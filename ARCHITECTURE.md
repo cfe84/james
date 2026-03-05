@@ -1,0 +1,156 @@
+# James Architecture
+
+## MI6 - Agent Communication Relay
+
+MI6 is a transport layer for remote agents to communicate via sessions. It consists of two binaries: `mi6-client` (local) and `mi6-server` (remote/container).
+
+### Project Structure
+
+```
+mi6/
+├── go.mod
+├── cmd/
+│   ├── mi6-client/main.go
+│   └── mi6-server/main.go
+├── pkg/
+│   ├── protocol/     # Wire protocol messages and codec
+│   ├── auth/          # SSH key auth, challenge-response, ECDH key exchange
+│   ├── session/       # Server-side session management
+│   └── transport/     # Encrypted connection wrapper
+├── internal/
+│   ├── batch/         # Stdin batching for client
+│   └── config/        # CLI flags and configuration
+└── Dockerfile
+```
+
+### Key Technical Decisions
+
+1. **Transport**: Raw TCP with custom binary framing (length-prefixed). Simpler than HTTP/WebSocket for a stdio relay.
+
+2. **Authentication**: SSH keys (RSA + ECDSA) for identity via challenge-response. Uses `golang.org/x/crypto/ssh` for key parsing and signature verification.
+
+3. **Encryption**: Ephemeral X25519 ECDH key exchange during auth handshake, deriving AES-256-GCM symmetric key via HKDF. Provides forward secrecy.
+
+4. **Wire Protocol**: Binary framed messages. Pre-auth messages are plaintext; post-auth encrypted with AES-256-GCM. Frame: `[length:4][nonce:12][encrypted_payload][tag:16]`.
+
+5. **Sessions**: Lazy creation (first client join creates session). In-memory only (no persistence). Server broadcasts data to all OTHER connected clients in the same session.
+
+6. **Batching**: Client batches stdin with triple trigger: newline, buffer size (4KB), or idle timeout (100ms).
+
+7. **authorized_keys**: Standard OpenSSH format, reloaded on SIGHUP.
+
+### Auth Flow
+
+```
+Client                              Server
+  │── MsgAuth {public_key} ──────────>│  (server checks authorized_keys)
+  │<── MsgAuthChallenge {challenge,   │  (generates challenge + ephemeral ECDH key)
+  │     server_ecdh_pub} ────────────│
+  │── MsgAuthResponse {signature,     │  (client signs challenge, generates ECDH key)
+  │     client_ecdh_pub} ───────────>│  (server verifies, derives shared secret)
+  │<── MsgAuthOK ────────────────────│
+  │     [encrypted from here]         │
+```
+
+### Implementation Phases
+
+1. Protocol & codec
+2. Auth package (key loading, challenge-response, ECDH)
+3. Transport layer (encrypted conn)
+4. Session management (server-side)
+5. Stdin batcher (client-side)
+6. Client binary
+7. Server binary
+8. Dockerfile
+
+## Moneypenny - Agent Session Manager
+
+Moneypenny is a per-host daemon that manages Claude Code agent sessions. It receives JSON commands via stdio (directly or through MI6) and orchestrates agent subprocesses.
+
+### Project Structure
+
+```
+moneypenny/
+├── go.mod
+├── cmd/moneypenny/main.go      # Entry point: stdio/MI6 modes, key management
+├── pkg/
+│   ├── envelope/               # JSON protocol types (command/response envelopes, error codes)
+│   ├── store/                  # SQLite persistence (sessions, conversation history)
+│   ├── agent/                  # Agent subprocess runner (claude CLI invocation)
+│   └── handler/                # Command dispatch and method handlers
+└── Makefile
+```
+
+### Key Technical Decisions
+
+1. **Protocol**: Line-delimited JSON envelopes over stdio. Commands have `{type, method, request_id, data}`, responses have `{type, status, request_id, error_code?, data}`.
+
+2. **Storage**: SQLite with WAL mode. Two tables: `sessions` (metadata, params, state) and `conversation_turns` (ordered prompt/response history). Chosen for simplicity and zero external dependencies.
+
+3. **Agent invocation**: Shells out to `claude` CLI with `--output-format json --session-id <id> -p <prompt>`. Parses the JSON output to extract the text response. Processes are tracked for stop/kill support.
+
+4. **MI6 integration**: Spawns `mi6-client` as a subprocess, piping stdio through it. Moneypenny auto-generates an ECDSA key on first MI6 use, stores it in `~/.config/james/moneypenny/`. Use `--show-public-key` to get the key for adding to mi6-server's authorized_keys.
+
+5. **Session states**: `idle` (ready for commands) and `working` (agent running). `stop_session` kills the agent and returns to idle. `continue_session` rejected unless idle.
+
+6. **Error handling**: Standardized error codes (SESSION_NOT_FOUND, SESSION_ALREADY_EXISTS, etc.) returned in the response envelope's `error_code` field.
+
+### Methods
+
+- `create_session` - Create new session, run initial prompt, store result
+- `continue_session` - Send new prompt to existing idle session
+- `list_sessions` - List all sessions with status
+- `get_session` - Full session detail with conversation history
+- `delete_session` - Kill agent if running, remove session
+- `stop_session` - Kill running agent, set session back to idle
+- `get_version` - Return the moneypenny version
+
+## Hem - Agent Orchestration CLI
+
+Hem is the top-level CLI that manages moneypenny instances and orchestrates sessions across them. kubectl-style verb+noun commands.
+
+### Architecture: Client/Server
+
+Hem uses a client/server architecture over a Unix domain socket (`~/.config/james/hem/hem.sock`).
+
+- **Server** (`hem server`): Long-running daemon that owns SQLite, moneypenny transport connections, and all orchestration logic. Accepts line-delimited JSON requests on the Unix socket. Each connection handles one request/response.
+- **CLI** (all other commands): Thin client that parses verb+noun, sends a JSON request to the server, receives a structured JSON response, and formats it for display.
+- Commands return structured data (not formatted text). The CLI handles output formatting (`-o json/text/table/tsv`).
+
+### Project Structure
+
+```
+hem/
+├── go.mod
+├── cmd/hem/main.go          # Entry point: thin CLI client + server startup
+├── pkg/
+│   ├── cli/                 # Verb+noun command parser, plural/alias normalization
+│   ├── protocol/            # Shared types: Request, Response (used by both client and server)
+│   ├── server/              # Unix socket server, connection handling
+│   ├── hemclient/           # Thin client that connects to the server socket
+│   ├── store/               # SQLite (moneypenny registry, session-to-moneypenny mapping)
+│   ├── transport/           # FIFO and MI6 client for talking to moneypennies
+│   ├── commands/            # All command implementations (return structured data)
+│   └── output/              # Output formatting (json, text, table, tsv)
+└── Makefile
+```
+
+### Key Technical Decisions
+
+1. **Client/server split**: Server maintains persistent state and connections. CLI is stateless. Future clients (UI, web) connect to the same socket.
+
+2. **Internal protocol**: Line-delimited JSON over Unix socket. Request: `{"verb":"create","noun":"session","args":[...]}`. Response: `{"status":"ok","data":{...}}` or `{"status":"error","message":"..."}`. One request/response per connection.
+
+3. **CLI pattern**: verb+noun (e.g., `hem add moneypenny`, `hem create session`). Nouns accept singular and plural. Custom parser, no external CLI framework.
+
+4. **Transport**: Server talks to moneypenny via FIFO (local named pipes) or MI6 (spawns mi6-client subprocess). Same JSON envelope protocol.
+
+5. **Storage**: SQLite tracks moneypenny registry and session-to-moneypenny mapping. Moneypenny owns session data; hem just knows where each session lives.
+
+6. **Output formats**: `--output-type` / `-o` supports json, text, table, tsv. Default is text. Formatting is done by the CLI, not the server.
+
+7. **SSH keys**: Auto-generates ECDSA key for MI6 transport, same approach as moneypenny. `hem show-public-key` to export.
+
+## Versioning
+
+Single `VERSION` file at project root. Injected at compile time via `-ldflags "-X main.Version=..."`. All components (mi6, moneypenny, hem) share the same version. Semver format.

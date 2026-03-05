@@ -1,0 +1,25 @@
+# Binaries
+bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go build/test
+*.test
+*.out
+
+# SQLite
+*.db
+*.db-wal
+*.db-shm
+
+# SSH keys
+*_ecdsa
+*_ecdsa.pub
+*.pem
+
+# OS
+.DS_Store
+Thumbs.db
