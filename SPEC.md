@@ -110,6 +110,10 @@ Line-delimited JSON, one request/response per connection:
 - The server stores state in a sqlite instance (moneypenny registry, session-to-moneypenny mapping).
 - For MI6 transport, hem auto-generates an ECDSA SSH key (same approach as moneypenny), stored in its data directory. Use `hem show-public-key` to output the key for adding to mi6-server's authorized_keys.
 - `hem set-default moneypenny -n NAME` sets the default moneypenny. Session commands use this default when `-m` is not specified.
+- `hem set-default agent VALUE` sets the default agent (used by `create session` when `--agent` is not specified, fallback: `claude`).
+- `hem set-default path VALUE` sets the default working directory (used by `create session` when `--path` is not specified, fallback: `.`).
+- `hem get-default agent|path|moneypenny` shows the current default for a given key.
+- `hem list defaults` shows all configured defaults.
 
 ## Server
 

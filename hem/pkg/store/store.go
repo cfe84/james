@@ -72,6 +72,11 @@ CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
     moneypenny_name TEXT NOT NULL REFERENCES moneypennies(name) ON DELETE CASCADE,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS defaults (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 );`
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
@@ -272,6 +277,59 @@ func scanMoneypenny(row *sql.Row) (*Moneypenny, error) {
 	}
 	mp.IsDefault = isDefault != 0
 	return &mp, nil
+}
+
+// SetDefault sets a default value by key.
+func (s *Store) SetDefault(key, value string) error {
+	_, err := s.db.Exec(
+		`INSERT OR REPLACE INTO defaults (key, value) VALUES (?, ?)`,
+		key, value,
+	)
+	if err != nil {
+		return fmt.Errorf("set default %q: %w", key, err)
+	}
+	return nil
+}
+
+// GetDefault returns a default value by key. Returns "" if not set.
+func (s *Store) GetDefault(key string) (string, error) {
+	var value string
+	err := s.db.QueryRow(`SELECT value FROM defaults WHERE key = ?`, key).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get default %q: %w", key, err)
+	}
+	return value, nil
+}
+
+// DeleteDefault removes a default value by key.
+func (s *Store) DeleteDefault(key string) error {
+	_, err := s.db.Exec(`DELETE FROM defaults WHERE key = ?`, key)
+	if err != nil {
+		return fmt.Errorf("delete default %q: %w", key, err)
+	}
+	return nil
+}
+
+// ListDefaults returns all defaults as key-value pairs.
+func (s *Store) ListDefaults() (map[string]string, error) {
+	rows, err := s.db.Query(`SELECT key, value FROM defaults ORDER BY key`)
+	if err != nil {
+		return nil, fmt.Errorf("list defaults: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string]string)
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, fmt.Errorf("scan default: %w", err)
+		}
+		result[k] = v
+	}
+	return result, rows.Err()
 }
 
 func boolToInt(b bool) int {

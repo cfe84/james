@@ -18,6 +18,7 @@ var nounAliases = map[string]string{
 	"moneypennies": "moneypenny",
 	"mp":           "moneypenny",
 	"sessions":     "session",
+	"defaults":     "default",
 }
 
 // Verb aliases: map synonyms.

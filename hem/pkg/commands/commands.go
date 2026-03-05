@@ -40,6 +40,14 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.DeleteMoneypenny(args)
 	case "set-default moneypenny":
 		return e.SetDefaultMoneypenny(args)
+	case "set-default agent":
+		return e.SetDefaultValue("agent", args)
+	case "set-default path":
+		return e.SetDefaultValue("path", args)
+	case "get-default moneypenny", "get-default agent", "get-default path":
+		return e.GetDefaultValue(noun)
+	case "list default":
+		return e.ListDefaults(args)
 
 	// Session commands
 	case "create session":
@@ -432,6 +440,61 @@ func (e *Executor) SetDefaultMoneypenny(args []string) *protocol.Response {
 	})
 }
 
+// SetDefaultValue sets a default value (agent, path).
+func (e *Executor) SetDefaultValue(key string, args []string) *protocol.Response {
+	if len(args) == 0 {
+		return protocol.ErrResponse(fmt.Sprintf("value is required: hem set-default %s VALUE", key))
+	}
+	value := args[0]
+
+	if err := e.store.SetDefault(key, value); err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	return protocol.OKResponse(TextResult{
+		Message: fmt.Sprintf("Default %s set to %q.", key, value),
+	})
+}
+
+// GetDefaultValue returns a default value.
+func (e *Executor) GetDefaultValue(key string) *protocol.Response {
+	value, err := e.store.GetDefault(key)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if value == "" {
+		return protocol.OKResponse(TextResult{
+			Message: fmt.Sprintf("No default %s set.", key),
+		})
+	}
+	return protocol.OKResponse(TextResult{
+		Message: value,
+	})
+}
+
+// ListDefaults lists all defaults.
+func (e *Executor) ListDefaults(args []string) *protocol.Response {
+	defaults, err := e.store.ListDefaults()
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	// Also include the moneypenny default from its own table.
+	mp, err := e.store.GetDefaultMoneypenny()
+	if err == nil && mp != nil {
+		defaults["moneypenny"] = mp.Name
+	}
+
+	result := TableResult{
+		Headers: []string{"Key", "Value"},
+	}
+	for k, v := range defaults {
+		result.Rows = append(result.Rows, []string{k, v})
+	}
+
+	return protocol.OKResponse(result)
+}
+
 // ---------------------------------------------------------------------------
 // Session commands
 // ---------------------------------------------------------------------------
@@ -443,15 +506,31 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 	remaining, err := parseFlagsFromArgs("create-session", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&mpName, "m", "", "moneypenny name")
 		fs.StringVar(&mpName, "moneypenny", "", "moneypenny name")
-		fs.StringVar(&agentName, "agent", "claude", "agent to use")
+		fs.StringVar(&agentName, "agent", "", "agent to use")
 		fs.StringVar(&sessionName, "name", "", "session name")
 		fs.StringVar(&systemPrompt, "system-prompt", "", "system prompt")
 		fs.BoolVar(&yolo, "yolo", false, "enable yolo mode")
-		fs.StringVar(&pathArg, "path", ".", "working directory path")
+		fs.StringVar(&pathArg, "path", "", "working directory path")
 		fs.BoolVar(&async, "async", false, "return immediately without waiting for response")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
+	}
+
+	// Apply stored defaults for agent and path when not specified.
+	if agentName == "" {
+		if v, _ := e.store.GetDefault("agent"); v != "" {
+			agentName = v
+		} else {
+			agentName = "claude"
+		}
+	}
+	if pathArg == "" {
+		if v, _ := e.store.GetDefault("path"); v != "" {
+			pathArg = v
+		} else {
+			pathArg = "."
+		}
 	}
 
 	var mp *store.Moneypenny

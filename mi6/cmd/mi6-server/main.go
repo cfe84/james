@@ -23,10 +23,23 @@ import (
 var Version = "dev"
 
 func main() {
-	listenAddr := flag.String("listen", ":7007", "TCP address to listen on")
+	port := flag.String("port", "", "port to listen on (overrides PORT env, default 7007)")
+	listenAddr := flag.String("listen", "", "TCP address to listen on (overrides --port)")
 	authorizedKeysPath := flag.String("authorized-keys", "", "path to OpenSSH authorized_keys file (required)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
+
+	// Resolve listen address: --listen > --port > PORT env > default.
+	if *listenAddr == "" {
+		p := *port
+		if p == "" {
+			p = os.Getenv("PORT")
+		}
+		if p == "" {
+			p = "7007"
+		}
+		*listenAddr = ":" + p
+	}
 
 	if *showVersion {
 		fmt.Println(Version)

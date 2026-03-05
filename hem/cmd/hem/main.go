@@ -265,6 +265,12 @@ Moneypenny management:
   delete moneypenny -n NAME
   set-default moneypenny -n NAME
 
+Defaults:
+  set-default agent VALUE        Set default agent (e.g. claude)
+  set-default path VALUE         Set default working directory
+  get-default agent|path|moneypenny
+  list defaults
+
 Session management:
   create session -m MONEYPENNY PROMPT [--name, --system-prompt, --yolo, --path, --async]
   continue session SESSION_ID PROMPT [--async]
