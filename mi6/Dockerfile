@@ -11,5 +11,5 @@ RUN apk add --no-cache ca-certificates
 COPY --from=builder /build/mi6-server /usr/local/bin/mi6-server
 ENV PORT=7007
 EXPOSE 7007
-ENTRYPOINT ["mi6-server", "--authorized-keys", "/etc/mi6/authorized_keys"]
+ENTRYPOINT ["mi6-server", "--authorized-keys", "/etc/mi6/authorized_keys", "--server-key", "/etc/mi6/server_key"]
 

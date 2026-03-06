@@ -128,7 +128,7 @@ func (m *Manager) Leave(sessionID string, clientID string) {
 }
 
 // Broadcast sends data to all clients in the session EXCEPT the sender.
-// Non-blocking: if a client's WriteCh is full, skip that client (slow consumer).
+// Non-blocking: if a client's WriteCh is full, skip that client (slow consumer)
 func (m *Manager) Broadcast(sessionID string, senderID string, data []byte) {
 	m.mu.RLock()
 	sess, ok := m.sessions[sessionID]

@@ -12,7 +12,7 @@ docker create \
     --name "${CONTAINER_NAME}" \
     --restart unless-stopped \
     -p 7007:7007 \
-    -v "${CONFIG}:/etc/mi6:ro" \
+    -v "${CONFIG}:/etc/mi6" \
     mi6
 
 docker start "${CONTAINER_NAME}"
