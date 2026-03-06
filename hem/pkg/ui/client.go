@@ -289,6 +289,31 @@ func (c *client) listProjects(statusFilter string) ([]projectInfo, error) {
 	return projects, nil
 }
 
+type projectDetail struct {
+	ID                  string `json:"id"`
+	Name                string `json:"name"`
+	Status              string `json:"status"`
+	Moneypenny          string `json:"moneypenny"`
+	Paths               string `json:"paths"`
+	DefaultAgent        string `json:"default_agent"`
+	DefaultSystemPrompt string `json:"default_system_prompt"`
+}
+
+func (c *client) showProject(nameOrID string) (*projectDetail, error) {
+	resp, err := c.send("show", "project", nameOrID)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Status == protocol.StatusError {
+		return nil, fmt.Errorf("%s", resp.Message)
+	}
+	var detail projectDetail
+	if err := json.Unmarshal(resp.Data, &detail); err != nil {
+		return nil, fmt.Errorf("parsing project: %w", err)
+	}
+	return &detail, nil
+}
+
 func (c *client) deleteProject(nameOrID string) error {
 	resp, err := c.send("delete", "project", nameOrID)
 	if err != nil {

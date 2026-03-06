@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -182,7 +183,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.moneypennies, cmd = m.moneypennies.Update(msg)
 		return m, cmd
 
-	case wizardMPLoadedMsg, wizardDirLoadedMsg:
+	case wizardMPLoadedMsg, wizardDirLoadedMsg, wizardProjectLoadedMsg:
 		var cmd tea.Cmd
 		m.wizard, cmd = m.wizard.Update(msg)
 		return m, cmd
@@ -959,6 +960,19 @@ func (m Model) updateWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.wizard.err = nil
 			return m, nil
 		case wizardStepForm:
+			if m.wizard.projectName != "" {
+				// Came from project — skip back to leaving wizard entirely.
+				m.currentView = m.previousView
+				switch m.previousView {
+				case viewProjectDetail:
+					m.projectDetail.loading = true
+					return m, m.projectDetail.loadDashboard()
+				default:
+					m.currentView = viewDashboard
+					m.dashboard.loading = true
+					return m, m.dashboard.loadDashboard()
+				}
+			}
 			m.wizard.step = wizardStepPath
 			m.wizard.err = nil
 			return m, nil
@@ -1171,7 +1185,6 @@ func (m Model) renderStatusBar() string {
 		}
 	}
 
-	left := lipgloss.JoinHorizontal(lipgloss.Left, keys...)
 	right := ""
 	if m.statusMsg != "" {
 		right = statusDescStyle.Render(m.statusMsg)
@@ -1179,20 +1192,57 @@ func (m Model) renderStatusBar() string {
 		right = statusDescStyle.Render("v" + m.version)
 	}
 
-	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
-	if gap < 0 {
-		// Not enough room for right side — drop it.
-		right = ""
-		gap = m.width - lipgloss.Width(left)
+	gapStyle := lipgloss.NewStyle().Background(colorPrimary)
+
+	// Wrap keys into lines that fit the terminal width.
+	var lines []string
+	var currentLine string
+	currentWidth := 0
+	for _, k := range keys {
+		kw := lipgloss.Width(k)
+		if currentWidth > 0 && currentWidth+kw > m.width {
+			// Fill remainder of line with background.
+			gap := m.width - currentWidth
+			if gap > 0 {
+				currentLine += gapStyle.Render(fmt.Sprintf("%*s", gap, ""))
+			}
+			lines = append(lines, currentLine)
+			currentLine = ""
+			currentWidth = 0
+		}
+		currentLine += k
+		currentWidth += kw
+	}
+
+	// Last line: add right-aligned status/version.
+	if currentLine != "" {
+		gap := m.width - currentWidth - lipgloss.Width(right)
 		if gap < 0 {
-			gap = 0
+			// No room for right side on this line.
+			gap = m.width - currentWidth
+			if gap > 0 {
+				currentLine += gapStyle.Render(fmt.Sprintf("%*s", gap, ""))
+			}
+			lines = append(lines, currentLine)
+			// Put right on its own line.
+			if right != "" {
+				rGap := m.width - lipgloss.Width(right)
+				if rGap > 0 {
+					lines = append(lines, gapStyle.Render(fmt.Sprintf("%*s", rGap, ""))+right)
+				} else {
+					lines = append(lines, right)
+				}
+			}
+		} else {
+			if gap > 0 {
+				currentLine += gapStyle.Render(fmt.Sprintf("%*s", gap, ""))
+			}
+			currentLine += right
+			lines = append(lines, currentLine)
 		}
 	}
-	// Use a plain style (no padding) for the gap filler so it doesn't add extra width.
-	gapStyle := lipgloss.NewStyle().Background(colorPrimary)
-	padding := gapStyle.Render(fmt.Sprintf("%*s", gap, ""))
 
-	return left + padding + right
+	return strings.Join(lines, "\n")
 }
 
 // Run starts the TUI.

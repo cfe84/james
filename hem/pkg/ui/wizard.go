@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -102,6 +103,11 @@ func newProjectWizardModel(c *client) wizardModel {
 	}
 }
 
+type wizardProjectLoadedMsg struct {
+	project *projectDetail
+	err     error
+}
+
 func newWizardModelForProject(c *client, projectName string) wizardModel {
 	m := newWizardModel(c)
 	m.async = true
@@ -109,10 +115,20 @@ func newWizardModelForProject(c *client, projectName string) wizardModel {
 	for i := range m.fields {
 		if m.fields[i].flag == "--project" {
 			m.fields[i].value = projectName
-			break
+		}
+		if m.fields[i].flag == "--name" {
+			m.fields[i].value = projectName
 		}
 	}
 	return m
+}
+
+func (m wizardModel) loadProjectDetails() tea.Cmd {
+	name := m.projectName
+	return func() tea.Msg {
+		p, err := m.client.showProject(name)
+		return wizardProjectLoadedMsg{project: p, err: err}
+	}
 }
 
 func (m wizardModel) loadMoneypennies() tea.Cmd {
@@ -179,6 +195,9 @@ func (m wizardModel) createSession() tea.Cmd {
 }
 
 func (m wizardModel) Init() tea.Cmd {
+	if m.projectName != "" {
+		return m.loadProjectDetails()
+	}
 	return m.loadMoneypennies()
 }
 
@@ -198,6 +217,30 @@ func (m wizardModel) Update(msg tea.Msg) (wizardModel, tea.Cmd) {
 				break
 			}
 		}
+
+	case wizardProjectLoadedMsg:
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		p := msg.project
+		m.selectedMP = p.Moneypenny
+		// Use first path from project's JSON array.
+		var paths []string
+		if err := json.Unmarshal([]byte(p.Paths), &paths); err == nil && len(paths) > 0 {
+			m.selectedPath = paths[0]
+		}
+		// Pre-fill agent and system prompt from project defaults.
+		for i := range m.fields {
+			if m.fields[i].flag == "--agent" && p.DefaultAgent != "" && m.fields[i].value == "" {
+				m.fields[i].value = p.DefaultAgent
+			}
+			if m.fields[i].flag == "--system-prompt" && p.DefaultSystemPrompt != "" && m.fields[i].value == "" {
+				m.fields[i].value = p.DefaultSystemPrompt
+			}
+		}
+		m.step = wizardStepForm
+		return m, nil
 
 	case wizardDirLoadedMsg:
 		m.pathLoading = false
@@ -357,6 +400,29 @@ func (m wizardModel) updateFormStep(msg tea.KeyMsg) (wizardModel, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// wrapText breaks text into lines of at most maxWidth characters.
+// Tries to break at word boundaries when possible.
+func wrapText(text string, maxWidth int) []string {
+	if maxWidth <= 0 || len(text) <= maxWidth {
+		return []string{text}
+	}
+	var lines []string
+	for len(text) > 0 {
+		if len(text) <= maxWidth {
+			lines = append(lines, text)
+			break
+		}
+		// Find last space within maxWidth.
+		cut := maxWidth
+		if idx := strings.LastIndex(text[:maxWidth], " "); idx > 0 {
+			cut = idx + 1
+		}
+		lines = append(lines, text[:cut])
+		text = text[cut:]
+	}
+	return lines
 }
 
 // visibleDirs returns only directory entries.
@@ -523,6 +589,13 @@ func (m wizardModel) viewFormStep() string {
 		mpLabel, lipgloss.NewStyle().Foreground(colorSuccess).Render(m.selectedMP),
 		pathLabel, lipgloss.NewStyle().Foreground(colorSuccess).Render(m.selectedPath)))
 
+	// labelWidth (16) + indent (2) + space (1) = 19 chars before value.
+	const valueIndent = 19
+	maxValueWidth := m.width - valueIndent - 2
+	if maxValueWidth < 20 {
+		maxValueWidth = 20
+	}
+
 	for i, f := range m.fields {
 		label := labelStyle.Render(f.label + ":")
 		var value string
@@ -534,7 +607,17 @@ func (m wizardModel) viewFormStep() string {
 					value = fieldActiveStyle.Render("[ ] " + f.value)
 				}
 			} else {
-				value = fieldActiveStyle.Render(f.value + "\u2588")
+				text := f.value + "\u2588"
+				lines := wrapText(text, maxValueWidth)
+				var parts []string
+				for j, line := range lines {
+					rendered := fieldActiveStyle.Render(line)
+					if j > 0 {
+						rendered = strings.Repeat(" ", valueIndent) + rendered
+					}
+					parts = append(parts, rendered)
+				}
+				value = strings.Join(parts, "\n")
 			}
 		} else {
 			if f.isBool {
@@ -542,7 +625,16 @@ func (m wizardModel) viewFormStep() string {
 			} else if f.value == "" {
 				value = fieldInactiveStyle.Render("(empty)")
 			} else {
-				value = fieldInactiveStyle.Render(f.value)
+				lines := wrapText(f.value, maxValueWidth)
+				var parts []string
+				for j, line := range lines {
+					rendered := fieldInactiveStyle.Render(line)
+					if j > 0 {
+						rendered = strings.Repeat(" ", valueIndent) + rendered
+					}
+					parts = append(parts, rendered)
+				}
+				value = strings.Join(parts, "\n")
 			}
 		}
 		b.WriteString("  " + label + " " + value + "\n")
