@@ -61,8 +61,9 @@ var CommandHelp = map[string]string{
 	"update project":      "Usage: hem update project NAME_OR_ID [flags]\n\nUpdates project fields.\n\nFlags:\n  --name             New project name\n  --status           New status (active, paused, done)\n  -m, --moneypenny   Default moneypenny\n  --path             Working directory path\n  --agent            Default agent\n  --system-prompt    Default system prompt",
 	"delete project":      "Usage: hem delete project NAME_OR_ID\n\nDeletes a project. Sessions keep their data but lose the project link.",
 	"complete session":    "Usage: hem complete session SESSION_ID\n\nMarks a session as completed in hem's local tracking.",
+	"diff session":        "Usage: hem diff session SESSION_ID\n\nShows git diff for a session's working directory.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)",
 	"dashboard":           "Usage: hem dashboard [--project NAME] [--all]\n\nShows a dashboard of sessions grouped by attention state.\n\nFlags:\n  --project          Filter by project name\n  --all              Include completed sessions",
-	"import session":       "Usage: hem import session FILE.jsonl [-m MONEYPENNY] [--name NAME] [--project PROJECT]\n\nImports an existing Claude Code session from a JSONL file.\n\nFlags:\n  -m, --moneypenny   Moneypenny name (uses default if not set)\n  --name             Session name (default: first user message)\n  --agent            Agent (default: claude)\n  --path             Working directory (default: from JSONL or default)\n  --project          Project name or ID",
+	"import session":       "Usage: hem import session FILE.jsonl|SESSION_ID [-m MONEYPENNY] [--name NAME] [--project PROJECT]\n\nImports an existing Claude Code session from a JSONL file or by session ID.\nIf the argument is not a file on disk, it is treated as a session ID and\nsearched for in ~/.claude/projects/ subdirectories.\n\nFlags:\n  -m, --moneypenny   Moneypenny name (uses default if not set)\n  --name             Session name (default: first user message)\n  --agent            Agent (default: claude)\n  --path             Working directory (default: from JSONL or default)\n  --project          Project name or ID",
 }
 
 // Dispatch routes a verb+noun+args to the appropriate handler.
@@ -142,6 +143,8 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.DeleteProject(args)
 	case "complete session":
 		return e.CompleteSession(args)
+	case "diff session":
+		return e.DiffSession(args)
 	case "import session":
 		return e.ImportSession(args)
 	default:
@@ -905,6 +908,9 @@ func (e *Executor) ContinueSession(args []string) *protocol.Response {
 		_ = e.store.SetSessionHemStatus(sessionID, "active")
 	}
 
+	// Mark as unreviewed — the response hasn't been seen yet.
+	_ = e.store.SetSessionReviewed(sessionID, false)
+
 	cmdData := map[string]interface{}{
 		"session_id": sessionID,
 		"prompt":     prompt,
@@ -998,16 +1004,23 @@ func (e *Executor) DeleteSession(args []string) *protocol.Response {
 	}
 
 	ctx := context.Background()
+	var warnings []string
 	if _, err := e.sendCommand(ctx, mp, "delete_session", cmdData); err != nil {
-		return protocol.ErrResponse(err.Error())
+		// Remote delete failed (moneypenny offline or session doesn't exist remotely).
+		// Still clean up local tracking.
+		warnings = append(warnings, fmt.Sprintf("remote delete failed: %v", err))
 	}
 
 	if err := e.store.DeleteTrackedSession(sessionID); err != nil {
 		return protocol.ErrResponse(fmt.Sprintf("removing local session tracking: %v", err))
 	}
 
+	msg := fmt.Sprintf("Session %s deleted.", sessionID)
+	if len(warnings) > 0 {
+		msg += " (warning: " + warnings[0] + ")"
+	}
 	return protocol.OKResponse(TextResult{
-		Message: fmt.Sprintf("Session %s deleted.", sessionID),
+		Message: msg,
 	})
 }
 
@@ -1304,6 +1317,9 @@ func (e *Executor) HistorySession(args []string) *protocol.Response {
 	if numTurns > 0 && numTurns < len(conv) {
 		conv = conv[len(conv)-numTurns:]
 	}
+
+	// Mark session as reviewed — the user is seeing the response.
+	_ = e.store.SetSessionReviewed(sessionID, true)
 
 	return protocol.OKResponse(HistoryResult{
 		SessionID:    sessionID,
@@ -1648,6 +1664,58 @@ func (e *Executor) CompleteSession(args []string) *protocol.Response {
 	})
 }
 
+func (e *Executor) DiffSession(args []string) *protocol.Response {
+	var sessionID string
+
+	remaining, err := parseFlagsFromArgs("diff-session", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&sessionID, "session-id", "", "session ID")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if sessionID == "" {
+		if len(remaining) == 0 {
+			return protocol.ErrResponse("session_id is required")
+		}
+		sessionID = remaining[0]
+	}
+
+	// Find which moneypenny has this session.
+	mpName, err := e.store.GetSessionMoneypenny(sessionID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if mpName == "" {
+		return protocol.ErrResponse(fmt.Sprintf("session %q not tracked", sessionID))
+	}
+
+	mp, err := e.store.GetMoneypenny(mpName)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if mp == nil {
+		return protocol.ErrResponse(fmt.Sprintf("moneypenny %q not found", mpName))
+	}
+
+	ctx := context.Background()
+	resp, err := e.sendCommand(ctx, mp, "git_diff", map[string]interface{}{
+		"session_id": sessionID,
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	var result struct {
+		Diff string `json:"diff"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("parsing diff: %v", err))
+	}
+
+	return protocol.OKResponse(TextResult{Message: result.Diff})
+}
+
 func (e *Executor) ImportSession(args []string) *protocol.Response {
 	var mpName, sessionName, agentName, pathArg, projectNameOrID string
 
@@ -1664,9 +1732,34 @@ func (e *Executor) ImportSession(args []string) *protocol.Response {
 	}
 
 	if len(remaining) == 0 {
-		return protocol.ErrResponse("JSONL file path is required")
+		return protocol.ErrResponse("JSONL file path or session ID is required")
 	}
+
 	jsonlPath := remaining[0]
+	if _, err := os.Stat(jsonlPath); err != nil {
+		// Not a file on disk — treat as a session ID and search ~/.claude/projects/
+		homeDir, err := os.UserHomeDir()
+		if err != nil {
+			return protocol.ErrResponse(fmt.Sprintf("getting home directory: %v", err))
+		}
+		projectsDir := filepath.Join(homeDir, ".claude", "projects")
+		targetName := remaining[0] + ".jsonl"
+		found := ""
+		_ = filepath.Walk(projectsDir, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return nil
+			}
+			if !info.IsDir() && info.Name() == targetName {
+				found = path
+				return filepath.SkipAll
+			}
+			return nil
+		})
+		if found == "" {
+			return protocol.ErrResponse(fmt.Sprintf("could not find Claude session file for session ID: %s", remaining[0]))
+		}
+		jsonlPath = found
+	}
 
 	// Read and parse the JSONL file.
 	data, err := os.ReadFile(jsonlPath)
@@ -1952,11 +2045,22 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 		projectName := projectNames[sess.ProjectID]
 
 		// Determine attention category.
+		// 0=READY (idle, unreviewed), 1=WORKING, 2=IDLE (idle, reviewed), 3=COMPLETED
 		sortKey := 1 // WORKING
 		if sess.HemStatus == "completed" {
-			sortKey = 2
-		} else if mpStatus == "idle" {
-			sortKey = 0
+			sortKey = 3
+		} else if mpStatus == "idle" || mpStatus == "offline" {
+			if sess.Reviewed {
+				sortKey = 2 // IDLE
+			} else {
+				sortKey = 0 // READY
+			}
+		}
+
+		// Display "ready" instead of "idle" for unreviewed sessions.
+		displayStatus := mpStatus
+		if (mpStatus == "idle" || mpStatus == "offline") && !sess.Reviewed {
+			displayStatus = "ready"
 		}
 
 		displayName := sessionName
@@ -1975,7 +2079,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 			SessionID:  sess.SessionID,
 			Name:       displayName,
 			Project:    projectName,
-			MPStatus:   mpStatus,
+			MPStatus:   displayStatus,
 			HemStatus:  sess.HemStatus,
 			Moneypenny: sess.MoneypennyName,
 			LastActive: lastActiveFormatted,

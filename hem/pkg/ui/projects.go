@@ -231,6 +231,142 @@ func (m createProjectModel) View() string {
 	return dialogStyle.Render(b.String())
 }
 
+// editProjectModel is a form for editing an existing project.
+type editProjectModel struct {
+	projectID string
+	fields    []formField
+	original  []string
+	cursor    int
+	width     int
+	height    int
+	err       error
+	saving    bool
+	client    *client
+}
+
+type projectUpdatedMsg struct {
+	err error
+}
+
+func newEditProjectModel(c *client, p *projectInfo) editProjectModel {
+	fields := []formField{
+		{label: "Name", flag: "--name", value: p.Name},
+		{label: "Status", flag: "--status", value: p.Status},
+		{label: "Moneypenny", flag: "-m", value: p.Moneypenny},
+		{label: "Agent", flag: "--agent", value: p.Agent},
+		{label: "Path", flag: "--path", value: p.Paths},
+		{label: "System Prompt", flag: "--system-prompt", value: ""},
+	}
+	original := make([]string, len(fields))
+	for i, f := range fields {
+		original[i] = f.value
+	}
+	return editProjectModel{
+		client:    c,
+		projectID: p.ID,
+		fields:    fields,
+		original:  original,
+	}
+}
+
+func (m editProjectModel) save() tea.Cmd {
+	return func() tea.Msg {
+		fields := make(map[string]string)
+		for i, f := range m.fields {
+			if f.value != m.original[i] {
+				fields[f.flag] = f.value
+			}
+		}
+		if len(fields) == 0 {
+			return projectUpdatedMsg{err: nil}
+		}
+		err := m.client.updateProject(m.projectID, fields)
+		return projectUpdatedMsg{err: err}
+	}
+}
+
+func (m editProjectModel) Update(msg tea.Msg) (editProjectModel, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		if m.saving {
+			return m, nil
+		}
+		field := &m.fields[m.cursor]
+		switch msg.String() {
+		case "up":
+			if m.cursor > 0 {
+				m.cursor--
+			}
+		case "down":
+			if m.cursor < len(m.fields)-1 {
+				m.cursor++
+			}
+		case "tab":
+			m.cursor = (m.cursor + 1) % len(m.fields)
+		case "enter":
+			m.saving = true
+			return m, m.save()
+		case "backspace":
+			if len(field.value) > 0 {
+				field.value = field.value[:len(field.value)-1]
+			}
+		case "ctrl+u":
+			field.value = ""
+		default:
+			if msg.Type == tea.KeyRunes {
+				field.value += string(msg.Runes)
+			} else if msg.Type == tea.KeySpace {
+				field.value += " "
+			}
+		}
+	}
+	return m, nil
+}
+
+func (m editProjectModel) View() string {
+	var b strings.Builder
+
+	b.WriteString(titleStyle.Render(fmt.Sprintf(" Edit Project: %s ", truncate(m.fields[0].value, 20))))
+	b.WriteString("\n\n")
+
+	for i, f := range m.fields {
+		label := labelStyle.Render(f.label + ":")
+
+		changed := ""
+		if f.value != m.original[i] {
+			changed = lipgloss.NewStyle().Foreground(colorWarning).Render(" *")
+		}
+
+		var value string
+		if i == m.cursor {
+			value = fieldActiveStyle.Render(f.value + "█")
+		} else {
+			if f.value == "" {
+				value = fieldInactiveStyle.Render("(empty)")
+			} else {
+				value = fieldInactiveStyle.Render(f.value)
+			}
+		}
+		b.WriteString("  " + label + " " + value + changed + "\n")
+	}
+
+	b.WriteString("\n")
+	if m.saving {
+		b.WriteString("  Saving...")
+	} else {
+		b.WriteString(statusDescStyle.Render(" Enter ") + " save  " +
+			statusDescStyle.Render(" Tab ") + " next field  " +
+			statusDescStyle.Render(" Esc ") + " cancel  " +
+			statusDescStyle.Render(" Ctrl+U ") + " clear")
+	}
+
+	if m.err != nil {
+		b.WriteString("\n  " + lipgloss.NewStyle().Foreground(colorDanger).Render(m.err.Error()))
+	}
+
+	return dialogStyle.Render(b.String())
+}
+
 func (m projectsModel) View() string {
 	if m.loading {
 		return "\n  Loading projects..."

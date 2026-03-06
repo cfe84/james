@@ -32,6 +32,7 @@ type Session struct {
 	MoneypennyName string
 	ProjectID      string
 	HemStatus      string // "active" or "completed"
+	Reviewed       bool   // true if user has seen latest response
 	CreatedAt      time.Time
 }
 
@@ -101,6 +102,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     moneypenny_name TEXT NOT NULL REFERENCES moneypennies(name) ON DELETE CASCADE,
     project_id TEXT NOT NULL DEFAULT '',
     hem_status TEXT NOT NULL DEFAULT 'active',
+    reviewed INTEGER NOT NULL DEFAULT 1,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -277,11 +279,11 @@ func (s *Store) ListTrackedSessions(moneypennyFilter string) ([]*Session, error)
 	var err error
 	if moneypennyFilter == "" {
 		rows, err = s.db.Query(
-			`SELECT session_id, moneypenny_name, project_id, hem_status, created_at FROM sessions ORDER BY session_id`,
+			`SELECT session_id, moneypenny_name, project_id, hem_status, reviewed, created_at FROM sessions ORDER BY session_id`,
 		)
 	} else {
 		rows, err = s.db.Query(
-			`SELECT session_id, moneypenny_name, project_id, hem_status, created_at FROM sessions WHERE moneypenny_name = ? ORDER BY session_id`,
+			`SELECT session_id, moneypenny_name, project_id, hem_status, reviewed, created_at FROM sessions WHERE moneypenny_name = ? ORDER BY session_id`,
 			moneypennyFilter,
 		)
 	}
@@ -293,9 +295,11 @@ func (s *Store) ListTrackedSessions(moneypennyFilter string) ([]*Session, error)
 	var result []*Session
 	for rows.Next() {
 		var sess Session
-		if err := rows.Scan(&sess.SessionID, &sess.MoneypennyName, &sess.ProjectID, &sess.HemStatus, &sess.CreatedAt); err != nil {
+		var reviewed int
+		if err := rows.Scan(&sess.SessionID, &sess.MoneypennyName, &sess.ProjectID, &sess.HemStatus, &reviewed, &sess.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
+		sess.Reviewed = reviewed != 0
 		result = append(result, &sess)
 	}
 	return result, rows.Err()
@@ -529,6 +533,15 @@ func (s *Store) SetSessionHemStatus(sessionID, hemStatus string) error {
 	return nil
 }
 
+// SetSessionReviewed updates the reviewed flag on a session.
+func (s *Store) SetSessionReviewed(sessionID string, reviewed bool) error {
+	_, err := s.db.Exec(`UPDATE sessions SET reviewed = ? WHERE session_id = ?`, boolToInt(reviewed), sessionID)
+	if err != nil {
+		return fmt.Errorf("set session reviewed %q: %w", sessionID, err)
+	}
+	return nil
+}
+
 // GetSessionHemStatus returns the hem_status for a session. Returns "" if not found.
 func (s *Store) GetSessionHemStatus(sessionID string) (string, error) {
 	var status string
@@ -558,6 +571,7 @@ func (s *Store) migrateSchema() error {
 	migrations := []string{
 		`ALTER TABLE sessions ADD COLUMN project_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sessions ADD COLUMN hem_status TEXT NOT NULL DEFAULT 'active'`,
+		`ALTER TABLE sessions ADD COLUMN reviewed INTEGER NOT NULL DEFAULT 1`,
 	}
 	for _, m := range migrations {
 		_, err := s.db.Exec(m)

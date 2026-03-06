@@ -54,6 +54,8 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.updateSession(ctx, cmd)
 	case "import_session":
 		return h.importSession(ctx, cmd)
+	case "git_diff":
+		return h.gitDiff(ctx, cmd)
 	case "get_version":
 		return h.getVersion(cmd)
 	default:
@@ -377,4 +379,45 @@ func (h *Handler) importSession(_ context.Context, cmd *envelope.Command) *envel
 		"session_id": data.SessionID,
 		"turns":      len(data.Conversation),
 	})
+}
+
+func (h *Handler) gitDiff(_ context.Context, cmd *envelope.Command) *envelope.Response {
+	var data envelope.SessionIDData
+	if err := json.Unmarshal(cmd.Data, &data); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
+	}
+
+	if data.SessionID == "" {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id is required")
+	}
+
+	// Get session from store to find its working directory.
+	sess, err := h.store.GetSession(data.SessionID)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to get session: %v", err))
+	}
+	if sess == nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, fmt.Sprintf("session not found: %s", data.SessionID))
+	}
+
+	// Run git diff (unstaged changes).
+	diffCmd := exec.Command("git", "diff")
+	diffCmd.Dir = sess.Path
+	unstaged, err := diffCmd.Output()
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to run git diff: %v", err))
+	}
+
+	// Run git diff --cached (staged changes).
+	cachedCmd := exec.Command("git", "diff", "--cached")
+	cachedCmd.Dir = sess.Path
+	staged, err := cachedCmd.Output()
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to run git diff --cached: %v", err))
+	}
+
+	// Combine output.
+	combined := string(unstaged) + string(staged)
+
+	return envelope.SuccessResponse(cmd.RequestID, map[string]string{"diff": combined})
 }

@@ -285,6 +285,105 @@ func (c *client) createProject(args []string) error {
 	return nil
 }
 
+func (c *client) updateProject(nameOrID string, fields map[string]string) error {
+	args := []string{nameOrID}
+	for flag, value := range fields {
+		args = append(args, flag, value)
+	}
+	resp, err := c.send("update", "project", args...)
+	if err != nil {
+		return err
+	}
+	if resp.Status == protocol.StatusError {
+		return fmt.Errorf("%s", resp.Message)
+	}
+	return nil
+}
+
+// moneypennyInfo is a parsed moneypenny from list moneypennies.
+type moneypennyInfo struct {
+	Name      string
+	Type      string
+	Address   string
+	IsDefault bool
+}
+
+func (c *client) listMoneypennies() ([]moneypennyInfo, error) {
+	resp, err := c.send("list", "moneypenny")
+	if err != nil {
+		return nil, err
+	}
+	if resp.Status == protocol.StatusError {
+		return nil, fmt.Errorf("%s", resp.Message)
+	}
+
+	var table struct {
+		Headers []string   `json:"headers"`
+		Rows    [][]string `json:"rows"`
+	}
+	if err := json.Unmarshal(resp.Data, &table); err != nil {
+		return nil, fmt.Errorf("parsing moneypennies: %w", err)
+	}
+
+	var mps []moneypennyInfo
+	for _, row := range table.Rows {
+		mp := moneypennyInfo{}
+		if len(row) > 0 {
+			mp.Name = row[0]
+		}
+		if len(row) > 1 {
+			mp.Type = row[1]
+		}
+		if len(row) > 2 {
+			mp.Address = row[2]
+		}
+		if len(row) > 3 {
+			mp.IsDefault = row[3] == "*"
+		}
+		mps = append(mps, mp)
+	}
+	return mps, nil
+}
+
+func (c *client) pingMoneypenny(name string) (string, error) {
+	resp, err := c.send("ping", "moneypenny", "-n", name)
+	if err != nil {
+		return "", err
+	}
+	if resp.Status == protocol.StatusError {
+		return "", fmt.Errorf("%s", resp.Message)
+	}
+	var result struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return "", err
+	}
+	return result.Message, nil
+}
+
+func (c *client) deleteMoneypenny(name string) error {
+	resp, err := c.send("delete", "moneypenny", "-n", name)
+	if err != nil {
+		return err
+	}
+	if resp.Status == protocol.StatusError {
+		return fmt.Errorf("%s", resp.Message)
+	}
+	return nil
+}
+
+func (c *client) setDefaultMoneypenny(name string) error {
+	resp, err := c.send("set-default", "moneypenny", "-n", name)
+	if err != nil {
+		return err
+	}
+	if resp.Status == protocol.StatusError {
+		return fmt.Errorf("%s", resp.Message)
+	}
+	return nil
+}
+
 func (c *client) moveSessionToProject(sessionID, projectNameOrID string) error {
 	resp, err := c.send("update", "session", sessionID, "--project", projectNameOrID)
 	if err != nil {

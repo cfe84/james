@@ -14,11 +14,11 @@ type dashboardEntry struct {
 	SessionID  string
 	Name       string
 	Project    string
-	MPStatus   string // idle/working
+	MPStatus   string // ready/idle/working/offline
 	HemStatus  string // active/completed
 	Moneypenny string
 	LastActive string
-	Category   int // 0=REVIEW, 1=WORKING, 2=COMPLETED
+	Category   int // 0=READY, 1=WORKING, 2=IDLE, 3=COMPLETED
 }
 
 // dashboardModel displays the attention-based dashboard.
@@ -53,11 +53,15 @@ func newDashboardModel(c *client) dashboardModel {
 
 func (m dashboardModel) loadDashboard() tea.Cmd {
 	projectFilter := m.projectFilter
+	showAll := m.showAll
 	return func() tea.Msg {
 		// Use the dashboard command which handles grouping and project filtering.
 		args := []string{}
 		if projectFilter != "" {
 			args = append(args, "--project", projectFilter)
+		}
+		if showAll {
+			args = append(args, "--all")
 		}
 		resp, err := m.client.send("dashboard", "", args...)
 		if err != nil {
@@ -107,11 +111,14 @@ func (m dashboardModel) loadDashboard() tea.Cmd {
 			}
 
 			// Determine category from parsed status.
+			// 0=READY, 1=WORKING, 2=IDLE, 3=COMPLETED
 			e.Category = 1 // WORKING
 			if e.HemStatus == "completed" {
-				e.Category = 2
-			} else if e.MPStatus == "idle" || e.MPStatus == "offline" {
+				e.Category = 3
+			} else if e.MPStatus == "ready" {
 				e.Category = 0
+			} else if e.MPStatus == "idle" || e.MPStatus == "offline" {
+				e.Category = 2
 			}
 
 			entries = append(entries, e)
@@ -186,6 +193,10 @@ func (m dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 			if m.cursor < len(m.entries)-1 {
 				m.cursor++
 			}
+		case "a":
+			m.showAll = !m.showAll
+			m.loading = true
+			return m, m.loadDashboard()
 		case "r":
 			m.loading = true
 			return m, m.loadDashboard()
@@ -202,8 +213,9 @@ func (m dashboardModel) selectedEntry() *dashboardEntry {
 }
 
 var (
-	categoryReviewStyle  = lipgloss.NewStyle().Foreground(colorWarning).Bold(true)
-	categoryWorkingStyle = lipgloss.NewStyle().Foreground(colorSuccess).Bold(true)
+	categoryReadyStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#60A5FA")).Bold(true)
+	categoryWorkingStyle = lipgloss.NewStyle().Foreground(colorWarning).Bold(true)
+	categoryIdleStyle    = lipgloss.NewStyle().Foreground(colorSuccess).Bold(true)
 	categoryDoneStyle    = lipgloss.NewStyle().Foreground(colorMuted).Bold(true)
 
 	statusCompleted = lipgloss.NewStyle().Foreground(colorMuted).Render("✓ done")
@@ -212,10 +224,12 @@ var (
 func categoryLabel(cat int) string {
 	switch cat {
 	case 0:
-		return categoryReviewStyle.Render(" REVIEW ")
+		return categoryReadyStyle.Render(" READY ")
 	case 1:
 		return categoryWorkingStyle.Render(" WORKING ")
 	case 2:
+		return categoryIdleStyle.Render(" IDLE ")
+	case 3:
 		return categoryDoneStyle.Render(" COMPLETED ")
 	}
 	return ""
@@ -261,6 +275,19 @@ func (m dashboardModel) View() string {
 		end = len(m.entries)
 	}
 
+	// Show project column if not already filtered by project and any entry has a project.
+	showProject := m.projectFilter == ""
+	if showProject {
+		hasAnyProject := false
+		for _, e := range m.entries {
+			if e.Project != "" {
+				hasAnyProject = true
+				break
+			}
+		}
+		showProject = hasAnyProject
+	}
+
 	lastCat := -1
 
 	for i := start; i < end; i++ {
@@ -284,11 +311,14 @@ func (m dashboardModel) View() string {
 		mp := truncate(e.Moneypenny, 10)
 		status := statusBadge(e.MPStatus)
 		lastActive := truncate(e.LastActive, 14)
-		project := truncate(e.Project, 12)
 
 		var line string
-		if project != "" {
-			line = fmt.Sprintf("  %-22s [%-12s] %-10s %-12s %s", name, project, status, mp, lastActive)
+		if showProject {
+			project := truncate(e.Project, 12)
+			if project == "" {
+				project = "-"
+			}
+			line = fmt.Sprintf("  %-22s %-14s %-10s %-12s %s", name, project, status, mp, lastActive)
 		} else {
 			line = fmt.Sprintf("  %-22s %-10s %-12s %s", name, status, mp, lastActive)
 		}

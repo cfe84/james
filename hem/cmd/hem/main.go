@@ -513,7 +513,8 @@ Session management:
   update session SESSION_ID [--name, --system-prompt, --yolo true/false, --path]
   history session SESSION_ID [-n N]
   list sessions [-m MONEYPENNY] [--all] [--status STATUS]
-  import session FILE.jsonl [-m MONEYPENNY] [--name, --project, --path]
+  diff session SESSION_ID
+  import session FILE.jsonl|SESSION_ID [-m MONEYPENNY] [--name, --project, --path]
 
 Dashboard:
   dashboard [--project NAME] [--all]

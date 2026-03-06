@@ -18,6 +18,10 @@ const (
 	viewCreate
 	viewEdit
 	viewCreateProject
+	viewImport
+	viewDiff
+	viewEditProject
+	viewMoneypennies
 )
 
 // Model is the top-level bubbletea model.
@@ -32,6 +36,10 @@ type Model struct {
 	create        createModel
 	edit          editModel
 	createProject createProjectModel
+	editProject   editProjectModel
+	importForm    importModel
+	diff          diffModel
+	moneypennies  moneypenniesModel
 	width         int
 	height        int
 	client        *client
@@ -75,6 +83,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.edit.height = h
 		m.createProject.width = msg.Width
 		m.createProject.height = h
+		m.editProject.width = msg.Width
+		m.editProject.height = h
+		m.importForm.width = msg.Width
+		m.importForm.height = h
+		m.diff.width = msg.Width
+		m.diff.height = h
+		m.moneypennies.width = msg.Width
+		m.moneypennies.height = h
 		return m, nil
 
 	case tea.KeyMsg:
@@ -87,6 +103,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 		case "esc":
+			if m.currentView == viewChat {
+				if !m.chat.commandMode {
+					m.chat.commandMode = true
+					return m, nil
+				}
+				// Second Esc: leave chat.
+				m.chat.commandMode = false
+				m.chat.confirmDelete = false
+				prev := m.previousView
+				m.currentView = prev
+				m.statusMsg = ""
+				switch prev {
+				case viewProjectDetail:
+					m.projectDetail.loading = true
+					return m, m.projectDetail.loadDashboard()
+				case viewSessions:
+					m.sessions.loading = true
+					return m, m.sessions.loadSessions()
+				default:
+					m.currentView = viewDashboard
+					m.dashboard.loading = true
+					return m, m.dashboard.loadDashboard()
+				}
+			}
 			return m.handleEsc()
 		}
 
@@ -108,6 +148,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateEdit(msg)
 		case viewCreateProject:
 			return m.updateCreateProject(msg)
+		case viewImport:
+			return m.updateImport(msg)
+		case viewDiff:
+			return m.updateDiff(msg)
+		case viewEditProject:
+			return m.updateEditProject(msg)
+		case viewMoneypennies:
+			return m.updateMoneypennies(msg)
 		}
 
 	// Route messages to appropriate view.
@@ -131,6 +179,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dashboard, cmd = m.dashboard.Update(msg)
 		return m, cmd
 
+	case moneypenniesLoadedMsg, moneypennyDeletedMsg, moneypennyPingedMsg, moneypennyDefaultSetMsg:
+		var cmd tea.Cmd
+		m.moneypennies, cmd = m.moneypennies.Update(msg)
+		return m, cmd
+
 	case projectsLoadedMsg, projectDeletedMsg:
 		var cmd tea.Cmd
 		m.projects, cmd = m.projects.Update(msg)
@@ -141,9 +194,67 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessions, cmd = m.sessions.Update(msg)
 		return m, cmd
 
+	case chatSessionStoppedMsg:
+		var cmd tea.Cmd
+		m.chat, cmd = m.chat.Update(msg)
+		if msg.err == nil {
+			m.statusMsg = "Session stopped"
+		}
+		return m, cmd
+
+	case chatSessionCompletedMsg:
+		if msg.err != nil {
+			m.chat.err = msg.err
+		} else {
+			m.statusMsg = "Session completed"
+			m.chat.commandMode = false
+		}
+		return m, nil
+
+	case chatSessionDeletedMsg:
+		if msg.err != nil {
+			m.chat.err = msg.err
+			return m, nil
+		}
+		m.statusMsg = "Session deleted"
+		m.chat.commandMode = false
+		prev := m.previousView
+		m.currentView = prev
+		switch prev {
+		case viewProjectDetail:
+			m.projectDetail.loading = true
+			return m, m.projectDetail.loadDashboard()
+		case viewSessions:
+			m.sessions.loading = true
+			return m, m.sessions.loadSessions()
+		default:
+			m.currentView = viewDashboard
+			m.dashboard.loading = true
+			return m, m.dashboard.loadDashboard()
+		}
+
 	case historyLoadedMsg, messageSentMsg:
 		var cmd tea.Cmd
 		m.chat, cmd = m.chat.Update(msg)
+		return m, cmd
+
+	case sessionImportedMsg:
+		im := msg
+		if im.err != nil {
+			m.importForm.err = im.err
+			m.importForm.importing = false
+			return m, nil
+		}
+		m.statusMsg = im.message
+		m.currentView = viewSessions
+		m.sessions = newSessionsModel(m.client)
+		m.sessions.width = m.width
+		m.sessions.height = m.height - 3
+		return m, m.sessions.loadSessions()
+
+	case diffLoadedMsg:
+		var cmd tea.Cmd
+		m.diff, cmd = m.diff.Update(msg)
 		return m, cmd
 
 	case sessionDetailLoadedMsg:
@@ -159,9 +270,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.statusMsg = "Session updated"
+		if m.previousView == viewChat {
+			m.currentView = viewChat
+			return m, m.chat.loadHistory()
+		}
 		m.currentView = viewSessions
 		m.sessions.loading = true
 		return m, m.sessions.loadSessions()
+
+	case projectUpdatedMsg:
+		pm := msg
+		if pm.err != nil {
+			m.editProject.err = pm.err
+			m.editProject.saving = false
+			return m, nil
+		}
+		m.statusMsg = "Project updated"
+		m.currentView = viewProjects
+		m.projects = newProjectsModel(m.client)
+		m.projects.width = m.width
+		m.projects.height = m.height - 3
+		return m, m.projects.loadProjects()
 
 	case projectCreatedMsg:
 		pm := msg
@@ -245,22 +374,6 @@ func (m Model) handleEsc() (tea.Model, tea.Cmd) {
 		m.statusMsg = ""
 		m.dashboard.loading = true
 		return m, m.dashboard.loadDashboard()
-	case viewChat:
-		// Go back to wherever we came from.
-		prev := m.previousView
-		m.currentView = prev
-		m.statusMsg = ""
-		switch prev {
-		case viewProjectDetail:
-			m.projectDetail.loading = true
-			return m, m.projectDetail.loadDashboard()
-		case viewSessions:
-			m.sessions.loading = true
-			return m, m.sessions.loadSessions()
-		default:
-			m.dashboard.loading = true
-			return m, m.dashboard.loadDashboard()
-		}
 	case viewCreate:
 		prev := m.previousView
 		m.currentView = prev
@@ -277,15 +390,50 @@ func (m Model) handleEsc() (tea.Model, tea.Cmd) {
 			return m, m.dashboard.loadDashboard()
 		}
 	case viewEdit:
-		m.currentView = viewSessions
+		prev := m.previousView
+		m.currentView = prev
 		m.statusMsg = ""
-		m.sessions.loading = true
-		return m, m.sessions.loadSessions()
-	case viewCreateProject:
+		switch prev {
+		case viewChat:
+			return m, nil
+		case viewSessions:
+			m.sessions.loading = true
+			return m, m.sessions.loadSessions()
+		default:
+			m.currentView = viewSessions
+			m.sessions.loading = true
+			return m, m.sessions.loadSessions()
+		}
+	case viewCreateProject, viewEditProject:
 		m.currentView = viewProjects
 		m.statusMsg = ""
 		m.projects.loading = true
 		return m, m.projects.loadProjects()
+	case viewMoneypennies:
+		m.currentView = viewDashboard
+		m.statusMsg = ""
+		m.dashboard.loading = true
+		return m, m.dashboard.loadDashboard()
+	case viewImport:
+		m.currentView = viewSessions
+		m.statusMsg = ""
+		m.sessions.loading = true
+		return m, m.sessions.loadSessions()
+	case viewDiff:
+		prev := m.previousView
+		m.currentView = prev
+		m.statusMsg = ""
+		switch prev {
+		case viewProjectDetail:
+			m.projectDetail.loading = true
+			return m, m.projectDetail.loadDashboard()
+		case viewSessions:
+			m.sessions.loading = true
+			return m, m.sessions.loadSessions()
+		default:
+			m.dashboard.loading = true
+			return m, m.dashboard.loadDashboard()
+		}
 	}
 	return m, nil
 }
@@ -319,12 +467,37 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.currentView = viewCreate
 		m.previousView = viewDashboard
 		return m, nil
+	case "e":
+		e := m.dashboard.selectedEntry()
+		if e != nil {
+			m.edit = newEditModel(m.client, e.SessionID)
+			m.edit.width = m.width
+			m.edit.height = m.height - 3
+			m.currentView = viewEdit
+			return m, m.edit.loadDetail()
+		}
+	case "g":
+		e := m.dashboard.selectedEntry()
+		if e != nil {
+			m.diff = newDiffModel(m.client, e.SessionID)
+			m.diff.width = m.width
+			m.diff.height = m.height - 3
+			m.currentView = viewDiff
+			m.previousView = viewDashboard
+			return m, m.diff.loadDiff()
+		}
 	case "l":
 		m.sessions = newSessionsModel(m.client)
 		m.sessions.width = m.width
 		m.sessions.height = m.height - 3
 		m.currentView = viewSessions
 		return m, m.sessions.loadSessions()
+	case "m":
+		m.moneypennies = newMoneypenniesModel(m.client)
+		m.moneypennies.width = m.width
+		m.moneypennies.height = m.height - 3
+		m.currentView = viewMoneypennies
+		return m, m.moneypennies.loadMoneypennies()
 	case "p":
 		m.projects = newProjectsModel(m.client)
 		m.projects.width = m.width
@@ -357,6 +530,15 @@ func (m Model) updateProjects(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		p := m.projects.selectedProject()
 		if p != nil {
 			return m, m.projects.deleteProject(p.ID)
+		}
+	case "e":
+		p := m.projects.selectedProject()
+		if p != nil {
+			m.editProject = newEditProjectModel(m.client, p)
+			m.editProject.width = m.width
+			m.editProject.height = m.height - 3
+			m.currentView = viewEditProject
+			return m, nil
 		}
 	case "n":
 		m.createProject = newCreateProjectModel(m.client)
@@ -393,6 +575,25 @@ func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		e := m.projectDetail.selectedEntry()
 		if e != nil {
 			return m, m.projectDetail.deleteSession(e.SessionID)
+		}
+	case "e":
+		e := m.projectDetail.selectedEntry()
+		if e != nil {
+			m.edit = newEditModel(m.client, e.SessionID)
+			m.edit.width = m.width
+			m.edit.height = m.height - 3
+			m.currentView = viewEdit
+			return m, m.edit.loadDetail()
+		}
+	case "g":
+		e := m.projectDetail.selectedEntry()
+		if e != nil {
+			m.diff = newDiffModel(m.client, e.SessionID)
+			m.diff.width = m.width
+			m.diff.height = m.height - 3
+			m.currentView = viewDiff
+			m.previousView = viewProjectDetail
+			return m, m.diff.loadDiff()
 		}
 	case "n":
 		m.create = newCreateModelForProject(m.client, m.projectDetail.projectFilter)
@@ -447,6 +648,22 @@ func (m Model) updateSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if s != nil && s.Status == "working" {
 			return m, m.sessions.stopSession(s.SessionID)
 		}
+	case "i":
+		m.importForm = newImportModel(m.client)
+		m.importForm.width = m.width
+		m.importForm.height = m.height - 3
+		m.currentView = viewImport
+		return m, nil
+	case "g":
+		s := m.sessions.selectedSession()
+		if s != nil {
+			m.diff = newDiffModel(m.client, s.SessionID)
+			m.diff.width = m.width
+			m.diff.height = m.height - 3
+			m.currentView = viewDiff
+			m.previousView = viewSessions
+			return m, m.diff.loadDiff()
+		}
 	default:
 		var cmd tea.Cmd
 		m.sessions, cmd = m.sessions.Update(msg)
@@ -456,6 +673,56 @@ func (m Model) updateSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.chat.commandMode {
+		switch msg.String() {
+		case "s":
+			m.chat.confirmDelete = false
+			return m, func() tea.Msg {
+				err := m.chat.client.stopSession(m.chat.sessionID)
+				return chatSessionStoppedMsg{err: err}
+			}
+		case "c":
+			m.chat.confirmDelete = false
+			return m, func() tea.Msg {
+				_, err := m.chat.client.send("complete", "session", m.chat.sessionID)
+				if err != nil {
+					return chatSessionCompletedMsg{err: err}
+				}
+				return chatSessionCompletedMsg{}
+			}
+		case "d":
+			if !m.chat.confirmDelete {
+				m.chat.confirmDelete = true
+				return m, nil
+			}
+			// Confirmed — delete.
+			m.chat.confirmDelete = false
+			return m, func() tea.Msg {
+				err := m.chat.client.deleteSession(m.chat.sessionID)
+				return chatSessionDeletedMsg{err: err}
+			}
+		case "e":
+			m.chat.confirmDelete = false
+			m.chat.commandMode = false
+			m.edit = newEditModel(m.client, m.chat.sessionID)
+			m.edit.width = m.width
+			m.edit.height = m.height - 3
+			m.currentView = viewEdit
+			m.previousView = viewChat
+			return m, m.edit.loadDetail()
+		case "g":
+			m.chat.confirmDelete = false
+			m.chat.commandMode = false
+			m.diff = newDiffModel(m.client, m.chat.sessionID)
+			m.diff.width = m.width
+			m.diff.height = m.height - 3
+			m.currentView = viewDiff
+			m.previousView = viewChat
+			return m, m.diff.loadDiff()
+		default:
+			m.chat.confirmDelete = false
+		}
+	}
 	var cmd tea.Cmd
 	m.chat, cmd = m.chat.Update(msg)
 	return m, cmd
@@ -479,6 +746,51 @@ func (m Model) updateCreateProject(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m Model) updateImport(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.importForm, cmd = m.importForm.Update(msg)
+	return m, cmd
+}
+
+func (m Model) updateMoneypennies(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		mp := m.moneypennies.selectedMoneypenny()
+		if mp != nil {
+			m.moneypennies.statusMsg = "Pinging..."
+			m.moneypennies.err = nil
+			return m, m.moneypennies.pingMoneypenny(mp.Name)
+		}
+	case "d":
+		mp := m.moneypennies.selectedMoneypenny()
+		if mp != nil {
+			return m, m.moneypennies.deleteMoneypenny(mp.Name)
+		}
+	case "s":
+		mp := m.moneypennies.selectedMoneypenny()
+		if mp != nil {
+			return m, m.moneypennies.setDefault(mp.Name)
+		}
+	default:
+		var cmd tea.Cmd
+		m.moneypennies, cmd = m.moneypennies.Update(msg)
+		return m, cmd
+	}
+	return m, nil
+}
+
+func (m Model) updateEditProject(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.editProject, cmd = m.editProject.Update(msg)
+	return m, cmd
+}
+
+func (m Model) updateDiff(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.diff, cmd = m.diff.Update(msg)
+	return m, cmd
+}
+
 func (m Model) View() string {
 	var content string
 	switch m.currentView {
@@ -498,6 +810,14 @@ func (m Model) View() string {
 		content = m.edit.View()
 	case viewCreateProject:
 		content = m.createProject.View()
+	case viewEditProject:
+		content = m.editProject.View()
+	case viewImport:
+		content = m.importForm.View()
+	case viewDiff:
+		content = m.diff.View()
+	case viewMoneypennies:
+		content = m.moneypennies.View()
 	}
 
 	statusBar := m.renderStatusBar()
@@ -508,11 +828,19 @@ func (m Model) renderStatusBar() string {
 	var keys []string
 	switch m.currentView {
 	case viewDashboard:
+		completedLabel := " show done"
+		if m.dashboard.showAll {
+			completedLabel = " hide done"
+		}
 		keys = []string{
 			statusKeyStyle.Render("↵") + statusDescStyle.Render(" chat"),
+			statusKeyStyle.Render("a") + statusDescStyle.Render(completedLabel),
 			statusKeyStyle.Render("c") + statusDescStyle.Render(" complete"),
 			statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
+			statusKeyStyle.Render("e") + statusDescStyle.Render(" edit"),
+			statusKeyStyle.Render("g") + statusDescStyle.Render(" git diff"),
 			statusKeyStyle.Render("n") + statusDescStyle.Render(" new"),
+			statusKeyStyle.Render("m") + statusDescStyle.Render(" moneypennies"),
 			statusKeyStyle.Render("p") + statusDescStyle.Render(" projects"),
 			statusKeyStyle.Render("l") + statusDescStyle.Render(" all sessions"),
 			statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
@@ -521,16 +849,31 @@ func (m Model) renderStatusBar() string {
 	case viewProjects:
 		keys = []string{
 			statusKeyStyle.Render("↵") + statusDescStyle.Render(" open"),
+			statusKeyStyle.Render("e") + statusDescStyle.Render(" edit"),
 			statusKeyStyle.Render("n") + statusDescStyle.Render(" new"),
 			statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
 			statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
 			statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
 		}
+	case viewEditProject:
+		keys = []string{
+			statusKeyStyle.Render("↵") + statusDescStyle.Render(" save"),
+			statusKeyStyle.Render("tab") + statusDescStyle.Render(" next"),
+			statusKeyStyle.Render("^U") + statusDescStyle.Render(" clear"),
+			statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
+		}
 	case viewProjectDetail:
+		completedLabel := " show done"
+		if m.projectDetail.showAll {
+			completedLabel = " hide done"
+		}
 		keys = []string{
 			statusKeyStyle.Render("↵") + statusDescStyle.Render(" chat"),
+			statusKeyStyle.Render("a") + statusDescStyle.Render(completedLabel),
 			statusKeyStyle.Render("c") + statusDescStyle.Render(" complete"),
 			statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
+			statusKeyStyle.Render("e") + statusDescStyle.Render(" edit"),
+			statusKeyStyle.Render("g") + statusDescStyle.Render(" git diff"),
 			statusKeyStyle.Render("n") + statusDescStyle.Render(" new"),
 			statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
 			statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
@@ -541,15 +884,31 @@ func (m Model) renderStatusBar() string {
 			statusKeyStyle.Render("n") + statusDescStyle.Render(" new"),
 			statusKeyStyle.Render("e") + statusDescStyle.Render(" edit"),
 			statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
+			statusKeyStyle.Render("g") + statusDescStyle.Render(" git diff"),
+			statusKeyStyle.Render("i") + statusDescStyle.Render(" import"),
 			statusKeyStyle.Render("s") + statusDescStyle.Render(" stop"),
 			statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
 			statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
 		}
 	case viewChat:
-		keys = []string{
-			statusKeyStyle.Render("↵") + statusDescStyle.Render(" send"),
-			statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
-			statusKeyStyle.Render("pgup/dn") + statusDescStyle.Render(" scroll"),
+		if m.chat.commandMode {
+			keys = []string{
+				statusKeyStyle.Render("c") + statusDescStyle.Render(" complete"),
+				statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
+				statusKeyStyle.Render("e") + statusDescStyle.Render(" edit"),
+				statusKeyStyle.Render("g") + statusDescStyle.Render(" git diff"),
+				statusKeyStyle.Render("s") + statusDescStyle.Render(" stop"),
+				statusKeyStyle.Render("↵") + statusDescStyle.Render(" resume"),
+				statusKeyStyle.Render("esc") + statusDescStyle.Render(" leave"),
+				statusKeyStyle.Render("pgup/dn") + statusDescStyle.Render(" scroll"),
+			}
+		} else {
+			keys = []string{
+				statusKeyStyle.Render("↵") + statusDescStyle.Render(" send"),
+				statusKeyStyle.Render("⇧↵") + statusDescStyle.Render(" newline"),
+				statusKeyStyle.Render("esc") + statusDescStyle.Render(" commands"),
+				statusKeyStyle.Render("pgup/dn") + statusDescStyle.Render(" scroll"),
+			}
 		}
 	case viewCreate:
 		keys = []string{
@@ -569,6 +928,26 @@ func (m Model) renderStatusBar() string {
 			statusKeyStyle.Render("↵") + statusDescStyle.Render(" create"),
 			statusKeyStyle.Render("tab") + statusDescStyle.Render(" next"),
 			statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
+		}
+	case viewImport:
+		keys = []string{
+			statusKeyStyle.Render("↵") + statusDescStyle.Render(" import"),
+			statusKeyStyle.Render("tab") + statusDescStyle.Render(" next"),
+			statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
+		}
+	case viewMoneypennies:
+		keys = []string{
+			statusKeyStyle.Render("↵") + statusDescStyle.Render(" ping"),
+			statusKeyStyle.Render("s") + statusDescStyle.Render(" set default"),
+			statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
+			statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
+			statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
+		}
+	case viewDiff:
+		keys = []string{
+			statusKeyStyle.Render("↑↓") + statusDescStyle.Render(" scroll"),
+			statusKeyStyle.Render("pgup/dn") + statusDescStyle.Render(" page"),
+			statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
 		}
 	}
 

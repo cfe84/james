@@ -43,6 +43,7 @@ var (
 				Foreground(colorSecondary).
 				Bold(true)
 
+	statusReady   = lipgloss.NewStyle().Foreground(lipgloss.Color("#60A5FA")).Render("● ready")
 	statusIdle    = lipgloss.NewStyle().Foreground(colorSuccess).Render("● idle")
 	statusWorking = lipgloss.NewStyle().Foreground(colorWarning).Render("◉ working")
 
@@ -97,6 +98,8 @@ var statusOffline = lipgloss.NewStyle().Foreground(colorDanger).Render("✗ offl
 
 func statusBadge(status string) string {
 	switch status {
+	case "ready":
+		return statusReady
 	case "idle":
 		return statusIdle
 	case "working":

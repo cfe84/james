@@ -101,8 +101,11 @@ moneypenny/
 - `continue_session` - Send new prompt to existing idle session
 - `list_sessions` - List all sessions with status
 - `get_session` - Full session detail with conversation history
+- `update_session` - Update session parameters (name, system_prompt, yolo, path)
 - `delete_session` - Kill agent if running, remove session
 - `stop_session` - Kill running agent, set session back to idle
+- `import_session` - Create session with pre-existing conversation (no agent run)
+- `git_diff` - Run git diff in session's working directory, return output
 - `get_version` - Return the moneypenny version
 
 ## Hem - Agent Orchestration CLI
@@ -122,16 +125,28 @@ Hem uses a client/server architecture over a Unix domain socket (`~/.config/jame
 ```
 hem/
 ├── go.mod
-├── cmd/hem/main.go          # Entry point: thin CLI client + server startup
+├── cmd/hem/main.go          # Entry point: thin CLI client + server startup + chat REPL
 ├── pkg/
 │   ├── cli/                 # Verb+noun command parser, plural/alias normalization
 │   ├── protocol/            # Shared types: Request, Response (used by both client and server)
 │   ├── server/              # Unix socket server, connection handling
 │   ├── hemclient/           # Thin client that connects to the server socket
-│   ├── store/               # SQLite (moneypenny registry, session-to-moneypenny mapping)
+│   ├── store/               # SQLite (moneypenny registry, session tracking, projects)
 │   ├── transport/           # FIFO and MI6 client for talking to moneypennies
 │   ├── commands/            # All command implementations (return structured data)
-│   └── output/              # Output formatting (json, text, table, tsv)
+│   ├── output/              # Output formatting (json, text, table, tsv)
+│   └── ui/                  # TUI (bubbletea + lipgloss)
+│       ├── ui.go            # Top-level model, view routing, key bindings
+│       ├── client.go        # Server communication wrapper
+│       ├── styles.go        # Colors and style definitions
+│       ├── dashboard.go     # Attention-based session dashboard
+│       ├── sessions.go      # Full session list view
+│       ├── projects.go      # Project list + create project form
+│       ├── chat.go          # Conversation view with markdown rendering
+│       ├── create.go        # Create session form
+│       ├── edit.go          # Edit session form
+│       ├── diff.go          # Git diff viewer
+│       └── importform.go    # Import session form
 └── Makefile
 ```
 
@@ -159,7 +174,13 @@ hem/
 
 11. **Session lifecycle**: Hem tracks a local `hem_status` (active/completed) separate from moneypenny's status (idle/working). Completing a session hides it from default views. Continuing a completed session automatically reactivates it.
 
-12. **TUI**: Built with bubbletea + lipgloss. Dashboard is the default view, with navigation to session list, chat, create, and edit views. Uses the same hem server socket as the CLI.
+12. **TUI**: Built with bubbletea + lipgloss. View-based architecture: `ui.go` is the top-level router, each view is its own model in a separate file (dashboard.go, sessions.go, chat.go, diff.go, etc). Messages bubble up to the top-level `Update()` which routes to the appropriate view. All views communicate with the hem server via the same Unix socket as the CLI.
+
+13. **Markdown rendering**: Assistant messages in TUI chat use `glamour` with `WithStylePath("dark")`. Must NOT use `WithAutoStyle()` as it sends OSC terminal queries that conflict with bubbletea's terminal control and break the TUI.
+
+14. **Session import**: Supports both JSONL file paths and bare session IDs. For session IDs, walks `~/.claude/projects/` looking for `{id}.jsonl`. Parses Claude Code JSONL format: user messages as string content, assistant messages as text blocks from content arrays.
+
+15. **Resilient deletion**: Session deletion proceeds with local tracking cleanup even when moneypenny is unreachable, reporting a warning rather than failing entirely. This handles stale/orphaned sessions.
 
 ## Versioning
 

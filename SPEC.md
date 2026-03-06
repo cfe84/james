@@ -68,6 +68,12 @@ Method: **delete_session**: deletes a session. If it is in working state, the ag
 
 Method: **stop_session**: stops the agent subprocess for a working session. Session state goes back to idle, allowing continue_session to be called afterwards. Returns `SESSION_NOT_WORKING` error if session is not in working state.
 
+Method: **update_session**: updates session parameters. Data: `{ "session_id": "id", "name": "new name", "system_prompt": "new prompt", "yolo": true, "path": "/new/path" }`. Only non-nil fields are updated.
+
+Method: **import_session**: creates a session with pre-existing conversation history without running an agent. Data: `{ "session_id": "id", "name": "name", "agent": "claude", "path": "/path", "conversation": [{"role": "user", "content": "..."}, ...] }`. Used by `hem import session`.
+
+Method: **git_diff**: runs `git diff` and `git diff --cached` in a session's working directory. Data: `{ "session_id": "id" }`. Returns `{ "diff": "..." }`.
+
 Method: **get_version**: returns the version of moneypenny
 
 Memory: Moneypenny creates a memory file for all the sessions it handles. It give the path to that memory files to the agent in the system prompt and asks it to write anything it needs to remember there, and dumps the memory into the system prompt in each call.
@@ -206,7 +212,7 @@ Hem manages sessions on moneypennies. It tracks which moneypenny each session li
 
 ### Update
 
-`hem update session SESSION_ID [--name NAME] [--system-prompt TEXT] [--yolo true/false] [--path PATH]` — updates session parameters. Only specified fields are changed.
+`hem update session SESSION_ID [--name NAME] [--system-prompt TEXT] [--yolo true/false] [--path PATH] [--project NAME_OR_ID]` — updates session parameters. Only specified fields are changed. `--project` moves the session to a project (hem-local operation, not sent to moneypenny).
 
 ### History / Log
 
@@ -221,6 +227,25 @@ Hem manages sessions on moneypennies. It tracks which moneypenny each session li
 `hem complete session SESSION_ID` — marks a session as completed in hem's local tracking. Completed sessions are hidden from default list and dashboard views.
 
 - If a completed session is continued (via `continue session`), it automatically goes back to active status.
+
+### Import
+
+`hem import session FILE.jsonl|SESSION_ID [-m MONEYPENNY] [--name NAME] [--project PROJECT] [--path PATH] [--agent AGENT]`
+
+- Imports an existing Claude Code session from a JSONL file.
+- If the argument is not a file on disk, it is treated as a session ID and searched for in `~/.claude/projects/` subdirectories (Claude Code stores sessions as `{session-id}.jsonl`).
+- Parses the JSONL to extract: session ID, working directory (cwd), user messages (string content), assistant messages (text blocks from content array).
+- Sends `import_session` to moneypenny to create the session with conversation history without running an agent.
+- Tracks the session locally in hem, optionally assigning to a project.
+- Default session name is first 40 chars of first user message.
+
+### Diff
+
+`hem diff session SESSION_ID` — shows git diff for a session's working directory.
+
+- Sends `git_diff` to the moneypenny that owns the session.
+- Moneypenny runs `git diff` and `git diff --cached` in the session's working directory.
+- Returns the combined diff output.
 
 ## Projects
 
@@ -262,26 +287,43 @@ Groups sessions by state:
 
 ### UI
 
-`hem ui` — launches an interactive terminal UI (TUI) built with bubbletea.
+`hem ui` — launches an interactive terminal UI (TUI) built with bubbletea + lipgloss.
 
-- **Dashboard** (default view): attention-based grouped view of sessions (REVIEW, WORKING, COMPLETED).
+- **Dashboard** (default view): attention-based grouped view of sessions (REVIEW, WORKING, COMPLETED). Shows project name alongside sessions when any have a project assigned.
   - `Enter` — open chat for selected session
   - `c` — mark session as completed
+  - `d` — delete session
+  - `g` — view git diff for session
   - `n` — create new session (opens form)
+  - `p` — switch to projects view
   - `l` — switch to full session list
   - `r` — refresh
   - `q` — quit
+- **Projects**: browse all projects with status, moneypenny, agent, paths.
+  - `Enter` — open project detail (filtered session list)
+  - `n` — create new project (opens form)
+  - `d` — delete project
+  - `r` — refresh
+  - `esc` — back to dashboard
+- **Project detail**: dashboard filtered to a single project.
+  - Same keys as dashboard, plus `n` creates session pre-filled with project name and in async mode.
+  - `esc` — back to projects
 - **Session list**: browse all sessions with status, name, moneypenny, timestamps.
-  - `n` — create new session (opens form)
   - `Enter` — open chat for selected session
-  - `e` — edit session
+  - `n` — create new session
+  - `e` — edit session parameters
   - `d` — delete session
+  - `g` — view git diff
+  - `i` — import session (opens form)
   - `s` — stop a working session
   - `r` — refresh list
   - `esc` — back to dashboard
-- **Chat view**: full conversation history with input. Send messages with Enter, scroll with PgUp/PgDn, Esc to go back.
-- **Create form**: fill in prompt, name, agent, system prompt, path, yolo. Tab between fields, Enter to submit.
-- **Edit form**: modify session parameters. Shows change indicators. Enter to save, Esc to cancel.
+- **Chat view**: full conversation history with markdown rendering (glamour) for assistant messages. Send messages with Enter, scroll with PgUp/PgDn, supports paste. Esc to go back.
+- **Create form**: fill in prompt, name, project, agent, system prompt, path, yolo. Tab between fields, Enter to submit. When created from project detail, runs async and returns to project view.
+- **Edit form**: modify session parameters (name, project, system prompt, path, yolo). Shows change indicators (*) for modified fields. Enter to save, Esc to cancel.
+- **Create project form**: fill in name, moneypenny, agent, path, system prompt.
+- **Import form**: import session by JSONL file path or session ID. Optional name, project, path.
+- **Diff view**: colored git diff display (green=add, red=remove, blue=hunk, amber=header). Scrollable with arrow keys and PgUp/PgDn.
 
 ### Chat
 
