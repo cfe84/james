@@ -20,13 +20,14 @@ import (
 
 // Executor runs commands using the store and transport layer.
 type Executor struct {
-	store      *store.Store
-	mi6KeyPath string
-	Version    string
+	store             *store.Store
+	mi6KeyPath        string
+	Version           string
+	lastSessionStates map[string]string // sessionID → last known mpStatus ("working", "ready", etc.)
 }
 
 func New(s *store.Store, mi6KeyPath string) *Executor {
-	return &Executor{store: s, mi6KeyPath: mi6KeyPath}
+	return &Executor{store: s, mi6KeyPath: mi6KeyPath, lastSessionStates: make(map[string]string)}
 }
 
 // CommandHelp maps verb+noun to help text.
@@ -52,7 +53,7 @@ var CommandHelp = map[string]string{
 	"last session":        "Usage: hem last session SESSION_ID\n\nShows the last assistant response for a session.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)",
 	"show session":        "Usage: hem show session SESSION_ID\n\nShows session parameters (agent, system_prompt, yolo, path, name, status).\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)",
 	"update session":      "Usage: hem update session SESSION_ID [flags]\n\nUpdates session parameters.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)\n  --name             Session name\n  --system-prompt    System prompt\n  --yolo             Yolo mode (true/false)\n  --path             Working directory",
-	"history session":     "Usage: hem history session SESSION_ID [-n N]\n\nShows conversation history for a session.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)\n  -n                 Number of turns to show (default: all)",
+	"history session":     "Usage: hem history session SESSION_ID [-n N] [--count C] [--from F]\n\nShows conversation history for a session.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)\n  -n                 Number of turns to show (default: all)\n  --count            Page size (default: all; TUI uses 10)\n  --from             Offset from end for pagination",
 	"list session":        "Usage: hem list sessions [-m MONEYPENNY]\n\nLists all sessions across all moneypennies.\n\nFlags:\n  -m, --moneypenny   Filter by moneypenny name",
 	"test mi6":            "Usage: hem test mi6 --mi6 ADDRESS --session SESSION_ID\n\nTests connectivity to an MI6 server.\n\nFlags:\n  --mi6              MI6 server address (uses default if not set)\n  --session          Session ID to join (required)",
 	"chat":                "Usage: hem chat [-m MONEYPENNY] [--session-id ID] [flags]\n\nInteractive chat with an agent. Creates a new session by default.\n\nFlags:\n  -m, --moneypenny   Moneypenny name (uses default if not set)\n  --session-id       Continue an existing session\n  --agent            Agent to use (uses default, fallback: claude)\n  --name             Session name\n  --system-prompt    System prompt for the agent\n  --yolo             Skip permissions\n  --path             Working directory",
@@ -64,7 +65,10 @@ var CommandHelp = map[string]string{
 	"complete session":    "Usage: hem complete session SESSION_ID\n\nMarks a session as completed in hem's local tracking.",
 	"diff session":        "Usage: hem diff session SESSION_ID\n\nShows git diff for a session's working directory.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)",
 	"run ":                "Usage: hem run [-m MONEYPENNY] [--path PATH] [--session-id ID] COMMAND\n\nExecutes a shell command on a remote moneypenny.\n\nFlags:\n  -m, --moneypenny   Moneypenny name (uses default if not set)\n  --path             Working directory on the remote host\n  --session-id       Use the moneypenny and path from this session",
-	"schedule session":    "Usage: hem schedule session SESSION_ID --at TIME --prompt PROMPT\n\nSchedules a prompt for a session at a future time.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)\n  --at               When to send (RFC3339, or relative like +2h, +30m)\n  --prompt           Prompt to send",
+	"commit session":      "Usage: hem commit session SESSION_ID -m MESSAGE\n\nStages all changes and commits in the session's working directory.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)\n  -m                 Commit message (required)",
+	"branch session":      "Usage: hem branch session SESSION_ID --name BRANCH_NAME\n\nCreates and switches to a new git branch in the session's working directory.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)\n  --name             Branch name (required)",
+	"push session":        "Usage: hem push session SESSION_ID\n\nPushes the current branch to origin with -u in the session's working directory.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)",
+	"schedule session":    "Usage: hem schedule session SESSION_ID --at TIME --prompt PROMPT [--cron EXPR]\n\nSchedules a prompt for a session at a future time.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)\n  --at               When to send (RFC3339, or relative like +2h, +30m)\n  --prompt           Prompt to send\n  --cron             Cron expression for recurring schedules (e.g. '0 9 * * 1' for Mon 9am, '@every 2h', '@daily')",
 	"list schedule":       "Usage: hem list schedules [--session-id SESSION_ID]\n\nLists scheduled prompts for a session.\n\nFlags:\n  --session-id       Session ID (required)",
 	"cancel schedule":     "Usage: hem cancel schedule SCHEDULE_ID\n\nCancels a pending schedule.",
 	"enable":              "Usage: hem enable SETTING\n\nEnables a boolean setting.\n\nAvailable settings:\n  sound-notification   Play a sound when a session finishes",
@@ -170,6 +174,12 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.CompleteSession(args)
 	case "diff session":
 		return e.DiffSession(args)
+	case "commit session":
+		return e.CommitSession(args)
+	case "branch session":
+		return e.BranchSession(args)
+	case "push session":
+		return e.PushSession(args)
 	case "import session":
 		return e.ImportSession(args)
 	case "schedule session":
@@ -445,6 +455,7 @@ type ConversationTurn struct {
 type HistoryResult struct {
 	SessionID    string             `json:"session_id"`
 	Conversation []ConversationTurn `json:"conversation"`
+	Total        int                `json:"total"` // total turns in the session
 }
 
 type ProjectResult struct {
@@ -1373,10 +1384,14 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 func (e *Executor) HistorySession(args []string) *protocol.Response {
 	var sessionID string
 	var numTurns int
+	var count int
+	var from int
 
 	remaining, err := parseFlagsFromArgs("history-session", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&sessionID, "session-id", "", "session ID")
 		fs.IntVar(&numTurns, "n", 0, "number of turns to show (0 = all)")
+		fs.IntVar(&count, "count", 0, "page size (0 = all)")
+		fs.IntVar(&from, "from", 0, "offset from end")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -1398,6 +1413,14 @@ func (e *Executor) HistorySession(args []string) *protocol.Response {
 		"session_id": sessionID,
 	}
 
+	// If count is specified, use pagination; otherwise fetch all.
+	if count > 0 {
+		cmdData["count"] = count
+		cmdData["from"] = from
+	} else {
+		cmdData["all"] = true
+	}
+
 	ctx := context.Background()
 	resp, err := e.sendCommand(ctx, mp, "get_session_conversation", cmdData)
 	if err != nil {
@@ -1406,6 +1429,7 @@ func (e *Executor) HistorySession(args []string) *protocol.Response {
 
 	var sessionData struct {
 		Conversation []ConversationTurn `json:"conversation"`
+		Total        int                `json:"total"`
 	}
 	if err := json.Unmarshal(resp.Data, &sessionData); err != nil {
 		return protocol.ErrResponse(fmt.Sprintf("parsing conversation: %v", err))
@@ -1426,6 +1450,7 @@ func (e *Executor) HistorySession(args []string) *protocol.Response {
 	return protocol.OKResponse(HistoryResult{
 		SessionID:    sessionID,
 		Conversation: conv,
+		Total:        sessionData.Total,
 	})
 }
 
@@ -2405,12 +2430,25 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 		}
 	}
 
+	// Detect working→ready transitions and play notification sound.
+	for _, entry := range entries {
+		prev := e.lastSessionStates[entry.SessionID]
+		if prev == "working" && entry.MPStatus == "ready" {
+			e.playNotificationSound()
+			break // one notification per poll cycle is enough
+		}
+	}
+	// Update state cache.
+	for _, entry := range entries {
+		e.lastSessionStates[entry.SessionID] = entry.MPStatus
+	}
+
 	result := TableResult{
 		Headers: []string{"SessionID", "Name", "Project", "Status", "Moneypenny", "Last Activity"},
 	}
-	for _, e := range entries {
+	for _, entry := range entries {
 		result.Rows = append(result.Rows, []string{
-			e.SessionID, e.Name, e.Project, e.MPStatus + " (" + e.HemStatus + ")", e.Moneypenny, e.LastActive,
+			entry.SessionID, entry.Name, entry.Project, entry.MPStatus + " (" + entry.HemStatus + ")", entry.Moneypenny, entry.LastActive,
 		})
 	}
 
@@ -2462,12 +2500,13 @@ func (e *Executor) TestMI6(args []string) *protocol.Response {
 
 // ScheduleSession schedules a prompt for a session at a future time.
 func (e *Executor) ScheduleSession(args []string) *protocol.Response {
-	var sessionID, atStr, prompt string
+	var sessionID, atStr, prompt, cronExpr string
 
 	remaining, err := parseFlagsFromArgs("schedule-session", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&sessionID, "session-id", "", "session ID")
 		fs.StringVar(&atStr, "at", "", "when to send (RFC3339 or relative like +2h)")
 		fs.StringVar(&prompt, "prompt", "", "prompt to send")
+		fs.StringVar(&cronExpr, "cron", "", "cron expression for recurring schedules")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -2503,12 +2542,17 @@ func (e *Executor) ScheduleSession(args []string) *protocol.Response {
 		return protocol.ErrResponse(err.Error())
 	}
 
-	ctx := context.Background()
-	resp, err := e.sendCommand(ctx, mp, "schedule", map[string]interface{}{
+	cmdData := map[string]interface{}{
 		"session_id":   sessionID,
 		"prompt":       prompt,
 		"scheduled_at": scheduledAt.UTC().Format(time.RFC3339),
-	})
+	}
+	if cronExpr != "" {
+		cmdData["cron_expr"] = cronExpr
+	}
+
+	ctx := context.Background()
+	resp, err := e.sendCommand(ctx, mp, "schedule", cmdData)
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
@@ -2685,4 +2729,145 @@ func parseScheduleTime(s string) (time.Time, error) {
 	}
 
 	return time.Time{}, fmt.Errorf("cannot parse time %q (use RFC3339, +2h, or YYYY-MM-DD HH:MM)", s)
+}
+
+// CommitSession stages all changes and commits in a session's working directory.
+func (e *Executor) CommitSession(args []string) *protocol.Response {
+	var sessionID, message string
+
+	remaining, err := parseFlagsFromArgs("commit-session", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&sessionID, "session-id", "", "session ID")
+		fs.StringVar(&message, "m", "", "commit message")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if sessionID == "" && len(remaining) > 0 {
+		sessionID = remaining[0]
+		remaining = remaining[1:]
+	}
+	if sessionID == "" {
+		return protocol.ErrResponse("session_id is required")
+	}
+	if message == "" && len(remaining) > 0 {
+		message = strings.Join(remaining, " ")
+	}
+	if message == "" {
+		return protocol.ErrResponse("-m (commit message) is required")
+	}
+
+	mp, err := e.resolveSessionMoneypenny(sessionID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	ctx := context.Background()
+	resp, err := e.sendCommand(ctx, mp, "git_commit", map[string]interface{}{
+		"session_id": sessionID,
+		"message":    message,
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	var result struct {
+		Output string `json:"output"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("parsing result: %v", err))
+	}
+
+	return protocol.OKResponse(TextResult{Message: result.Output})
+}
+
+// BranchSession creates and switches to a new git branch in a session's working directory.
+func (e *Executor) BranchSession(args []string) *protocol.Response {
+	var sessionID, branchName string
+
+	remaining, err := parseFlagsFromArgs("branch-session", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&sessionID, "session-id", "", "session ID")
+		fs.StringVar(&branchName, "name", "", "branch name")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if sessionID == "" && len(remaining) > 0 {
+		sessionID = remaining[0]
+		remaining = remaining[1:]
+	}
+	if sessionID == "" {
+		return protocol.ErrResponse("session_id is required")
+	}
+	if branchName == "" && len(remaining) > 0 {
+		branchName = remaining[0]
+	}
+	if branchName == "" {
+		return protocol.ErrResponse("--name (branch name) is required")
+	}
+
+	mp, err := e.resolveSessionMoneypenny(sessionID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	ctx := context.Background()
+	resp, err := e.sendCommand(ctx, mp, "git_branch", map[string]interface{}{
+		"session_id":  sessionID,
+		"branch_name": branchName,
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	var result struct {
+		Output string `json:"output"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("parsing result: %v", err))
+	}
+
+	return protocol.OKResponse(TextResult{Message: result.Output})
+}
+
+// PushSession pushes the current branch to origin in a session's working directory.
+func (e *Executor) PushSession(args []string) *protocol.Response {
+	var sessionID string
+
+	remaining, err := parseFlagsFromArgs("push-session", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&sessionID, "session-id", "", "session ID")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if sessionID == "" && len(remaining) > 0 {
+		sessionID = remaining[0]
+	}
+	if sessionID == "" {
+		return protocol.ErrResponse("session_id is required")
+	}
+
+	mp, err := e.resolveSessionMoneypenny(sessionID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	ctx := context.Background()
+	resp, err := e.sendCommand(ctx, mp, "git_push", map[string]interface{}{
+		"session_id": sessionID,
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	var result struct {
+		Output string `json:"output"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("parsing result: %v", err))
+	}
+
+	return protocol.OKResponse(TextResult{Message: result.Output})
 }

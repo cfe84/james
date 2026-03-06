@@ -29,10 +29,11 @@ var (
 // SecureConn wraps a net.Conn with AES-256-GCM encryption after handshake.
 // Send is safe for concurrent use; Receive is not (callers must serialize reads).
 type SecureConn struct {
-	conn      net.Conn
-	cipher    cipher.AEAD
-	sendMu    sync.Mutex    // protects Send from concurrent writes
-	sendCount atomic.Uint64 // monotonic counter for nonce generation
+	conn        net.Conn
+	cipher      cipher.AEAD
+	sendMu      sync.Mutex    // protects Send from concurrent writes
+	sendCount   atomic.Uint64 // monotonic counter for nonce generation
+	noncePrefix [4]byte       // random prefix set at init, differentiates connection restarts
 }
 
 // ClientHandshakeParams holds the parameters for a client handshake.
@@ -97,6 +98,9 @@ func ClientHandshake(params ClientHandshakeParams) (*SecureConn, error) {
 	}
 
 	sc := &SecureConn{conn: conn, cipher: aesCipher}
+	if _, err := rand.Read(sc.noncePrefix[:]); err != nil {
+		return nil, fmt.Errorf("generating nonce prefix: %w", err)
+	}
 
 	// Step 4: Receive encrypted MsgServerAuth: [SSH pubkey (authorized_keys format)] + [4-byte sig len] + [signature].
 	// The signature is over (client_ecdh_pub || server_ecdh_pub) — binds to this exchange.
@@ -218,6 +222,9 @@ func ServerHandshake(params ServerHandshakeParams) (*SecureConn, ssh.PublicKey, 
 	}
 
 	sc := &SecureConn{conn: conn, cipher: aesCipher}
+	if _, err := rand.Read(sc.noncePrefix[:]); err != nil {
+		return nil, nil, fmt.Errorf("generating nonce prefix: %w", err)
+	}
 
 	// Step 4: Send encrypted MsgServerAuth: [SSH pubkey] + [signature of (client_ecdh_pub || server_ecdh_pub)].
 	transcript := make([]byte, 64)
@@ -317,10 +324,7 @@ func (sc *SecureConn) Send(msg *protocol.Message) error {
 	// This prevents nonce reuse even for very long-lived connections.
 	nonce := make([]byte, sc.cipher.NonceSize())
 	count := sc.sendCount.Add(1)
-	// Fill first 4 bytes with random to differentiate connection restarts.
-	if _, err := rand.Read(nonce[:4]); err != nil {
-		return fmt.Errorf("transport: generating nonce prefix: %w", err)
-	}
+	copy(nonce[:4], sc.noncePrefix[:])
 	binary.BigEndian.PutUint64(nonce[4:], count)
 
 	ciphertext := sc.cipher.Seal(nil, nonce, plaintext, nil)

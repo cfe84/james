@@ -44,6 +44,14 @@ type SessionIDData struct {
 	SessionID string `json:"session_id"`
 }
 
+// GetConversationData is the data payload for get_session_conversation.
+type GetConversationData struct {
+	SessionID string `json:"session_id"`
+	Count     int    `json:"count,omitempty"` // number of turns to return (default 10, 0 = use default)
+	From      int    `json:"from,omitempty"`  // offset from the end (0 = most recent)
+	All       bool   `json:"all,omitempty"`   // return all turns
+}
+
 // SessionInfo is returned by list_sessions for each session.
 type SessionInfo struct {
 	SessionID    string `json:"session_id"`
@@ -69,6 +77,7 @@ type SessionDetail struct {
 type SessionConversation struct {
 	SessionID    string             `json:"session_id"`
 	Conversation []ConversationTurn `json:"conversation"`
+	Total        int                `json:"total"` // total number of turns in the session
 }
 
 // ConversationTurn represents a single prompt/response pair.
@@ -112,6 +121,7 @@ type ScheduleData struct {
 	SessionID   string `json:"session_id"`
 	Prompt      string `json:"prompt"`
 	ScheduledAt string `json:"scheduled_at"` // RFC3339 UTC
+	CronExpr    string `json:"cron_expr,omitempty"`
 }
 
 // ScheduleResponse is returned by schedule on success.
@@ -133,6 +143,7 @@ type ScheduleInfo struct {
 	Prompt      string `json:"prompt"`
 	ScheduledAt string `json:"scheduled_at"`
 	Status      string `json:"status"`
+	CronExpr    string `json:"cron_expr,omitempty"`
 	CreatedAt   string `json:"created_at"`
 }
 
@@ -144,6 +155,28 @@ type ListSchedulesResponse struct {
 // CancelScheduleData is the data payload for cancel_schedule.
 type CancelScheduleData struct {
 	ScheduleID int64 `json:"schedule_id"`
+}
+
+// GitCommitData is the data payload for git_commit.
+type GitCommitData struct {
+	SessionID string `json:"session_id"`
+	Message   string `json:"message"`
+}
+
+// GitBranchData is the data payload for git_branch.
+type GitBranchData struct {
+	SessionID  string `json:"session_id"`
+	BranchName string `json:"branch_name"`
+}
+
+// GitPushData is the data payload for git_push.
+type GitPushData struct {
+	SessionID string `json:"session_id"`
+}
+
+// GitResponse is returned by git operations on success.
+type GitResponse struct {
+	Output string `json:"output"`
 }
 
 // ExecuteCommandData is the data payload for execute_command.

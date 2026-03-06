@@ -15,12 +15,15 @@ import (
 
 // LoadOrGenerateServerKey loads a server SSH key from keyPath, or generates one
 // if it doesn't exist. Returns the signer and public key.
+// Uses O_CREATE|O_EXCL to avoid TOCTOU races between concurrent server starts.
 func LoadOrGenerateServerKey(keyPath string) (crypto.Signer, ssh.PublicKey, error) {
-	if _, err := os.Stat(keyPath); err == nil {
-		return LoadPrivateKey(keyPath)
+	// Try to load existing key first.
+	signer, pub, err := LoadPrivateKey(keyPath)
+	if err == nil {
+		return signer, pub, nil
 	}
 
-	// Generate a new ECDSA P-256 key.
+	// Key doesn't exist or is unreadable — generate a new one.
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, nil, fmt.Errorf("generating server key: %w", err)
@@ -36,11 +39,24 @@ func LoadOrGenerateServerKey(keyPath string) (crypto.Signer, ssh.PublicKey, erro
 	}
 
 	privPEM := pem.EncodeToMemory(privBytes)
-	if err := os.WriteFile(keyPath, privPEM, 0600); err != nil {
-		return nil, nil, fmt.Errorf("saving server key: %w", err)
-	}
 
-	pub, err := ssh.NewPublicKey(&key.PublicKey)
+	// Use O_CREATE|O_EXCL to atomically create the file — if another process
+	// raced us, this fails and we load their key instead.
+	f, err := os.OpenFile(keyPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		if os.IsExist(err) {
+			// Another process created the key — load it.
+			return LoadPrivateKey(keyPath)
+		}
+		return nil, nil, fmt.Errorf("creating server key file: %w", err)
+	}
+	if _, err := f.Write(privPEM); err != nil {
+		f.Close()
+		return nil, nil, fmt.Errorf("writing server key: %w", err)
+	}
+	f.Close()
+
+	pub, err = ssh.NewPublicKey(&key.PublicKey)
 	if err != nil {
 		return nil, nil, err
 	}

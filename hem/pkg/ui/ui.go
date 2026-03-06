@@ -17,7 +17,6 @@ const (
 	viewChat
 	viewCreate
 	viewEdit
-	viewCreateProject
 	viewImport
 	viewDiff
 	viewEditProject
@@ -37,7 +36,6 @@ type Model struct {
 	chat          chatModel
 	create        createModel
 	edit          editModel
-	createProject createProjectModel
 	editProject   editProjectModel
 	importForm    importModel
 	diff          diffModel
@@ -87,8 +85,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.create.height = h
 		m.edit.width = msg.Width
 		m.edit.height = h
-		m.createProject.width = msg.Width
-		m.createProject.height = h
 		m.editProject.width = msg.Width
 		m.editProject.height = h
 		m.importForm.width = msg.Width
@@ -156,8 +152,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateCreate(msg)
 		case viewEdit:
 			return m.updateEdit(msg)
-		case viewCreateProject:
-			return m.updateCreateProject(msg)
 		case viewImport:
 			return m.updateImport(msg)
 		case viewDiff:
@@ -173,16 +167,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	// Route messages to appropriate view.
-	case dashboardLoadedMsg:
-		if m.currentView == viewProjectDetail {
-			var cmd tea.Cmd
-			m.projectDetail, cmd = m.projectDetail.Update(msg)
-			return m, cmd
-		}
-		var cmd tea.Cmd
-		m.dashboard, cmd = m.dashboard.Update(msg)
-		return m, cmd
-
 	case sessionCompletedMsg, dashboardDeletedMsg:
 		if m.currentView == viewProjectDetail {
 			var cmd tea.Cmd
@@ -252,6 +236,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.dashboard.loadDashboard()
 		}
 
+	case dashboardPollTickMsg:
+		// Always reload the main dashboard in background regardless of current view,
+		// so session states stay fresh (the server handles notification sounds).
+		if !m.dashboard.loading {
+			cmds := []tea.Cmd{m.dashboard.loadDashboard(), dashboardPollTick()}
+			// Also refresh project detail if active.
+			if m.currentView == viewProjectDetail && !m.projectDetail.loading {
+				cmds = append(cmds, m.projectDetail.loadDashboard())
+			}
+			return m, tea.Batch(cmds...)
+		}
+		return m, dashboardPollTick()
+
+	case dashboardLoadedMsg:
+		// Route to the matching dashboard instance based on projectFilter.
+		if msg.projectFilter == "" || msg.projectFilter == m.dashboard.projectFilter {
+			var cmd tea.Cmd
+			m.dashboard, cmd = m.dashboard.Update(msg)
+			return m, cmd
+		}
+		if msg.projectFilter == m.projectDetail.projectFilter {
+			var cmd tea.Cmd
+			m.projectDetail, cmd = m.projectDetail.Update(msg)
+			return m, cmd
+		}
+		return m, nil
+
 	case chatPollTickMsg:
 		// Only process poll ticks when chat is active.
 		if m.currentView == viewChat {
@@ -262,7 +273,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Discard tick if not in chat view.
 		return m, nil
 
-	case historyLoadedMsg, messageSentMsg:
+	case historyLoadedMsg, messageSentMsg, olderHistoryLoadedMsg:
 		var cmd tea.Cmd
 		m.chat, cmd = m.chat.Update(msg)
 		return m, cmd
@@ -329,8 +340,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case projectCreatedMsg:
 		pm := msg
 		if pm.err != nil {
-			m.createProject.err = pm.err
-			m.createProject.creating = false
+			m.wizard.err = pm.err
+			m.wizard.creating = false
 			return m, nil
 		}
 		m.statusMsg = "Project created"
@@ -454,7 +465,7 @@ func (m Model) handleEsc() (tea.Model, tea.Cmd) {
 			m.sessions.loading = true
 			return m, m.sessions.loadSessions()
 		}
-	case viewCreateProject, viewEditProject:
+	case viewEditProject:
 		m.currentView = viewProjects
 		m.statusMsg = ""
 		m.projects.loading = true
@@ -624,11 +635,12 @@ func (m Model) updateProjects(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	case "n":
-		m.createProject = newCreateProjectModel(m.client)
-		m.createProject.width = m.width
-		m.createProject.height = m.height - 3
-		m.currentView = viewCreateProject
-		return m, nil
+		m.wizard = newProjectWizardModel(m.client)
+		m.wizard.width = m.width
+		m.wizard.height = m.height - 3
+		m.currentView = viewWizard
+		m.previousView = viewProjects
+		return m, m.wizard.Init()
 	default:
 		var cmd tea.Cmd
 		m.projects, cmd = m.projects.Update(msg)
@@ -860,12 +872,6 @@ func (m Model) updateEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m Model) updateCreateProject(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	var cmd tea.Cmd
-	m.createProject, cmd = m.createProject.Update(msg)
-	return m, cmd
-}
-
 func (m Model) updateImport(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.importForm, cmd = m.importForm.Update(msg)
@@ -980,8 +986,6 @@ func (m Model) View() string {
 		content = m.create.View()
 	case viewEdit:
 		content = m.edit.View()
-	case viewCreateProject:
-		content = m.createProject.View()
 	case viewEditProject:
 		content = m.editProject.View()
 	case viewImport:
@@ -1114,12 +1118,6 @@ func (m Model) renderStatusBar() string {
 			statusKeyStyle.Render("↵") + statusDescStyle.Render(" save"),
 			statusKeyStyle.Render("tab") + statusDescStyle.Render(" next"),
 			statusKeyStyle.Render("^U") + statusDescStyle.Render(" clear"),
-			statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
-		}
-	case viewCreateProject:
-		keys = []string{
-			statusKeyStyle.Render("↵") + statusDescStyle.Render(" create"),
-			statusKeyStyle.Render("tab") + statusDescStyle.Render(" next"),
 			statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
 		}
 	case viewImport:

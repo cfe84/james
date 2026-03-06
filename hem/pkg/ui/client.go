@@ -117,8 +117,26 @@ func (c *client) showSession(sessionID string) (*sessionDetail, error) {
 	return &detail, nil
 }
 
+type historyPage struct {
+	Conversation []conversationTurn
+	Total        int
+}
+
 func (c *client) getHistory(sessionID string) ([]conversationTurn, error) {
-	resp, err := c.send("history", "session", sessionID)
+	page, err := c.getHistoryPaginated(sessionID, 0, 0)
+	if err != nil {
+		return nil, err
+	}
+	return page.Conversation, nil
+}
+
+func (c *client) getHistoryPaginated(sessionID string, count, from int) (*historyPage, error) {
+	args := []string{sessionID}
+	if count > 0 {
+		args = append(args, "--count", fmt.Sprintf("%d", count))
+		args = append(args, "--from", fmt.Sprintf("%d", from))
+	}
+	resp, err := c.send("history", "session", args...)
 	if err != nil {
 		return nil, err
 	}
@@ -128,11 +146,12 @@ func (c *client) getHistory(sessionID string) ([]conversationTurn, error) {
 
 	var result struct {
 		Conversation []conversationTurn `json:"conversation"`
+		Total        int                `json:"total"`
 	}
 	if err := json.Unmarshal(resp.Data, &result); err != nil {
 		return nil, fmt.Errorf("parsing history: %w", err)
 	}
-	return result.Conversation, nil
+	return &historyPage{Conversation: result.Conversation, Total: result.Total}, nil
 }
 
 func (c *client) createSession(args []string) (sessionID string, response string, err error) {

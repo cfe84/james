@@ -133,6 +133,7 @@ func (c *Client) sendFIFO(ctx context.Context, cmd *Command) (*Response, error) 
 	errCh := make(chan error, 1)
 	go func() {
 		scanner := bufio.NewScanner(outFile)
+		scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024) // up to 16MB responses
 		if !scanner.Scan() {
 			errCh <- fmt.Errorf("no response from moneypenny")
 			return
@@ -201,6 +202,7 @@ func (c *Client) sendMI6(ctx context.Context, cmd *Command) (*Response, error) {
 	// through the MI6 relay.
 
 	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024) // up to 16MB responses
 	if !scanner.Scan() {
 		stdin.Close()
 		waitErr := proc.Wait()

@@ -4,10 +4,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
+
+type dashboardPollTickMsg struct{}
+
+const dashboardPollInterval = 5 * time.Second
+
+func dashboardPollTick() tea.Cmd {
+	return tea.Tick(dashboardPollInterval, func(time.Time) tea.Msg {
+		return dashboardPollTickMsg{}
+	})
+}
 
 // dashboardEntry represents a session in the dashboard.
 type dashboardEntry struct {
@@ -37,8 +48,9 @@ type dashboardModel struct {
 }
 
 type dashboardLoadedMsg struct {
-	entries []dashboardEntry
-	err     error
+	entries       []dashboardEntry
+	err           error
+	projectFilter string // which dashboard instance this belongs to
 }
 
 type sessionCompletedMsg struct{ err error }
@@ -65,10 +77,10 @@ func (m dashboardModel) loadDashboard() tea.Cmd {
 		}
 		resp, err := m.client.send("dashboard", "", args...)
 		if err != nil {
-			return dashboardLoadedMsg{err: err}
+			return dashboardLoadedMsg{err: err, projectFilter: projectFilter}
 		}
 		if resp.Status == "error" {
-			return dashboardLoadedMsg{err: fmt.Errorf("%s", resp.Message)}
+			return dashboardLoadedMsg{err: fmt.Errorf("%s", resp.Message), projectFilter: projectFilter}
 		}
 
 		// Parse the TableResult.
@@ -124,7 +136,7 @@ func (m dashboardModel) loadDashboard() tea.Cmd {
 			entries = append(entries, e)
 		}
 
-		return dashboardLoadedMsg{entries: entries}
+		return dashboardLoadedMsg{entries: entries, projectFilter: projectFilter}
 	}
 }
 
@@ -156,11 +168,17 @@ func (m dashboardModel) completeSession(id string) tea.Cmd {
 }
 
 func (m dashboardModel) Init() tea.Cmd {
-	return m.loadDashboard()
+	return tea.Batch(m.loadDashboard(), dashboardPollTick())
 }
 
 func (m dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 	switch msg := msg.(type) {
+	case dashboardPollTickMsg:
+		if !m.loading {
+			return m, tea.Batch(m.loadDashboard(), dashboardPollTick())
+		}
+		return m, dashboardPollTick()
+
 	case dashboardLoadedMsg:
 		m.loading = false
 		m.entries = msg.entries

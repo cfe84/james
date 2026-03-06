@@ -77,6 +77,12 @@ Method: **import_session**: creates a session with pre-existing conversation his
 
 Method: **git_diff**: runs `git diff` and `git diff --cached` in a session's working directory. Data: `{ "session_id": "id" }`. Returns `{ "diff": "..." }`.
 
+Method: **git_commit**: stages all changes and commits in a session's working directory. Data: `{ "session_id": "id", "message": "commit message" }`. Runs `git add -A` then `git commit -m`. Returns `{ "output": "..." }`.
+
+Method: **git_branch**: creates and switches to a new branch in a session's working directory. Data: `{ "session_id": "id", "branch": "branch-name" }`. Runs `git checkout -b`. Returns `{ "output": "..." }`.
+
+Method: **git_push**: pushes the current branch to origin in a session's working directory. Data: `{ "session_id": "id" }`. Runs `git push -u origin <current-branch>`. Returns `{ "output": "..." }`.
+
 Method: **execute_command**: executes a shell command on the host. Data: `{ "command": "the shell command to run", "path": "/optional/working/directory" }`. Runs the command via `sh -c` in the specified path (or moneypenny's current directory if path is empty). Returns `{ "output": "combined stdout+stderr", "exit_code": 0 }`. Non-zero exit codes are returned in the response (not as errors). Only returns an error envelope if the command fails to execute at all (e.g., path doesn't exist).
 
 Method: **schedule**: creates a scheduled continuation for a session. Data: `{ "session_id": "id", "prompt": "the prompt to send", "at": "RFC3339 timestamp or relative duration" }`. The `at` field accepts RFC3339 timestamps, relative durations (`+2h`, `+30m`), local time (`YYYY-MM-DD HH:MM`, `HH:MM`). Returns `{ "schedule_id": "id", "scheduled_at": "RFC3339 timestamp" }`. When the scheduled time arrives: if the session is idle, continues directly; if the session is busy, queues the prompt via `queue_prompt`.
@@ -261,19 +267,45 @@ Hem manages sessions on moneypennies. It tracks which moneypenny each session li
 - Moneypenny runs `git diff` and `git diff --cached` in the session's working directory.
 - Returns the combined diff output.
 
+### Commit
+
+`hem commit session SESSION_ID -m MESSAGE` — stages all changes and commits in the session's working directory.
+
+- Sends `git_commit` to the moneypenny that owns the session.
+- Moneypenny runs `git add -A` followed by `git commit -m MESSAGE`.
+
+### Branch
+
+`hem branch session SESSION_ID --name BRANCH` — creates and switches to a new branch.
+
+- Sends `git_branch` to the moneypenny that owns the session.
+- Moneypenny runs `git checkout -b BRANCH` in the session's working directory.
+
+### Push
+
+`hem push session SESSION_ID` — pushes the current branch to origin.
+
+- Sends `git_push` to the moneypenny that owns the session.
+- Moneypenny runs `git push -u origin <current-branch>` in the session's working directory.
+
 ## Scheduled Continuation
 
 Sessions can have scheduled continuations — prompts that are automatically sent to the agent at a future time.
 
 ### CLI Commands
 
-`hem schedule session SESSION_ID --at TIME --prompt PROMPT` — creates a scheduled continuation.
+`hem schedule session SESSION_ID --at TIME --prompt PROMPT [--cron EXPR]` — creates a scheduled continuation.
 
 - `--at` accepts multiple time formats:
   - RFC3339 timestamps (`2026-03-06T14:30:00Z`)
   - Relative durations (`+2h`, `+30m`, `+1h30m`)
   - Local time with date (`2026-03-06 14:30`)
   - Local time without date (`14:30` — assumes today, or tomorrow if the time has passed)
+- `--cron` creates a recurring schedule using a cron expression:
+  - Standard 5-field format: `minute hour dom month dow` (numbers and `*`)
+  - Shorthands: `@hourly`, `@daily`, `@every 2h`
+  - When a recurring schedule fires, a new occurrence is automatically created for the next matching time.
+  - The `cron_expr` is stored in the schedules table.
 - Sends `schedule` to the moneypenny that owns the session.
 
 `hem list schedules --session-id ID` — lists pending schedules for a session. Sends `list_schedules` to the moneypenny.
@@ -286,7 +318,9 @@ Moneypenny runs a scheduler goroutine that starts on boot and checks for due sch
 
 - When a schedule is due and the session is idle: continues the session directly with the scheduled prompt.
 - When a schedule is due and the session is busy: queues the prompt via `queue_prompt`.
-- Executed schedules are removed from the pending list.
+- When a schedule fires (one-shot or recurring), a "system" conversation turn is added to the session, visible in chat, showing when the task was triggered.
+- For recurring schedules, after firing, a new schedule is automatically created for the next cron-matching time.
+- Executed one-shot schedules are removed from the pending list.
 
 ### Agent Self-Scheduling
 
@@ -337,7 +371,7 @@ Projects provide context for organizing sessions — a project groups related se
 `hem enable SETTING` / `hem disable SETTING` — toggle boolean settings stored in the defaults table.
 
 Available settings:
-- **sound-notification** — when enabled, plays a notification sound (embedded WAV via `afplay` on macOS, `aplay` on Linux) whenever a session finishes (i.e., `pollUntilIdle` completes). The WAV file is embedded at build time from `hem/assets/notification.wav` and written to `~/.config/james/hem/notification.wav` on first use. Disabled by default.
+- **sound-notification** — when enabled, plays a notification sound (embedded WAV via `afplay` on macOS, `aplay` on Linux) whenever a session finishes. Works in both CLI (via `pollUntilIdle`) and TUI (via dashboard auto-refresh polling detecting WORKING-to-READY transitions). The TUI triggers notifications through a `notify` server command. The WAV file is embedded at build time from `hem/assets/notification.wav` and written to `~/.config/james/hem/notification.wav` on first use. Disabled by default.
 - **schedule-system-prompt** — when enabled (default: enabled), schedule instructions are appended to every session's system prompt, informing agents of the `<schedule at="...">prompt</schedule>` self-scheduling syntax. Disable to prevent agents from creating their own schedules.
 
 ## Remote Execution
@@ -361,6 +395,8 @@ Groups sessions by state:
 4. **COMPLETED** — user marked session as done (hidden unless `--all`)
 
 The "reviewed" flag tracks whether the user has seen the latest agent response. A session becomes unreviewed when `continue_session` is called. It becomes reviewed when the user views the conversation history and the last turn is from the assistant (i.e., the agent has finished). This prevents the chat view's polling from prematurely marking a session as reviewed while the agent is still working.
+
+The dashboard auto-refreshes every 5 seconds by polling moneypennies. When a session transitions from WORKING to READY, a notification sound is triggered (if sound-notification is enabled). This works regardless of which TUI view is active, as the dashboard polling runs in the background.
 
 ### Chat
 
@@ -404,7 +440,7 @@ The "reviewed" flag tracks whether the user has seen the latest agent response. 
   - `x` — open remote shell for session's moneypenny+path
   - `r` — refresh list
   - `esc` — back to dashboard
-- **Chat view**: full conversation history with markdown rendering (glamour) for assistant messages. Send messages with Enter, scroll with PgUp/PgDn, supports paste. Queued messages show with ⏳ icon and `[Queued]` label. Esc enters command mode; second Esc leaves chat.
+- **Chat view**: full conversation history with markdown rendering (glamour) for assistant messages. Send messages with Enter, scroll with PgUp/PgDn, supports paste. Queued messages show with ⏳ icon and `[Queued]` label; the queued indicator is preserved across poll refreshes and only cleared when an assistant response appears. System turns (e.g., schedule triggers) are rendered with a ⚙ icon in muted/italic style. Esc enters command mode; second Esc leaves chat.
   - Command mode: `c` complete, `d` delete (press twice to confirm), `e` edit, `g` git diff, `s` stop, `t` schedule (two-step: time then prompt), `x` shell, Enter resume, Esc leave.
 - **Moneypennies view**: browse registered moneypennies.
   - `Enter` — ping moneypenny

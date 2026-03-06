@@ -19,18 +19,24 @@ type chatPollTickMsg struct{}
 const chatPollInterval = 3 * time.Second
 
 // chatModel displays conversation history and allows sending messages.
+const chatPageSize = 10
+
 type chatModel struct {
-	sessionID    string
-	sessionName  string
-	conversation []conversationTurn
-	schedules    []scheduleInfo
-	input        string
-	cursorPos    int
-	width        int
-	height       int
-	scroll       int // scroll offset from bottom
-	err          error
-	loading      bool
+	sessionID     string
+	sessionName   string
+	sessionStatus string // moneypenny status (ready, working, etc.)
+	conversation  []conversationTurn
+	totalTurns    int // total turns on server
+	recentCount   int // number of turns in the latest page (for comparison on refresh)
+	schedules     []scheduleInfo
+	input         string
+	cursorPos     int
+	width         int
+	height        int
+	scroll        int // scroll offset from bottom
+	err           error
+	loading       bool
+	loadingMore   bool // loading older messages
 	sending       bool
 	commandMode   bool
 	confirmDelete bool
@@ -51,6 +57,14 @@ func newChatModel(c *client, sessionID, sessionName string) chatModel {
 // Messages
 type historyLoadedMsg struct {
 	conversation []conversationTurn
+	total        int
+	status       string // session status from moneypenny
+	err          error
+}
+
+type olderHistoryLoadedMsg struct {
+	conversation []conversationTurn
+	total        int
 	err          error
 }
 
@@ -71,8 +85,39 @@ type scheduleCreatedMsg struct {
 
 func (m chatModel) loadHistory() tea.Cmd {
 	return func() tea.Msg {
-		turns, err := m.client.getHistory(m.sessionID)
-		return historyLoadedMsg{conversation: turns, err: err}
+		page, err := m.client.getHistoryPaginated(m.sessionID, chatPageSize, 0)
+		if err != nil {
+			return historyLoadedMsg{err: err}
+		}
+		// Also fetch session status.
+		var status string
+		detail, err := m.client.showSession(m.sessionID)
+		if err == nil {
+			status = detail.Status
+		}
+		return historyLoadedMsg{conversation: page.Conversation, total: page.Total, status: status}
+	}
+}
+
+func (m chatModel) loadOlderHistory() tea.Cmd {
+	// We have the most recent len(conversation) turns.
+	// "from" = offset from the end in the paginated query.
+	// To get the next older page, skip what we already have.
+	from := len(m.conversation)
+	remaining := m.totalTurns - from
+	if remaining <= 0 {
+		return nil
+	}
+	count := chatPageSize
+	if count > remaining {
+		count = remaining
+	}
+	return func() tea.Msg {
+		page, err := m.client.getHistoryPaginated(m.sessionID, count, from)
+		if err != nil {
+			return olderHistoryLoadedMsg{err: err}
+		}
+		return olderHistoryLoadedMsg{conversation: page.Conversation, total: page.Total}
 	}
 }
 
@@ -119,13 +164,57 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 	case historyLoadedMsg:
 		m.loading = false
 		if msg.err == nil {
-			// Only update if conversation changed (avoid scroll reset).
-			if len(msg.conversation) != len(m.conversation) {
-				m.conversation = msg.conversation
+			m.sessionStatus = msg.status
+			m.totalTurns = msg.total
+
+			// Compare with the recent portion of our conversation.
+			oldRecent := m.recentTurns()
+			changed := len(msg.conversation) != len(oldRecent)
+			if !changed {
+				for i := range msg.conversation {
+					if msg.conversation[i].Role != oldRecent[i].Role || msg.conversation[i].Content != oldRecent[i].Content {
+						changed = true
+						break
+					}
+				}
+			}
+
+			if changed {
+				// Preserve queued flags.
+				for i := len(m.conversation) - 1; i >= 0; i-- {
+					if m.conversation[i].Role == "user" && m.conversation[i].Queued {
+						for j := len(msg.conversation) - 1; j >= 0; j-- {
+							if msg.conversation[j].Role == "user" && msg.conversation[j].Content == m.conversation[i].Content {
+								hasResponse := j+1 < len(msg.conversation) && msg.conversation[j+1].Role == "assistant"
+								if !hasResponse {
+									msg.conversation[j].Queued = true
+								}
+								break
+							}
+						}
+					}
+				}
+
+				// Replace only the recent portion, keeping any older loaded history.
+				olderCount := len(m.conversation) - m.recentCount
+				if olderCount > 0 {
+					m.conversation = append(m.conversation[:olderCount], msg.conversation...)
+				} else {
+					m.conversation = msg.conversation
+				}
+				m.recentCount = len(msg.conversation)
 				m.scroll = 0
 			}
 		}
 		m.err = msg.err
+
+	case olderHistoryLoadedMsg:
+		m.loadingMore = false
+		if msg.err == nil && len(msg.conversation) > 0 {
+			m.totalTurns = msg.total
+			// Prepend older turns to the conversation.
+			m.conversation = append(msg.conversation, m.conversation...)
+		}
 
 	case messageSentMsg:
 		m.sending = false
@@ -139,9 +228,14 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 					last.Queued = true
 				}
 			}
+		} else {
+			// Sent successfully — optimistically show working status
+			// until the next poll confirms the real state.
+			m.sessionStatus = "working"
 		}
-		// Async mode: polling will pick up the response.
-		return m, nil
+		// Start polling immediately so the working indicator and eventual
+		// response are picked up without waiting for the next tick.
+		return m, tea.Batch(m.loadHistory(), chatPollTick())
 
 	case schedulesLoadedMsg:
 		if msg.err == nil {
@@ -206,6 +300,10 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 				m.confirmDelete = false
 			case "pgup", "ctrl+u":
 				m.scroll += 10
+				if m.scroll > 0 && !m.loadingMore && len(m.conversation) < m.totalTurns {
+					m.loadingMore = true
+					return m, m.loadOlderHistory()
+				}
 			case "pgdown", "ctrl+d":
 				m.scroll -= 10
 				if m.scroll < 0 {
@@ -230,6 +328,8 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 					Role:    "user",
 					Content: prompt,
 				})
+				m.recentCount++
+				m.totalTurns++
 				m.scroll = 0
 				return m, m.sendMessage(prompt)
 			}
@@ -267,6 +367,10 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 			m.cursorPos = len(m.input)
 		case "pgup", "ctrl+u":
 			m.scroll += 10
+			if m.scroll > 0 && !m.loadingMore && len(m.conversation) < m.totalTurns {
+				m.loadingMore = true
+				return m, m.loadOlderHistory()
+			}
 		case "pgdown", "ctrl+d":
 			m.scroll -= 10
 			if m.scroll < 0 {
@@ -323,15 +427,33 @@ func (m chatModel) View() string {
 
 	// Render messages.
 	var msgLines []string
+
+	// Show indicator if there are older messages not yet loaded.
+	if len(m.conversation) < m.totalTurns {
+		remaining := m.totalTurns - len(m.conversation)
+		if m.loadingMore {
+			msgLines = append(msgLines, lipgloss.NewStyle().Foreground(colorMuted).Render(
+				"  Loading older messages..."))
+		} else {
+			msgLines = append(msgLines, lipgloss.NewStyle().Foreground(colorMuted).Render(
+				fmt.Sprintf("  ↑ %d older messages — scroll up to load", remaining)))
+		}
+		msgLines = append(msgLines, "")
+	}
+
+	systemMsgStyle := lipgloss.NewStyle().Foreground(colorMuted).Italic(true)
 	for _, turn := range m.conversation {
 		var prefix string
-		if turn.Role == "user" {
+		switch turn.Role {
+		case "user":
 			if turn.Queued {
 				prefix = userMsgStyle.Render("⏳ you") + " " + lipgloss.NewStyle().Foreground(colorMuted).Render("[Queued]")
 			} else {
 				prefix = userMsgStyle.Render("🧑‍💻 you")
 			}
-		} else {
+		case "system":
+			prefix = systemMsgStyle.Render("⚙ system")
+		default:
 			prefix = assistantMsgStyle.Render("🤖 assistant")
 		}
 		if turn.CreatedAt != "" {
@@ -345,15 +467,21 @@ func (m chatModel) View() string {
 			contentWidth = 80
 		}
 		var rendered string
-		if turn.Role == "assistant" {
+		switch turn.Role {
+		case "assistant":
 			rendered = renderMarkdown(turn.Content, contentWidth)
-		} else {
+		case "system":
+			rendered = wordWrap(turn.Content, contentWidth)
+		default:
 			rendered = wordWrap(turn.Content, contentWidth)
 		}
 		for _, line := range strings.Split(rendered, "\n") {
-			if turn.Role == "assistant" {
+			switch turn.Role {
+			case "assistant":
 				msgLines = append(msgLines, "  "+line)
-			} else {
+			case "system":
+				msgLines = append(msgLines, "  "+systemMsgStyle.Render(line))
+			default:
 				msgLines = append(msgLines, "  "+msgContentStyle.Render(line))
 			}
 		}
@@ -362,6 +490,9 @@ func (m chatModel) View() string {
 
 	if m.sending {
 		msgLines = append(msgLines, assistantMsgStyle.Render("🤖 thinking..."))
+		msgLines = append(msgLines, "")
+	} else if m.sessionStatus == "working" {
+		msgLines = append(msgLines, assistantMsgStyle.Render("🤖 working..."))
 		msgLines = append(msgLines, "")
 	}
 
@@ -457,6 +588,14 @@ func (m chatModel) View() string {
 	}
 
 	return b.String()
+}
+
+// recentTurns returns the most recently fetched page of turns (the tail of the conversation).
+func (m chatModel) recentTurns() []conversationTurn {
+	if m.recentCount <= 0 || m.recentCount >= len(m.conversation) {
+		return m.conversation
+	}
+	return m.conversation[len(m.conversation)-m.recentCount:]
 }
 
 // renderMarkdown renders markdown content using glamour.

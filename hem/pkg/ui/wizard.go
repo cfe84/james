@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -10,13 +11,20 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+func defaultWizardPath() string {
+	if home, err := os.UserHomeDir(); err == nil {
+		return home
+	}
+	return "/"
+}
+
 const (
 	wizardStepMoneypenny = 0
 	wizardStepPath       = 1
 	wizardStepForm       = 2
 )
 
-// wizardModel is a 3-step wizard for creating a new session.
+// wizardModel is a 3-step wizard for creating a new session or project.
 type wizardModel struct {
 	step   int
 	width  int
@@ -44,6 +52,9 @@ type wizardModel struct {
 	async       bool
 	projectName string
 
+	// Project mode
+	forProject bool
+
 	// Selections
 	selectedMP   string
 	selectedPath string
@@ -64,7 +75,7 @@ func newWizardModel(c *client) wizardModel {
 		step:        wizardStepMoneypenny,
 		client:      c,
 		mpLoading:   true,
-		currentPath: "/",
+		currentPath: defaultWizardPath(),
 		fields: []formField{
 			{label: "Prompt", flag: "", value: ""},
 			{label: "Name", flag: "--name", value: ""},
@@ -72,6 +83,21 @@ func newWizardModel(c *client) wizardModel {
 			{label: "Agent", flag: "--agent", value: ""},
 			{label: "System Prompt", flag: "--system-prompt", value: ""},
 			{label: "Yolo", flag: "--yolo", isBool: true, value: "false"},
+		},
+	}
+}
+
+func newProjectWizardModel(c *client) wizardModel {
+	return wizardModel{
+		step:        wizardStepMoneypenny,
+		client:      c,
+		mpLoading:   true,
+		currentPath: defaultWizardPath(),
+		forProject:  true,
+		fields: []formField{
+			{label: "Name", flag: "--name", value: ""},
+			{label: "Agent", flag: "--agent", value: ""},
+			{label: "System Prompt", flag: "--system-prompt", value: ""},
 		},
 	}
 }
@@ -102,6 +128,23 @@ func (m wizardModel) loadDirectory() tea.Cmd {
 	return func() tea.Msg {
 		entries, err := m.client.listDirectory(mp, path)
 		return wizardDirLoadedMsg{entries: entries, err: err}
+	}
+}
+
+func (m wizardModel) createProject() tea.Cmd {
+	return func() tea.Msg {
+		var args []string
+		args = append(args, "-m", m.selectedMP)
+		args = append(args, "--path", m.selectedPath)
+
+		for _, f := range m.fields {
+			if f.value == "" {
+				continue
+			}
+			args = append(args, f.flag, f.value)
+		}
+		err := m.client.createProject(args)
+		return projectCreatedMsg{err: err}
 	}
 }
 
@@ -280,9 +323,12 @@ func (m wizardModel) updateFormStep(msg tea.KeyMsg) (wizardModel, tea.Cmd) {
 	case "tab":
 		m.fCursor = (m.fCursor + 1) % len(m.fields)
 	case "enter":
-		prompt := m.fields[0].value
-		if strings.TrimSpace(prompt) != "" {
+		required := m.fields[0].value
+		if strings.TrimSpace(required) != "" {
 			m.creating = true
+			if m.forProject {
+				return m, m.createProject()
+			}
 			return m, m.createSession()
 		}
 	case "backspace":
@@ -340,7 +386,11 @@ func (m wizardModel) View() string {
 			stepParts = append(stepParts, lipgloss.NewStyle().Foreground(colorMuted).Render(n))
 		}
 	}
-	b.WriteString(titleStyle.Render(" New Session ") + "  " + strings.Join(stepParts, " > "))
+	title := " New Session "
+	if m.forProject {
+		title = " New Project "
+	}
+	b.WriteString(titleStyle.Render(title) + "  " + strings.Join(stepParts, " > "))
 	b.WriteString("\n\n")
 
 	switch m.step {
@@ -499,7 +549,11 @@ func (m wizardModel) viewFormStep() string {
 	}
 
 	if m.creating {
-		b.WriteString("\n  Creating session...")
+		if m.forProject {
+			b.WriteString("\n  Creating project...")
+		} else {
+			b.WriteString("\n  Creating session...")
+		}
 	}
 
 	return b.String()

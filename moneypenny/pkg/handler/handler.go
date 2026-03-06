@@ -72,6 +72,12 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.importSession(ctx, cmd)
 	case "git_diff":
 		return h.gitDiff(ctx, cmd)
+	case "git_commit":
+		return h.gitCommit(ctx, cmd)
+	case "git_branch":
+		return h.gitBranch(ctx, cmd)
+	case "git_push":
+		return h.gitPush(ctx, cmd)
 	case "execute_command":
 		return h.executeCommand(ctx, cmd)
 	case "list_directory":
@@ -353,7 +359,7 @@ func (h *Handler) getSession(_ context.Context, cmd *envelope.Command) *envelope
 }
 
 func (h *Handler) getSessionConversation(_ context.Context, cmd *envelope.Command) *envelope.Response {
-	var data envelope.SessionIDData
+	var data envelope.GetConversationData
 	if err := json.Unmarshal(cmd.Data, &data); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
 	}
@@ -366,7 +372,21 @@ func (h *Handler) getSessionConversation(_ context.Context, cmd *envelope.Comman
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, fmt.Sprintf("session not found: %s", data.SessionID))
 	}
 
-	turns, err := h.store.GetConversation(data.SessionID)
+	total, err := h.store.GetConversationCount(data.SessionID)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to count conversation: %v", err))
+	}
+
+	var turns []*store.ConversationTurn
+	if data.All {
+		turns, err = h.store.GetConversation(data.SessionID)
+	} else {
+		count := data.Count
+		if count <= 0 {
+			count = 10
+		}
+		turns, err = h.store.GetConversationPaginated(data.SessionID, count, data.From)
+	}
 	if err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to get conversation: %v", err))
 	}
@@ -383,6 +403,7 @@ func (h *Handler) getSessionConversation(_ context.Context, cmd *envelope.Comman
 	return envelope.SuccessResponse(cmd.RequestID, envelope.SessionConversation{
 		SessionID:    data.SessionID,
 		Conversation: conversation,
+		Total:        total,
 	})
 }
 
@@ -647,7 +668,14 @@ func (h *Handler) schedule(_ context.Context, cmd *envelope.Command) *envelope.R
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid scheduled_at (expected RFC3339): %v", err))
 	}
 
-	id, err := h.store.CreateSchedule(data.SessionID, data.Prompt, scheduledAt)
+	// Validate cron expression if provided.
+	if data.CronExpr != "" {
+		if _, err := nextCronTime(data.CronExpr, time.Now()); err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid cron expression: %v", err))
+		}
+	}
+
+	id, err := h.store.CreateScheduleWithCron(data.SessionID, data.Prompt, scheduledAt, data.CronExpr)
 	if err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to create schedule: %v", err))
 	}
@@ -684,6 +712,7 @@ func (h *Handler) listSchedules(_ context.Context, cmd *envelope.Command) *envel
 			Prompt:      s.Prompt,
 			ScheduledAt: s.ScheduledAt.UTC().Format(time.RFC3339),
 			Status:      s.Status,
+			CronExpr:    s.CronExpr,
 			CreatedAt:   s.CreatedAt.UTC().Format(time.RFC3339),
 		})
 	}
@@ -808,6 +837,14 @@ func (h *Handler) processDueSchedules() {
 			continue
 		}
 
+		// Add a system notification turn so the user sees the scheduled prompt in chat.
+		label := "Scheduled task"
+		if sch.CronExpr != "" {
+			label = fmt.Sprintf("Recurring task (%s)", sch.CronExpr)
+		}
+		schedNotice := fmt.Sprintf("[%s triggered at %s]", label, time.Now().Local().Format("Jan 2, 3:04 PM"))
+		_ = h.store.AddConversationTurn(sch.SessionID, "system", schedNotice)
+
 		if sess.Status == store.StateIdle {
 			// Session is idle — continue it directly.
 			if err := h.store.UpdateSessionStatus(sch.SessionID, store.StateWorking); err != nil {
@@ -819,6 +856,12 @@ func (h *Handler) processDueSchedules() {
 				h.vlog("scheduler: failed to add conversation turn for session %s: %v", sch.SessionID, err)
 			}
 			_ = h.store.UpdateScheduleStatus(sch.ID, store.ScheduleDone)
+
+			// If this is a recurring schedule, create the next occurrence.
+			if sch.CronExpr != "" {
+				h.scheduleNextCron(sch)
+			}
+
 			go h.runAgent(sch.SessionID, agent.RunParams{
 				SessionID:    sch.SessionID,
 				Agent:        sess.Agent,
@@ -836,7 +879,232 @@ func (h *Handler) processDueSchedules() {
 				continue
 			}
 			_ = h.store.UpdateScheduleStatus(sch.ID, store.ScheduleDone)
+
+			// If this is a recurring schedule, create the next occurrence.
+			if sch.CronExpr != "" {
+				h.scheduleNextCron(sch)
+			}
+
 			h.vlog("scheduler: session %s busy, queued scheduled prompt (schedule %d)", sch.SessionID, sch.ID)
 		}
 	}
+}
+
+// scheduleNextCron creates the next occurrence of a recurring schedule.
+func (h *Handler) scheduleNextCron(sch *store.Schedule) {
+	next, err := nextCronTime(sch.CronExpr, time.Now())
+	if err != nil {
+		h.vlog("scheduler: invalid cron expression %q for schedule %d: %v", sch.CronExpr, sch.ID, err)
+		return
+	}
+	id, err := h.store.CreateScheduleWithCron(sch.SessionID, sch.Prompt, next, sch.CronExpr)
+	if err != nil {
+		h.vlog("scheduler: failed to create next cron occurrence for schedule %d: %v", sch.ID, err)
+		return
+	}
+	h.vlog("scheduler: created next cron occurrence %d for session %s at %s", id, sch.SessionID, next.Format(time.RFC3339))
+}
+
+// nextCronTime computes the next occurrence after `after` for a cron expression.
+// Supports standard 5-field cron: minute hour day-of-month month day-of-week.
+// Also supports simple interval shorthands: @every 1h, @every 30m, @daily, @hourly.
+func nextCronTime(expr string, after time.Time) (time.Time, error) {
+	expr = strings.TrimSpace(expr)
+
+	// Handle shorthands.
+	switch {
+	case expr == "@hourly":
+		return after.Truncate(time.Hour).Add(time.Hour), nil
+	case expr == "@daily":
+		next := time.Date(after.Year(), after.Month(), after.Day()+1, 0, 0, 0, 0, after.Location())
+		return next, nil
+	case strings.HasPrefix(expr, "@every "):
+		durStr := strings.TrimPrefix(expr, "@every ")
+		d, err := time.ParseDuration(durStr)
+		if err != nil {
+			return time.Time{}, fmt.Errorf("invalid interval: %w", err)
+		}
+		return after.Add(d), nil
+	}
+
+	// Parse standard 5-field cron: min hour dom month dow
+	fields := strings.Fields(expr)
+	if len(fields) != 5 {
+		return time.Time{}, fmt.Errorf("expected 5 fields in cron expression, got %d", len(fields))
+	}
+
+	// Simple cron parser: supports numbers and * only (no ranges/steps for now).
+	parseField := func(s string, min, max int) ([]int, error) {
+		if s == "*" {
+			vals := make([]int, max-min+1)
+			for i := range vals {
+				vals[i] = min + i
+			}
+			return vals, nil
+		}
+		var val int
+		if _, err := fmt.Sscanf(s, "%d", &val); err != nil {
+			return nil, fmt.Errorf("invalid cron field %q", s)
+		}
+		if val < min || val > max {
+			return nil, fmt.Errorf("cron field %d out of range [%d-%d]", val, min, max)
+		}
+		return []int{val}, nil
+	}
+
+	minutes, err := parseField(fields[0], 0, 59)
+	if err != nil {
+		return time.Time{}, err
+	}
+	hours, err := parseField(fields[1], 0, 23)
+	if err != nil {
+		return time.Time{}, err
+	}
+	doms, err := parseField(fields[2], 1, 31)
+	if err != nil {
+		return time.Time{}, err
+	}
+	months, err := parseField(fields[3], 1, 12)
+	if err != nil {
+		return time.Time{}, err
+	}
+	dows, err := parseField(fields[4], 0, 6)
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	domSet := make(map[int]bool)
+	for _, v := range doms {
+		domSet[v] = true
+	}
+	monSet := make(map[int]bool)
+	for _, v := range months {
+		monSet[v] = true
+	}
+	dowSet := make(map[int]bool)
+	for _, v := range dows {
+		dowSet[v] = true
+	}
+
+	// Iterate minute by minute from after+1min, up to 1 year.
+	t := after.Truncate(time.Minute).Add(time.Minute)
+	limit := after.Add(366 * 24 * time.Hour)
+	for t.Before(limit) {
+		if monSet[int(t.Month())] && domSet[t.Day()] && dowSet[int(t.Weekday())] {
+			for _, h := range hours {
+				for _, m := range minutes {
+					candidate := time.Date(t.Year(), t.Month(), t.Day(), h, m, 0, 0, t.Location())
+					if candidate.After(after) {
+						return candidate, nil
+					}
+				}
+			}
+		}
+		t = t.Add(24 * time.Hour)
+		t = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
+	}
+
+	return time.Time{}, fmt.Errorf("no matching time found within 1 year for cron %q", expr)
+}
+
+// Git operation handlers.
+
+func (h *Handler) gitCommit(_ context.Context, cmd *envelope.Command) *envelope.Response {
+	var data envelope.GitCommitData
+	if err := json.Unmarshal(cmd.Data, &data); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
+	}
+	if data.SessionID == "" || data.Message == "" {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id and message are required")
+	}
+
+	sess, err := h.store.GetSession(data.SessionID)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to get session: %v", err))
+	}
+	if sess == nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, fmt.Sprintf("session not found: %s", data.SessionID))
+	}
+
+	// Stage all changes.
+	addCmd := exec.Command("git", "add", "-A")
+	addCmd.Dir = sess.Path
+	if out, err := addCmd.CombinedOutput(); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("git add failed: %s", string(out)))
+	}
+
+	// Commit.
+	commitCmd := exec.Command("git", "commit", "-m", data.Message)
+	commitCmd.Dir = sess.Path
+	out, err := commitCmd.CombinedOutput()
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("git commit failed: %s", string(out)))
+	}
+
+	return envelope.SuccessResponse(cmd.RequestID, envelope.GitResponse{Output: string(out)})
+}
+
+func (h *Handler) gitBranch(_ context.Context, cmd *envelope.Command) *envelope.Response {
+	var data envelope.GitBranchData
+	if err := json.Unmarshal(cmd.Data, &data); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
+	}
+	if data.SessionID == "" || data.BranchName == "" {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id and branch_name are required")
+	}
+
+	sess, err := h.store.GetSession(data.SessionID)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to get session: %v", err))
+	}
+	if sess == nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, fmt.Sprintf("session not found: %s", data.SessionID))
+	}
+
+	// Create and switch to new branch.
+	branchCmd := exec.Command("git", "checkout", "-b", data.BranchName)
+	branchCmd.Dir = sess.Path
+	out, err := branchCmd.CombinedOutput()
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("git checkout -b failed: %s", string(out)))
+	}
+
+	return envelope.SuccessResponse(cmd.RequestID, envelope.GitResponse{Output: string(out)})
+}
+
+func (h *Handler) gitPush(_ context.Context, cmd *envelope.Command) *envelope.Response {
+	var data envelope.GitPushData
+	if err := json.Unmarshal(cmd.Data, &data); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
+	}
+	if data.SessionID == "" {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id is required")
+	}
+
+	sess, err := h.store.GetSession(data.SessionID)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to get session: %v", err))
+	}
+	if sess == nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, fmt.Sprintf("session not found: %s", data.SessionID))
+	}
+
+	// Get current branch name.
+	branchCmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	branchCmd.Dir = sess.Path
+	branchOut, err := branchCmd.Output()
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to get branch name: %v", err))
+	}
+	branch := strings.TrimSpace(string(branchOut))
+
+	// Push with -u to set upstream.
+	pushCmd := exec.Command("git", "push", "-u", "origin", branch)
+	pushCmd.Dir = sess.Path
+	out, err := pushCmd.CombinedOutput()
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("git push failed: %s", string(out)))
+	}
+
+	return envelope.SuccessResponse(cmd.RequestID, envelope.GitResponse{Output: string(out)})
 }

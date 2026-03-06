@@ -50,6 +50,7 @@ type Schedule struct {
 	Prompt      string
 	ScheduledAt time.Time
 	Status      string
+	CronExpr    string // cron expression for recurring schedules (empty = one-shot)
 	CreatedAt   time.Time
 }
 
@@ -123,6 +124,7 @@ CREATE TABLE IF NOT EXISTS schedules (
     prompt TEXT NOT NULL,
     scheduled_at DATETIME NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
+    cron_expr TEXT NOT NULL DEFAULT '',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -130,7 +132,14 @@ CREATE INDEX IF NOT EXISTS idx_schedules_session ON schedules(session_id);
 CREATE INDEX IF NOT EXISTS idx_schedules_pending ON schedules(status, scheduled_at);
 `
 	_, err := db.Exec(schema)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Migration: add cron_expr column to schedules if missing (for existing DBs).
+	db.Exec(`ALTER TABLE schedules ADD COLUMN cron_expr TEXT NOT NULL DEFAULT ''`)
+
+	return nil
 }
 
 // Close closes the database.
@@ -356,6 +365,46 @@ func (s *Store) GetConversation(sessionID string) ([]*ConversationTurn, error) {
 	return turns, rows.Err()
 }
 
+// GetConversationCount returns the total number of turns for a session.
+func (s *Store) GetConversationCount(sessionID string) (int, error) {
+	var count int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM conversation_turns WHERE session_id = ?`, sessionID,
+	).Scan(&count)
+	return count, err
+}
+
+// GetConversationPaginated returns turns for a session with pagination.
+// It returns the last `limit` turns, offset by `offset` from the end.
+// For example, limit=10, offset=0 returns the 10 most recent turns.
+// limit=10, offset=10 returns turns 11-20 from the end.
+func (s *Store) GetConversationPaginated(sessionID string, limit, offset int) ([]*ConversationTurn, error) {
+	// We want rows ordered chronologically, but paginated from the end.
+	// Use a subquery to get the tail, then re-order.
+	rows, err := s.db.Query(
+		`SELECT id, session_id, role, content, created_at FROM (
+			SELECT id, session_id, role, content, created_at
+			FROM conversation_turns WHERE session_id = ?
+			ORDER BY created_at DESC, id DESC
+			LIMIT ? OFFSET ?
+		) sub ORDER BY created_at, id`, sessionID, limit, offset,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get conversation paginated: %w", err)
+	}
+	defer rows.Close()
+
+	var turns []*ConversationTurn
+	for rows.Next() {
+		t := &ConversationTurn{}
+		if err := rows.Scan(&t.ID, &t.SessionID, &t.Role, &t.Content, &t.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan turn: %w", err)
+		}
+		turns = append(turns, t)
+	}
+	return turns, rows.Err()
+}
+
 // QueuePrompt adds a prompt to the queue for a session.
 func (s *Store) QueuePrompt(sessionID, prompt string) error {
 	_, err := s.db.Exec(
@@ -415,9 +464,14 @@ func (s *Store) QueueLength(sessionID string) (int, error) {
 
 // CreateSchedule adds a scheduled prompt for a session.
 func (s *Store) CreateSchedule(sessionID, prompt string, scheduledAt time.Time) (int64, error) {
+	return s.CreateScheduleWithCron(sessionID, prompt, scheduledAt, "")
+}
+
+// CreateScheduleWithCron adds a scheduled prompt with an optional cron expression for recurrence.
+func (s *Store) CreateScheduleWithCron(sessionID, prompt string, scheduledAt time.Time, cronExpr string) (int64, error) {
 	res, err := s.db.Exec(
-		`INSERT INTO schedules (session_id, prompt, scheduled_at, status) VALUES (?, ?, ?, ?)`,
-		sessionID, prompt, scheduledAt.UTC(), SchedulePending,
+		`INSERT INTO schedules (session_id, prompt, scheduled_at, status, cron_expr) VALUES (?, ?, ?, ?, ?)`,
+		sessionID, prompt, scheduledAt.UTC(), SchedulePending, cronExpr,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("create schedule: %w", err)
@@ -428,10 +482,10 @@ func (s *Store) CreateSchedule(sessionID, prompt string, scheduledAt time.Time) 
 // GetSchedule retrieves a schedule by ID.
 func (s *Store) GetSchedule(id int64) (*Schedule, error) {
 	row := s.db.QueryRow(
-		`SELECT id, session_id, prompt, scheduled_at, status, created_at FROM schedules WHERE id = ?`, id,
+		`SELECT id, session_id, prompt, scheduled_at, status, cron_expr, created_at FROM schedules WHERE id = ?`, id,
 	)
 	sch := &Schedule{}
-	err := row.Scan(&sch.ID, &sch.SessionID, &sch.Prompt, &sch.ScheduledAt, &sch.Status, &sch.CreatedAt)
+	err := row.Scan(&sch.ID, &sch.SessionID, &sch.Prompt, &sch.ScheduledAt, &sch.Status, &sch.CronExpr, &sch.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -447,12 +501,12 @@ func (s *Store) ListSchedules(sessionID string, statusFilter string) ([]*Schedul
 	var err error
 	if statusFilter != "" {
 		rows, err = s.db.Query(
-			`SELECT id, session_id, prompt, scheduled_at, status, created_at
+			`SELECT id, session_id, prompt, scheduled_at, status, cron_expr, created_at
 			 FROM schedules WHERE session_id = ? AND status = ? ORDER BY scheduled_at`, sessionID, statusFilter,
 		)
 	} else {
 		rows, err = s.db.Query(
-			`SELECT id, session_id, prompt, scheduled_at, status, created_at
+			`SELECT id, session_id, prompt, scheduled_at, status, cron_expr, created_at
 			 FROM schedules WHERE session_id = ? ORDER BY scheduled_at`, sessionID,
 		)
 	}
@@ -464,7 +518,7 @@ func (s *Store) ListSchedules(sessionID string, statusFilter string) ([]*Schedul
 	var schedules []*Schedule
 	for rows.Next() {
 		sch := &Schedule{}
-		if err := rows.Scan(&sch.ID, &sch.SessionID, &sch.Prompt, &sch.ScheduledAt, &sch.Status, &sch.CreatedAt); err != nil {
+		if err := rows.Scan(&sch.ID, &sch.SessionID, &sch.Prompt, &sch.ScheduledAt, &sch.Status, &sch.CronExpr, &sch.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan schedule: %w", err)
 		}
 		schedules = append(schedules, sch)
@@ -476,7 +530,7 @@ func (s *Store) ListSchedules(sessionID string, statusFilter string) ([]*Schedul
 func (s *Store) DueSchedules() ([]*Schedule, error) {
 	now := time.Now().UTC()
 	rows, err := s.db.Query(
-		`SELECT id, session_id, prompt, scheduled_at, status, created_at
+		`SELECT id, session_id, prompt, scheduled_at, status, cron_expr, created_at
 		 FROM schedules WHERE status = ? AND scheduled_at <= ? ORDER BY scheduled_at`,
 		SchedulePending, now,
 	)
@@ -488,7 +542,7 @@ func (s *Store) DueSchedules() ([]*Schedule, error) {
 	var schedules []*Schedule
 	for rows.Next() {
 		sch := &Schedule{}
-		if err := rows.Scan(&sch.ID, &sch.SessionID, &sch.Prompt, &sch.ScheduledAt, &sch.Status, &sch.CreatedAt); err != nil {
+		if err := rows.Scan(&sch.ID, &sch.SessionID, &sch.Prompt, &sch.ScheduledAt, &sch.Status, &sch.CronExpr, &sch.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan schedule: %w", err)
 		}
 		schedules = append(schedules, sch)
