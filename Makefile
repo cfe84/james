@@ -1,8 +1,14 @@
 COMPONENTS := mi6 moneypenny hem
 ifeq ($(OS),Windows_NT)
     VERSION := $(shell type VERSION 2>NUL || echo unknown)
+	INSTALL := copy
+	SEP := \\
+	EXECUTABLE_SUFFIX := .exe
 else
     VERSION := $(shell cat VERSION 2>/dev/null || echo unknown)
+	INSTALL := cp -m 755
+	SEP := /
+	EXECUTABLE_SUFFIX :=
 endif
 
 # Find first existing bin directory for install.
@@ -54,18 +60,9 @@ else
 endif
 endif
 	@echo "Installing to $(INSTALL_DIR)"
-	-@mkdir -p "$(INSTALL_DIR)"
-ifeq ($(OS),Windows_NT)
-	@install -m 755 mi6/bin/mi6-server.exe "$(INSTALL_DIR)/"
-	@install -m 755 mi6/bin/mi6-client.exe "$(INSTALL_DIR)/"
-	@install -m 755 moneypenny/bin/moneypenny.exe "$(INSTALL_DIR)/"
-	@install -m 755 hem/bin/hem.exe "$(INSTALL_DIR)/"
+	$(INSTALL) mi6$(SEP)bin$(SEP)mi6-server$(EXECUTABLE_SUFFIX) "$(INSTALL_DIR)$(SEP)"
+	$(INSTALL) mi6$(SEP)bin$(SEP)mi6-client$(EXECUTABLE_SUFFIX) "$(INSTALL_DIR)$(SEP)"
+	$(INSTALL) moneypenny$(SEP)bin$(SEP)moneypenny$(EXECUTABLE_SUFFIX) "$(INSTALL_DIR)$(SEP)"
+	$(INSTALL) hem$(SEP)bin$(SEP)hem$(EXECUTABLE_SUFFIX) "$(INSTALL_DIR)$(SEP)"
 	@echo "Installed to: $(INSTALL_DIR)"
 	@echo "Make sure $(INSTALL_DIR) is in your PATH"
-else
-	@install -m 755 mi6/bin/mi6-server "$(INSTALL_DIR)/"
-	@install -m 755 mi6/bin/mi6-client "$(INSTALL_DIR)/"
-	@install -m 755 moneypenny/bin/moneypenny "$(INSTALL_DIR)/"
-	@install -m 755 hem/bin/hem "$(INSTALL_DIR)/"
-	@echo "Installed: mi6-server mi6-client moneypenny hem"
-endif
