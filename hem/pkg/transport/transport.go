@@ -192,20 +192,26 @@ func (c *Client) sendMI6(ctx context.Context, cmd *Command) (*Response, error) {
 	}
 	data = append(data, '\n')
 	stdin.Write(data)
-	stdin.Close()
+
+	// Don't close stdin yet — closing it triggers mi6-client shutdown
+	// (stdin EOF → cancel → exit) before the response can arrive back
+	// through the MI6 relay.
 
 	scanner := bufio.NewScanner(stdout)
 	if !scanner.Scan() {
+		stdin.Close()
 		proc.Wait()
 		return nil, fmt.Errorf("no response from moneypenny via MI6")
 	}
 
 	var resp Response
 	if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
+		stdin.Close()
 		proc.Wait()
 		return nil, fmt.Errorf("parsing response: %w", err)
 	}
 
+	stdin.Close()
 	proc.Wait()
 	return &resp, nil
 }
