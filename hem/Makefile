@@ -1,4 +1,4 @@
-VERSION := $(shell type ..\VERSION 2>nul || cat ../VERSION 2>/dev/null || echo 0.1.0)
+VERSION := $(shell cat ../VERSION 2>/dev/null || type ..\VERSION 2>NUL || echo 0.1.0)
 LDFLAGS := -ldflags "-X main.Version=$(VERSION)"
 
 export CGO_ENABLED=1
