@@ -233,6 +233,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.dashboard.loadDashboard()
 		}
 
+	case chatPollTickMsg:
+		// Only process poll ticks when chat is active.
+		if m.currentView == viewChat {
+			var cmd tea.Cmd
+			m.chat, cmd = m.chat.Update(msg)
+			return m, cmd
+		}
+		// Discard tick if not in chat view.
+		return m, nil
+
 	case historyLoadedMsg, messageSentMsg:
 		var cmd tea.Cmd
 		m.chat, cmd = m.chat.Update(msg)
@@ -900,14 +910,14 @@ func (m Model) renderStatusBar() string {
 				statusKeyStyle.Render("s") + statusDescStyle.Render(" stop"),
 				statusKeyStyle.Render("↵") + statusDescStyle.Render(" resume"),
 				statusKeyStyle.Render("esc") + statusDescStyle.Render(" leave"),
-				statusKeyStyle.Render("pgup/dn") + statusDescStyle.Render(" scroll"),
+				statusKeyStyle.Render("^U/^D") + statusDescStyle.Render(" scroll"),
 			}
 		} else {
 			keys = []string{
 				statusKeyStyle.Render("↵") + statusDescStyle.Render(" send"),
-				statusKeyStyle.Render("⇧↵") + statusDescStyle.Render(" newline"),
+				statusKeyStyle.Render("⌥↵") + statusDescStyle.Render(" newline"),
 				statusKeyStyle.Render("esc") + statusDescStyle.Render(" commands"),
-				statusKeyStyle.Render("pgup/dn") + statusDescStyle.Render(" scroll"),
+				statusKeyStyle.Render("^U/^D") + statusDescStyle.Render(" scroll"),
 			}
 		}
 	case viewCreate:

@@ -1,5 +1,9 @@
 # Binaries
 bin/
+hem/hem
+mi6/mi6-server
+mi6/mi6-client
+moneypenny/moneypenny
 *.exe
 *.exe~
 *.dll

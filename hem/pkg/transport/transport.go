@@ -2,12 +2,14 @@ package transport
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 )
 
@@ -170,7 +172,8 @@ func (c *Client) sendMI6(ctx context.Context, cmd *Command) (*Response, error) {
 	}
 
 	proc := exec.CommandContext(ctx, mi6Client, "--key", c.mi6KeyPath, c.mi6Addr)
-	proc.Stderr = os.Stderr
+	var stderrBuf bytes.Buffer
+	proc.Stderr = &stderrBuf
 
 	stdin, err := proc.StdinPipe()
 	if err != nil {
@@ -200,8 +203,18 @@ func (c *Client) sendMI6(ctx context.Context, cmd *Command) (*Response, error) {
 	scanner := bufio.NewScanner(stdout)
 	if !scanner.Scan() {
 		stdin.Close()
-		proc.Wait()
-		return nil, fmt.Errorf("no response from moneypenny via MI6")
+		waitErr := proc.Wait()
+		errParts := []string{"no response from moneypenny via MI6"}
+		if se := scanner.Err(); se != nil {
+			errParts = append(errParts, fmt.Sprintf("scan: %v", se))
+		}
+		if waitErr != nil {
+			errParts = append(errParts, fmt.Sprintf("exit: %v", waitErr))
+		}
+		if stderr := strings.TrimSpace(stderrBuf.String()); stderr != "" {
+			errParts = append(errParts, fmt.Sprintf("stderr: %s", stderr))
+		}
+		return nil, fmt.Errorf("%s", strings.Join(errParts, "; "))
 	}
 
 	var resp Response

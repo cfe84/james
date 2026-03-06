@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 
 	"james/moneypenny/pkg/agent"
 	"james/moneypenny/pkg/envelope"
@@ -46,6 +47,10 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.listSessions(ctx, cmd)
 	case "get_session":
 		return h.getSession(ctx, cmd)
+	case "get_session_conversation":
+		return h.getSessionConversation(ctx, cmd)
+	case "queue_prompt":
+		return h.queuePrompt(ctx, cmd)
 	case "delete_session":
 		return h.deleteSession(ctx, cmd)
 	case "stop_session":
@@ -174,7 +179,40 @@ func (h *Handler) continueSession(ctx context.Context, cmd *envelope.Command) *e
 	})
 }
 
+func (h *Handler) queuePrompt(_ context.Context, cmd *envelope.Command) *envelope.Response {
+	var data envelope.ContinueSessionData
+	if err := json.Unmarshal(cmd.Data, &data); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
+	}
+
+	if data.SessionID == "" || data.Prompt == "" {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id and prompt are required")
+	}
+
+	sess, err := h.store.GetSession(data.SessionID)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to get session: %v", err))
+	}
+	if sess == nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, fmt.Sprintf("session not found: %s", data.SessionID))
+	}
+
+	if err := h.store.QueuePrompt(data.SessionID, data.Prompt); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to queue prompt: %v", err))
+	}
+
+	queueLen, _ := h.store.QueueLength(data.SessionID)
+	h.vlog("queued prompt for session %s (queue length: %d)", data.SessionID, queueLen)
+
+	return envelope.SuccessResponse(cmd.RequestID, map[string]interface{}{
+		"session_id":   data.SessionID,
+		"queued":       true,
+		"queue_length": queueLen,
+	})
+}
+
 // runAgent executes the agent in the background, updating the store when done.
+// After completion, it checks the prompt queue and auto-continues if there are queued prompts.
 func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 	ctx := context.Background()
 	result, err := h.runner.Run(ctx, params)
@@ -188,11 +226,47 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 		h.vlog("failed to add conversation turn for session %s: %v", sessionID, err)
 	}
 
+	h.vlog("agent completed for session %s", sessionID)
+
+	// Check for queued prompts before going idle.
+	prompts, err := h.store.DrainQueue(sessionID)
+	if err != nil {
+		h.vlog("failed to drain queue for session %s: %v", sessionID, err)
+	}
+
+	if len(prompts) > 0 {
+		combinedPrompt := strings.Join(prompts, "\n")
+		h.vlog("processing %d queued prompt(s) for session %s", len(prompts), sessionID)
+
+		// Add the queued prompt as a user turn.
+		if err := h.store.AddConversationTurn(sessionID, "user", combinedPrompt); err != nil {
+			h.vlog("failed to add queued conversation turn for session %s: %v", sessionID, err)
+		}
+
+		// Re-fetch session for latest settings.
+		sess, err := h.store.GetSession(sessionID)
+		if err != nil || sess == nil {
+			h.vlog("failed to get session %s for queued continuation: %v", sessionID, err)
+			_ = h.store.UpdateSessionStatus(sessionID, store.StateIdle)
+			return
+		}
+
+		// Continue with queued prompt (recursive call to runAgent).
+		h.runAgent(sessionID, agent.RunParams{
+			SessionID:    sessionID,
+			Agent:        sess.Agent,
+			Prompt:       combinedPrompt,
+			SystemPrompt: sess.SystemPrompt,
+			Yolo:         sess.Yolo,
+			Path:         sess.Path,
+			Resume:       true,
+		})
+		return
+	}
+
 	if err := h.store.UpdateSessionStatus(sessionID, store.StateIdle); err != nil {
 		h.vlog("failed to update status for session %s: %v", sessionID, err)
 	}
-
-	h.vlog("agent completed for session %s", sessionID)
 }
 
 func (h *Handler) listSessions(_ context.Context, cmd *envelope.Command) *envelope.Response {
@@ -232,6 +306,37 @@ func (h *Handler) getSession(_ context.Context, cmd *envelope.Command) *envelope
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, fmt.Sprintf("session not found: %s", data.SessionID))
 	}
 
+	detail := envelope.SessionDetail{
+		SessionID:    sess.SessionID,
+		Name:         sess.Name,
+		Status:       sess.Status,
+		Agent:        sess.Agent,
+		SystemPrompt: sess.SystemPrompt,
+		Yolo:         sess.Yolo,
+		Path:         sess.Path,
+	}
+
+	if ts, err := h.store.GetSessionTimestamps(data.SessionID); err == nil && ts != nil {
+		detail.LastAccessed = ts.LastTurn.UTC().Format("2006-01-02T15:04:05Z")
+	}
+
+	return envelope.SuccessResponse(cmd.RequestID, detail)
+}
+
+func (h *Handler) getSessionConversation(_ context.Context, cmd *envelope.Command) *envelope.Response {
+	var data envelope.SessionIDData
+	if err := json.Unmarshal(cmd.Data, &data); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
+	}
+
+	sess, err := h.store.GetSession(data.SessionID)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to get session: %v", err))
+	}
+	if sess == nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, fmt.Sprintf("session not found: %s", data.SessionID))
+	}
+
 	turns, err := h.store.GetConversation(data.SessionID)
 	if err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to get conversation: %v", err))
@@ -246,18 +351,10 @@ func (h *Handler) getSession(_ context.Context, cmd *envelope.Command) *envelope
 		})
 	}
 
-	detail := envelope.SessionDetail{
-		SessionID:    sess.SessionID,
-		Name:         sess.Name,
-		Status:       sess.Status,
-		Agent:        sess.Agent,
-		SystemPrompt: sess.SystemPrompt,
-		Yolo:         sess.Yolo,
-		Path:         sess.Path,
+	return envelope.SuccessResponse(cmd.RequestID, envelope.SessionConversation{
+		SessionID:    data.SessionID,
 		Conversation: conversation,
-	}
-
-	return envelope.SuccessResponse(cmd.RequestID, detail)
+	})
 }
 
 func (h *Handler) deleteSession(_ context.Context, cmd *envelope.Command) *envelope.Response {

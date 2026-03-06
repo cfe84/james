@@ -213,21 +213,30 @@ func (e *Executor) pollUntilIdle(ctx context.Context, mp *store.Moneypenny, sess
 		}
 
 		var detail struct {
-			Status       string `json:"status"`
-			Conversation []struct {
-				Role    string `json:"role"`
-				Content string `json:"content"`
-			} `json:"conversation"`
+			Status string `json:"status"`
 		}
 		if err := json.Unmarshal(resp.Data, &detail); err != nil {
 			return "", fmt.Errorf("parsing poll response: %w", err)
 		}
 
 		if detail.Status != "working" {
-			// Find the last assistant message.
-			for i := len(detail.Conversation) - 1; i >= 0; i-- {
-				if detail.Conversation[i].Role == "assistant" {
-					return detail.Conversation[i].Content, nil
+			// Fetch conversation to get the last assistant response.
+			convResp, err := e.sendCommand(ctx, mp, "get_session_conversation", map[string]interface{}{"session_id": sessionID})
+			if err != nil {
+				return "", fmt.Errorf("fetching conversation: %w", err)
+			}
+			var convData struct {
+				Conversation []struct {
+					Role    string `json:"role"`
+					Content string `json:"content"`
+				} `json:"conversation"`
+			}
+			if err := json.Unmarshal(convResp.Data, &convData); err != nil {
+				return "", fmt.Errorf("parsing conversation: %w", err)
+			}
+			for i := len(convData.Conversation) - 1; i >= 0; i-- {
+				if convData.Conversation[i].Role == "assistant" {
+					return convData.Conversation[i].Content, nil
 				}
 			}
 			return "", nil
@@ -370,6 +379,7 @@ type SessionContinuedResult struct {
 	SessionID string `json:"session_id"`
 	Response  string `json:"response,omitempty"`
 	Async     bool   `json:"async"`
+	Queued    bool   `json:"queued,omitempty"`
 }
 
 type SessionStateResult struct {
@@ -867,6 +877,9 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 		return protocol.ErrResponse(err.Error())
 	}
 
+	// Sync mode: the caller will see the response, mark as reviewed.
+	_ = e.store.SetSessionReviewed(sessionID, true)
+
 	return protocol.OKResponse(SessionCreatedResult{
 		SessionID: sessionID,
 		Response:  response,
@@ -919,6 +932,17 @@ func (e *Executor) ContinueSession(args []string) *protocol.Response {
 	ctx := context.Background()
 	_, err = e.sendCommand(ctx, mp, "continue_session", cmdData)
 	if err != nil {
+		// If session is busy, queue the prompt instead.
+		if isSessionNotIdle(err) {
+			_, queueErr := e.sendCommand(ctx, mp, "queue_prompt", cmdData)
+			if queueErr != nil {
+				return protocol.ErrResponse(fmt.Sprintf("queueing prompt: %v", queueErr))
+			}
+			return protocol.OKResponse(SessionContinuedResult{
+				SessionID: sessionID,
+				Queued:    true,
+			})
+		}
 		return protocol.ErrResponse(err.Error())
 	}
 
@@ -935,10 +959,18 @@ func (e *Executor) ContinueSession(args []string) *protocol.Response {
 		return protocol.ErrResponse(err.Error())
 	}
 
+	// Sync mode: the caller will see the response, mark as reviewed.
+	_ = e.store.SetSessionReviewed(sessionID, true)
+
 	return protocol.OKResponse(SessionContinuedResult{
 		SessionID: sessionID,
 		Response:  response,
 	})
+}
+
+// isSessionNotIdle checks if an error is a SESSION_NOT_IDLE error from moneypenny.
+func isSessionNotIdle(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "SESSION_NOT_IDLE")
 }
 
 func (e *Executor) StopSession(args []string) *protocol.Response {
@@ -1096,7 +1128,7 @@ func (e *Executor) LastSession(args []string) *protocol.Response {
 	}
 
 	ctx := context.Background()
-	resp, err := e.sendCommand(ctx, mp, "get_session", cmdData)
+	resp, err := e.sendCommand(ctx, mp, "get_session_conversation", cmdData)
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
@@ -1301,7 +1333,7 @@ func (e *Executor) HistorySession(args []string) *protocol.Response {
 	}
 
 	ctx := context.Background()
-	resp, err := e.sendCommand(ctx, mp, "get_session", cmdData)
+	resp, err := e.sendCommand(ctx, mp, "get_session_conversation", cmdData)
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
@@ -2021,22 +2053,19 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 			continue
 		}
 
-		// Get session info from moneypenny.
+		// Get session info from moneypenny (metadata only, no conversation).
 		var mpStatus, sessionName, lastAccessed string
 		resp, err := e.sendCommand(ctx, mp, "get_session", map[string]interface{}{"session_id": sess.SessionID})
 		if err == nil {
 			var detail struct {
-				Status       string             `json:"status"`
-				Name         string             `json:"name"`
-				Conversation []ConversationTurn `json:"conversation"`
+				Status       string `json:"status"`
+				Name         string `json:"name"`
+				LastAccessed string `json:"last_accessed"`
 			}
 			if json.Unmarshal(resp.Data, &detail) == nil {
 				mpStatus = detail.Status
 				sessionName = detail.Name
-				// Get last activity from conversation timestamps.
-				if len(detail.Conversation) > 0 {
-					lastAccessed = detail.Conversation[len(detail.Conversation)-1].CreatedAt
-				}
+				lastAccessed = detail.LastAccessed
 			}
 		} else {
 			mpStatus = "offline"

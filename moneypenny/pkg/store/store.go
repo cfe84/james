@@ -90,6 +90,15 @@ CREATE TABLE IF NOT EXISTS conversation_turns (
 );
 
 CREATE INDEX IF NOT EXISTS idx_conversation_session ON conversation_turns(session_id);
+
+CREATE TABLE IF NOT EXISTS prompt_queue (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+    prompt TEXT NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_prompt_queue_session ON prompt_queue(session_id);
 `
 	_, err := db.Exec(schema)
 	return err
@@ -316,4 +325,61 @@ func (s *Store) GetConversation(sessionID string) ([]*ConversationTurn, error) {
 		turns = append(turns, t)
 	}
 	return turns, rows.Err()
+}
+
+// QueuePrompt adds a prompt to the queue for a session.
+func (s *Store) QueuePrompt(sessionID, prompt string) error {
+	_, err := s.db.Exec(
+		`INSERT INTO prompt_queue (session_id, prompt) VALUES (?, ?)`,
+		sessionID, prompt,
+	)
+	if err != nil {
+		return fmt.Errorf("queue prompt: %w", err)
+	}
+	return nil
+}
+
+// DrainQueue removes and returns all queued prompts for a session, ordered by creation time.
+func (s *Store) DrainQueue(sessionID string) ([]string, error) {
+	rows, err := s.db.Query(
+		`SELECT id, prompt FROM prompt_queue WHERE session_id = ? ORDER BY created_at, id`, sessionID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("drain queue: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []int64
+	var prompts []string
+	for rows.Next() {
+		var id int64
+		var prompt string
+		if err := rows.Scan(&id, &prompt); err != nil {
+			return nil, fmt.Errorf("scan queued prompt: %w", err)
+		}
+		ids = append(ids, id)
+		prompts = append(prompts, prompt)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Delete drained prompts.
+	for _, id := range ids {
+		s.db.Exec(`DELETE FROM prompt_queue WHERE id = ?`, id)
+	}
+
+	return prompts, nil
+}
+
+// QueueLength returns the number of queued prompts for a session.
+func (s *Store) QueueLength(sessionID string) (int, error) {
+	var count int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM prompt_queue WHERE session_id = ?`, sessionID,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("queue length: %w", err)
+	}
+	return count, nil
 }

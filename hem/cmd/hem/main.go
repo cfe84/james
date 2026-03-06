@@ -37,9 +37,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Handle help flags before parsing.
+	// Handle help and version flags before parsing.
 	if os.Args[1] == "-h" || os.Args[1] == "--help" || os.Args[1] == "help" {
 		printUsage()
+		return
+	}
+	if os.Args[1] == "--version" || os.Args[1] == "-v" {
+		fmt.Println(Version)
 		return
 	}
 

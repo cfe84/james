@@ -1,4 +1,5 @@
 COMPONENTS := mi6 moneypenny hem
+VERSION := $(shell cat VERSION 2>/dev/null || echo unknown)
 
 # Find first existing bin directory for install.
 # On Windows: %LOCALAPPDATA%\Programs or %USERPROFILE%\bin
@@ -19,6 +20,7 @@ endif
 all: build
 
 build: $(COMPONENTS)
+	@echo "Built james v$(VERSION): mi6-server mi6-client moneypenny hem"
 
 mi6:
 	$(MAKE) -C mi6 build

@@ -152,21 +152,27 @@ func (c *client) createSession(args []string) (sessionID string, response string
 	return result.SessionID, result.Response, nil
 }
 
-func (c *client) continueSession(sessionID, prompt string) (string, error) {
+type continueResult struct {
+	Response string
+	Queued   bool
+}
+
+func (c *client) continueSession(sessionID, prompt string) (continueResult, error) {
 	resp, err := c.send("continue", "session", sessionID, prompt)
 	if err != nil {
-		return "", err
+		return continueResult{}, err
 	}
 	if resp.Status == protocol.StatusError {
-		return "", fmt.Errorf("%s", resp.Message)
+		return continueResult{}, fmt.Errorf("%s", resp.Message)
 	}
 	var result struct {
 		Response string `json:"response"`
+		Queued   bool   `json:"queued"`
 	}
 	if err := json.Unmarshal(resp.Data, &result); err != nil {
-		return "", err
+		return continueResult{}, err
 	}
-	return result.Response, nil
+	return continueResult{Response: result.Response, Queued: result.Queued}, nil
 }
 
 func (c *client) updateSession(sessionID string, fields map[string]string) error {

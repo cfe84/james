@@ -102,7 +102,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     moneypenny_name TEXT NOT NULL REFERENCES moneypennies(name) ON DELETE CASCADE,
     project_id TEXT NOT NULL DEFAULT '',
     hem_status TEXT NOT NULL DEFAULT 'active',
-    reviewed INTEGER NOT NULL DEFAULT 1,
+    reviewed INTEGER NOT NULL DEFAULT 0,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -248,7 +248,7 @@ func (s *Store) TrackSession(sessionID, moneypennyName string, projectID ...stri
 		pid = projectID[0]
 	}
 	_, err := s.db.Exec(
-		`INSERT OR REPLACE INTO sessions (session_id, moneypenny_name, project_id, hem_status) VALUES (?, ?, ?, 'active')`,
+		`INSERT OR REPLACE INTO sessions (session_id, moneypenny_name, project_id, hem_status, reviewed) VALUES (?, ?, ?, 'active', 0)`,
 		sessionID, moneypennyName, pid,
 	)
 	if err != nil {

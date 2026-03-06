@@ -179,6 +179,7 @@ func runFIFO(ctx context.Context, h *handler.Handler, vlog *log.Logger, dir stri
 }
 
 // runMI6 connects to an MI6 server and processes commands received through it.
+// If the connection drops, it retries with exponential backoff (5s, 10s, 10s, ...).
 func runMI6(ctx context.Context, h *handler.Handler, vlog *log.Logger, addr string, keyPath string) {
 	// Parse addr: host/session_id or host:port/session_id
 	host, sessionID, err := parseMI6Addr(addr)
@@ -203,26 +204,62 @@ func runMI6(ctx context.Context, h *handler.Handler, vlog *log.Logger, addr stri
 		log.Fatalf("mi6-client not found: %v", err)
 	}
 
+	retryDelay := 5 * time.Second
+	maxDelay := 10 * time.Second
+
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+
+		vlog.Printf("connecting to MI6 at %s", addr)
+		err := runMI6Once(ctx, h, vlog, mi6Client, keyPath, addr)
+		if ctx.Err() != nil {
+			return
+		}
+
+		if err != nil {
+			vlog.Printf("MI6 connection lost: %v", err)
+		} else {
+			vlog.Printf("MI6 connection closed")
+		}
+
+		vlog.Printf("reconnecting in %v...", retryDelay)
+		select {
+		case <-time.After(retryDelay):
+		case <-ctx.Done():
+			return
+		}
+
+		if retryDelay < maxDelay {
+			retryDelay = maxDelay
+		}
+	}
+}
+
+func runMI6Once(ctx context.Context, h *handler.Handler, vlog *log.Logger, mi6Client, keyPath, addr string) error {
 	cmd := exec.CommandContext(ctx, mi6Client, "--key", keyPath, addr)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		log.Fatalf("failed to get mi6-client stdin: %v", err)
+		return fmt.Errorf("failed to get mi6-client stdin: %w", err)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		log.Fatalf("failed to get mi6-client stdout: %v", err)
+		return fmt.Errorf("failed to get mi6-client stdout: %w", err)
 	}
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Start(); err != nil {
-		log.Fatalf("failed to start mi6-client: %v", err)
+		return fmt.Errorf("failed to start mi6-client: %w", err)
 	}
+
+	vlog.Printf("MI6 connected")
 
 	// Process commands from MI6 (via mi6-client stdout) and write responses (via mi6-client stdin).
 	runStdio(ctx, h, vlog, stdout, stdin)
 
 	stdin.Close()
-	cmd.Wait()
+	return cmd.Wait()
 }
 
 func parseMI6Addr(addr string) (host, sessionID string, err error) {

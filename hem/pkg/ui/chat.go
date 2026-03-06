@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -13,6 +14,9 @@ import (
 type chatSessionStoppedMsg struct{ err error }
 type chatSessionCompletedMsg struct{ err error }
 type chatSessionDeletedMsg struct{ err error }
+type chatPollTickMsg struct{}
+
+const chatPollInterval = 3 * time.Second
 
 // chatModel displays conversation history and allows sending messages.
 type chatModel struct {
@@ -49,6 +53,7 @@ type historyLoadedMsg struct {
 
 type messageSentMsg struct {
 	response string
+	queued   bool
 	err      error
 }
 
@@ -61,27 +66,54 @@ func (m chatModel) loadHistory() tea.Cmd {
 
 func (m chatModel) sendMessage(prompt string) tea.Cmd {
 	return func() tea.Msg {
-		resp, err := m.client.continueSession(m.sessionID, prompt)
-		return messageSentMsg{response: resp, err: err}
+		result, err := m.client.continueSession(m.sessionID, prompt)
+		return messageSentMsg{response: result.Response, queued: result.Queued, err: err}
 	}
 }
 
+func chatPollTick() tea.Cmd {
+	return tea.Tick(chatPollInterval, func(time.Time) tea.Msg {
+		return chatPollTickMsg{}
+	})
+}
+
 func (m chatModel) Init() tea.Cmd {
-	return m.loadHistory()
+	return tea.Batch(m.loadHistory(), chatPollTick())
 }
 
 func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 	switch msg := msg.(type) {
+	case chatPollTickMsg:
+		// Periodically reload history to catch agent responses.
+		if !m.sending && !m.loading {
+			return m, tea.Batch(m.loadHistory(), chatPollTick())
+		}
+		return m, chatPollTick()
+
 	case historyLoadedMsg:
 		m.loading = false
-		m.conversation = msg.conversation
+		if msg.err == nil {
+			// Only update if conversation changed (avoid scroll reset).
+			if len(msg.conversation) != len(m.conversation) {
+				m.conversation = msg.conversation
+				m.scroll = 0
+			}
+		}
 		m.err = msg.err
-		m.scroll = 0
 
 	case messageSentMsg:
 		m.sending = false
 		if msg.err != nil {
 			m.err = msg.err
+		} else if msg.queued {
+			// Prompt was queued — mark the last user turn as queued.
+			if len(m.conversation) > 0 {
+				last := &m.conversation[len(m.conversation)-1]
+				if last.Role == "user" {
+					last.Content = last.Content + " [queued]"
+				}
+			}
+			return m, nil
 		} else {
 			// Reload history to get the full updated conversation.
 			return m, m.loadHistory()
@@ -107,9 +139,9 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 			case "enter":
 				m.commandMode = false
 				m.confirmDelete = false
-			case "pgup":
+			case "pgup", "ctrl+u":
 				m.scroll += 10
-			case "pgdown":
+			case "pgdown", "ctrl+d":
 				m.scroll -= 10
 				if m.scroll < 0 {
 					m.scroll = 0
@@ -133,7 +165,7 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 				m.scroll = 0
 				return m, m.sendMessage(prompt)
 			}
-		case "shift+enter":
+		case "shift+enter", "alt+enter":
 			m.input = m.input[:m.cursorPos] + "\n" + m.input[m.cursorPos:]
 			m.cursorPos++
 		case "backspace":
@@ -156,12 +188,9 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 			m.cursorPos = 0
 		case "end":
 			m.cursorPos = len(m.input)
-		case "ctrl+u":
-			m.input = ""
-			m.cursorPos = 0
-		case "pgup":
+		case "pgup", "ctrl+u":
 			m.scroll += 10
-		case "pgdown":
+		case "pgdown", "ctrl+d":
 			m.scroll -= 10
 			if m.scroll < 0 {
 				m.scroll = 0

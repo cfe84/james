@@ -53,15 +53,21 @@ type SessionInfo struct {
 	LastAccessed string `json:"last_accessed,omitempty"`
 }
 
-// SessionDetail is returned by get_session.
+// SessionDetail is returned by get_session (metadata only, no conversation).
 type SessionDetail struct {
+	SessionID    string `json:"session_id"`
+	Name         string `json:"name"`
+	Status       string `json:"status"`
+	Agent        string `json:"agent"`
+	SystemPrompt string `json:"system_prompt"`
+	Yolo         bool   `json:"yolo"`
+	Path         string `json:"path"`
+	LastAccessed string `json:"last_accessed,omitempty"`
+}
+
+// SessionConversation is returned by get_session_conversation.
+type SessionConversation struct {
 	SessionID    string             `json:"session_id"`
-	Name         string             `json:"name"`
-	Status       string             `json:"status"`
-	Agent        string             `json:"agent"`
-	SystemPrompt string             `json:"system_prompt"`
-	Yolo         bool               `json:"yolo"`
-	Path         string             `json:"path"`
 	Conversation []ConversationTurn `json:"conversation"`
 }
 
