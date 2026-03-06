@@ -1,16 +1,20 @@
 package main
 
 import (
+	"bufio"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/json"
 	"encoding/pem"
+	"flag"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 
 	"golang.org/x/crypto/ssh"
 
@@ -59,6 +63,9 @@ func main() {
 			log.Fatalf("failed to load public key: %v", err)
 		}
 		fmt.Print(string(ssh.MarshalAuthorizedKey(pubKey)))
+		return
+	case "chat":
+		runChat(cmd.Args)
 		return
 	case "start":
 		if cmd.Noun == "server" {
@@ -150,6 +157,33 @@ func printResponse(data json.RawMessage, outputFmt string) {
 		}
 	}
 
+	// Check if it's a SessionShowResult (has "moneypenny" field) — must be before
+	// SessionStateResult since both have session_id + status.
+	if _, hasMp := raw["moneypenny"]; hasMp {
+		var result commands.SessionShowResult
+		if json.Unmarshal(data, &result) == nil {
+			td := output.TableData{
+				Headers: []string{"Field", "Value"},
+				Rows: [][]string{
+					{"session_id", result.SessionID},
+					{"moneypenny", result.Moneypenny},
+					{"name", result.Name},
+					{"agent", result.Agent},
+					{"system_prompt", result.SystemPrompt},
+					{"yolo", fmt.Sprintf("%v", result.Yolo)},
+					{"path", result.Path},
+					{"status", result.Status},
+				},
+			}
+			showFmt := outputFmt
+			if showFmt == output.FormatText {
+				showFmt = output.FormatTable
+			}
+			output.Print(os.Stdout, showFmt, td)
+			return
+		}
+	}
+
 	// Check if it's a SessionCreatedResult or SessionContinuedResult.
 	if _, hasSID := raw["session_id"]; hasSID {
 		if _, hasResp := raw["response"]; hasResp {
@@ -192,8 +226,8 @@ func printResponse(data json.RawMessage, outputFmt string) {
 		var result struct {
 			SessionID    string `json:"session_id"`
 			Conversation []struct {
-				Role string `json:"role"`
-				Text string `json:"text"`
+				Role    string `json:"role"`
+				Content string `json:"content"`
 			} `json:"conversation"`
 		}
 		if json.Unmarshal(data, &result) == nil {
@@ -201,41 +235,156 @@ func printResponse(data json.RawMessage, outputFmt string) {
 				output.Print(os.Stdout, outputFmt, result.Conversation)
 			} else {
 				for _, turn := range result.Conversation {
-					fmt.Printf("[%s]\n%s\n\n", turn.Role, turn.Text)
+					fmt.Printf("[%s]\n%s\n\n", turn.Role, turn.Content)
 				}
 			}
 			return
 		}
 	}
 
-	// Check if it's a SessionShowResult (has "moneypenny" field).
-	if _, hasMp := raw["moneypenny"]; hasMp {
-		var result commands.SessionShowResult
-		if json.Unmarshal(data, &result) == nil {
-			td := output.TableData{
-				Headers: []string{"Field", "Value"},
-				Rows: [][]string{
-					{"session_id", result.SessionID},
-					{"moneypenny", result.Moneypenny},
-					{"name", result.Name},
-					{"agent", result.Agent},
-					{"system_prompt", result.SystemPrompt},
-					{"yolo", fmt.Sprintf("%v", result.Yolo)},
-					{"path", result.Path},
-					{"status", result.Status},
-				},
+	// Fallback: print as JSON.
+	output.Print(os.Stdout, outputFmt, json.RawMessage(data))
+}
+
+// ANSI color codes for chat output.
+const (
+	colorViolet = "\033[35m"
+	colorReset  = "\033[0m"
+)
+
+// runChat runs an interactive chat session.
+func runChat(args []string) {
+	var mpName, sessionID, sessionName, systemPrompt, pathArg, agentName string
+	var yolo bool
+
+	fs := flag.NewFlagSet("chat", flag.ContinueOnError)
+	fs.StringVar(&mpName, "m", "", "moneypenny name")
+	fs.StringVar(&mpName, "moneypenny", "", "moneypenny name")
+	fs.StringVar(&sessionID, "session-id", "", "continue an existing session")
+	fs.StringVar(&agentName, "agent", "", "agent to use")
+	fs.StringVar(&sessionName, "name", "", "session name")
+	fs.StringVar(&systemPrompt, "system-prompt", "", "system prompt")
+	fs.BoolVar(&yolo, "yolo", false, "enable yolo mode")
+	fs.StringVar(&pathArg, "path", "", "working directory path")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	sockPath := server.DefaultSocketPath()
+	isNewSession := sessionID == ""
+
+	// State for queuing messages while agent is working.
+	var mu sync.Mutex
+	var queued []string
+	working := false
+
+	// sendAndPrint sends a request to the server and prints the response.
+	// Returns the session ID (important for first message).
+	sendAndPrint := func(verb string, sendArgs []string) string {
+		req := &protocol.Request{
+			Verb: verb,
+			Noun: "session",
+			Args: sendArgs,
+		}
+		resp, err := hemclient.Send(sockPath, req)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			return sessionID
+		}
+		if resp.Status == protocol.StatusError {
+			fmt.Fprintf(os.Stderr, "Error: %s\n", resp.Message)
+			return sessionID
+		}
+
+		// Parse session response to get session_id and response text.
+		var result struct {
+			SessionID string `json:"session_id"`
+			Response  string `json:"response"`
+		}
+		if err := json.Unmarshal(resp.Data, &result); err == nil {
+			if result.SessionID != "" {
+				sessionID = result.SessionID
 			}
-			showFmt := outputFmt
-			if showFmt == output.FormatText {
-				showFmt = output.FormatTable
+			if result.Response != "" {
+				fmt.Printf("%s🤖 %s%s\n", colorViolet, result.Response, colorReset)
 			}
-			output.Print(os.Stdout, showFmt, td)
-			return
+		}
+		return sessionID
+	}
+
+	// processMessage sends a message and then drains queued messages.
+	processMessage := func(prompt string, isFirst bool) {
+		if isFirst && isNewSession {
+			// Build create session args.
+			createArgs := []string{}
+			if mpName != "" {
+				createArgs = append(createArgs, "-m", mpName)
+			}
+			if agentName != "" {
+				createArgs = append(createArgs, "--agent", agentName)
+			}
+			if sessionName != "" {
+				createArgs = append(createArgs, "--name", sessionName)
+			}
+			if systemPrompt != "" {
+				createArgs = append(createArgs, "--system-prompt", systemPrompt)
+			}
+			if yolo {
+				createArgs = append(createArgs, "--yolo")
+			}
+			if pathArg != "" {
+				createArgs = append(createArgs, "--path", pathArg)
+			}
+			createArgs = append(createArgs, prompt)
+			sendAndPrint("create", createArgs)
+		} else {
+			continueArgs := []string{sessionID, prompt}
+			sendAndPrint("continue", continueArgs)
+		}
+
+		// Drain any messages that were queued while we were waiting.
+		for {
+			mu.Lock()
+			if len(queued) == 0 {
+				working = false
+				mu.Unlock()
+				return
+			}
+			// Batch all queued messages into one prompt.
+			batch := strings.Join(queued, "\n")
+			queued = queued[:0]
+			mu.Unlock()
+
+			continueArgs := []string{sessionID, batch}
+			sendAndPrint("continue", continueArgs)
 		}
 	}
 
-	// Fallback: print as JSON.
-	output.Print(os.Stdout, outputFmt, json.RawMessage(data))
+	fmt.Fprintf(os.Stderr, "Chat started. Type messages and press Enter. Ctrl+C to exit.\n")
+
+	scanner := bufio.NewScanner(os.Stdin)
+	first := true
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		mu.Lock()
+		if working {
+			// Agent is busy — queue this message.
+			queued = append(queued, line)
+			mu.Unlock()
+			continue
+		}
+		working = true
+		mu.Unlock()
+
+		isFirst := first
+		first = false
+		processMessage(line, isFirst)
+	}
 }
 
 // runServer starts the hem server daemon.
@@ -300,8 +449,12 @@ Session management:
   state session SESSION_ID
   last session SESSION_ID
   show session SESSION_ID
+  update session SESSION_ID [--name, --system-prompt, --yolo true/false, --path]
   history session SESSION_ID [-n N]
   list sessions [-m MONEYPENNY]
+
+Chat:
+  chat [-m MONEYPENNY] [--session-id ID] [--agent, --name, --system-prompt, --yolo, --path]
 
 MI6:
   test mi6 --mi6 ADDRESS --session SESSION_ID

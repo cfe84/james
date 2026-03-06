@@ -17,6 +17,16 @@ type ContinueSessionData struct {
 	Prompt    string `json:"prompt"`
 }
 
+// UpdateSessionData is the data payload for update_session.
+// Only non-nil pointer fields are updated.
+type UpdateSessionData struct {
+	SessionID    string  `json:"session_id"`
+	Name         *string `json:"name,omitempty"`
+	SystemPrompt *string `json:"system_prompt,omitempty"`
+	Yolo         *bool   `json:"yolo,omitempty"`
+	Path         *string `json:"path,omitempty"`
+}
+
 // SessionIDData is used by methods that only need a session_id (get_session, delete_session, stop_session).
 type SessionIDData struct {
 	SessionID string `json:"session_id"`

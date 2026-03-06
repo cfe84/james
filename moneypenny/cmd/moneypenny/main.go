@@ -73,7 +73,7 @@ func main() {
 	}
 	defer st.Close()
 
-	runner := agent.New()
+	runner := agent.New(vlog)
 	h := handler.New(st, runner, Version)
 
 	ctx, cancel := context.WithCancel(context.Background())

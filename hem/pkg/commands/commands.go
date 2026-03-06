@@ -50,9 +50,11 @@ var CommandHelp = map[string]string{
 	"state session":       "Usage: hem state session SESSION_ID\n\nShows the current state of a session (idle/working).\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)",
 	"last session":        "Usage: hem last session SESSION_ID\n\nShows the last assistant response for a session.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)",
 	"show session":        "Usage: hem show session SESSION_ID\n\nShows session parameters (agent, system_prompt, yolo, path, name, status).\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)",
+	"update session":      "Usage: hem update session SESSION_ID [flags]\n\nUpdates session parameters.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)\n  --name             Session name\n  --system-prompt    System prompt\n  --yolo             Yolo mode (true/false)\n  --path             Working directory",
 	"history session":     "Usage: hem history session SESSION_ID [-n N]\n\nShows conversation history for a session.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)\n  -n                 Number of turns to show (default: all)",
 	"list session":        "Usage: hem list sessions [-m MONEYPENNY]\n\nLists all sessions across all moneypennies.\n\nFlags:\n  -m, --moneypenny   Filter by moneypenny name",
 	"test mi6":            "Usage: hem test mi6 --mi6 ADDRESS --session SESSION_ID\n\nTests connectivity to an MI6 server.\n\nFlags:\n  --mi6              MI6 server address (uses default if not set)\n  --session          Session ID to join (required)",
+	"chat":                "Usage: hem chat [-m MONEYPENNY] [--session-id ID] [flags]\n\nInteractive chat with an agent. Creates a new session by default.\n\nFlags:\n  -m, --moneypenny   Moneypenny name (uses default if not set)\n  --session-id       Continue an existing session\n  --agent            Agent to use (uses default, fallback: claude)\n  --name             Session name\n  --system-prompt    System prompt for the agent\n  --yolo             Skip permissions\n  --path             Working directory",
 }
 
 // Dispatch routes a verb+noun+args to the appropriate handler.
@@ -108,6 +110,8 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.ShowSession(args)
 	case "history session", "log session":
 		return e.HistorySession(args)
+	case "update session":
+		return e.UpdateSession(args)
 	case "list session":
 		return e.ListSessions(args)
 	case "test mi6":
@@ -280,17 +284,17 @@ type SessionLastResult struct {
 type SessionShowResult struct {
 	SessionID    string `json:"session_id"`
 	Moneypenny   string `json:"moneypenny"`
-	Name         string `json:"name,omitempty"`
-	Agent        string `json:"agent,omitempty"`
-	SystemPrompt string `json:"system_prompt,omitempty"`
-	Yolo         bool   `json:"yolo,omitempty"`
-	Path         string `json:"path,omitempty"`
-	Status       string `json:"status,omitempty"`
+	Name         string `json:"name"`
+	Agent        string `json:"agent"`
+	SystemPrompt string `json:"system_prompt"`
+	Yolo         bool   `json:"yolo"`
+	Path         string `json:"path"`
+	Status       string `json:"status"`
 }
 
 type ConversationTurn struct {
-	Role string `json:"role"`
-	Text string `json:"text"`
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }
 
 type HistoryResult struct {
@@ -940,8 +944,8 @@ func (e *Executor) LastSession(args []string) *protocol.Response {
 
 	var sessionData struct {
 		Conversation []struct {
-			Role string `json:"role"`
-			Text string `json:"text"`
+			Role    string `json:"role"`
+			Content string `json:"content"`
 		} `json:"conversation"`
 	}
 	if err := json.Unmarshal(resp.Data, &sessionData); err != nil {
@@ -952,7 +956,7 @@ func (e *Executor) LastSession(args []string) *protocol.Response {
 		if sessionData.Conversation[i].Role == "assistant" {
 			return protocol.OKResponse(SessionLastResult{
 				SessionID: sessionID,
-				Response:  sessionData.Conversation[i].Text,
+				Response:  sessionData.Conversation[i].Content,
 			})
 		}
 	}
@@ -1024,6 +1028,70 @@ func (e *Executor) ShowSession(args []string) *protocol.Response {
 	}
 
 	return protocol.OKResponse(result)
+}
+
+func (e *Executor) UpdateSession(args []string) *protocol.Response {
+	var sessionID, name, systemPrompt, pathArg string
+	var yoloStr string
+
+	remaining, err := parseFlagsFromArgs("update-session", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&sessionID, "session-id", "", "session ID")
+		fs.StringVar(&name, "name", "", "session name")
+		fs.StringVar(&systemPrompt, "system-prompt", "", "system prompt")
+		fs.StringVar(&yoloStr, "yolo", "", "yolo mode (true/false)")
+		fs.StringVar(&pathArg, "path", "", "working directory path")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if sessionID == "" {
+		if len(remaining) == 0 {
+			return protocol.ErrResponse("session_id is required")
+		}
+		sessionID = remaining[0]
+	}
+
+	mp, err := e.resolveSessionMoneypenny(sessionID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	// Build update data with only specified fields.
+	cmdData := map[string]interface{}{
+		"session_id": sessionID,
+	}
+
+	hasUpdate := false
+	if name != "" {
+		cmdData["name"] = name
+		hasUpdate = true
+	}
+	if systemPrompt != "" {
+		cmdData["system_prompt"] = systemPrompt
+		hasUpdate = true
+	}
+	if pathArg != "" {
+		cmdData["path"] = pathArg
+		hasUpdate = true
+	}
+	if yoloStr != "" {
+		cmdData["yolo"] = yoloStr == "true"
+		hasUpdate = true
+	}
+
+	if !hasUpdate {
+		return protocol.ErrResponse("no fields to update (use --name, --system-prompt, --yolo, --path)")
+	}
+
+	ctx := context.Background()
+	if _, err := e.sendCommand(ctx, mp, "update_session", cmdData); err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	return protocol.OKResponse(TextResult{
+		Message: fmt.Sprintf("Session %s updated.", sessionID),
+	})
 }
 
 func (e *Executor) HistorySession(args []string) *protocol.Response {

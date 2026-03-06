@@ -173,6 +173,51 @@ func (s *Store) ListSessions() ([]*Session, error) {
 	return sessions, rows.Err()
 }
 
+// UpdateSessionFields updates specific fields of a session.
+func (s *Store) UpdateSessionFields(sessionID string, name, systemPrompt, path *string, yolo *bool) error {
+	sess, err := s.GetSession(sessionID)
+	if err != nil {
+		return err
+	}
+	if sess == nil {
+		return fmt.Errorf("session %q not found", sessionID)
+	}
+
+	if name != nil {
+		sess.Name = *name
+	}
+	if systemPrompt != nil {
+		sess.SystemPrompt = *systemPrompt
+	}
+	if path != nil {
+		sess.Path = *path
+	}
+	if yolo != nil {
+		sess.Yolo = *yolo
+	}
+
+	now := time.Now().UTC()
+	yoloInt := 0
+	if sess.Yolo {
+		yoloInt = 1
+	}
+	res, err := s.db.Exec(
+		`UPDATE sessions SET name = ?, system_prompt = ?, yolo = ?, path = ?, updated_at = ? WHERE session_id = ?`,
+		sess.Name, sess.SystemPrompt, yoloInt, sess.Path, now, sessionID,
+	)
+	if err != nil {
+		return fmt.Errorf("update session: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("session %q not found", sessionID)
+	}
+	return nil
+}
+
 // UpdateSessionStatus updates the status of a session.
 func (s *Store) UpdateSessionStatus(sessionID string, status string) error {
 	now := time.Now().UTC()

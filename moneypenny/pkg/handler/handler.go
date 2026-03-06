@@ -40,6 +40,8 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.deleteSession(ctx, cmd)
 	case "stop_session":
 		return h.stopSession(ctx, cmd)
+	case "update_session":
+		return h.updateSession(ctx, cmd)
 	case "get_version":
 		return h.getVersion(cmd)
 	default:
@@ -274,6 +276,30 @@ func (h *Handler) deleteSession(_ context.Context, cmd *envelope.Command) *envel
 
 	if err := h.store.DeleteSession(data.SessionID); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to delete session: %v", err))
+	}
+
+	return envelope.SuccessResponse(cmd.RequestID, map[string]string{"session_id": data.SessionID})
+}
+
+func (h *Handler) updateSession(_ context.Context, cmd *envelope.Command) *envelope.Response {
+	var data envelope.UpdateSessionData
+	if err := json.Unmarshal(cmd.Data, &data); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
+	}
+
+	if data.SessionID == "" {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id is required")
+	}
+
+	// Validate path if provided.
+	if data.Path != nil && *data.Path != "" {
+		if _, err := os.Stat(*data.Path); err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidPath, fmt.Sprintf("path does not exist: %s", *data.Path))
+		}
+	}
+
+	if err := h.store.UpdateSessionFields(data.SessionID, data.Name, data.SystemPrompt, data.Path, data.Yolo); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to update session: %v", err))
 	}
 
 	return envelope.SuccessResponse(cmd.RequestID, map[string]string{"session_id": data.SessionID})

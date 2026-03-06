@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"strings"
@@ -30,12 +31,14 @@ type RunParams struct {
 type Runner struct {
 	mu        sync.Mutex
 	processes map[string]*exec.Cmd // sessionID -> running process
+	vlog      *log.Logger
 }
 
 // New creates a new Runner.
-func New() *Runner {
+func New(vlog *log.Logger) *Runner {
 	return &Runner{
 		processes: make(map[string]*exec.Cmd),
+		vlog:      vlog,
 	}
 }
 
@@ -58,22 +61,29 @@ func (r *Runner) Run(ctx context.Context, params RunParams) (*Result, error) {
 		return nil, fmt.Errorf("agent binary %q not found: %w", params.Agent, err)
 	}
 
-	args := []string{
-		"--output-format", "json",
-		"--session-id", params.SessionID,
-		"-p", params.Prompt,
-	}
+	var args []string
 
-	if params.SystemPrompt != "" && !params.Resume {
-		args = append(args, "--system-prompt", params.SystemPrompt)
+	if params.Resume {
+		// Continue an existing session: --resume SESSION_ID.
+		args = []string{
+			"--output-format", "json",
+			"--resume", params.SessionID,
+			"-p", params.Prompt,
+		}
+	} else {
+		// Create a new session.
+		args = []string{
+			"--output-format", "json",
+			"--session-id", params.SessionID,
+			"-p", params.Prompt,
+		}
+		if params.SystemPrompt != "" {
+			args = append(args, "--system-prompt", params.SystemPrompt)
+		}
 	}
 
 	if params.Yolo {
 		args = append(args, "--dangerously-skip-permissions")
-	}
-
-	if params.Resume {
-		args = append(args, "--resume")
 	}
 
 	cmd := exec.CommandContext(ctx, agentPath, args...)
@@ -81,6 +91,8 @@ func (r *Runner) Run(ctx context.Context, params RunParams) (*Result, error) {
 		cmd.Dir = params.Path
 	}
 	cmd.Stderr = os.Stderr
+
+	r.vlog.Printf("exec: %s %s", agentPath, strings.Join(args, " "))
 
 	r.mu.Lock()
 	r.processes[params.SessionID] = cmd

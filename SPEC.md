@@ -204,6 +204,10 @@ Hem manages sessions on moneypennies. It tracks which moneypenny each session li
 
 `hem show session SESSION_ID` — shows session parameters (agent, system_prompt, yolo, path, name, status).
 
+### Update
+
+`hem update session SESSION_ID [--name NAME] [--system-prompt TEXT] [--yolo true/false] [--path PATH]` — updates session parameters. Only specified fields are changed.
+
 ### History / Log
 
 `hem history session SESSION_ID [-n N]` or `hem log session SESSION_ID [-n N]` — shows conversation history. `-n` limits to last N turns (default: all).
@@ -211,3 +215,16 @@ Hem manages sessions on moneypennies. It tracks which moneypenny each session li
 ### List
 
 `hem list sessions [-m MONEYPENNY_NAME]` — lists all sessions across all moneypennies. `-m` filters by moneypenny.
+
+### Chat
+
+`hem chat [-m MONEYPENNY] [--session-id ID] [flags]` — interactive REPL for chatting with an agent.
+
+- By default, creates a new session (same flags as `create session`: `--agent`, `--name`, `--system-prompt`, `--yolo`, `--path`, `-m`).
+- With `--session-id ID`, continues an existing session.
+- Reads user input from stdin line by line. Each line is sent as a prompt (create on first message, continue on subsequent).
+- Agent responses are displayed with a 🤖 prefix in violet (ANSI color).
+- If the user sends a message while the agent is still responding, the message is queued. Multiple queued messages are batched (newline-separated) into a single prompt.
+- This is a client-side command: the CLI handles the interactive loop directly, sending create/continue requests to the hem server.
+- Ctrl+C or EOF exits the chat.
+
