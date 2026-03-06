@@ -102,7 +102,11 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	resp := s.dispatcher.Dispatch(req.Verb, req.Noun, req.Args)
 
-	s.vlog.Printf("response: status=%s", resp.Status)
+	if resp.Status == "error" {
+		s.vlog.Printf("response: status=error message=%q", resp.Message)
+	} else {
+		s.vlog.Printf("response: status=%s", resp.Status)
+	}
 
 	writeResponse(conn, resp)
 }

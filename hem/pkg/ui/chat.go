@@ -466,14 +466,18 @@ func (m chatModel) View() string {
 		if contentWidth < 20 {
 			contentWidth = 80
 		}
+		content := turn.Content
+		if strings.TrimSpace(content) == "" {
+			content = "(empty)"
+		}
 		var rendered string
 		switch turn.Role {
 		case "assistant":
-			rendered = renderMarkdown(turn.Content, contentWidth)
+			rendered = renderMarkdown(content, contentWidth)
 		case "system":
-			rendered = wordWrap(turn.Content, contentWidth)
+			rendered = wordWrap(content, contentWidth)
 		default:
-			rendered = wordWrap(turn.Content, contentWidth)
+			rendered = wordWrap(content, contentWidth)
 		}
 		for _, line := range strings.Split(rendered, "\n") {
 			switch turn.Role {
@@ -600,6 +604,9 @@ func (m chatModel) recentTurns() []conversationTurn {
 
 // renderMarkdown renders markdown content using glamour.
 func renderMarkdown(content string, width int) string {
+	if strings.TrimSpace(content) == "" {
+		return content
+	}
 	r, err := glamour.NewTermRenderer(
 		glamour.WithStylePath("dark"),
 		glamour.WithWordWrap(width),
@@ -612,7 +619,12 @@ func renderMarkdown(content string, width int) string {
 		return wordWrap(content, width)
 	}
 	// Trim trailing whitespace from glamour output.
-	return strings.TrimRight(out, "\n ")
+	out = strings.TrimRight(out, "\n ")
+	// If glamour produced empty output from non-empty content, fall back.
+	if strings.TrimSpace(out) == "" {
+		return wordWrap(content, width)
+	}
+	return out
 }
 
 // wordLeft returns the cursor position after moving one word to the left.

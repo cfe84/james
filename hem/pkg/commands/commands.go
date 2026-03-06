@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,6 +29,30 @@ type Executor struct {
 
 func New(s *store.Store, mi6KeyPath string) *Executor {
 	return &Executor{store: s, mi6KeyPath: mi6KeyPath, lastSessionStates: make(map[string]string)}
+}
+
+// CheckConnectivity pings all registered moneypennies and logs warnings for
+// any that are unreachable. Intended to be called at server startup.
+func (e *Executor) CheckConnectivity(logger *log.Logger) {
+	mps, err := e.store.ListMoneypennies()
+	if err != nil {
+		logger.Printf("WARNING: failed to list moneypennies: %v", err)
+		return
+	}
+	if len(mps) == 0 {
+		return
+	}
+
+	for _, mp := range mps {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_, err := e.sendCommand(ctx, mp, "get_version", nil)
+		cancel()
+		if err != nil {
+			logger.Printf("WARNING: moneypenny %q (%s) is unreachable: %v", mp.Name, moneypennyAddress(mp), err)
+		} else {
+			logger.Printf("moneypenny %q (%s) OK", mp.Name, moneypennyAddress(mp))
+		}
+	}
 }
 
 // CommandHelp maps verb+noun to help text.
@@ -1219,21 +1244,30 @@ func (e *Executor) LastSession(args []string) *protocol.Response {
 		return protocol.ErrResponse(err.Error())
 	}
 
-	var sessionData struct {
-		Conversation []struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
-		} `json:"conversation"`
+	type turnInfo struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
 	}
-	if err := json.Unmarshal(resp.Data, &sessionData); err != nil {
-		return protocol.ErrResponse(fmt.Sprintf("parsing session data: %v", err))
+	var turns []turnInfo
+	if len(resp.Data) > 0 && resp.Data[0] == '[' {
+		if err := json.Unmarshal(resp.Data, &turns); err != nil {
+			return protocol.ErrResponse(fmt.Sprintf("parsing session data: %v", err))
+		}
+	} else {
+		var sessionData struct {
+			Conversation []turnInfo `json:"conversation"`
+		}
+		if err := json.Unmarshal(resp.Data, &sessionData); err != nil {
+			return protocol.ErrResponse(fmt.Sprintf("parsing session data: %v", err))
+		}
+		turns = sessionData.Conversation
 	}
 
-	for i := len(sessionData.Conversation) - 1; i >= 0; i-- {
-		if sessionData.Conversation[i].Role == "assistant" {
+	for i := len(turns) - 1; i >= 0; i-- {
+		if turns[i].Role == "assistant" {
 			return protocol.OKResponse(SessionLastResult{
 				SessionID: sessionID,
-				Response:  sessionData.Conversation[i].Content,
+				Response:  turns[i].Content,
 			})
 		}
 	}
@@ -2367,10 +2401,11 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 	// Collect results into a map by moneypenny name.
 	mpData := make(map[string]map[string]mpSessionInfo)
 	for res := range resultCh {
-		if res.err == nil {
+		if res.err != nil {
+			log.Printf("dashboard: moneypenny %q query failed: %v", res.mpName, res.err)
+		} else {
 			mpData[res.mpName] = res.sessions
 		}
-		// On error, mpData[mpName] stays nil → sessions show as "offline".
 	}
 
 	// Build dashboard entries.
@@ -2386,9 +2421,12 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 				lastAccessed = info.LastAccessed
 			} else {
 				mpStatus = "unknown"
+				log.Printf("dashboard: session %s not found on moneypenny %q (mp has %d sessions)",
+					sess.SessionID, sess.MoneypennyName, len(mpSessions))
 			}
 		} else {
 			mpStatus = "offline"
+			log.Printf("dashboard: moneypenny %q unreachable for session %s", sess.MoneypennyName, sess.SessionID)
 		}
 
 		projectName := projectNames[sess.ProjectID]

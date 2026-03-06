@@ -512,6 +512,10 @@ func runServer() {
 
 	exec := commands.New(st, keyPath)
 	exec.Version = Version
+
+	// Check connectivity to all registered moneypennies at startup.
+	exec.CheckConnectivity(log.Default())
+
 	sockPath := server.DefaultSocketPath()
 
 	srv := server.New(sockPath, exec, vlog)

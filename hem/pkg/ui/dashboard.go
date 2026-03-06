@@ -181,10 +181,15 @@ func (m dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 
 	case dashboardLoadedMsg:
 		m.loading = false
-		m.entries = msg.entries
-		m.err = msg.err
-		if m.cursor >= len(m.entries) {
-			m.cursor = max(0, len(m.entries)-1)
+		if msg.err != nil {
+			m.err = msg.err
+			// Don't wipe entries on error — keep last good data.
+		} else {
+			m.entries = msg.entries
+			m.err = nil
+			if m.cursor >= len(m.entries) {
+				m.cursor = max(0, len(m.entries)-1)
+			}
 		}
 
 	case sessionCompletedMsg:
