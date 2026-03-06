@@ -10,7 +10,10 @@ import (
 type view int
 
 const (
-	viewSessions view = iota
+	viewDashboard view = iota
+	viewProjects
+	viewProjectDetail
+	viewSessions
 	viewChat
 	viewCreate
 	viewEdit
@@ -18,29 +21,34 @@ const (
 
 // Model is the top-level bubbletea model.
 type Model struct {
-	currentView view
-	sessions    sessionsModel
-	chat        chatModel
-	create      createModel
-	edit        editModel
-	width       int
-	height      int
-	client      *client
-	statusMsg   string
+	currentView   view
+	previousView  view // for esc navigation
+	dashboard     dashboardModel
+	projects      projectsModel
+	projectDetail dashboardModel // reuses dashboardModel with project filter
+	sessions      sessionsModel
+	chat          chatModel
+	create        createModel
+	edit          editModel
+	width         int
+	height        int
+	client        *client
+	statusMsg     string
 }
 
 // New creates the initial UI model.
 func New() Model {
 	c := newClient()
 	return Model{
-		currentView: viewSessions,
+		currentView: viewDashboard,
+		dashboard:   newDashboardModel(c),
 		sessions:    newSessionsModel(c),
 		client:      c,
 	}
 }
 
 func (m Model) Init() tea.Cmd {
-	return m.sessions.Init()
+	return m.dashboard.Init()
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -48,14 +56,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		h := msg.Height - 3 // status bar
+		m.dashboard.width = msg.Width
+		m.dashboard.height = h
+		m.projectDetail.width = msg.Width
+		m.projectDetail.height = h
+		m.projects.width = msg.Width
+		m.projects.height = h
 		m.sessions.width = msg.Width
-		m.sessions.height = msg.Height - 3 // status bar
+		m.sessions.height = h
 		m.chat.width = msg.Width
-		m.chat.height = msg.Height - 3
+		m.chat.height = h
 		m.create.width = msg.Width
-		m.create.height = msg.Height - 3
+		m.create.height = h
 		m.edit.width = msg.Width
-		m.edit.height = msg.Height - 3
+		m.edit.height = h
 		return m, nil
 
 	case tea.KeyMsg:
@@ -64,21 +79,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c":
 			return m, tea.Quit
 		case "q":
-			if m.currentView == viewSessions {
+			if m.currentView == viewDashboard {
 				return m, tea.Quit
 			}
 		case "esc":
-			if m.currentView != viewSessions {
-				m.currentView = viewSessions
-				m.statusMsg = ""
-				// Refresh session list.
-				m.sessions.loading = true
-				return m, m.sessions.loadSessions()
-			}
+			return m.handleEsc()
 		}
 
 		// View-specific keys.
 		switch m.currentView {
+		case viewDashboard:
+			return m.updateDashboard(msg)
+		case viewProjects:
+			return m.updateProjects(msg)
+		case viewProjectDetail:
+			return m.updateProjectDetail(msg)
 		case viewSessions:
 			return m.updateSessions(msg)
 		case viewChat:
@@ -90,6 +105,31 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	// Route messages to appropriate view.
+	case dashboardLoadedMsg:
+		if m.currentView == viewProjectDetail {
+			var cmd tea.Cmd
+			m.projectDetail, cmd = m.projectDetail.Update(msg)
+			return m, cmd
+		}
+		var cmd tea.Cmd
+		m.dashboard, cmd = m.dashboard.Update(msg)
+		return m, cmd
+
+	case sessionCompletedMsg:
+		if m.currentView == viewProjectDetail {
+			var cmd tea.Cmd
+			m.projectDetail, cmd = m.projectDetail.Update(msg)
+			return m, cmd
+		}
+		var cmd tea.Cmd
+		m.dashboard, cmd = m.dashboard.Update(msg)
+		return m, cmd
+
+	case projectsLoadedMsg, projectDeletedMsg:
+		var cmd tea.Cmd
+		m.projects, cmd = m.projects.Update(msg)
+		return m, cmd
+
 	case sessionsLoadedMsg, sessionDeletedMsg, sessionStoppedMsg:
 		var cmd tea.Cmd
 		m.sessions, cmd = m.sessions.Update(msg)
@@ -124,12 +164,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.create.creating = false
 			return m, nil
 		}
-		// Switch to chat with the new session.
 		m.statusMsg = fmt.Sprintf("Session %s created", truncate(cm.sessionID, 12))
 		m.chat = newChatModel(m.client, cm.sessionID, "")
 		m.chat.width = m.width
 		m.chat.height = m.height - 3
-		// Add the response to conversation.
 		if cm.response != "" {
 			m.chat.conversation = []conversationTurn{
 				{Role: "user", Content: m.create.fields[0].value},
@@ -138,12 +176,179 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.chat.loading = false
 		}
 		m.currentView = viewChat
+		m.previousView = viewDashboard
 		if cm.response == "" {
 			return m, m.chat.loadHistory()
 		}
 		return m, nil
 	}
 
+	return m, nil
+}
+
+func (m Model) handleEsc() (tea.Model, tea.Cmd) {
+	switch m.currentView {
+	case viewDashboard:
+		// Already at root, do nothing.
+		return m, nil
+	case viewProjects:
+		m.currentView = viewDashboard
+		m.statusMsg = ""
+		m.dashboard.loading = true
+		return m, m.dashboard.loadDashboard()
+	case viewProjectDetail:
+		m.currentView = viewProjects
+		m.statusMsg = ""
+		m.projects.loading = true
+		return m, m.projects.loadProjects()
+	case viewSessions:
+		m.currentView = viewDashboard
+		m.statusMsg = ""
+		m.dashboard.loading = true
+		return m, m.dashboard.loadDashboard()
+	case viewChat:
+		// Go back to wherever we came from.
+		prev := m.previousView
+		m.currentView = prev
+		m.statusMsg = ""
+		switch prev {
+		case viewProjectDetail:
+			m.projectDetail.loading = true
+			return m, m.projectDetail.loadDashboard()
+		case viewSessions:
+			m.sessions.loading = true
+			return m, m.sessions.loadSessions()
+		default:
+			m.dashboard.loading = true
+			return m, m.dashboard.loadDashboard()
+		}
+	case viewCreate:
+		prev := m.previousView
+		m.currentView = prev
+		m.statusMsg = ""
+		switch prev {
+		case viewProjectDetail:
+			m.projectDetail.loading = true
+			return m, m.projectDetail.loadDashboard()
+		case viewSessions:
+			m.sessions.loading = true
+			return m, m.sessions.loadSessions()
+		default:
+			m.dashboard.loading = true
+			return m, m.dashboard.loadDashboard()
+		}
+	case viewEdit:
+		m.currentView = viewSessions
+		m.statusMsg = ""
+		m.sessions.loading = true
+		return m, m.sessions.loadSessions()
+	}
+	return m, nil
+}
+
+func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		e := m.dashboard.selectedEntry()
+		if e != nil {
+			m.chat = newChatModel(m.client, e.SessionID, e.Name)
+			m.chat.width = m.width
+			m.chat.height = m.height - 3
+			m.currentView = viewChat
+			m.previousView = viewDashboard
+			return m, m.chat.loadHistory()
+		}
+	case "c":
+		e := m.dashboard.selectedEntry()
+		if e != nil && e.HemStatus != "completed" {
+			return m, m.dashboard.completeSession(e.SessionID)
+		}
+	case "n":
+		m.create = newCreateModel(m.client)
+		m.create.width = m.width
+		m.create.height = m.height - 3
+		m.currentView = viewCreate
+		m.previousView = viewDashboard
+		return m, nil
+	case "l":
+		m.sessions = newSessionsModel(m.client)
+		m.sessions.width = m.width
+		m.sessions.height = m.height - 3
+		m.currentView = viewSessions
+		return m, m.sessions.loadSessions()
+	case "p":
+		m.projects = newProjectsModel(m.client)
+		m.projects.width = m.width
+		m.projects.height = m.height - 3
+		m.currentView = viewProjects
+		return m, m.projects.loadProjects()
+	default:
+		var cmd tea.Cmd
+		m.dashboard, cmd = m.dashboard.Update(msg)
+		return m, cmd
+	}
+	return m, nil
+}
+
+func (m Model) updateProjects(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		p := m.projects.selectedProject()
+		if p != nil {
+			m.projectDetail = newDashboardModel(m.client)
+			m.projectDetail.projectFilter = p.Name
+			m.projectDetail.title = p.Name
+			m.projectDetail.width = m.width
+			m.projectDetail.height = m.height - 3
+			m.projectDetail.loading = true
+			m.currentView = viewProjectDetail
+			return m, m.projectDetail.loadDashboard()
+		}
+	case "d":
+		p := m.projects.selectedProject()
+		if p != nil {
+			return m, m.projects.deleteProject(p.ID)
+		}
+	default:
+		var cmd tea.Cmd
+		m.projects, cmd = m.projects.Update(msg)
+		return m, cmd
+	}
+	return m, nil
+}
+
+func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		e := m.projectDetail.selectedEntry()
+		if e != nil {
+			m.chat = newChatModel(m.client, e.SessionID, e.Name)
+			m.chat.width = m.width
+			m.chat.height = m.height - 3
+			m.currentView = viewChat
+			m.previousView = viewProjectDetail
+			return m, m.chat.loadHistory()
+		}
+	case "c":
+		e := m.projectDetail.selectedEntry()
+		if e != nil && e.HemStatus != "completed" {
+			return m, m.projectDetail.completeSession(e.SessionID)
+		}
+	case "n":
+		m.create = newCreateModel(m.client)
+		// Pre-fill project in the create form if we have a project filter.
+		// The create form doesn't have a project field yet, but the session
+		// will be created in the context of the project detail view.
+		m.create.width = m.width
+		m.create.height = m.height - 3
+		m.currentView = viewCreate
+		m.previousView = viewProjectDetail
+		return m, nil
+	default:
+		var cmd tea.Cmd
+		m.projectDetail, cmd = m.projectDetail.Update(msg)
+		return m, cmd
+	}
 	return m, nil
 }
 
@@ -156,6 +361,7 @@ func (m Model) updateSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.chat.width = m.width
 			m.chat.height = m.height - 3
 			m.currentView = viewChat
+			m.previousView = viewSessions
 			return m, m.chat.loadHistory()
 		}
 	case "n":
@@ -163,6 +369,7 @@ func (m Model) updateSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.create.width = m.width
 		m.create.height = m.height - 3
 		m.currentView = viewCreate
+		m.previousView = viewSessions
 		return m, nil
 	case "e":
 		s := m.sessions.selectedSession()
@@ -212,6 +419,12 @@ func (m Model) updateEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) View() string {
 	var content string
 	switch m.currentView {
+	case viewDashboard:
+		content = m.dashboard.View()
+	case viewProjects:
+		content = m.projects.View()
+	case viewProjectDetail:
+		content = m.projectDetail.View()
 	case viewSessions:
 		content = m.sessions.View()
 	case viewChat:
@@ -222,24 +435,47 @@ func (m Model) View() string {
 		content = m.edit.View()
 	}
 
-	// Status bar.
 	statusBar := m.renderStatusBar()
-
 	return content + "\n" + statusBar
 }
 
 func (m Model) renderStatusBar() string {
 	var keys []string
 	switch m.currentView {
+	case viewDashboard:
+		keys = []string{
+			statusKeyStyle.Render("↵") + statusDescStyle.Render(" chat"),
+			statusKeyStyle.Render("c") + statusDescStyle.Render(" complete"),
+			statusKeyStyle.Render("n") + statusDescStyle.Render(" new"),
+			statusKeyStyle.Render("p") + statusDescStyle.Render(" projects"),
+			statusKeyStyle.Render("l") + statusDescStyle.Render(" all sessions"),
+			statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
+			statusKeyStyle.Render("q") + statusDescStyle.Render(" quit"),
+		}
+	case viewProjects:
+		keys = []string{
+			statusKeyStyle.Render("↵") + statusDescStyle.Render(" open"),
+			statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
+			statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
+			statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
+		}
+	case viewProjectDetail:
+		keys = []string{
+			statusKeyStyle.Render("↵") + statusDescStyle.Render(" chat"),
+			statusKeyStyle.Render("c") + statusDescStyle.Render(" complete"),
+			statusKeyStyle.Render("n") + statusDescStyle.Render(" new"),
+			statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
+			statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
+		}
 	case viewSessions:
 		keys = []string{
-			statusKeyStyle.Render("n") + statusDescStyle.Render(" new"),
 			statusKeyStyle.Render("↵") + statusDescStyle.Render(" chat"),
+			statusKeyStyle.Render("n") + statusDescStyle.Render(" new"),
 			statusKeyStyle.Render("e") + statusDescStyle.Render(" edit"),
 			statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
 			statusKeyStyle.Render("s") + statusDescStyle.Render(" stop"),
 			statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
-			statusKeyStyle.Render("q") + statusDescStyle.Render(" quit"),
+			statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
 		}
 	case viewChat:
 		keys = []string{

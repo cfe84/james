@@ -214,7 +214,49 @@ Hem manages sessions on moneypennies. It tracks which moneypenny each session li
 
 ### List
 
-`hem list sessions [-m MONEYPENNY_NAME]` — lists all sessions across all moneypennies. `-m` filters by moneypenny.
+`hem list sessions [-m MONEYPENNY_NAME] [--all] [--status STATUS]` — lists all sessions across all moneypennies. `-m` filters by moneypenny. By default, completed sessions are hidden. `--all` shows everything. `--status completed` shows only completed.
+
+### Complete
+
+`hem complete session SESSION_ID` — marks a session as completed in hem's local tracking. Completed sessions are hidden from default list and dashboard views.
+
+- If a completed session is continued (via `continue session`), it automatically goes back to active status.
+
+## Projects
+
+Projects provide context for organizing sessions — a project groups related sessions with shared defaults.
+
+### Create
+
+`hem create project --name NAME [-m MONEYPENNY] [--path PATH] [--agent AGENT] [--system-prompt TEXT]`
+
+- Name must be unique.
+- When creating sessions with `--project NAME`, the project's defaults are used for unspecified flags.
+
+### List
+
+`hem list projects [--status active|paused|done]` — lists all projects, optionally filtered by status.
+
+### Show
+
+`hem show project NAME_OR_ID` — shows project details.
+
+### Update
+
+`hem update project NAME_OR_ID [--name NAME] [--status active|paused|done] [-m MONEYPENNY] [--path PATH] [--agent AGENT] [--system-prompt TEXT]`
+
+### Delete
+
+`hem delete project NAME_OR_ID` — deletes a project. Sessions linked to it are unlinked but kept.
+
+## Dashboard
+
+`hem dashboard [--project NAME] [--all]` — attention-based view of sessions.
+
+Groups sessions by state:
+1. **REVIEW** — session is idle and active (agent finished, needs user review)
+2. **WORKING** — agent is currently running
+3. **COMPLETED** — user marked session as done (hidden unless `--all`)
 
 ### Chat
 
@@ -222,15 +264,24 @@ Hem manages sessions on moneypennies. It tracks which moneypenny each session li
 
 `hem ui` — launches an interactive terminal UI (TUI) built with bubbletea.
 
-- **Session list** (default view): browse all sessions with status, name, moneypenny, timestamps.
+- **Dashboard** (default view): attention-based grouped view of sessions (REVIEW, WORKING, COMPLETED).
+  - `Enter` — open chat for selected session
+  - `c` — mark session as completed
+  - `n` — create new session (opens form)
+  - `l` — switch to full session list
+  - `r` — refresh
+  - `q` — quit
+- **Session list**: browse all sessions with status, name, moneypenny, timestamps.
   - `n` — create new session (opens form)
   - `Enter` — open chat for selected session
+  - `e` — edit session
   - `d` — delete session
   - `s` — stop a working session
   - `r` — refresh list
-  - `q` — quit
+  - `esc` — back to dashboard
 - **Chat view**: full conversation history with input. Send messages with Enter, scroll with PgUp/PgDn, Esc to go back.
 - **Create form**: fill in prompt, name, agent, system prompt, path, yolo. Tab between fields, Enter to submit.
+- **Edit form**: modify session parameters. Shows change indicators. Enter to save, Esc to cancel.
 
 ### Chat
 

@@ -45,7 +45,7 @@ func main() {
 
 	cmd, err := cli.Parse(os.Args[1:])
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%sError: %v%s\n", colorRed, err, colorReset)
 		printUsage()
 		os.Exit(1)
 	}
@@ -70,9 +70,24 @@ func main() {
 		return
 	case "ui":
 		if err := ui.Run(); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			fmt.Fprintf(os.Stderr, "%sError: %v%s\n", colorRed, err, colorReset)
 			os.Exit(1)
 		}
+		return
+	case "dashboard":
+		// Dashboard is a server command but has no noun.
+		sockPath := server.DefaultSocketPath()
+		req := &protocol.Request{Verb: "dashboard", Noun: "", Args: cmd.Args}
+		resp, err := hemclient.Send(sockPath, req)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%sError: %v%s\n", colorRed, err, colorReset)
+			os.Exit(1)
+		}
+		if resp.Status == protocol.StatusError {
+			fmt.Fprintf(os.Stderr, "%sError: %s%s\n", colorRed, resp.Message, colorReset)
+			os.Exit(1)
+		}
+		printResponse(resp.Data, cmd.OutputType)
 		return
 	case "start":
 		if cmd.Noun == "server" {
@@ -103,12 +118,12 @@ func main() {
 
 	resp, err := hemclient.Send(sockPath, req)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%sError: %v%s\n", colorRed, err, colorReset)
 		os.Exit(1)
 	}
 
 	if resp.Status == protocol.StatusError {
-		fmt.Fprintf(os.Stderr, "Error: %s\n", resp.Message)
+		fmt.Fprintf(os.Stderr, "%sError: %s%s\n", colorRed, resp.Message, colorReset)
 		os.Exit(1)
 	}
 
@@ -155,11 +170,40 @@ func printResponse(data json.RawMessage, outputFmt string) {
 				td.Rows = [][]string{}
 			}
 			// Default to table format for tabular data.
-			fmt := outputFmt
-			if fmt == output.FormatText {
-				fmt = output.FormatTable
+			tableFmt := outputFmt
+			if tableFmt == output.FormatText {
+				tableFmt = output.FormatTable
 			}
-			output.Print(os.Stdout, fmt, td)
+			output.Print(os.Stdout, tableFmt, td)
+			// Print warnings after the table.
+			for _, w := range table.Warnings {
+				fmt.Fprintf(os.Stderr, "%sWarning: %s%s\n", colorYellow, w, colorReset)
+			}
+			return
+		}
+	}
+
+	// Check if it's a ProjectResult (has "default_agent" field).
+	if _, hasDA := raw["default_agent"]; hasDA {
+		var result commands.ProjectResult
+		if json.Unmarshal(data, &result) == nil {
+			td := output.TableData{
+				Headers: []string{"Field", "Value"},
+				Rows: [][]string{
+					{"id", result.ID},
+					{"name", result.Name},
+					{"status", result.Status},
+					{"moneypenny", result.Moneypenny},
+					{"paths", result.Paths},
+					{"default_agent", result.DefaultAgent},
+					{"default_system_prompt", result.DefaultSystemPrompt},
+				},
+			}
+			showFmt := outputFmt
+			if showFmt == output.FormatText {
+				showFmt = output.FormatTable
+			}
+			output.Print(os.Stdout, showFmt, td)
 			return
 		}
 	}
@@ -253,10 +297,12 @@ func printResponse(data json.RawMessage, outputFmt string) {
 	output.Print(os.Stdout, outputFmt, json.RawMessage(data))
 }
 
-// ANSI color codes for chat output.
+// ANSI color codes for terminal output.
 const (
-	colorViolet = "\033[35m"
-	colorReset  = "\033[0m"
+	colorViolet    = "\033[35m"
+	colorReset     = "\033[0m"
+	colorYellow    = "\033[33m"
+	colorRed       = "\033[31m"
 )
 
 // runChat runs an interactive chat session.
@@ -274,7 +320,7 @@ func runChat(args []string) {
 	fs.BoolVar(&yolo, "yolo", false, "enable yolo mode")
 	fs.StringVar(&pathArg, "path", "", "working directory path")
 	if err := fs.Parse(args); err != nil {
-		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "%sError: %v%s\n", colorRed, err, colorReset)
 		os.Exit(1)
 	}
 
@@ -296,11 +342,11 @@ func runChat(args []string) {
 		}
 		resp, err := hemclient.Send(sockPath, req)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			fmt.Fprintf(os.Stderr, "%sError: %v%s\n", colorRed, err, colorReset)
 			return sessionID
 		}
 		if resp.Status == protocol.StatusError {
-			fmt.Fprintf(os.Stderr, "Error: %s\n", resp.Message)
+			fmt.Fprintf(os.Stderr, "%sError: %s%s\n", colorRed, resp.Message, colorReset)
 			return sessionID
 		}
 
@@ -448,9 +494,17 @@ Defaults:
   get-default agent|path|moneypenny|mi6
   list defaults
 
+Project management:
+  create project --name NAME [-m MP] [--path PATH] [--agent AGENT] [--system-prompt TEXT]
+  list projects [--status active|paused|done]
+  show project NAME_OR_ID
+  update project NAME_OR_ID [--name, --status, -m, --path, --agent, --system-prompt]
+  delete project NAME_OR_ID
+
 Session management:
-  create session -m MONEYPENNY PROMPT [--name, --system-prompt, --yolo, --path, --async]
+  create session [-m MONEYPENNY] [--project NAME] PROMPT [--name, --system-prompt, --yolo, --path, --async]
   continue session SESSION_ID PROMPT [--async]
+  complete session SESSION_ID
   stop session SESSION_ID
   delete session SESSION_ID
   state session SESSION_ID
@@ -458,7 +512,10 @@ Session management:
   show session SESSION_ID
   update session SESSION_ID [--name, --system-prompt, --yolo true/false, --path]
   history session SESSION_ID [-n N]
-  list sessions [-m MONEYPENNY]
+  list sessions [-m MONEYPENNY] [--all] [--status STATUS]
+
+Dashboard:
+  dashboard [--project NAME] [--all]
 
 Chat:
   chat [-m MONEYPENNY] [--session-id ID] [--agent, --name, --system-prompt, --yolo, --path]

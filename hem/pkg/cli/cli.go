@@ -19,6 +19,7 @@ var nounAliases = map[string]string{
 	"mp":           "moneypenny",
 	"sessions":     "session",
 	"defaults":     "default",
+	"projects":     "project",
 }
 
 // Verb aliases: map synonyms.
@@ -31,6 +32,7 @@ var noNounVerbs = map[string]bool{
 	"show-public-key": true,
 	"chat":            true,
 	"ui":              true,
+	"dashboard":       true,
 }
 
 // Parse parses os.Args[1:] into a Command.

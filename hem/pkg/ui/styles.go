@@ -4,12 +4,12 @@ import "github.com/charmbracelet/lipgloss"
 
 var (
 	// Colors
-	colorPrimary   = lipgloss.Color("#7C3AED") // violet
+	colorPrimary   = lipgloss.Color("#F97316") // orange
 	colorSecondary = lipgloss.Color("#6B7280") // gray
 	colorSuccess   = lipgloss.Color("#10B981") // green
 	colorWarning   = lipgloss.Color("#F59E0B") // amber
 	colorDanger    = lipgloss.Color("#EF4444") // red
-	colorMuted     = lipgloss.Color("#4B5563")
+	colorMuted     = lipgloss.Color("#9CA3AF")
 	colorBg        = lipgloss.Color("#1F2937")
 	colorBgLight   = lipgloss.Color("#374151")
 
@@ -93,12 +93,16 @@ var (
 				Padding(0, 1)
 )
 
+var statusOffline = lipgloss.NewStyle().Foreground(colorDanger).Render("✗ offline")
+
 func statusBadge(status string) string {
 	switch status {
 	case "idle":
 		return statusIdle
 	case "working":
 		return statusWorking
+	case "offline":
+		return statusOffline
 	default:
 		return lipgloss.NewStyle().Foreground(colorDanger).Render("? " + status)
 	}

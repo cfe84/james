@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -29,7 +30,22 @@ type Moneypenny struct {
 type Session struct {
 	SessionID      string
 	MoneypennyName string
+	ProjectID      string
+	HemStatus      string // "active" or "completed"
 	CreatedAt      time.Time
+}
+
+// Project represents a project that groups sessions.
+type Project struct {
+	ID                  string
+	Name                string
+	Status              string // active, paused, done
+	Moneypenny          string
+	Paths               string // JSON array
+	DefaultAgent        string
+	DefaultSystemPrompt string
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
 
 // Store manages Hem's SQLite database.
@@ -68,9 +84,23 @@ CREATE TABLE IF NOT EXISTS moneypennies (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS projects (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT 'active',
+    moneypenny TEXT NOT NULL DEFAULT '',
+    paths TEXT NOT NULL DEFAULT '[]',
+    default_agent TEXT NOT NULL DEFAULT 'claude',
+    default_system_prompt TEXT NOT NULL DEFAULT '',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
     moneypenny_name TEXT NOT NULL REFERENCES moneypennies(name) ON DELETE CASCADE,
+    project_id TEXT NOT NULL DEFAULT '',
+    hem_status TEXT NOT NULL DEFAULT 'active',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -83,7 +113,15 @@ CREATE TABLE IF NOT EXISTS defaults (
 		return nil, fmt.Errorf("create schema: %w", err)
 	}
 
-	return &Store{db: db}, nil
+	s := &Store{db: db}
+
+	// Run migrations for existing databases.
+	if err := s.migrateSchema(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("migrate schema: %w", err)
+	}
+
+	return s, nil
 }
 
 // Close closes the underlying database connection.
@@ -201,10 +239,15 @@ func (s *Store) GetDefaultMoneypenny() (*Moneypenny, error) {
 }
 
 // TrackSession records that a session is associated with a moneypenny.
-func (s *Store) TrackSession(sessionID, moneypennyName string) error {
+// projectID may be empty.
+func (s *Store) TrackSession(sessionID, moneypennyName string, projectID ...string) error {
+	pid := ""
+	if len(projectID) > 0 {
+		pid = projectID[0]
+	}
 	_, err := s.db.Exec(
-		`INSERT OR REPLACE INTO sessions (session_id, moneypenny_name) VALUES (?, ?)`,
-		sessionID, moneypennyName,
+		`INSERT OR REPLACE INTO sessions (session_id, moneypenny_name, project_id, hem_status) VALUES (?, ?, ?, 'active')`,
+		sessionID, moneypennyName, pid,
 	)
 	if err != nil {
 		return fmt.Errorf("track session %q: %w", sessionID, err)
@@ -234,11 +277,11 @@ func (s *Store) ListTrackedSessions(moneypennyFilter string) ([]*Session, error)
 	var err error
 	if moneypennyFilter == "" {
 		rows, err = s.db.Query(
-			`SELECT session_id, moneypenny_name, created_at FROM sessions ORDER BY session_id`,
+			`SELECT session_id, moneypenny_name, project_id, hem_status, created_at FROM sessions ORDER BY session_id`,
 		)
 	} else {
 		rows, err = s.db.Query(
-			`SELECT session_id, moneypenny_name, created_at FROM sessions WHERE moneypenny_name = ? ORDER BY session_id`,
+			`SELECT session_id, moneypenny_name, project_id, hem_status, created_at FROM sessions WHERE moneypenny_name = ? ORDER BY session_id`,
 			moneypennyFilter,
 		)
 	}
@@ -250,7 +293,7 @@ func (s *Store) ListTrackedSessions(moneypennyFilter string) ([]*Session, error)
 	var result []*Session
 	for rows.Next() {
 		var sess Session
-		if err := rows.Scan(&sess.SessionID, &sess.MoneypennyName, &sess.CreatedAt); err != nil {
+		if err := rows.Scan(&sess.SessionID, &sess.MoneypennyName, &sess.ProjectID, &sess.HemStatus, &sess.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
 		result = append(result, &sess)
@@ -330,6 +373,203 @@ func (s *Store) ListDefaults() (map[string]string, error) {
 		result[k] = v
 	}
 	return result, rows.Err()
+}
+
+// ---------------------------------------------------------------------------
+// Project methods
+// ---------------------------------------------------------------------------
+
+// CreateProject inserts a new project.
+func (s *Store) CreateProject(p *Project) error {
+	_, err := s.db.Exec(
+		`INSERT INTO projects (id, name, status, moneypenny, paths, default_agent, default_system_prompt, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.ID, p.Name, p.Status, p.Moneypenny, p.Paths, p.DefaultAgent, p.DefaultSystemPrompt, p.CreatedAt, p.UpdatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("create project %q: %w", p.Name, err)
+	}
+	return nil
+}
+
+// GetProject retrieves a project by ID first, then by name. Returns nil, nil if not found.
+func (s *Store) GetProject(nameOrID string) (*Project, error) {
+	row := s.db.QueryRow(
+		`SELECT id, name, status, moneypenny, paths, default_agent, default_system_prompt, created_at, updated_at
+		 FROM projects WHERE id = ?`, nameOrID,
+	)
+	p, err := scanProject(row)
+	if err == nil {
+		return p, nil
+	}
+	if err != sql.ErrNoRows {
+		return nil, fmt.Errorf("get project %q: %w", nameOrID, err)
+	}
+
+	// Try by name.
+	row = s.db.QueryRow(
+		`SELECT id, name, status, moneypenny, paths, default_agent, default_system_prompt, created_at, updated_at
+		 FROM projects WHERE name = ?`, nameOrID,
+	)
+	p, err = scanProject(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get project %q: %w", nameOrID, err)
+	}
+	return p, nil
+}
+
+// ListProjects returns projects, optionally filtered by status.
+func (s *Store) ListProjects(statusFilter string) ([]*Project, error) {
+	var rows *sql.Rows
+	var err error
+	if statusFilter == "" {
+		rows, err = s.db.Query(
+			`SELECT id, name, status, moneypenny, paths, default_agent, default_system_prompt, created_at, updated_at
+			 FROM projects ORDER BY name`,
+		)
+	} else {
+		rows, err = s.db.Query(
+			`SELECT id, name, status, moneypenny, paths, default_agent, default_system_prompt, created_at, updated_at
+			 FROM projects WHERE status = ? ORDER BY name`, statusFilter,
+		)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list projects: %w", err)
+	}
+	defer rows.Close()
+
+	var result []*Project
+	for rows.Next() {
+		var p Project
+		if err := rows.Scan(&p.ID, &p.Name, &p.Status, &p.Moneypenny, &p.Paths, &p.DefaultAgent, &p.DefaultSystemPrompt, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan project: %w", err)
+		}
+		result = append(result, &p)
+	}
+	return result, rows.Err()
+}
+
+// UpdateProject updates specified fields of a project. Only non-nil pointer fields are updated.
+func (s *Store) UpdateProject(id string, name, status, moneypenny, paths, defaultAgent, defaultSystemPrompt *string) error {
+	var sets []string
+	var args []interface{}
+
+	if name != nil {
+		sets = append(sets, "name = ?")
+		args = append(args, *name)
+	}
+	if status != nil {
+		sets = append(sets, "status = ?")
+		args = append(args, *status)
+	}
+	if moneypenny != nil {
+		sets = append(sets, "moneypenny = ?")
+		args = append(args, *moneypenny)
+	}
+	if paths != nil {
+		sets = append(sets, "paths = ?")
+		args = append(args, *paths)
+	}
+	if defaultAgent != nil {
+		sets = append(sets, "default_agent = ?")
+		args = append(args, *defaultAgent)
+	}
+	if defaultSystemPrompt != nil {
+		sets = append(sets, "default_system_prompt = ?")
+		args = append(args, *defaultSystemPrompt)
+	}
+
+	if len(sets) == 0 {
+		return nil
+	}
+
+	sets = append(sets, "updated_at = ?")
+	args = append(args, time.Now())
+	args = append(args, id)
+
+	query := fmt.Sprintf("UPDATE projects SET %s WHERE id = ?", strings.Join(sets, ", "))
+	_, err := s.db.Exec(query, args...)
+	if err != nil {
+		return fmt.Errorf("update project %q: %w", id, err)
+	}
+	return nil
+}
+
+// DeleteProject removes a project by id.
+func (s *Store) DeleteProject(id string) error {
+	// Clear project_id on sessions that reference this project.
+	if _, err := s.db.Exec(`UPDATE sessions SET project_id = '' WHERE project_id = ?`, id); err != nil {
+		return fmt.Errorf("unlinking sessions from project %q: %w", id, err)
+	}
+	_, err := s.db.Exec(`DELETE FROM projects WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete project %q: %w", id, err)
+	}
+	return nil
+}
+
+// SetSessionProject updates the project_id on a session.
+func (s *Store) SetSessionProject(sessionID, projectID string) error {
+	_, err := s.db.Exec(`UPDATE sessions SET project_id = ? WHERE session_id = ?`, projectID, sessionID)
+	if err != nil {
+		return fmt.Errorf("set session project %q: %w", sessionID, err)
+	}
+	return nil
+}
+
+// SetSessionHemStatus updates the hem_status on a session.
+func (s *Store) SetSessionHemStatus(sessionID, hemStatus string) error {
+	_, err := s.db.Exec(`UPDATE sessions SET hem_status = ? WHERE session_id = ?`, hemStatus, sessionID)
+	if err != nil {
+		return fmt.Errorf("set session hem_status %q: %w", sessionID, err)
+	}
+	return nil
+}
+
+// GetSessionHemStatus returns the hem_status for a session. Returns "" if not found.
+func (s *Store) GetSessionHemStatus(sessionID string) (string, error) {
+	var status string
+	err := s.db.QueryRow(`SELECT hem_status FROM sessions WHERE session_id = ?`, sessionID).Scan(&status)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get session hem_status %q: %w", sessionID, err)
+	}
+	return status, nil
+}
+
+// scanProject scans a single row into a Project.
+func scanProject(row *sql.Row) (*Project, error) {
+	var p Project
+	err := row.Scan(&p.ID, &p.Name, &p.Status, &p.Moneypenny, &p.Paths, &p.DefaultAgent, &p.DefaultSystemPrompt, &p.CreatedAt, &p.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// migrateSchema runs ALTER TABLE statements for existing databases,
+// ignoring "duplicate column name" errors.
+func (s *Store) migrateSchema() error {
+	migrations := []string{
+		`ALTER TABLE sessions ADD COLUMN project_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sessions ADD COLUMN hem_status TEXT NOT NULL DEFAULT 'active'`,
+	}
+	for _, m := range migrations {
+		_, err := s.db.Exec(m)
+		if err != nil {
+			// Ignore "duplicate column name" errors.
+			if strings.Contains(err.Error(), "duplicate column name") {
+				continue
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 func boolToInt(b bool) int {

@@ -145,11 +145,21 @@ hem/
 
 4. **Transport**: Server talks to moneypenny via FIFO (local named pipes) or MI6 (spawns mi6-client subprocess). Same JSON envelope protocol.
 
-5. **Storage**: SQLite tracks moneypenny registry and session-to-moneypenny mapping. Moneypenny owns session data; hem just knows where each session lives.
+5. **Storage**: SQLite tracks moneypenny registry, session-to-moneypenny mapping, projects, and local session status (hem_status). Moneypenny owns session data; hem just knows where each session lives and its local completion state.
 
 6. **Output formats**: `--output-type` / `-o` supports json, text, table, tsv. Default is text. Formatting is done by the CLI, not the server.
 
 7. **SSH keys**: Auto-generates ECDSA key for MI6 transport, same approach as moneypenny. `hem show-public-key` to export.
+
+8. **Projects**: Provide organizational context for sessions. A project has defaults (moneypenny, agent, path, system prompt) that sessions inherit when created with `--project`. Status: active/paused/done for filtering.
+
+9. **Dashboard**: Attention-based view grouping sessions by state: REVIEW (idle, needs user attention), WORKING (agent running), COMPLETED (user marked done). Available as both CLI command and TUI default view.
+
+10. **Async agent execution**: Moneypenny runs agents asynchronously — `create_session` and `continue_session` return immediately with session_id, agent runs in background goroutine. Hem polls moneypenny for completion when not using `--async`. This allows moneypenny to handle multiple concurrent requests.
+
+11. **Session lifecycle**: Hem tracks a local `hem_status` (active/completed) separate from moneypenny's status (idle/working). Completing a session hides it from default views. Continuing a completed session automatically reactivates it.
+
+12. **TUI**: Built with bubbletea + lipgloss. Dashboard is the default view, with navigation to session list, chat, create, and edit views. Uses the same hem server socket as the CLI.
 
 ## Versioning
 

@@ -55,6 +55,13 @@ var CommandHelp = map[string]string{
 	"list session":        "Usage: hem list sessions [-m MONEYPENNY]\n\nLists all sessions across all moneypennies.\n\nFlags:\n  -m, --moneypenny   Filter by moneypenny name",
 	"test mi6":            "Usage: hem test mi6 --mi6 ADDRESS --session SESSION_ID\n\nTests connectivity to an MI6 server.\n\nFlags:\n  --mi6              MI6 server address (uses default if not set)\n  --session          Session ID to join (required)",
 	"chat":                "Usage: hem chat [-m MONEYPENNY] [--session-id ID] [flags]\n\nInteractive chat with an agent. Creates a new session by default.\n\nFlags:\n  -m, --moneypenny   Moneypenny name (uses default if not set)\n  --session-id       Continue an existing session\n  --agent            Agent to use (uses default, fallback: claude)\n  --name             Session name\n  --system-prompt    System prompt for the agent\n  --yolo             Skip permissions\n  --path             Working directory",
+	"create project":      "Usage: hem create project --name NAME [-m MONEYPENNY] [--path PATH] [--agent AGENT] [--system-prompt TEXT]\n\nCreates a new project.\n\nFlags:\n  --name             Project name (required)\n  -m, --moneypenny   Default moneypenny\n  --path             Working directory path\n  --agent            Default agent\n  --system-prompt    Default system prompt",
+	"list project":        "Usage: hem list projects [--status STATUS]\n\nLists all projects.\n\nFlags:\n  --status           Filter by status (active, paused, done)",
+	"show project":        "Usage: hem show project NAME_OR_ID\n\nShows project details.\n\nFlags:\n  --name             Project name (alternative to positional arg)",
+	"update project":      "Usage: hem update project NAME_OR_ID [flags]\n\nUpdates project fields.\n\nFlags:\n  --name             New project name\n  --status           New status (active, paused, done)\n  -m, --moneypenny   Default moneypenny\n  --path             Working directory path\n  --agent            Default agent\n  --system-prompt    Default system prompt",
+	"delete project":      "Usage: hem delete project NAME_OR_ID\n\nDeletes a project. Sessions keep their data but lose the project link.",
+	"complete session":    "Usage: hem complete session SESSION_ID\n\nMarks a session as completed in hem's local tracking.",
+	"dashboard":           "Usage: hem dashboard [--project NAME] [--all]\n\nShows a dashboard of sessions grouped by attention state.\n\nFlags:\n  --project          Filter by project name\n  --all              Include completed sessions",
 }
 
 // Dispatch routes a verb+noun+args to the appropriate handler.
@@ -68,6 +75,10 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 			}
 			return protocol.ErrResponse(fmt.Sprintf("no help available for: %s %s", verb, noun))
 		}
+	}
+
+	if verb == "dashboard" {
+		return e.Dashboard(args)
 	}
 
 	switch verb + " " + noun {
@@ -117,6 +128,19 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 	case "test mi6":
 		return e.TestMI6(args)
 
+	// Project commands
+	case "create project":
+		return e.CreateProject(args)
+	case "list project":
+		return e.ListProjects(args)
+	case "show project":
+		return e.ShowProject(args)
+	case "update project":
+		return e.UpdateProject(args)
+	case "delete project":
+		return e.DeleteProject(args)
+	case "complete session":
+		return e.CompleteSession(args)
 	default:
 		return protocol.ErrResponse(fmt.Sprintf("unknown command: %s %s", verb, noun))
 	}
@@ -325,8 +349,9 @@ type TextResult struct {
 }
 
 type TableResult struct {
-	Headers []string   `json:"headers"`
-	Rows    [][]string `json:"rows"`
+	Headers  []string   `json:"headers"`
+	Rows     [][]string `json:"rows"`
+	Warnings []string   `json:"warnings,omitempty"`
 }
 
 type SessionCreatedResult struct {
@@ -363,13 +388,24 @@ type SessionShowResult struct {
 }
 
 type ConversationTurn struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role      string `json:"role"`
+	Content   string `json:"content"`
+	CreatedAt string `json:"created_at,omitempty"`
 }
 
 type HistoryResult struct {
 	SessionID    string             `json:"session_id"`
 	Conversation []ConversationTurn `json:"conversation"`
+}
+
+type ProjectResult struct {
+	ID                  string `json:"id"`
+	Name                string `json:"name"`
+	Status              string `json:"status"`
+	Moneypenny          string `json:"moneypenny"`
+	Paths               string `json:"paths"`
+	DefaultAgent        string `json:"default_agent"`
+	DefaultSystemPrompt string `json:"default_system_prompt"`
 }
 
 // ---------------------------------------------------------------------------
@@ -685,7 +721,7 @@ func (e *Executor) ListDefaults(args []string) *protocol.Response {
 // ---------------------------------------------------------------------------
 
 func (e *Executor) CreateSession(args []string) *protocol.Response {
-	var mpName, sessionName, systemPrompt, pathArg, agentName string
+	var mpName, sessionName, systemPrompt, pathArg, agentName, projectNameOrID string
 	var yolo, async bool
 
 	remaining, err := parseFlagsFromArgs("create-session", args, func(fs *flag.FlagSet) {
@@ -697,9 +733,39 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 		fs.BoolVar(&yolo, "yolo", false, "enable yolo mode")
 		fs.StringVar(&pathArg, "path", "", "working directory path")
 		fs.BoolVar(&async, "async", false, "return immediately without waiting for response")
+		fs.StringVar(&projectNameOrID, "project", "", "project name or ID")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
+	}
+
+	// Resolve project and apply its defaults when session-specific flags aren't provided.
+	var projectID string
+	if projectNameOrID != "" {
+		proj, err := e.store.GetProject(projectNameOrID)
+		if err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		if proj == nil {
+			return protocol.ErrResponse(fmt.Sprintf("project %q not found", projectNameOrID))
+		}
+		projectID = proj.ID
+		if mpName == "" && proj.Moneypenny != "" {
+			mpName = proj.Moneypenny
+		}
+		if agentName == "" && proj.DefaultAgent != "" {
+			agentName = proj.DefaultAgent
+		}
+		if pathArg == "" && proj.Paths != "[]" && proj.Paths != "" {
+			// Use the first path from the JSON array.
+			var paths []string
+			if json.Unmarshal([]byte(proj.Paths), &paths) == nil && len(paths) > 0 {
+				pathArg = paths[0]
+			}
+		}
+		if systemPrompt == "" && proj.DefaultSystemPrompt != "" {
+			systemPrompt = proj.DefaultSystemPrompt
+		}
 	}
 
 	// Apply stored defaults for agent and path when not specified.
@@ -744,6 +810,14 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 
 	sessionID := generateSessionID()
 
+	// Auto-generate a name from the prompt if none provided.
+	if sessionName == "" {
+		sessionName = prompt
+		if len(sessionName) > 40 {
+			sessionName = sessionName[:40]
+		}
+	}
+
 	cmdData := map[string]interface{}{
 		"agent":      agentName,
 		"session_id": sessionID,
@@ -758,8 +832,14 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 		cmdData["yolo"] = true
 	}
 
-	if err := e.store.TrackSession(sessionID, mp.Name); err != nil {
-		return protocol.ErrResponse(fmt.Sprintf("tracking session: %v", err))
+	if projectID != "" {
+		if err := e.store.TrackSession(sessionID, mp.Name, projectID); err != nil {
+			return protocol.ErrResponse(fmt.Sprintf("tracking session: %v", err))
+		}
+	} else {
+		if err := e.store.TrackSession(sessionID, mp.Name); err != nil {
+			return protocol.ErrResponse(fmt.Sprintf("tracking session: %v", err))
+		}
 	}
 
 	ctx := context.Background()
@@ -815,6 +895,11 @@ func (e *Executor) ContinueSession(args []string) *protocol.Response {
 	mp, err := e.resolveSessionMoneypenny(sessionID)
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
+	}
+
+	// If session was completed, reactivate it.
+	if hemStatus, _ := e.store.GetSessionHemStatus(sessionID); hemStatus == "completed" {
+		_ = e.store.SetSessionHemStatus(sessionID, "active")
 	}
 
 	cmdData := map[string]interface{}{
@@ -1205,11 +1290,14 @@ func (e *Executor) HistorySession(args []string) *protocol.Response {
 }
 
 func (e *Executor) ListSessions(args []string) *protocol.Response {
-	var mpName string
+	var mpName, statusFilter string
+	var showAll bool
 
 	_, err := parseFlagsFromArgs("list-sessions", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&mpName, "m", "", "moneypenny name filter")
 		fs.StringVar(&mpName, "moneypenny", "", "moneypenny name filter")
+		fs.BoolVar(&showAll, "all", false, "show all sessions including completed")
+		fs.StringVar(&statusFilter, "status", "", "filter by hem_status (active, completed)")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -1232,14 +1320,23 @@ func (e *Executor) ListSessions(args []string) *protocol.Response {
 		}
 	}
 
+	// Build a set of tracked sessions with their hem_status for filtering.
+	trackedSessions, _ := e.store.ListTrackedSessions("")
+	hemStatusMap := make(map[string]string)
+	for _, ts := range trackedSessions {
+		hemStatusMap[ts.SessionID] = ts.HemStatus
+	}
+
 	result := TableResult{
 		Headers: []string{"SessionID", "Name", "Status", "Moneypenny", "Created", "Last Active"},
 	}
 
 	ctx := context.Background()
+	var warnings []string
 	for _, mp := range mps {
 		resp, err := e.sendCommand(ctx, mp, "list_sessions", nil)
 		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("moneypenny %q is offline", mp.Name))
 			continue
 		}
 
@@ -1255,10 +1352,421 @@ func (e *Executor) ListSessions(args []string) *protocol.Response {
 		}
 
 		for _, s := range sessions {
+			hemStatus := hemStatusMap[s.SessionID]
+			if hemStatus == "" {
+				hemStatus = "active"
+			}
+
+			// Apply hem_status filtering.
+			if statusFilter != "" {
+				if hemStatus != statusFilter {
+					continue
+				}
+			} else if !showAll {
+				// By default, hide completed sessions.
+				if hemStatus == "completed" {
+					continue
+				}
+			}
+
 			created := formatTimestamp(s.CreatedAt)
 			lastActive := formatTimestamp(s.LastAccessed)
 			result.Rows = append(result.Rows, []string{s.SessionID, s.Name, s.Status, mp.Name, created, lastActive})
 		}
+	}
+
+	if len(warnings) > 0 {
+		result.Warnings = warnings
+	}
+
+	return protocol.OKResponse(result)
+}
+
+// ---------------------------------------------------------------------------
+// Project commands
+// ---------------------------------------------------------------------------
+
+func (e *Executor) CreateProject(args []string) *protocol.Response {
+	var name, mpName, pathArg, agentName, systemPrompt string
+
+	_, err := parseFlagsFromArgs("create-project", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&name, "name", "", "project name")
+		fs.StringVar(&mpName, "m", "", "default moneypenny")
+		fs.StringVar(&mpName, "moneypenny", "", "default moneypenny")
+		fs.StringVar(&pathArg, "path", "", "working directory path")
+		fs.StringVar(&agentName, "agent", "", "default agent")
+		fs.StringVar(&systemPrompt, "system-prompt", "", "default system prompt")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if name == "" {
+		return protocol.ErrResponse("--name is required")
+	}
+
+	paths := "[]"
+	if pathArg != "" {
+		pathsJSON, _ := json.Marshal([]string{pathArg})
+		paths = string(pathsJSON)
+	}
+
+	if agentName == "" {
+		agentName = "claude"
+	}
+
+	now := time.Now()
+	p := &store.Project{
+		ID:                  generateSessionID(),
+		Name:                name,
+		Status:              "active",
+		Moneypenny:          mpName,
+		Paths:               paths,
+		DefaultAgent:        agentName,
+		DefaultSystemPrompt: systemPrompt,
+		CreatedAt:           now,
+		UpdatedAt:           now,
+	}
+
+	if err := e.store.CreateProject(p); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("creating project: %v", err))
+	}
+
+	return protocol.OKResponse(TextResult{
+		Message: fmt.Sprintf("Created project %q (id: %s).", name, p.ID),
+	})
+}
+
+func (e *Executor) ListProjects(args []string) *protocol.Response {
+	var statusFilter string
+
+	_, err := parseFlagsFromArgs("list-projects", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&statusFilter, "status", "", "filter by status")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	projects, err := e.store.ListProjects(statusFilter)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	result := TableResult{
+		Headers: []string{"ID", "Name", "Status", "Moneypenny", "Agent", "Paths"},
+	}
+	for _, p := range projects {
+		result.Rows = append(result.Rows, []string{
+			p.ID, p.Name, p.Status, p.Moneypenny, p.DefaultAgent, p.Paths,
+		})
+	}
+
+	return protocol.OKResponse(result)
+}
+
+func (e *Executor) ShowProject(args []string) *protocol.Response {
+	var name string
+
+	remaining, err := parseFlagsFromArgs("show-project", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&name, "name", "", "project name")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if name == "" {
+		if len(remaining) == 0 {
+			return protocol.ErrResponse("project name or ID is required")
+		}
+		name = remaining[0]
+	}
+
+	p, err := e.store.GetProject(name)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if p == nil {
+		return protocol.ErrResponse(fmt.Sprintf("project %q not found", name))
+	}
+
+	return protocol.OKResponse(ProjectResult{
+		ID:                  p.ID,
+		Name:                p.Name,
+		Status:              p.Status,
+		Moneypenny:          p.Moneypenny,
+		Paths:               p.Paths,
+		DefaultAgent:        p.DefaultAgent,
+		DefaultSystemPrompt: p.DefaultSystemPrompt,
+	})
+}
+
+func (e *Executor) UpdateProject(args []string) *protocol.Response {
+	var nameFlag, statusFlag, mpName, pathArg, agentName, systemPrompt string
+
+	remaining, err := parseFlagsFromArgs("update-project", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&nameFlag, "name", "", "new project name")
+		fs.StringVar(&statusFlag, "status", "", "new status (active, paused, done)")
+		fs.StringVar(&mpName, "m", "", "default moneypenny")
+		fs.StringVar(&mpName, "moneypenny", "", "default moneypenny")
+		fs.StringVar(&pathArg, "path", "", "working directory path")
+		fs.StringVar(&agentName, "agent", "", "default agent")
+		fs.StringVar(&systemPrompt, "system-prompt", "", "default system prompt")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if len(remaining) == 0 {
+		return protocol.ErrResponse("project name or ID is required as positional argument")
+	}
+	nameOrID := remaining[0]
+
+	p, err := e.store.GetProject(nameOrID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if p == nil {
+		return protocol.ErrResponse(fmt.Sprintf("project %q not found", nameOrID))
+	}
+
+	// Validate status if provided.
+	if statusFlag != "" {
+		switch statusFlag {
+		case "active", "paused", "done":
+			// valid
+		default:
+			return protocol.ErrResponse(fmt.Sprintf("invalid status %q: must be one of active, paused, done", statusFlag))
+		}
+	}
+
+	var pName, pStatus, pMoneypenny, pPaths, pAgent, pSystemPrompt *string
+	if nameFlag != "" {
+		pName = &nameFlag
+	}
+	if statusFlag != "" {
+		pStatus = &statusFlag
+	}
+	if mpName != "" {
+		pMoneypenny = &mpName
+	}
+	if pathArg != "" {
+		pathsJSON, _ := json.Marshal([]string{pathArg})
+		pathsStr := string(pathsJSON)
+		pPaths = &pathsStr
+	}
+	if agentName != "" {
+		pAgent = &agentName
+	}
+	if systemPrompt != "" {
+		pSystemPrompt = &systemPrompt
+	}
+
+	if pName == nil && pStatus == nil && pMoneypenny == nil && pPaths == nil && pAgent == nil && pSystemPrompt == nil {
+		return protocol.ErrResponse("no fields to update")
+	}
+
+	if err := e.store.UpdateProject(p.ID, pName, pStatus, pMoneypenny, pPaths, pAgent, pSystemPrompt); err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	return protocol.OKResponse(TextResult{
+		Message: fmt.Sprintf("Project %q updated.", nameOrID),
+	})
+}
+
+func (e *Executor) DeleteProject(args []string) *protocol.Response {
+	nameOrID := ""
+	if len(args) > 0 {
+		nameOrID = args[0]
+	}
+	if nameOrID == "" {
+		return protocol.ErrResponse("project name or ID is required")
+	}
+
+	p, err := e.store.GetProject(nameOrID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if p == nil {
+		return protocol.ErrResponse(fmt.Sprintf("project %q not found", nameOrID))
+	}
+
+	if err := e.store.DeleteProject(p.ID); err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	return protocol.OKResponse(TextResult{
+		Message: fmt.Sprintf("Deleted project %q.", p.Name),
+	})
+}
+
+func (e *Executor) CompleteSession(args []string) *protocol.Response {
+	var sessionID string
+
+	remaining, err := parseFlagsFromArgs("complete-session", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&sessionID, "session-id", "", "session ID")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if sessionID == "" {
+		if len(remaining) == 0 {
+			return protocol.ErrResponse("session_id is required")
+		}
+		sessionID = remaining[0]
+	}
+
+	if err := e.store.SetSessionHemStatus(sessionID, "completed"); err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	return protocol.OKResponse(TextResult{
+		Message: fmt.Sprintf("Session %s marked as completed.", sessionID),
+	})
+}
+
+func (e *Executor) Dashboard(args []string) *protocol.Response {
+	var projectFilter string
+	var showAll bool
+
+	_, err := parseFlagsFromArgs("dashboard", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&projectFilter, "project", "", "filter by project name")
+		fs.BoolVar(&showAll, "all", false, "include completed sessions")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	// Get all tracked sessions.
+	trackedSessions, err := e.store.ListTrackedSessions("")
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	// If filtering by project, resolve the project and filter sessions.
+	var projectIDFilter string
+	if projectFilter != "" {
+		proj, err := e.store.GetProject(projectFilter)
+		if err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		if proj == nil {
+			return protocol.ErrResponse(fmt.Sprintf("project %q not found", projectFilter))
+		}
+		projectIDFilter = proj.ID
+	}
+
+	// Build project name cache.
+	projects, _ := e.store.ListProjects("")
+	projectNames := make(map[string]string)
+	for _, p := range projects {
+		projectNames[p.ID] = p.Name
+	}
+
+	type dashboardEntry struct {
+		SessionID  string
+		Name       string
+		Project    string
+		MPStatus   string // moneypenny status (idle/working)
+		HemStatus  string // active/completed
+		Moneypenny string
+		LastActive string
+		SortKey    int // 0=REVIEW, 1=WORKING, 2=COMPLETED
+	}
+
+	var entries []dashboardEntry
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	for _, sess := range trackedSessions {
+		// Apply project filter.
+		if projectIDFilter != "" && sess.ProjectID != projectIDFilter {
+			continue
+		}
+
+		// Skip completed unless --all.
+		if sess.HemStatus == "completed" && !showAll {
+			continue
+		}
+
+		mp, err := e.store.GetMoneypenny(sess.MoneypennyName)
+		if err != nil || mp == nil {
+			continue
+		}
+
+		// Get session info from moneypenny.
+		var mpStatus, sessionName, lastAccessed string
+		resp, err := e.sendCommand(ctx, mp, "get_session", map[string]interface{}{"session_id": sess.SessionID})
+		if err == nil {
+			var detail struct {
+				Status       string             `json:"status"`
+				Name         string             `json:"name"`
+				Conversation []ConversationTurn `json:"conversation"`
+			}
+			if json.Unmarshal(resp.Data, &detail) == nil {
+				mpStatus = detail.Status
+				sessionName = detail.Name
+				// Get last activity from conversation timestamps.
+				if len(detail.Conversation) > 0 {
+					lastAccessed = detail.Conversation[len(detail.Conversation)-1].CreatedAt
+				}
+			}
+		} else {
+			mpStatus = "offline"
+		}
+
+		projectName := projectNames[sess.ProjectID]
+
+		// Determine attention category.
+		sortKey := 1 // WORKING
+		if sess.HemStatus == "completed" {
+			sortKey = 2
+		} else if mpStatus == "idle" {
+			sortKey = 0
+		}
+
+		displayName := sessionName
+		if displayName == "" {
+			// Truncate session ID for display.
+			if len(sess.SessionID) > 12 {
+				displayName = sess.SessionID[:12] + "..."
+			} else {
+				displayName = sess.SessionID
+			}
+		}
+
+		lastActiveFormatted := formatTimestamp(lastAccessed)
+
+		entries = append(entries, dashboardEntry{
+			SessionID:  sess.SessionID,
+			Name:       displayName,
+			Project:    projectName,
+			MPStatus:   mpStatus,
+			HemStatus:  sess.HemStatus,
+			Moneypenny: sess.MoneypennyName,
+			LastActive: lastActiveFormatted,
+			SortKey:    sortKey,
+		})
+	}
+
+	// Sort by attention level (REVIEW first, then WORKING, then COMPLETED).
+	for i := 0; i < len(entries); i++ {
+		for j := i + 1; j < len(entries); j++ {
+			if entries[j].SortKey < entries[i].SortKey {
+				entries[i], entries[j] = entries[j], entries[i]
+			}
+		}
+	}
+
+	result := TableResult{
+		Headers: []string{"SessionID", "Name", "Project", "Status", "Moneypenny", "Last Activity"},
+	}
+	for _, e := range entries {
+		result.Rows = append(result.Rows, []string{
+			e.SessionID, e.Name, e.Project, e.MPStatus + " (" + e.HemStatus + ")", e.Moneypenny, e.LastActive,
+		})
 	}
 
 	return protocol.OKResponse(result)

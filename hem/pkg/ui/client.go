@@ -205,3 +205,71 @@ func (c *client) stopSession(sessionID string) error {
 	}
 	return nil
 }
+
+// projectInfo is a parsed project from list projects.
+type projectInfo struct {
+	ID         string
+	Name       string
+	Status     string
+	Moneypenny string
+	Agent      string
+	Paths      string
+}
+
+func (c *client) listProjects(statusFilter string) ([]projectInfo, error) {
+	args := []string{}
+	if statusFilter != "" {
+		args = append(args, "--status", statusFilter)
+	}
+	resp, err := c.send("list", "project", args...)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Status == protocol.StatusError {
+		return nil, fmt.Errorf("%s", resp.Message)
+	}
+
+	var table struct {
+		Headers []string   `json:"headers"`
+		Rows    [][]string `json:"rows"`
+	}
+	if err := json.Unmarshal(resp.Data, &table); err != nil {
+		return nil, fmt.Errorf("parsing projects: %w", err)
+	}
+
+	var projects []projectInfo
+	for _, row := range table.Rows {
+		p := projectInfo{}
+		if len(row) > 0 {
+			p.ID = row[0]
+		}
+		if len(row) > 1 {
+			p.Name = row[1]
+		}
+		if len(row) > 2 {
+			p.Status = row[2]
+		}
+		if len(row) > 3 {
+			p.Moneypenny = row[3]
+		}
+		if len(row) > 4 {
+			p.Agent = row[4]
+		}
+		if len(row) > 5 {
+			p.Paths = row[5]
+		}
+		projects = append(projects, p)
+	}
+	return projects, nil
+}
+
+func (c *client) deleteProject(nameOrID string) error {
+	resp, err := c.send("delete", "project", nameOrID)
+	if err != nil {
+		return err
+	}
+	if resp.Status == protocol.StatusError {
+		return fmt.Errorf("%s", resp.Message)
+	}
+	return nil
+}
