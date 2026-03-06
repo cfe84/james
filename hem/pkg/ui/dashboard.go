@@ -288,6 +288,31 @@ func (m dashboardModel) View() string {
 		showProject = hasAnyProject
 	}
 
+	// Calculate column widths based on terminal width.
+	// Fixed columns: indent(2) + status(10) + lastActive(14) + spacing(~8)
+	// Flexible: name, moneypenny, project
+	w := m.width
+	if w < 80 {
+		w = 80
+	}
+	fixedWidth := 2 + 10 + 14 + 8 // indent + status + lastActive + gaps
+	if showProject {
+		fixedWidth += 14 // project column + gap
+	}
+	flexible := w - fixedWidth
+	nameWidth := flexible * 45 / 100
+	mpWidth := flexible * 30 / 100
+	projWidth := flexible * 25 / 100
+	if nameWidth < 15 {
+		nameWidth = 15
+	}
+	if mpWidth < 10 {
+		mpWidth = 10
+	}
+	if projWidth < 10 {
+		projWidth = 10
+	}
+
 	lastCat := -1
 
 	for i := start; i < end; i++ {
@@ -304,23 +329,27 @@ func (m dashboardModel) View() string {
 		}
 
 		// Entry line.
-		name := truncate(e.Name, 20)
+		name := truncate(e.Name, nameWidth)
 		if name == "" {
-			name = truncate(e.SessionID, 15)
+			name = truncate(e.SessionID, nameWidth)
 		}
-		mp := truncate(e.Moneypenny, 10)
+		mp := truncate(e.Moneypenny, mpWidth)
 		status := statusBadge(e.MPStatus)
 		lastActive := truncate(e.LastActive, 14)
 
+		nameFmt := fmt.Sprintf("%%-%ds", nameWidth+2)
+		mpFmt := fmt.Sprintf("%%-%ds", mpWidth+2)
+
 		var line string
 		if showProject {
-			project := truncate(e.Project, 12)
+			project := truncate(e.Project, projWidth)
 			if project == "" {
 				project = "-"
 			}
-			line = fmt.Sprintf("  %-22s %-14s %-10s %-12s %s", name, project, status, mp, lastActive)
+			projFmt := fmt.Sprintf("%%-%ds", projWidth+2)
+			line = fmt.Sprintf("  "+nameFmt+projFmt+"%-10s "+mpFmt+"%s", name, project, status, mp, lastActive)
 		} else {
-			line = fmt.Sprintf("  %-22s %-10s %-12s %s", name, status, mp, lastActive)
+			line = fmt.Sprintf("  "+nameFmt+"%-10s "+mpFmt+"%s", name, status, mp, lastActive)
 		}
 
 		if i == m.cursor {

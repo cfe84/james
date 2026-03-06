@@ -1009,7 +1009,7 @@ func (m Model) renderStatusBar() string {
 		} else {
 			keys = []string{
 				statusKeyStyle.Render("↵") + statusDescStyle.Render(" send"),
-				statusKeyStyle.Render("⌥↵") + statusDescStyle.Render(" newline"),
+				statusKeyStyle.Render("^J") + statusDescStyle.Render(" newline"),
 				statusKeyStyle.Render("esc") + statusDescStyle.Render(" commands"),
 				statusKeyStyle.Render("^U/^D") + statusDescStyle.Render(" scroll"),
 			}

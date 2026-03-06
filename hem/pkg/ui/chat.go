@@ -128,10 +128,6 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
-		if m.sending {
-			return m, nil // ignore input while sending
-		}
-
 		if m.commandMode {
 			// Most command mode keys are handled by updateChat in ui.go.
 			// Chat model only handles enter (resume) and scroll.
@@ -153,7 +149,7 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 		switch msg.String() {
 		case "enter":
 			prompt := strings.TrimSpace(m.input)
-			if prompt != "" {
+			if prompt != "" && !m.sending {
 				m.input = ""
 				m.cursorPos = 0
 				m.sending = true
@@ -165,7 +161,7 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 				m.scroll = 0
 				return m, m.sendMessage(prompt)
 			}
-		case "shift+enter", "alt+enter":
+		case "shift+enter", "alt+enter", "ctrl+j":
 			m.input = m.input[:m.cursorPos] + "\n" + m.input[m.cursorPos:]
 			m.cursorPos++
 		case "backspace":
