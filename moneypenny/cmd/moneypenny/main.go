@@ -148,10 +148,9 @@ func runFIFO(ctx context.Context, h *handler.Handler, vlog *log.Logger, dir stri
 	inPath := filepath.Join(dir, "moneypenny-in")
 	outPath := filepath.Join(dir, "moneypenny-out")
 
-	// Create FIFOs (remove stale ones first).
+	// Create FIFOs.
 	for _, p := range []string{inPath, outPath} {
-		os.Remove(p)
-		if err := syscall.Mkfifo(p, 0660); err != nil {
+		if err := createFifo(p); err != nil {
 			log.Fatalf("failed to create fifo %s: %v", p, err)
 		}
 	}
@@ -162,17 +161,14 @@ func runFIFO(ctx context.Context, h *handler.Handler, vlog *log.Logger, dir stri
 
 	log.Printf("fifos created: %s (in), %s (out)", inPath, outPath)
 
-	// Open FIFOs. We use O_RDWR for the input FIFO so the kernel keeps it
-	// alive even when all writers disconnect (prevents EOF on writer close).
-	// For the output FIFO, we also use O_RDWR to avoid blocking until a
-	// reader connects.
-	inFile, err := os.OpenFile(inPath, os.O_RDWR, os.ModeNamedPipe)
+	// Open FIFOs.
+	inFile, err := openFifoInput(inPath)
 	if err != nil {
 		log.Fatalf("failed to open fifo for reading: %v", err)
 	}
 	defer inFile.Close()
 
-	outFile, err := os.OpenFile(outPath, os.O_RDWR, os.ModeNamedPipe)
+	outFile, err := openFifoOutput(outPath)
 	if err != nil {
 		log.Fatalf("failed to open fifo for writing: %v", err)
 	}
