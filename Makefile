@@ -1,5 +1,9 @@
 COMPONENTS := mi6 moneypenny hem
-VERSION := $(strip $(file < VERSION))
+ifeq ($(OS),Windows_NT)
+    VERSION := $(shell type VERSION 2>NUL || echo unknown)
+else
+    VERSION := $(shell cat VERSION 2>/dev/null || echo unknown)
+endif
 
 # Find first existing bin directory for install.
 # On Windows: %LOCALAPPDATA%\Programs or %USERPROFILE%\bin

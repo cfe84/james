@@ -1,4 +1,8 @@
-VERSION := $(strip $(file < ../VERSION))
+ifeq ($(OS),Windows_NT)
+    VERSION := $(shell type ..\VERSION 2>NUL || echo unknown)
+else
+    VERSION := $(shell cat ../VERSION 2>/dev/null || echo unknown)
+endif
 LDFLAGS := -ldflags "-X main.Version=$(VERSION)"
 
 # Add .exe extension on Windows
