@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -111,9 +112,10 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 				m.scroll = 0
 			}
 		default:
-			// Append printable characters.
-			if len(msg.String()) == 1 || msg.Type == tea.KeySpace || msg.Type == tea.KeyRunes {
-				m.input += msg.String()
+			if msg.Type == tea.KeyRunes {
+				m.input += string(msg.Runes)
+			} else if msg.Type == tea.KeySpace {
+				m.input += " "
 			}
 		}
 	}
@@ -153,14 +155,23 @@ func (m chatModel) View() string {
 		}
 		msgLines = append(msgLines, prefix)
 
-		// Word-wrap content to width.
+		// Render content.
 		contentWidth := m.width - 4
 		if contentWidth < 20 {
 			contentWidth = 80
 		}
-		wrapped := wordWrap(turn.Content, contentWidth)
-		for _, line := range strings.Split(wrapped, "\n") {
-			msgLines = append(msgLines, "  "+msgContentStyle.Render(line))
+		var rendered string
+		if turn.Role == "assistant" {
+			rendered = renderMarkdown(turn.Content, contentWidth)
+		} else {
+			rendered = wordWrap(turn.Content, contentWidth)
+		}
+		for _, line := range strings.Split(rendered, "\n") {
+			if turn.Role == "assistant" {
+				msgLines = append(msgLines, "  "+line)
+			} else {
+				msgLines = append(msgLines, "  "+msgContentStyle.Render(line))
+			}
 		}
 		msgLines = append(msgLines, "")
 	}
@@ -215,6 +226,23 @@ func (m chatModel) View() string {
 	b.WriteString(inputLine)
 
 	return b.String()
+}
+
+// renderMarkdown renders markdown content using glamour.
+func renderMarkdown(content string, width int) string {
+	r, err := glamour.NewTermRenderer(
+		glamour.WithStylePath("dark"),
+		glamour.WithWordWrap(width),
+	)
+	if err != nil {
+		return wordWrap(content, width)
+	}
+	out, err := r.Render(content)
+	if err != nil {
+		return wordWrap(content, width)
+	}
+	// Trim trailing whitespace from glamour output.
+	return strings.TrimRight(out, "\n ")
 }
 
 // wordWrap wraps text at the given width, breaking on spaces.

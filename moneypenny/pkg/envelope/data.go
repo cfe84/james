@@ -27,6 +27,18 @@ type UpdateSessionData struct {
 	Path         *string `json:"path,omitempty"`
 }
 
+// ImportSessionData is the data payload for import_session.
+// Creates a session with conversation history without running an agent.
+type ImportSessionData struct {
+	SessionID    string             `json:"session_id"`
+	Name         string             `json:"name"`
+	Agent        string             `json:"agent"`
+	SystemPrompt string             `json:"system_prompt,omitempty"`
+	Yolo         bool               `json:"yolo,omitempty"`
+	Path         string             `json:"path"`
+	Conversation []ConversationTurn `json:"conversation"`
+}
+
 // SessionIDData is used by methods that only need a session_id (get_session, delete_session, stop_session).
 type SessionIDData struct {
 	SessionID string `json:"session_id"`

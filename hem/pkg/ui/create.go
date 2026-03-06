@@ -15,6 +15,7 @@ type createModel struct {
 	height      int
 	err         error
 	creating    bool
+	async       bool // if true, add --async flag
 	client      *client
 }
 
@@ -31,12 +32,26 @@ func newCreateModel(c *client) createModel {
 		fields: []formField{
 			{label: "Prompt", flag: "", value: ""},
 			{label: "Name", flag: "--name", value: ""},
+			{label: "Project", flag: "--project", value: ""},
 			{label: "Agent", flag: "--agent", value: ""},
 			{label: "System Prompt", flag: "--system-prompt", value: ""},
 			{label: "Path", flag: "--path", value: ""},
 			{label: "Yolo", flag: "--yolo", isBool: true, value: "false"},
 		},
 	}
+}
+
+func newCreateModelForProject(c *client, projectName string) createModel {
+	m := newCreateModel(c)
+	m.async = true
+	// Pre-fill the project field.
+	for i := range m.fields {
+		if m.fields[i].flag == "--project" {
+			m.fields[i].value = projectName
+			break
+		}
+	}
+	return m
 }
 
 type sessionCreatedMsg struct {
@@ -62,6 +77,9 @@ func (m createModel) createSession() tea.Cmd {
 			} else {
 				args = append(args, f.flag, f.value)
 			}
+		}
+		if m.async {
+			args = append(args, "--async")
 		}
 		args = append(args, prompt)
 		id, resp, err := m.client.createSession(args)
@@ -113,8 +131,10 @@ func (m createModel) Update(msg tea.Msg) (createModel, tea.Cmd) {
 				field.value += " "
 			}
 		default:
-			if !field.isBool && len(msg.String()) == 1 {
-				field.value += msg.String()
+			if !field.isBool {
+				if msg.Type == tea.KeyRunes {
+					field.value += string(msg.Runes)
+				}
 			}
 		}
 	}

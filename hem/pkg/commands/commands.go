@@ -62,6 +62,7 @@ var CommandHelp = map[string]string{
 	"delete project":      "Usage: hem delete project NAME_OR_ID\n\nDeletes a project. Sessions keep their data but lose the project link.",
 	"complete session":    "Usage: hem complete session SESSION_ID\n\nMarks a session as completed in hem's local tracking.",
 	"dashboard":           "Usage: hem dashboard [--project NAME] [--all]\n\nShows a dashboard of sessions grouped by attention state.\n\nFlags:\n  --project          Filter by project name\n  --all              Include completed sessions",
+	"import session":       "Usage: hem import session FILE.jsonl [-m MONEYPENNY] [--name NAME] [--project PROJECT]\n\nImports an existing Claude Code session from a JSONL file.\n\nFlags:\n  -m, --moneypenny   Moneypenny name (uses default if not set)\n  --name             Session name (default: first user message)\n  --agent            Agent (default: claude)\n  --path             Working directory (default: from JSONL or default)\n  --project          Project name or ID",
 }
 
 // Dispatch routes a verb+noun+args to the appropriate handler.
@@ -141,6 +142,8 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.DeleteProject(args)
 	case "complete session":
 		return e.CompleteSession(args)
+	case "import session":
+		return e.ImportSession(args)
 	default:
 		return protocol.ErrResponse(fmt.Sprintf("unknown command: %s %s", verb, noun))
 	}
@@ -1175,7 +1178,7 @@ func (e *Executor) ShowSession(args []string) *protocol.Response {
 
 func (e *Executor) UpdateSession(args []string) *protocol.Response {
 	var sessionID, name, systemPrompt, pathArg string
-	var yoloStr string
+	var yoloStr, projectNameOrID string
 
 	remaining, err := parseFlagsFromArgs("update-session", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&sessionID, "session-id", "", "session ID")
@@ -1183,6 +1186,7 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 		fs.StringVar(&systemPrompt, "system-prompt", "", "system prompt")
 		fs.StringVar(&yoloStr, "yolo", "", "yolo mode (true/false)")
 		fs.StringVar(&pathArg, "path", "", "working directory path")
+		fs.StringVar(&projectNameOrID, "project", "", "move to project (name or ID)")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -1223,13 +1227,31 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 		hasUpdate = true
 	}
 
-	if !hasUpdate {
-		return protocol.ErrResponse("no fields to update (use --name, --system-prompt, --yolo, --path)")
+	// Handle project assignment (local to hem, not sent to moneypenny).
+	if projectNameOrID != "" {
+		proj, err := e.store.GetProject(projectNameOrID)
+		if err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		if proj == nil {
+			return protocol.ErrResponse(fmt.Sprintf("project %q not found", projectNameOrID))
+		}
+		if err := e.store.SetSessionProject(sessionID, proj.ID); err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		hasUpdate = true
 	}
 
-	ctx := context.Background()
-	if _, err := e.sendCommand(ctx, mp, "update_session", cmdData); err != nil {
-		return protocol.ErrResponse(err.Error())
+	if !hasUpdate {
+		return protocol.ErrResponse("no fields to update (use --name, --system-prompt, --yolo, --path, --project)")
+	}
+
+	// Only send to moneypenny if there are moneypenny-level fields to update.
+	if name != "" || systemPrompt != "" || pathArg != "" || yoloStr != "" {
+		ctx := context.Background()
+		if _, err := e.sendCommand(ctx, mp, "update_session", cmdData); err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
 	}
 
 	return protocol.OKResponse(TextResult{
@@ -1623,6 +1645,216 @@ func (e *Executor) CompleteSession(args []string) *protocol.Response {
 
 	return protocol.OKResponse(TextResult{
 		Message: fmt.Sprintf("Session %s marked as completed.", sessionID),
+	})
+}
+
+func (e *Executor) ImportSession(args []string) *protocol.Response {
+	var mpName, sessionName, agentName, pathArg, projectNameOrID string
+
+	remaining, err := parseFlagsFromArgs("import-session", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&mpName, "m", "", "moneypenny name")
+		fs.StringVar(&mpName, "moneypenny", "", "moneypenny name")
+		fs.StringVar(&sessionName, "name", "", "session name")
+		fs.StringVar(&agentName, "agent", "", "agent (default: claude)")
+		fs.StringVar(&pathArg, "path", "", "working directory path")
+		fs.StringVar(&projectNameOrID, "project", "", "project name or ID")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if len(remaining) == 0 {
+		return protocol.ErrResponse("JSONL file path is required")
+	}
+	jsonlPath := remaining[0]
+
+	// Read and parse the JSONL file.
+	data, err := os.ReadFile(jsonlPath)
+	if err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("reading file: %v", err))
+	}
+
+	var sessionID, cwd string
+	var conversation []ConversationTurn
+
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var entry map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			continue
+		}
+
+		var msgType string
+		if raw, ok := entry["type"]; ok {
+			json.Unmarshal(raw, &msgType)
+		}
+
+		// Extract session ID and cwd from the first user message.
+		if sessionID == "" {
+			if raw, ok := entry["sessionId"]; ok {
+				json.Unmarshal(raw, &sessionID)
+			}
+		}
+		if cwd == "" {
+			if raw, ok := entry["cwd"]; ok {
+				json.Unmarshal(raw, &cwd)
+			}
+		}
+
+		switch msgType {
+		case "user":
+			var msg struct {
+				Role    string `json:"role"`
+				Content any    `json:"content"`
+			}
+			if raw, ok := entry["message"]; ok {
+				if json.Unmarshal(raw, &msg) == nil && msg.Role == "user" {
+					if text, ok := msg.Content.(string); ok {
+						conversation = append(conversation, ConversationTurn{
+							Role:    "user",
+							Content: text,
+						})
+					}
+				}
+			}
+		case "assistant":
+			var msg struct {
+				Role    string `json:"role"`
+				Content any    `json:"content"`
+			}
+			if raw, ok := entry["message"]; ok {
+				if json.Unmarshal(raw, &msg) == nil && msg.Role == "assistant" {
+					// Content is an array of blocks; extract text blocks.
+					if blocks, ok := msg.Content.([]interface{}); ok {
+						var texts []string
+						for _, block := range blocks {
+							if bm, ok := block.(map[string]interface{}); ok {
+								if bm["type"] == "text" {
+									if text, ok := bm["text"].(string); ok {
+										texts = append(texts, text)
+									}
+								}
+							}
+						}
+						if len(texts) > 0 {
+							conversation = append(conversation, ConversationTurn{
+								Role:    "assistant",
+								Content: strings.Join(texts, "\n"),
+							})
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if sessionID == "" {
+		return protocol.ErrResponse("could not extract session ID from JSONL file")
+	}
+	if len(conversation) == 0 {
+		return protocol.ErrResponse("no conversation found in JSONL file")
+	}
+
+	// Apply defaults.
+	if agentName == "" {
+		if v, _ := e.store.GetDefault("agent"); v != "" {
+			agentName = v
+		} else {
+			agentName = "claude"
+		}
+	}
+	if pathArg == "" {
+		if cwd != "" {
+			pathArg = cwd
+		} else if v, _ := e.store.GetDefault("path"); v != "" {
+			pathArg = v
+		} else {
+			pathArg = "."
+		}
+	}
+	if sessionName == "" {
+		// Use first user message as name.
+		for _, t := range conversation {
+			if t.Role == "user" {
+				sessionName = t.Content
+				if len(sessionName) > 40 {
+					sessionName = sessionName[:40]
+				}
+				break
+			}
+		}
+	}
+
+	// Resolve moneypenny.
+	var mp *store.Moneypenny
+	if mpName != "" {
+		mp, err = e.store.GetMoneypenny(mpName)
+		if err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		if mp == nil {
+			return protocol.ErrResponse(fmt.Sprintf("moneypenny %q not found", mpName))
+		}
+	} else {
+		mp, err = e.store.GetDefaultMoneypenny()
+		if err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		if mp == nil {
+			return protocol.ErrResponse("no moneypenny specified and no default set")
+		}
+	}
+
+	// Build conversation turns for moneypenny.
+	var turns []map[string]string
+	for _, t := range conversation {
+		turns = append(turns, map[string]string{
+			"role":    t.Role,
+			"content": t.Content,
+		})
+	}
+
+	cmdData := map[string]interface{}{
+		"session_id":   sessionID,
+		"name":         sessionName,
+		"agent":        agentName,
+		"path":         pathArg,
+		"conversation": turns,
+	}
+
+	ctx := context.Background()
+	if _, err := e.sendCommand(ctx, mp, "import_session", cmdData); err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	// Track session locally.
+	var projectID string
+	if projectNameOrID != "" {
+		proj, err := e.store.GetProject(projectNameOrID)
+		if err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		if proj == nil {
+			return protocol.ErrResponse(fmt.Sprintf("project %q not found", projectNameOrID))
+		}
+		projectID = proj.ID
+	}
+
+	if projectID != "" {
+		if err := e.store.TrackSession(sessionID, mp.Name, projectID); err != nil {
+			return protocol.ErrResponse(fmt.Sprintf("tracking session: %v", err))
+		}
+	} else {
+		if err := e.store.TrackSession(sessionID, mp.Name); err != nil {
+			return protocol.ErrResponse(fmt.Sprintf("tracking session: %v", err))
+		}
+	}
+
+	return protocol.OKResponse(TextResult{
+		Message: fmt.Sprintf("Imported session %s (%d turns) from %s", sessionID, len(conversation), filepath.Base(jsonlPath)),
 	})
 }
 

@@ -42,6 +42,7 @@ type dashboardLoadedMsg struct {
 }
 
 type sessionCompletedMsg struct{ err error }
+type dashboardDeletedMsg struct{ err error }
 
 func newDashboardModel(c *client) dashboardModel {
 	return dashboardModel{
@@ -120,6 +121,19 @@ func (m dashboardModel) loadDashboard() tea.Cmd {
 	}
 }
 
+func (m dashboardModel) deleteSession(id string) tea.Cmd {
+	return func() tea.Msg {
+		resp, err := m.client.send("delete", "session", id)
+		if err != nil {
+			return dashboardDeletedMsg{err: err}
+		}
+		if resp.Status == "error" {
+			return dashboardDeletedMsg{err: fmt.Errorf("%s", resp.Message)}
+		}
+		return dashboardDeletedMsg{err: nil}
+	}
+}
+
 func (m dashboardModel) completeSession(id string) tea.Cmd {
 	return func() tea.Msg {
 		// Send complete session command via hem protocol.
@@ -149,6 +163,13 @@ func (m dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 		}
 
 	case sessionCompletedMsg:
+		if msg.err != nil {
+			m.err = msg.err
+		}
+		m.loading = true
+		return m, m.loadDashboard()
+
+	case dashboardDeletedMsg:
 		if msg.err != nil {
 			m.err = msg.err
 		}

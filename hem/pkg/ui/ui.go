@@ -17,6 +17,7 @@ const (
 	viewChat
 	viewCreate
 	viewEdit
+	viewCreateProject
 )
 
 // Model is the top-level bubbletea model.
@@ -30,6 +31,7 @@ type Model struct {
 	chat          chatModel
 	create        createModel
 	edit          editModel
+	createProject createProjectModel
 	width         int
 	height        int
 	client        *client
@@ -71,6 +73,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.create.height = h
 		m.edit.width = msg.Width
 		m.edit.height = h
+		m.createProject.width = msg.Width
+		m.createProject.height = h
 		return m, nil
 
 	case tea.KeyMsg:
@@ -102,6 +106,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateCreate(msg)
 		case viewEdit:
 			return m.updateEdit(msg)
+		case viewCreateProject:
+			return m.updateCreateProject(msg)
 		}
 
 	// Route messages to appropriate view.
@@ -115,7 +121,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dashboard, cmd = m.dashboard.Update(msg)
 		return m, cmd
 
-	case sessionCompletedMsg:
+	case sessionCompletedMsg, dashboardDeletedMsg:
 		if m.currentView == viewProjectDetail {
 			var cmd tea.Cmd
 			m.projectDetail, cmd = m.projectDetail.Update(msg)
@@ -157,6 +163,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessions.loading = true
 		return m, m.sessions.loadSessions()
 
+	case projectCreatedMsg:
+		pm := msg
+		if pm.err != nil {
+			m.createProject.err = pm.err
+			m.createProject.creating = false
+			return m, nil
+		}
+		m.statusMsg = "Project created"
+		m.currentView = viewProjects
+		m.projects = newProjectsModel(m.client)
+		m.projects.width = m.width
+		m.projects.height = m.height - 3
+		return m, m.projects.loadProjects()
+
 	case sessionCreatedMsg:
 		cm := msg
 		if cm.err != nil {
@@ -165,6 +185,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.statusMsg = fmt.Sprintf("Session %s created", truncate(cm.sessionID, 12))
+
+		// If async, go back to where we came from instead of entering chat.
+		if m.create.async {
+			prev := m.previousView
+			m.currentView = prev
+			switch prev {
+			case viewProjectDetail:
+				m.projectDetail.loading = true
+				return m, m.projectDetail.loadDashboard()
+			case viewSessions:
+				m.sessions.loading = true
+				return m, m.sessions.loadSessions()
+			default:
+				m.currentView = viewDashboard
+				m.dashboard.loading = true
+				return m, m.dashboard.loadDashboard()
+			}
+		}
+
 		m.chat = newChatModel(m.client, cm.sessionID, "")
 		m.chat.width = m.width
 		m.chat.height = m.height - 3
@@ -242,6 +281,11 @@ func (m Model) handleEsc() (tea.Model, tea.Cmd) {
 		m.statusMsg = ""
 		m.sessions.loading = true
 		return m, m.sessions.loadSessions()
+	case viewCreateProject:
+		m.currentView = viewProjects
+		m.statusMsg = ""
+		m.projects.loading = true
+		return m, m.projects.loadProjects()
 	}
 	return m, nil
 }
@@ -262,6 +306,11 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		e := m.dashboard.selectedEntry()
 		if e != nil && e.HemStatus != "completed" {
 			return m, m.dashboard.completeSession(e.SessionID)
+		}
+	case "d":
+		e := m.dashboard.selectedEntry()
+		if e != nil {
+			return m, m.dashboard.deleteSession(e.SessionID)
 		}
 	case "n":
 		m.create = newCreateModel(m.client)
@@ -309,6 +358,12 @@ func (m Model) updateProjects(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if p != nil {
 			return m, m.projects.deleteProject(p.ID)
 		}
+	case "n":
+		m.createProject = newCreateProjectModel(m.client)
+		m.createProject.width = m.width
+		m.createProject.height = m.height - 3
+		m.currentView = viewCreateProject
+		return m, nil
 	default:
 		var cmd tea.Cmd
 		m.projects, cmd = m.projects.Update(msg)
@@ -334,11 +389,13 @@ func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if e != nil && e.HemStatus != "completed" {
 			return m, m.projectDetail.completeSession(e.SessionID)
 		}
+	case "d":
+		e := m.projectDetail.selectedEntry()
+		if e != nil {
+			return m, m.projectDetail.deleteSession(e.SessionID)
+		}
 	case "n":
-		m.create = newCreateModel(m.client)
-		// Pre-fill project in the create form if we have a project filter.
-		// The create form doesn't have a project field yet, but the session
-		// will be created in the context of the project detail view.
+		m.create = newCreateModelForProject(m.client, m.projectDetail.projectFilter)
 		m.create.width = m.width
 		m.create.height = m.height - 3
 		m.currentView = viewCreate
@@ -416,6 +473,12 @@ func (m Model) updateEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m Model) updateCreateProject(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.createProject, cmd = m.createProject.Update(msg)
+	return m, cmd
+}
+
 func (m Model) View() string {
 	var content string
 	switch m.currentView {
@@ -433,6 +496,8 @@ func (m Model) View() string {
 		content = m.create.View()
 	case viewEdit:
 		content = m.edit.View()
+	case viewCreateProject:
+		content = m.createProject.View()
 	}
 
 	statusBar := m.renderStatusBar()
@@ -446,6 +511,7 @@ func (m Model) renderStatusBar() string {
 		keys = []string{
 			statusKeyStyle.Render("↵") + statusDescStyle.Render(" chat"),
 			statusKeyStyle.Render("c") + statusDescStyle.Render(" complete"),
+			statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
 			statusKeyStyle.Render("n") + statusDescStyle.Render(" new"),
 			statusKeyStyle.Render("p") + statusDescStyle.Render(" projects"),
 			statusKeyStyle.Render("l") + statusDescStyle.Render(" all sessions"),
@@ -455,6 +521,7 @@ func (m Model) renderStatusBar() string {
 	case viewProjects:
 		keys = []string{
 			statusKeyStyle.Render("↵") + statusDescStyle.Render(" open"),
+			statusKeyStyle.Render("n") + statusDescStyle.Render(" new"),
 			statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
 			statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
 			statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
@@ -463,6 +530,7 @@ func (m Model) renderStatusBar() string {
 		keys = []string{
 			statusKeyStyle.Render("↵") + statusDescStyle.Render(" chat"),
 			statusKeyStyle.Render("c") + statusDescStyle.Render(" complete"),
+			statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
 			statusKeyStyle.Render("n") + statusDescStyle.Render(" new"),
 			statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
 			statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
@@ -494,6 +562,12 @@ func (m Model) renderStatusBar() string {
 			statusKeyStyle.Render("↵") + statusDescStyle.Render(" save"),
 			statusKeyStyle.Render("tab") + statusDescStyle.Render(" next"),
 			statusKeyStyle.Render("^U") + statusDescStyle.Render(" clear"),
+			statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
+		}
+	case viewCreateProject:
+		keys = []string{
+			statusKeyStyle.Render("↵") + statusDescStyle.Render(" create"),
+			statusKeyStyle.Render("tab") + statusDescStyle.Render(" next"),
 			statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
 		}
 	}

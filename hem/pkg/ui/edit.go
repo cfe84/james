@@ -38,6 +38,7 @@ func newEditModel(c *client, sessionID string) editModel {
 		loading:   true,
 		fields: []formField{
 			{label: "Name", flag: "--name", value: ""},
+			{label: "Project", flag: "--project", value: ""},
 			{label: "System Prompt", flag: "--system-prompt", value: ""},
 			{label: "Path", flag: "--path", value: ""},
 			{label: "Yolo", flag: "--yolo", isBool: true, value: "false"},
@@ -78,12 +79,14 @@ func (m editModel) Update(msg tea.Msg) (editModel, tea.Cmd) {
 		}
 		d := msg.detail
 		m.fields[0].value = d.Name
-		m.fields[1].value = d.SystemPrompt
-		m.fields[2].value = d.Path
+		// Project field (index 1) is left empty — it's a local hem concept,
+		// not available from moneypenny's session detail.
+		m.fields[2].value = d.SystemPrompt
+		m.fields[3].value = d.Path
 		if d.Yolo {
-			m.fields[3].value = "true"
+			m.fields[4].value = "true"
 		} else {
-			m.fields[3].value = "false"
+			m.fields[4].value = "false"
 		}
 		// Store originals for diff.
 		m.original = make([]string, len(m.fields))
@@ -129,8 +132,10 @@ func (m editModel) Update(msg tea.Msg) (editModel, tea.Cmd) {
 				field.value += " "
 			}
 		default:
-			if !field.isBool && len(msg.String()) == 1 {
-				field.value += msg.String()
+			if !field.isBool {
+				if msg.Type == tea.KeyRunes {
+					field.value += string(msg.Runes)
+				}
 			}
 		}
 	}

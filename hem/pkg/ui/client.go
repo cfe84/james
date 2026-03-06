@@ -273,3 +273,25 @@ func (c *client) deleteProject(nameOrID string) error {
 	}
 	return nil
 }
+
+func (c *client) createProject(args []string) error {
+	resp, err := c.send("create", "project", args...)
+	if err != nil {
+		return err
+	}
+	if resp.Status == protocol.StatusError {
+		return fmt.Errorf("%s", resp.Message)
+	}
+	return nil
+}
+
+func (c *client) moveSessionToProject(sessionID, projectNameOrID string) error {
+	resp, err := c.send("update", "session", sessionID, "--project", projectNameOrID)
+	if err != nil {
+		return err
+	}
+	if resp.Status == protocol.StatusError {
+		return fmt.Errorf("%s", resp.Message)
+	}
+	return nil
+}

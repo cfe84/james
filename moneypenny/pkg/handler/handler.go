@@ -52,6 +52,8 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.stopSession(ctx, cmd)
 	case "update_session":
 		return h.updateSession(ctx, cmd)
+	case "import_session":
+		return h.importSession(ctx, cmd)
 	case "get_version":
 		return h.getVersion(cmd)
 	default:
@@ -337,4 +339,42 @@ func (h *Handler) stopSession(_ context.Context, cmd *envelope.Command) *envelop
 	}
 
 	return envelope.SuccessResponse(cmd.RequestID, map[string]string{"session_id": data.SessionID})
+}
+
+func (h *Handler) importSession(_ context.Context, cmd *envelope.Command) *envelope.Response {
+	var data envelope.ImportSessionData
+	if err := json.Unmarshal(cmd.Data, &data); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
+	}
+
+	if data.SessionID == "" || data.Name == "" || data.Agent == "" || data.Path == "" {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id, name, agent, and path are required")
+	}
+
+	// Create session in store.
+	sess := &store.Session{
+		SessionID:    data.SessionID,
+		Name:         data.Name,
+		Agent:        data.Agent,
+		SystemPrompt: data.SystemPrompt,
+		Yolo:         data.Yolo,
+		Path:         data.Path,
+	}
+	if err := h.store.CreateSession(sess); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionAlreadyExists, fmt.Sprintf("session already exists: %s", data.SessionID))
+	}
+
+	// Import conversation turns.
+	for _, turn := range data.Conversation {
+		if err := h.store.AddConversationTurn(data.SessionID, turn.Role, turn.Content); err != nil {
+			h.vlog("failed to add imported conversation turn for session %s: %v", data.SessionID, err)
+		}
+	}
+
+	h.vlog("imported session %s with %d conversation turns", data.SessionID, len(data.Conversation))
+
+	return envelope.SuccessResponse(cmd.RequestID, map[string]interface{}{
+		"session_id": data.SessionID,
+		"turns":      len(data.Conversation),
+	})
 }
