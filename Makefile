@@ -1,5 +1,5 @@
 COMPONENTS := mi6 moneypenny hem
-VERSION := $(shell cat VERSION 2>/dev/null || echo unknown)
+VERSION := $(strip $(file < VERSION))
 
 # Find first existing bin directory for install.
 # On Windows: %LOCALAPPDATA%\Programs or %USERPROFILE%\bin
@@ -50,18 +50,18 @@ else
 endif
 endif
 	@echo "Installing to $(INSTALL_DIR)"
-	-@mkdir -p "$(INSTALL_DIR)" 2>/dev/null
+	-@mkdir -p "$(INSTALL_DIR)"
 ifeq ($(OS),Windows_NT)
-	@cp mi6/bin/mi6-server.exe "$(INSTALL_DIR)/"
-	@cp mi6/bin/mi6-client.exe "$(INSTALL_DIR)/"
-	@cp moneypenny/bin/moneypenny.exe "$(INSTALL_DIR)/"
-	@cp hem/bin/hem.exe "$(INSTALL_DIR)/"
+	@install -m 755 mi6/bin/mi6-server.exe "$(INSTALL_DIR)/"
+	@install -m 755 mi6/bin/mi6-client.exe "$(INSTALL_DIR)/"
+	@install -m 755 moneypenny/bin/moneypenny.exe "$(INSTALL_DIR)/"
+	@install -m 755 hem/bin/hem.exe "$(INSTALL_DIR)/"
 	@echo "Installed to: $(INSTALL_DIR)"
 	@echo "Make sure $(INSTALL_DIR) is in your PATH"
 else
-	@cp mi6/bin/mi6-server "$(INSTALL_DIR)/"
-	@cp mi6/bin/mi6-client "$(INSTALL_DIR)/"
-	@cp moneypenny/bin/moneypenny "$(INSTALL_DIR)/"
-	@cp hem/bin/hem "$(INSTALL_DIR)/"
+	@install -m 755 mi6/bin/mi6-server "$(INSTALL_DIR)/"
+	@install -m 755 mi6/bin/mi6-client "$(INSTALL_DIR)/"
+	@install -m 755 moneypenny/bin/moneypenny "$(INSTALL_DIR)/"
+	@install -m 755 hem/bin/hem "$(INSTALL_DIR)/"
 	@echo "Installed: mi6-server mi6-client moneypenny hem"
 endif
