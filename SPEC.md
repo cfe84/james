@@ -74,7 +74,7 @@ Memory: Moneypenny creates a memory file for all the sessions it handles. It giv
 
 Local deployment: add a `--local` convenience flag that allows moneypenny to run in local mode through fifo.
 
-- We invoke moneypenny with `--fifo FOLDER`
+- We invoke moneypenny with `--fifo FOLDER` or `--local` (defaults to `~/.config/james/moneypenny/fifo`)
 - Moneypenny creates two fifo, `moneypenny-in` and `moneypenny-out`
 - Then it uses these fifo to get input and produce output
 
@@ -136,6 +136,7 @@ Hem has a list of moneypennies it can use. Each instance has a unique name and a
 - Name must be unique.
 - Add a local moneypenny:
     - Local instances use FIFO for communication.
+    - `--local` uses the default FIFO path (`~/.config/james/moneypenny/fifo`)
     - `--fifo-folder FOLDER` (expects `moneypenny-in` and `moneypenny-out` in FOLDER)
     - Or `--fifo-in INPUT_FIFO` and `--fifo-out OUTPUT_FIFO` for custom paths.
 - Add an MI6 moneypenny:

@@ -33,10 +33,17 @@ var Version = "dev"
 func main() {
 	mi6Addr := flag.String("mi6", "", "connect via MI6 (host/session_id)")
 	fifoDir := flag.String("fifo", "", "use named pipes in FOLDER for I/O (creates moneypenny-in and moneypenny-out)")
+	local := flag.Bool("local", false, "run in local FIFO mode using default path (~/.config/james/moneypenny/fifo)")
 	dataDir := flag.String("data-dir", defaultDataDir(), "directory for moneypenny data (db, keys)")
 	showPubKey := flag.Bool("show-public-key", false, "output the public key and exit")
 	verbose := flag.Bool("v", false, "verbose logging to stderr")
 	flag.Parse()
+
+	// --local is shorthand for --fifo with the default path.
+	if *local && *fifoDir == "" {
+		defaultFifo := filepath.Join(defaultDataDir(), "fifo")
+		fifoDir = &defaultFifo
+	}
 
 	vlog := log.New(io.Discard, "[moneypenny] ", log.LstdFlags)
 	if *verbose {

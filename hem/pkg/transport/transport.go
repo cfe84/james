@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 )
 
 // Command is the JSON envelope sent to moneypenny.
@@ -83,47 +84,83 @@ func (c *Client) sendFIFO(ctx context.Context, cmd *Command) (*Response, error) 
 	}
 	data = append(data, '\n')
 
-	// Open both FIFOs. Since moneypenny has them open, these should not block
-	// long. Open out (for reading) in a goroutine to avoid blocking if
-	// moneypenny is waiting for input before producing output.
-	type readResult struct {
+	// Try to open the write FIFO with O_NONBLOCK first to detect if moneypenny
+	// is running. O_WRONLY|O_NONBLOCK returns ENXIO if no reader is connected.
+	inFile, err := os.OpenFile(c.fifoIn, os.O_WRONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		if isENXIO(err) {
+			return nil, fmt.Errorf("moneypenny is not running (no reader on FIFO)")
+		}
+		return nil, fmt.Errorf("opening fifo-in: %w", err)
+	}
+
+	// Open out (for reading) in a goroutine — uses blocking mode since we know
+	// moneypenny is running (the write open succeeded).
+	type openResult struct {
 		file *os.File
 		err  error
 	}
-	outCh := make(chan readResult, 1)
+	outCh := make(chan openResult, 1)
 	go func() {
 		f, err := os.OpenFile(c.fifoOut, os.O_RDONLY, 0)
-		outCh <- readResult{f, err}
+		outCh <- openResult{f, err}
 	}()
 
-	// Write command to moneypenny-in.
-	inFile, err := os.OpenFile(c.fifoIn, os.O_WRONLY, 0)
-	if err != nil {
-		return nil, fmt.Errorf("opening fifo-in: %w", err)
-	}
+	// Write command.
 	if _, err := inFile.Write(data); err != nil {
 		inFile.Close()
 		return nil, fmt.Errorf("writing to fifo-in: %w", err)
 	}
 	inFile.Close()
 
-	// Read response from moneypenny-out.
-	res := <-outCh
-	if res.err != nil {
-		return nil, fmt.Errorf("opening fifo-out: %w", res.err)
+	// Wait for the output FIFO to open.
+	var outFile *os.File
+	select {
+	case res := <-outCh:
+		if res.err != nil {
+			return nil, fmt.Errorf("opening fifo-out: %w", res.err)
+		}
+		outFile = res.file
+	case <-ctx.Done():
+		return nil, fmt.Errorf("timed out waiting for moneypenny response")
 	}
-	defer res.file.Close()
+	defer outFile.Close()
 
-	scanner := bufio.NewScanner(res.file)
-	if !scanner.Scan() {
-		return nil, fmt.Errorf("no response from moneypenny")
-	}
+	// Read response with context deadline.
+	scanCh := make(chan *Response, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		scanner := bufio.NewScanner(outFile)
+		if !scanner.Scan() {
+			errCh <- fmt.Errorf("no response from moneypenny")
+			return
+		}
+		var resp Response
+		if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
+			errCh <- fmt.Errorf("parsing response: %w", err)
+			return
+		}
+		scanCh <- &resp
+	}()
 
-	var resp Response
-	if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
-		return nil, fmt.Errorf("parsing response: %w", err)
+	select {
+	case resp := <-scanCh:
+		return resp, nil
+	case err := <-errCh:
+		return nil, err
+	case <-ctx.Done():
+		return nil, fmt.Errorf("timed out waiting for moneypenny response")
 	}
-	return &resp, nil
+}
+
+// isENXIO checks if an error is an ENXIO syscall error (no reader/writer on FIFO).
+func isENXIO(err error) bool {
+	if pe, ok := err.(*os.PathError); ok {
+		if errno, ok := pe.Err.(syscall.Errno); ok {
+			return errno == syscall.ENXIO
+		}
+	}
+	return false
 }
 
 func (c *Client) sendMI6(ctx context.Context, cmd *Command) (*Response, error) {

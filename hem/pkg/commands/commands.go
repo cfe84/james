@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -29,7 +30,7 @@ func New(s *store.Store, mi6KeyPath string) *Executor {
 
 // CommandHelp maps verb+noun to help text.
 var CommandHelp = map[string]string{
-	"add moneypenny":      "Usage: hem add moneypenny -n NAME [--fifo-folder DIR | --fifo-in PATH --fifo-out PATH | --mi6 ADDR]\n\nRegisters a new moneypenny instance.\n\nFlags:\n  -n, --name         Moneypenny name (required)\n  --fifo-folder      Folder containing moneypenny-in and moneypenny-out FIFOs\n  --fifo-in          Path to moneypenny input FIFO\n  --fifo-out         Path to moneypenny output FIFO\n  --mi6              MI6 server address (host or host/session_id)\n  --session-id       MI6 session ID (combined with --mi6 host; uses default mi6 if --mi6 omitted)",
+	"add moneypenny":      "Usage: hem add moneypenny -n NAME [--local | --fifo-folder DIR | --fifo-in PATH --fifo-out PATH | --mi6 ADDR]\n\nRegisters a new moneypenny instance.\n\nFlags:\n  -n, --name         Moneypenny name (required)\n  --local            Use default local FIFO path (~/.config/james/moneypenny/fifo)\n  --fifo-folder      Folder containing moneypenny-in and moneypenny-out FIFOs\n  --fifo-in          Path to moneypenny input FIFO\n  --fifo-out         Path to moneypenny output FIFO\n  --mi6              MI6 server address (host or host/session_id)\n  --session-id       MI6 session ID (combined with --mi6 host; uses default mi6 if --mi6 omitted)",
 	"list moneypenny":     "Usage: hem list moneypennies\n\nLists all registered moneypennies with name, type, address, and default status.",
 	"ping moneypenny":     "Usage: hem ping moneypenny -n NAME\n\nPings a moneypenny using get_version, displays version.\n\nFlags:\n  -n, --name         Moneypenny name (required)",
 	"delete moneypenny":   "Usage: hem delete moneypenny -n NAME\n\nRemoves a registered moneypenny and its tracked sessions.\n\nFlags:\n  -n, --name         Moneypenny name (required)",
@@ -163,22 +164,42 @@ func (e *Executor) sendCommand(ctx context.Context, mp *store.Moneypenny, method
 }
 
 // resolveSessionMoneypenny looks up which moneypenny a session belongs to.
+// First checks local tracking, then scans all moneypennies as fallback.
 func (e *Executor) resolveSessionMoneypenny(sessionID string) (*store.Moneypenny, error) {
+	// Try local tracking first.
 	mpName, err := e.store.GetSessionMoneypenny(sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("looking up session %q: %w", sessionID, err)
 	}
-	if mpName == "" {
-		return nil, fmt.Errorf("session %q not found in local tracking", sessionID)
+	if mpName != "" {
+		mp, err := e.store.GetMoneypenny(mpName)
+		if err != nil {
+			return nil, fmt.Errorf("getting moneypenny %q: %w", mpName, err)
+		}
+		if mp != nil {
+			return mp, nil
+		}
 	}
-	mp, err := e.store.GetMoneypenny(mpName)
+
+	// Fallback: scan all moneypennies for the session.
+	mps, err := e.store.ListMoneypennies()
 	if err != nil {
-		return nil, fmt.Errorf("getting moneypenny %q: %w", mpName, err)
+		return nil, err
 	}
-	if mp == nil {
-		return nil, fmt.Errorf("moneypenny %q (for session %q) not found", mpName, sessionID)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	for _, candidate := range mps {
+		resp, err := e.sendCommand(ctx, candidate, "get_session", map[string]interface{}{"session_id": sessionID})
+		if err == nil && resp != nil {
+			// Track it locally for next time.
+			e.store.TrackSession(sessionID, candidate.Name)
+			return candidate, nil
+		}
 	}
-	return mp, nil
+
+	return nil, fmt.Errorf("session %q not found on any moneypenny", sessionID)
 }
 
 // parseFlagsFromArgs creates a new FlagSet, applies the setup function to register flags,
@@ -191,6 +212,18 @@ func parseFlagsFromArgs(name string, args []string, setup func(fs *flag.FlagSet)
 		return nil, err
 	}
 	return fs.Args(), nil
+}
+
+// formatTimestamp formats an ISO timestamp into a human-friendly format.
+func formatTimestamp(ts string) string {
+	if ts == "" {
+		return ""
+	}
+	t, err := time.Parse("2006-01-02T15:04:05Z", ts)
+	if err != nil {
+		return ts
+	}
+	return t.Local().Format("Jan 02 15:04")
 }
 
 // moneypennyAddress returns a display address for a moneypenny.
@@ -271,10 +304,12 @@ type HistoryResult struct {
 
 func (e *Executor) AddMoneypenny(args []string) *protocol.Response {
 	var name, fifoFolder, fifoIn, fifoOut, mi6Addr, sessionID string
+	var local bool
 
 	remaining, err := parseFlagsFromArgs("add-moneypenny", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&name, "n", "", "moneypenny name")
 		fs.StringVar(&name, "name", "", "moneypenny name")
+		fs.BoolVar(&local, "local", false, "use default local FIFO path (~/.config/james/moneypenny/fifo)")
 		fs.StringVar(&fifoFolder, "fifo-folder", "", "folder containing moneypenny-in and moneypenny-out FIFOs")
 		fs.StringVar(&fifoIn, "fifo-in", "", "path to moneypenny input FIFO")
 		fs.StringVar(&fifoOut, "fifo-out", "", "path to moneypenny output FIFO")
@@ -285,6 +320,15 @@ func (e *Executor) AddMoneypenny(args []string) *protocol.Response {
 		return protocol.ErrResponse(err.Error())
 	}
 	_ = remaining
+
+	// --local resolves to the default moneypenny FIFO path.
+	if local && fifoFolder == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return protocol.ErrResponse(fmt.Sprintf("cannot determine home directory: %v", err))
+		}
+		fifoFolder = filepath.Join(home, ".config", "james", "moneypenny", "fifo")
+	}
 
 	if name == "" {
 		return protocol.ErrResponse("--name / -n is required")
@@ -1063,7 +1107,7 @@ func (e *Executor) ListSessions(args []string) *protocol.Response {
 	}
 
 	result := TableResult{
-		Headers: []string{"SessionID", "Name", "Status", "Moneypenny"},
+		Headers: []string{"SessionID", "Name", "Status", "Moneypenny", "Created", "Last Active"},
 	}
 
 	ctx := context.Background()
@@ -1074,16 +1118,20 @@ func (e *Executor) ListSessions(args []string) *protocol.Response {
 		}
 
 		var sessions []struct {
-			SessionID string `json:"session_id"`
-			Name      string `json:"name"`
-			Status    string `json:"status"`
+			SessionID    string `json:"session_id"`
+			Name         string `json:"name"`
+			Status       string `json:"status"`
+			CreatedAt    string `json:"created_at"`
+			LastAccessed string `json:"last_accessed"`
 		}
 		if err := json.Unmarshal(resp.Data, &sessions); err != nil {
 			continue
 		}
 
 		for _, s := range sessions {
-			result.Rows = append(result.Rows, []string{s.SessionID, s.Name, s.Status, mp.Name})
+			created := formatTimestamp(s.CreatedAt)
+			lastActive := formatTimestamp(s.LastAccessed)
+			result.Rows = append(result.Rows, []string{s.SessionID, s.Name, s.Status, mp.Name, created, lastActive})
 		}
 	}
 

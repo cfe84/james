@@ -196,11 +196,16 @@ func (h *Handler) listSessions(_ context.Context, cmd *envelope.Command) *envelo
 
 	infos := make([]envelope.SessionInfo, 0, len(sessions))
 	for _, s := range sessions {
-		infos = append(infos, envelope.SessionInfo{
+		info := envelope.SessionInfo{
 			SessionID: s.SessionID,
 			Name:      s.Name,
 			Status:    s.Status,
-		})
+		}
+		if ts, err := h.store.GetSessionTimestamps(s.SessionID); err == nil && ts != nil {
+			info.CreatedAt = ts.FirstTurn.UTC().Format("2006-01-02T15:04:05Z")
+			info.LastAccessed = ts.LastTurn.UTC().Format("2006-01-02T15:04:05Z")
+		}
+		infos = append(infos, info)
 	}
 
 	return envelope.SuccessResponse(cmd.RequestID, infos)
@@ -228,8 +233,9 @@ func (h *Handler) getSession(_ context.Context, cmd *envelope.Command) *envelope
 	conversation := make([]envelope.ConversationTurn, 0, len(turns))
 	for _, t := range turns {
 		conversation = append(conversation, envelope.ConversationTurn{
-			Role:    t.Role,
-			Content: t.Content,
+			Role:      t.Role,
+			Content:   t.Content,
+			CreatedAt: t.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		})
 	}
 

@@ -230,6 +230,27 @@ func (s *Store) AddConversationTurn(sessionID string, role string, content strin
 	return nil
 }
 
+// SessionTimestamps holds the first and last conversation turn timestamps.
+type SessionTimestamps struct {
+	FirstTurn time.Time
+	LastTurn  time.Time
+}
+
+// GetSessionTimestamps returns the first and last conversation turn timestamps for a session.
+func (s *Store) GetSessionTimestamps(sessionID string) (*SessionTimestamps, error) {
+	row := s.db.QueryRow(
+		`SELECT MIN(created_at), MAX(created_at) FROM conversation_turns WHERE session_id = ?`, sessionID,
+	)
+	var minT, maxT sql.NullTime
+	if err := row.Scan(&minT, &maxT); err != nil {
+		return nil, fmt.Errorf("get session timestamps: %w", err)
+	}
+	if !minT.Valid {
+		return nil, nil
+	}
+	return &SessionTimestamps{FirstTurn: minT.Time, LastTurn: maxT.Time}, nil
+}
+
 // GetConversation returns all turns for a session, ordered by creation time.
 func (s *Store) GetConversation(sessionID string) ([]*ConversationTurn, error) {
 	rows, err := s.db.Query(

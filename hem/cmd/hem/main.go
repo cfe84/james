@@ -279,7 +279,7 @@ Server:
   start server [-v]          Start the hem server daemon
 
 Moneypenny management:
-  add moneypenny -n NAME [--fifo-folder DIR | --fifo-in/--fifo-out | --mi6 ADDR]
+  add moneypenny -n NAME [--local | --fifo-folder DIR | --fifo-in/--fifo-out | --mi6 ADDR]
   list moneypennies
   ping moneypenny -n NAME
   delete moneypenny -n NAME

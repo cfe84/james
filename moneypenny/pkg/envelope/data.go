@@ -24,9 +24,11 @@ type SessionIDData struct {
 
 // SessionInfo is returned by list_sessions for each session.
 type SessionInfo struct {
-	SessionID string `json:"session_id"`
-	Name      string `json:"name"`
-	Status    string `json:"status"`
+	SessionID    string `json:"session_id"`
+	Name         string `json:"name"`
+	Status       string `json:"status"`
+	CreatedAt    string `json:"created_at,omitempty"`
+	LastAccessed string `json:"last_accessed,omitempty"`
 }
 
 // SessionDetail is returned by get_session.
@@ -43,8 +45,9 @@ type SessionDetail struct {
 
 // ConversationTurn represents a single prompt/response pair.
 type ConversationTurn struct {
-	Role    string `json:"role"`    // "user" or "assistant"
-	Content string `json:"content"`
+	Role      string `json:"role"`    // "user" or "assistant"
+	Content   string `json:"content"`
+	CreatedAt string `json:"created_at,omitempty"`
 }
 
 // CreateSessionResponse is returned by create_session on success.
