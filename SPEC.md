@@ -44,6 +44,7 @@ Moneypenny is a client deployed on each host, which handles agent sessions. It i
   - `INVALID_PATH` - the provided path does not exist
   - `AGENT_ERROR` - the agent subprocess crashed or returned an error
   - `INVALID_REQUEST` - malformed command or missing required fields
+  - `SCHEDULE_NOT_FOUND` - cancel_schedule with a schedule_id that does not exist
   - `INTERNAL_ERROR` - unexpected internal error
 
 Method: **create_session**: creates a new session with an agent. For now, we'll always use claude. Format of the data is `{ "agent": "claude", "system_prompt": "a system prompt for the agent", "yolo": boolean indicating if the session should be started with --dangerously-skip-permissions, "prompt": "prompt for the agent", "session_id": "GUID used for communication about that session id", "name": "a session name", "path": "the path where to start the agent" }`
@@ -77,6 +78,14 @@ Method: **import_session**: creates a session with pre-existing conversation his
 Method: **git_diff**: runs `git diff` and `git diff --cached` in a session's working directory. Data: `{ "session_id": "id" }`. Returns `{ "diff": "..." }`.
 
 Method: **execute_command**: executes a shell command on the host. Data: `{ "command": "the shell command to run", "path": "/optional/working/directory" }`. Runs the command via `sh -c` in the specified path (or moneypenny's current directory if path is empty). Returns `{ "output": "combined stdout+stderr", "exit_code": 0 }`. Non-zero exit codes are returned in the response (not as errors). Only returns an error envelope if the command fails to execute at all (e.g., path doesn't exist).
+
+Method: **schedule**: creates a scheduled continuation for a session. Data: `{ "session_id": "id", "prompt": "the prompt to send", "at": "RFC3339 timestamp or relative duration" }`. The `at` field accepts RFC3339 timestamps, relative durations (`+2h`, `+30m`), local time (`YYYY-MM-DD HH:MM`, `HH:MM`). Returns `{ "schedule_id": "id", "scheduled_at": "RFC3339 timestamp" }`. When the scheduled time arrives: if the session is idle, continues directly; if the session is busy, queues the prompt via `queue_prompt`.
+
+Method: **list_schedules**: lists pending schedules for a session. Data: `{ "session_id": "id" }`. Returns `{ "schedules": [{ "schedule_id": "id", "prompt": "...", "scheduled_at": "RFC3339", "created_at": "RFC3339" }, ...] }`.
+
+Method: **cancel_schedule**: cancels a pending schedule. Data: `{ "session_id": "id", "schedule_id": "id" }`. Returns success if the schedule existed and was removed. Returns `INVALID_REQUEST` if the schedule_id is not found.
+
+Method: **list_directory**: lists entries in a directory. Data: `{ "path": "/some/path" }`. Returns `{ "path": "/some/path", "entries": [{ "name": "foo", "is_dir": true }, ...] }`. Hidden files (starting with `.`) are excluded. Defaults to `/` if path is empty.
 
 Method: **get_version**: returns the version of moneypenny
 
@@ -252,6 +261,50 @@ Hem manages sessions on moneypennies. It tracks which moneypenny each session li
 - Moneypenny runs `git diff` and `git diff --cached` in the session's working directory.
 - Returns the combined diff output.
 
+## Scheduled Continuation
+
+Sessions can have scheduled continuations — prompts that are automatically sent to the agent at a future time.
+
+### CLI Commands
+
+`hem schedule session SESSION_ID --at TIME --prompt PROMPT` — creates a scheduled continuation.
+
+- `--at` accepts multiple time formats:
+  - RFC3339 timestamps (`2026-03-06T14:30:00Z`)
+  - Relative durations (`+2h`, `+30m`, `+1h30m`)
+  - Local time with date (`2026-03-06 14:30`)
+  - Local time without date (`14:30` — assumes today, or tomorrow if the time has passed)
+- Sends `schedule` to the moneypenny that owns the session.
+
+`hem list schedules --session-id ID` — lists pending schedules for a session. Sends `list_schedules` to the moneypenny.
+
+`hem cancel schedule SCHEDULE_ID --session-id ID` — cancels a pending schedule. Sends `cancel_schedule` to the moneypenny.
+
+### Scheduler
+
+Moneypenny runs a scheduler goroutine that starts on boot and checks for due schedules every 30 seconds.
+
+- When a schedule is due and the session is idle: continues the session directly with the scheduled prompt.
+- When a schedule is due and the session is busy: queues the prompt via `queue_prompt`.
+- Executed schedules are removed from the pending list.
+
+### Agent Self-Scheduling
+
+Agents can create schedules from within their responses by including a special tag:
+
+```
+<schedule at="...">prompt to send later</schedule>
+```
+
+Moneypenny parses agent responses for `<schedule>` tags and creates schedules from them. The `at` attribute accepts the same time formats as the CLI `--at` flag.
+
+Schedule instructions are appended to every session's system prompt automatically, informing the agent of the `<schedule>` tag syntax and its capabilities.
+
+### TUI
+
+- In the chat view, pending schedules are displayed with a ⏰ icon.
+- In command mode, `t` creates a new schedule (two-step input: first the time, then the prompt).
+
 ## Projects
 
 Projects provide context for organizing sessions — a project groups related sessions with shared defaults.
@@ -278,6 +331,14 @@ Projects provide context for organizing sessions — a project groups related se
 ### Delete
 
 `hem delete project NAME_OR_ID` — deletes a project. Sessions linked to it are unlinked but kept.
+
+## Settings
+
+`hem enable SETTING` / `hem disable SETTING` — toggle boolean settings stored in the defaults table.
+
+Available settings:
+- **sound-notification** — when enabled, plays a notification sound (embedded WAV via `afplay` on macOS, `aplay` on Linux) whenever a session finishes (i.e., `pollUntilIdle` completes). The WAV file is embedded at build time from `hem/assets/notification.wav` and written to `~/.config/james/hem/notification.wav` on first use. Disabled by default.
+- **schedule-system-prompt** — when enabled (default: enabled), schedule instructions are appended to every session's system prompt, informing agents of the `<schedule at="...">prompt</schedule>` self-scheduling syntax. Disable to prevent agents from creating their own schedules.
 
 ## Remote Execution
 
@@ -344,7 +405,7 @@ The "reviewed" flag tracks whether the user has seen the latest agent response. 
   - `r` — refresh list
   - `esc` — back to dashboard
 - **Chat view**: full conversation history with markdown rendering (glamour) for assistant messages. Send messages with Enter, scroll with PgUp/PgDn, supports paste. Queued messages show with ⏳ icon and `[Queued]` label. Esc enters command mode; second Esc leaves chat.
-  - Command mode: `c` complete, `d` delete (press twice to confirm), `e` edit, `g` git diff, `s` stop, `x` shell, Enter resume, Esc leave.
+  - Command mode: `c` complete, `d` delete (press twice to confirm), `e` edit, `g` git diff, `s` stop, `t` schedule (two-step: time then prompt), `x` shell, Enter resume, Esc leave.
 - **Moneypennies view**: browse registered moneypennies.
   - `Enter` — ping moneypenny
   - `s` — set as default
@@ -357,7 +418,7 @@ The "reviewed" flag tracks whether the user has seen the latest agent response. 
   - `Ctrl+U` — clear input
   - `PgUp/PgDn` — scroll output
   - `esc` — back
-- **Create form**: fill in prompt, name, project, agent, system prompt, path, yolo. Tab between fields, Enter to submit. When created from project detail, runs async and returns to project view.
+- **Create wizard** (3-step): Step 1 — select moneypenny from a list (arrow keys, Enter). Step 2 — browse remote filesystem to pick a working directory via `list_directory` (Enter to descend, Backspace to go up, Tab to confirm). Step 3 — fill in prompt, name, project, agent, system prompt, yolo (Tab between fields, Enter to submit). Esc navigates back through steps. When created from project detail, runs async and returns to project view.
 - **Edit form**: modify session parameters (name, project, system prompt, path, yolo). Shows change indicators (*) for modified fields. Enter to save, Esc to cancel.
 - **Create project form**: fill in name, moneypenny, agent, path, system prompt.
 - **Edit project form**: modify project parameters. Enter to save, Esc to cancel.

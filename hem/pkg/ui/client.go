@@ -159,7 +159,7 @@ type continueResult struct {
 }
 
 func (c *client) continueSession(sessionID, prompt string) (continueResult, error) {
-	resp, err := c.send("continue", "session", sessionID, prompt)
+	resp, err := c.send("continue", "session", sessionID, "--async", prompt)
 	if err != nil {
 		return continueResult{}, err
 	}
@@ -417,6 +417,113 @@ func (c *client) runCommand(moneypenny, path, command string) (runCommandResult,
 		return runCommandResult{}, fmt.Errorf("parsing result: %w", err)
 	}
 	return result, nil
+}
+
+type dirEntry struct {
+	Name  string `json:"name"`
+	IsDir bool   `json:"is_dir"`
+}
+
+func (c *client) listDirectory(moneypenny, path string) ([]dirEntry, error) {
+	args := []string{}
+	if moneypenny != "" {
+		args = append(args, "-m", moneypenny)
+	}
+	if path != "" {
+		args = append(args, "--path", path)
+	}
+	resp, err := c.send("list-directory", "", args...)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Status == protocol.StatusError {
+		return nil, fmt.Errorf("%s", resp.Message)
+	}
+	var result struct {
+		Path    string     `json:"path"`
+		Entries []dirEntry `json:"entries"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return nil, fmt.Errorf("parsing directory: %w", err)
+	}
+	return result.Entries, nil
+}
+
+type scheduleInfo struct {
+	ID          int64  `json:"id"`
+	SessionID   string `json:"session_id"`
+	Prompt      string `json:"prompt"`
+	ScheduledAt string `json:"scheduled_at"`
+	Status      string `json:"status"`
+	CreatedAt   string `json:"created_at"`
+}
+
+func (c *client) listSchedules(sessionID string) ([]scheduleInfo, error) {
+	resp, err := c.send("list", "schedule", "--session-id", sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Status == protocol.StatusError {
+		return nil, fmt.Errorf("%s", resp.Message)
+	}
+
+	// Check if it's a text result (no schedules found).
+	var text struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(resp.Data, &text) == nil && text.Message != "" {
+		return nil, nil
+	}
+
+	var table struct {
+		Headers []string   `json:"headers"`
+		Rows    [][]string `json:"rows"`
+	}
+	if err := json.Unmarshal(resp.Data, &table); err != nil {
+		return nil, fmt.Errorf("parsing schedules: %w", err)
+	}
+
+	var schedules []scheduleInfo
+	for _, row := range table.Rows {
+		s := scheduleInfo{}
+		if len(row) > 0 {
+			fmt.Sscanf(row[0], "%d", &s.ID)
+		}
+		if len(row) > 1 {
+			s.Status = row[1]
+		}
+		if len(row) > 2 {
+			s.ScheduledAt = row[2]
+		}
+		if len(row) > 3 {
+			s.Prompt = row[3]
+		}
+		s.SessionID = sessionID
+		schedules = append(schedules, s)
+	}
+	return schedules, nil
+}
+
+func (c *client) scheduleSession(sessionID, at, prompt string) error {
+	resp, err := c.send("schedule", "session", sessionID, "--at", at, "--prompt", prompt)
+	if err != nil {
+		return err
+	}
+	if resp.Status == protocol.StatusError {
+		return fmt.Errorf("%s", resp.Message)
+	}
+	return nil
+}
+
+func (c *client) cancelSchedule(sessionID string, scheduleID int64) error {
+	resp, err := c.send("cancel", "schedule", fmt.Sprintf("%d", scheduleID), "--session-id", sessionID)
+	if err != nil {
+		return err
+	}
+	if resp.Status == protocol.StatusError {
+		return fmt.Errorf("%s", resp.Message)
+	}
+	return nil
 }
 
 func (c *client) moveSessionToProject(sessionID, projectNameOrID string) error {

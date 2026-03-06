@@ -75,7 +75,7 @@ moneypenny/
 ├── cmd/moneypenny/main.go      # Entry point: stdio/MI6 modes, key management
 ├── pkg/
 │   ├── envelope/               # JSON protocol types (command/response envelopes, error codes)
-│   ├── store/                  # SQLite persistence (sessions, conversation history)
+│   ├── store/                  # SQLite persistence (sessions, conversation history, schedules)
 │   ├── agent/                  # Agent subprocess runner (claude CLI invocation)
 │   └── handler/                # Command dispatch and method handlers
 └── Makefile
@@ -108,7 +108,11 @@ moneypenny/
 - `import_session` - Create session with pre-existing conversation (no agent run)
 - `git_diff` - Run git diff in session's working directory, return output
 - `execute_command` - Run arbitrary shell command on the host (`sh -c`), return output + exit code
+- `list_directory` - List directory entries (name + is_dir) at a given path, skipping hidden files
 - `get_version` - Return the moneypenny version
+- `schedule` - Schedule a future continuation for a session (prompt + time)
+- `list_schedules` - List all schedules for a session (pending, fired, cancelled)
+- `cancel_schedule` - Cancel a pending schedule by ID
 
 ## Hem - Agent Orchestration CLI
 
@@ -127,6 +131,9 @@ Hem uses a client/server architecture over a Unix domain socket (`~/.config/jame
 ```
 hem/
 ├── go.mod
+├── assets/
+│   ├── embed.go             # go:embed for notification.wav
+│   └── notification.wav     # Notification sound (embedded at build time)
 ├── cmd/hem/main.go          # Entry point: thin CLI client + server startup + chat REPL
 ├── pkg/
 │   ├── cli/                 # Verb+noun command parser, plural/alias normalization
@@ -136,6 +143,8 @@ hem/
 │   ├── store/               # SQLite (moneypenny registry, session tracking, projects)
 │   ├── transport/           # FIFO and MI6 client for talking to moneypennies
 │   ├── commands/            # All command implementations (return structured data)
+│   │   ├── commands.go      # Core dispatch, session/project/moneypenny commands
+│   │   └── notification.go  # Sound notification (embedded wav, afplay/aplay)
 │   ├── output/              # Output formatting (json, text, table, tsv)
 │   └── ui/                  # TUI (bubbletea + lipgloss)
 │       ├── ui.go            # Top-level model, view routing, key bindings
@@ -150,6 +159,7 @@ hem/
 │       ├── diff.go          # Git diff viewer
 │       ├── importform.go    # Import session form
 │       ├── shell.go         # Remote shell (execute_command)
+│       ├── wizard.go        # 3-step create session wizard (mp, path, form)
 │       └── moneypennies.go  # Moneypenny management view
 └── Makefile
 ```
@@ -195,6 +205,12 @@ hem/
 19. **Remote command execution**: `execute_command` runs shell commands on moneypenny hosts via `sh -c`. Exposed in hem as `hem run` and in the TUI as a shell view (`x` key). Shell view can be opened from any session/moneypenny context, inheriting the moneypenny and working directory.
 
 20. **Version display**: All components log their version on startup. `hem --version` shows both client and server versions. TUI shows the version in the status bar.
+
+21. **Sound notifications**: Optional notification sound when a session finishes (agent goes idle after polling). The WAV file is embedded at build time from `hem/assets/notification.wav` using `go:embed`. On first play, it's written to `~/.config/james/hem/notification.wav`. Playback uses `afplay` (macOS) or `aplay` (Linux) in a fire-and-forget goroutine. Controlled via `hem enable sound-notification` / `hem disable sound-notification`, stored in the defaults table. The `enable`/`disable` verbs are generic and validate against a whitelist of known settings.
+
+22. **Create session wizard**: TUI session creation uses a 3-step wizard (`wizard.go`): (1) select moneypenny from a list, (2) browse remote filesystem to pick a working directory via `list_directory` moneypenny method, (3) fill in prompt and options. Esc navigates back through steps. The wizard replaces the old single-screen create form for all TUI entry points (dashboard, project detail, session list).
+
+23. **Scheduled continuation**: Moneypenny supports time-delayed session continuations. Schedules are stored in a `schedules` SQLite table (`id`, `session_id`, `prompt`, `scheduled_at`, `status`, `created_at`). A scheduler goroutine ticks every 30 seconds and also runs on boot to catch any schedules that came due while offline. When a schedule fires: if the session is idle, the prompt is sent as a direct `continue_session`; if the session is busy, the prompt is queued via the existing `queue_prompt` mechanism (same as TUI message queuing). Agents can self-schedule by emitting `<schedule at="...">prompt</schedule>` tags in their output, which moneypenny parses from agent responses. Schedule instructions are appended to every session's system prompt via a `scheduleSystemPromptSuffix` constant so agents know the capability exists. Time values accept RFC3339, relative formats (`+2h`, `+30m`), and local time strings. In the TUI, schedules are displayed in chat view with a clock icon, and the `t` key in command mode opens schedule management.
 
 ## Versioning
 

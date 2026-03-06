@@ -36,6 +36,23 @@ type ConversationTurn struct {
 	CreatedAt time.Time
 }
 
+// Schedule states
+const (
+	SchedulePending = "pending"
+	ScheduleRunning = "running"
+	ScheduleDone    = "done"
+)
+
+// Schedule represents a scheduled prompt for a session.
+type Schedule struct {
+	ID          int64
+	SessionID   string
+	Prompt      string
+	ScheduledAt time.Time
+	Status      string
+	CreatedAt   time.Time
+}
+
 // Store manages the SQLite database.
 type Store struct {
 	db *sql.DB
@@ -99,6 +116,18 @@ CREATE TABLE IF NOT EXISTS prompt_queue (
 );
 
 CREATE INDEX IF NOT EXISTS idx_prompt_queue_session ON prompt_queue(session_id);
+
+CREATE TABLE IF NOT EXISTS schedules (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+    prompt TEXT NOT NULL,
+    scheduled_at DATETIME NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_schedules_session ON schedules(session_id);
+CREATE INDEX IF NOT EXISTS idx_schedules_pending ON schedules(status, scheduled_at);
 `
 	_, err := db.Exec(schema)
 	return err
@@ -382,4 +411,113 @@ func (s *Store) QueueLength(sessionID string) (int, error) {
 		return 0, fmt.Errorf("queue length: %w", err)
 	}
 	return count, nil
+}
+
+// CreateSchedule adds a scheduled prompt for a session.
+func (s *Store) CreateSchedule(sessionID, prompt string, scheduledAt time.Time) (int64, error) {
+	res, err := s.db.Exec(
+		`INSERT INTO schedules (session_id, prompt, scheduled_at, status) VALUES (?, ?, ?, ?)`,
+		sessionID, prompt, scheduledAt.UTC(), SchedulePending,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("create schedule: %w", err)
+	}
+	return res.LastInsertId()
+}
+
+// GetSchedule retrieves a schedule by ID.
+func (s *Store) GetSchedule(id int64) (*Schedule, error) {
+	row := s.db.QueryRow(
+		`SELECT id, session_id, prompt, scheduled_at, status, created_at FROM schedules WHERE id = ?`, id,
+	)
+	sch := &Schedule{}
+	err := row.Scan(&sch.ID, &sch.SessionID, &sch.Prompt, &sch.ScheduledAt, &sch.Status, &sch.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get schedule: %w", err)
+	}
+	return sch, nil
+}
+
+// ListSchedules returns schedules for a session, optionally filtered by status.
+func (s *Store) ListSchedules(sessionID string, statusFilter string) ([]*Schedule, error) {
+	var rows *sql.Rows
+	var err error
+	if statusFilter != "" {
+		rows, err = s.db.Query(
+			`SELECT id, session_id, prompt, scheduled_at, status, created_at
+			 FROM schedules WHERE session_id = ? AND status = ? ORDER BY scheduled_at`, sessionID, statusFilter,
+		)
+	} else {
+		rows, err = s.db.Query(
+			`SELECT id, session_id, prompt, scheduled_at, status, created_at
+			 FROM schedules WHERE session_id = ? ORDER BY scheduled_at`, sessionID,
+		)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list schedules: %w", err)
+	}
+	defer rows.Close()
+
+	var schedules []*Schedule
+	for rows.Next() {
+		sch := &Schedule{}
+		if err := rows.Scan(&sch.ID, &sch.SessionID, &sch.Prompt, &sch.ScheduledAt, &sch.Status, &sch.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan schedule: %w", err)
+		}
+		schedules = append(schedules, sch)
+	}
+	return schedules, rows.Err()
+}
+
+// DueSchedules returns all pending schedules that are due (scheduled_at <= now).
+func (s *Store) DueSchedules() ([]*Schedule, error) {
+	now := time.Now().UTC()
+	rows, err := s.db.Query(
+		`SELECT id, session_id, prompt, scheduled_at, status, created_at
+		 FROM schedules WHERE status = ? AND scheduled_at <= ? ORDER BY scheduled_at`,
+		SchedulePending, now,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("due schedules: %w", err)
+	}
+	defer rows.Close()
+
+	var schedules []*Schedule
+	for rows.Next() {
+		sch := &Schedule{}
+		if err := rows.Scan(&sch.ID, &sch.SessionID, &sch.Prompt, &sch.ScheduledAt, &sch.Status, &sch.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan schedule: %w", err)
+		}
+		schedules = append(schedules, sch)
+	}
+	return schedules, rows.Err()
+}
+
+// UpdateScheduleStatus updates the status of a schedule.
+func (s *Store) UpdateScheduleStatus(id int64, status string) error {
+	res, err := s.db.Exec(`UPDATE schedules SET status = ? WHERE id = ?`, status, id)
+	if err != nil {
+		return fmt.Errorf("update schedule status: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("schedule %d not found", id)
+	}
+	return nil
+}
+
+// CancelSchedule cancels a pending schedule. Returns error if not pending.
+func (s *Store) CancelSchedule(id int64) error {
+	res, err := s.db.Exec(`DELETE FROM schedules WHERE id = ? AND status = ?`, id, SchedulePending)
+	if err != nil {
+		return fmt.Errorf("cancel schedule: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("schedule %d not found or not pending", id)
+	}
+	return nil
 }

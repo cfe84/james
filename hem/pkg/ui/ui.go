@@ -23,6 +23,7 @@ const (
 	viewEditProject
 	viewMoneypennies
 	viewShell
+	viewWizard
 )
 
 // Model is the top-level bubbletea model.
@@ -42,6 +43,7 @@ type Model struct {
 	diff          diffModel
 	moneypennies  moneypenniesModel
 	shell         shellModel
+	wizard        wizardModel
 	width         int
 	height        int
 	client        *client
@@ -97,6 +99,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.moneypennies.height = h
 		m.shell.width = msg.Width
 		m.shell.height = h
+		m.wizard.width = msg.Width
+		m.wizard.height = h
 		return m, nil
 
 	case tea.KeyMsg:
@@ -164,6 +168,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateMoneypennies(msg)
 		case viewShell:
 			return m.updateShell(msg)
+		case viewWizard:
+			return m.updateWizard(msg)
 		}
 
 	// Route messages to appropriate view.
@@ -190,6 +196,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case moneypenniesLoadedMsg, moneypennyDeletedMsg, moneypennyPingedMsg, moneypennyDefaultSetMsg:
 		var cmd tea.Cmd
 		m.moneypennies, cmd = m.moneypennies.Update(msg)
+		return m, cmd
+
+	case wizardMPLoadedMsg, wizardDirLoadedMsg:
+		var cmd tea.Cmd
+		m.wizard, cmd = m.wizard.Update(msg)
 		return m, cmd
 
 	case projectsLoadedMsg, projectDeletedMsg:
@@ -331,15 +342,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sessionCreatedMsg:
 		cm := msg
+
+		// Determine if this came from wizard or old create form.
+		isWizard := m.currentView == viewWizard
+		isAsync := (isWizard && m.wizard.async) || (!isWizard && m.create.async)
+
 		if cm.err != nil {
-			m.create.err = cm.err
-			m.create.creating = false
+			if isWizard {
+				m.wizard.err = cm.err
+				m.wizard.creating = false
+			} else {
+				m.create.err = cm.err
+				m.create.creating = false
+			}
 			return m, nil
 		}
 		m.statusMsg = fmt.Sprintf("Session %s created", truncate(cm.sessionID, 12))
 
 		// If async, go back to where we came from instead of entering chat.
-		if m.create.async {
+		if isAsync {
 			prev := m.previousView
 			m.currentView = prev
 			switch prev {
@@ -360,8 +381,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.chat.width = m.width
 		m.chat.height = m.height - 3
 		if cm.response != "" {
+			var prompt string
+			if isWizard {
+				prompt = m.wizard.fields[0].value
+			} else {
+				prompt = m.create.fields[0].value
+			}
 			m.chat.conversation = []conversationTurn{
-				{Role: "user", Content: m.create.fields[0].value},
+				{Role: "user", Content: prompt},
 				{Role: "assistant", Content: cm.response},
 			}
 			m.chat.loading = false
@@ -457,6 +484,9 @@ func (m Model) handleEsc() (tea.Model, tea.Cmd) {
 			m.dashboard.loading = true
 			return m, m.dashboard.loadDashboard()
 		}
+	case viewWizard:
+		// Delegate to updateWizard which handles step-based back navigation.
+		return m.updateWizard(tea.KeyMsg{Type: tea.KeyEscape})
 	case viewShell:
 		prev := m.previousView
 		m.currentView = prev
@@ -504,12 +534,12 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.dashboard.deleteSession(e.SessionID)
 		}
 	case "n":
-		m.create = newCreateModel(m.client)
-		m.create.width = m.width
-		m.create.height = m.height - 3
-		m.currentView = viewCreate
+		m.wizard = newWizardModel(m.client)
+		m.wizard.width = m.width
+		m.wizard.height = m.height - 3
+		m.currentView = viewWizard
 		m.previousView = viewDashboard
-		return m, nil
+		return m, m.wizard.Init()
 	case "e":
 		e := m.dashboard.selectedEntry()
 		if e != nil {
@@ -649,12 +679,12 @@ func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.diff.loadDiff()
 		}
 	case "n":
-		m.create = newCreateModelForProject(m.client, m.projectDetail.projectFilter)
-		m.create.width = m.width
-		m.create.height = m.height - 3
-		m.currentView = viewCreate
+		m.wizard = newWizardModelForProject(m.client, m.projectDetail.projectFilter)
+		m.wizard.width = m.width
+		m.wizard.height = m.height - 3
+		m.currentView = viewWizard
 		m.previousView = viewProjectDetail
-		return m, nil
+		return m, m.wizard.Init()
 	case "x":
 		e := m.projectDetail.selectedEntry()
 		if e != nil {
@@ -686,12 +716,12 @@ func (m Model) updateSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.chat.loadHistory()
 		}
 	case "n":
-		m.create = newCreateModel(m.client)
-		m.create.width = m.width
-		m.create.height = m.height - 3
-		m.currentView = viewCreate
+		m.wizard = newWizardModel(m.client)
+		m.wizard.width = m.width
+		m.wizard.height = m.height - 3
+		m.currentView = viewWizard
 		m.previousView = viewSessions
-		return m, nil
+		return m, m.wizard.Init()
 	case "e":
 		s := m.sessions.selectedSession()
 		if s != nil {
@@ -801,6 +831,14 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.currentView = viewShell
 			m.previousView = viewChat
 			return m, nil
+		case "t":
+			m.chat.confirmDelete = false
+			m.chat.commandMode = false
+			m.chat.scheduling = true
+			m.chat.scheduleAt = ""
+			m.chat.input = ""
+			m.chat.cursorPos = 0
+			return m, nil
 		default:
 			m.chat.confirmDelete = false
 		}
@@ -889,6 +927,42 @@ func (m Model) updateShell(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m Model) updateWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.String() == "esc" {
+		switch m.wizard.step {
+		case wizardStepMoneypenny:
+			// Leave wizard entirely.
+			m.currentView = m.previousView
+			switch m.previousView {
+			case viewDashboard:
+				m.dashboard.loading = true
+				return m, m.dashboard.loadDashboard()
+			case viewProjectDetail:
+				m.projectDetail.loading = true
+				return m, m.projectDetail.loadDashboard()
+			case viewSessions:
+				m.sessions.loading = true
+				return m, m.sessions.loadSessions()
+			default:
+				m.currentView = viewDashboard
+				m.dashboard.loading = true
+				return m, m.dashboard.loadDashboard()
+			}
+		case wizardStepPath:
+			m.wizard.step = wizardStepMoneypenny
+			m.wizard.err = nil
+			return m, nil
+		case wizardStepForm:
+			m.wizard.step = wizardStepPath
+			m.wizard.err = nil
+			return m, nil
+		}
+	}
+	var cmd tea.Cmd
+	m.wizard, cmd = m.wizard.Update(msg)
+	return m, cmd
+}
+
 func (m Model) View() string {
 	var content string
 	switch m.currentView {
@@ -918,6 +992,8 @@ func (m Model) View() string {
 		content = m.moneypennies.View()
 	case viewShell:
 		content = m.shell.View()
+	case viewWizard:
+		content = m.wizard.View()
 	}
 
 	statusBar := m.renderStatusBar()
@@ -994,13 +1070,26 @@ func (m Model) renderStatusBar() string {
 			statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
 		}
 	case viewChat:
-		if m.chat.commandMode {
+		if m.chat.scheduling {
+			if m.chat.scheduleAt == "" {
+				keys = []string{
+					statusKeyStyle.Render("↵") + statusDescStyle.Render(" confirm time"),
+					statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
+				}
+			} else {
+				keys = []string{
+					statusKeyStyle.Render("↵") + statusDescStyle.Render(" schedule"),
+					statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
+				}
+			}
+		} else if m.chat.commandMode {
 			keys = []string{
 				statusKeyStyle.Render("c") + statusDescStyle.Render(" complete"),
 				statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
 				statusKeyStyle.Render("e") + statusDescStyle.Render(" edit"),
 				statusKeyStyle.Render("g") + statusDescStyle.Render(" git diff"),
 				statusKeyStyle.Render("s") + statusDescStyle.Render(" stop"),
+				statusKeyStyle.Render("t") + statusDescStyle.Render(" schedule"),
 				statusKeyStyle.Render("x") + statusDescStyle.Render(" shell"),
 				statusKeyStyle.Render("↵") + statusDescStyle.Render(" resume"),
 				statusKeyStyle.Render("esc") + statusDescStyle.Render(" leave"),
@@ -1061,6 +1150,27 @@ func (m Model) renderStatusBar() string {
 			statusKeyStyle.Render("pgup/dn") + statusDescStyle.Render(" scroll"),
 			statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
 		}
+	case viewWizard:
+		switch m.wizard.step {
+		case wizardStepMoneypenny:
+			keys = []string{
+				statusKeyStyle.Render("↵") + statusDescStyle.Render(" select"),
+				statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
+			}
+		case wizardStepPath:
+			keys = []string{
+				statusKeyStyle.Render("↵") + statusDescStyle.Render(" open"),
+				statusKeyStyle.Render("tab") + statusDescStyle.Render(" confirm path"),
+				statusKeyStyle.Render("⌫") + statusDescStyle.Render(" up"),
+				statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
+			}
+		case wizardStepForm:
+			keys = []string{
+				statusKeyStyle.Render("↵") + statusDescStyle.Render(" create"),
+				statusKeyStyle.Render("tab") + statusDescStyle.Render(" next"),
+				statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
+			}
+		}
 	}
 
 	left := lipgloss.JoinHorizontal(lipgloss.Left, keys...)
@@ -1080,7 +1190,9 @@ func (m Model) renderStatusBar() string {
 			gap = 0
 		}
 	}
-	padding := statusBarStyle.Render(fmt.Sprintf("%*s", gap, ""))
+	// Use a plain style (no padding) for the gap filler so it doesn't add extra width.
+	gapStyle := lipgloss.NewStyle().Background(colorPrimary)
+	padding := gapStyle.Render(fmt.Sprintf("%*s", gap, ""))
 
 	return left + padding + right
 }

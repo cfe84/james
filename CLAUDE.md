@@ -59,7 +59,9 @@ Each component has its own `go.mod` and `Makefile`. Version is injected from `VE
 - **`hem/cmd/hem/main.go`** — CLI entry point, response formatting, chat REPL, server startup.
 - **`hem/pkg/ui/ui.go`** — TUI main model with view routing and key bindings.
 - **`hem/pkg/ui/dashboard.go`** — Dashboard view (attention-based session grouping).
+- **`hem/pkg/ui/wizard.go`** — 3-step create session wizard (moneypenny → path → form).
 - **`hem/pkg/ui/client.go`** — TUI client wrapper for server communication.
+- **`hem/pkg/commands/notification.go`** — Sound notification on task completion.
 - **`moneypenny/pkg/handler/handler.go`** — All moneypenny command handlers.
 - **`moneypenny/pkg/envelope/data.go`** — Protocol data types for moneypenny commands.
 
@@ -74,13 +76,14 @@ Each component has its own `go.mod` and `Makefile`. Version is injected from `VE
 
 | View | File | Key bindings |
 |------|------|-------------|
-| Dashboard | `dashboard.go` | Enter=chat, a=toggle done, c=complete, d=delete, e=edit, g=diff, n=new, x=shell, m=moneypennies, p=projects, l=sessions |
+| Dashboard | `dashboard.go` | Enter=chat, a=toggle done, c=complete, d=delete, e=edit, g=diff, n=new (wizard), x=shell, m=moneypennies, p=projects, l=sessions |
 | Projects | `projects.go` | Enter=open, e=edit, n=new, d=delete |
-| Project detail | `dashboard.go` (reused) | Enter=chat, c=complete, d=delete, e=edit, g=diff, n=new, x=shell |
-| Sessions | `sessions.go` | Enter=chat, n=new, e=edit, d=delete, g=diff, i=import, s=stop, x=shell |
-| Chat | `chat.go` | Enter=send, Esc=command mode. Command: c=complete, d=delete, e=edit, g=diff, s=stop, x=shell |
+| Project detail | `dashboard.go` (reused) | Enter=chat, c=complete, d=delete, e=edit, g=diff, n=new (wizard), x=shell |
+| Sessions | `sessions.go` | Enter=chat, n=new (wizard), e=edit, d=delete, g=diff, i=import, s=stop, x=shell |
+| Chat | `chat.go` | Enter=send, ^J=newline, Esc=command mode, Del=delete right, Alt+←/→=word nav. Command: c=complete, d=delete, e=edit, g=diff, s=stop, t=schedule, x=shell |
 | Shell | `shell.go` | Enter=run, Ctrl+U=clear, PgUp/PgDn=scroll |
 | Moneypennies | `moneypennies.go` | Enter=ping, s=set default, d=delete, x=shell |
+| Create wizard | `wizard.go` | 3-step: select moneypenny → browse path → fill form. Esc=back/cancel, Enter=select/submit, Tab=confirm path (step 2) |
 | Create session | `create.go` | Tab=next field, Enter=submit |
 | Edit session | `edit.go` | Tab=next field, Enter=save |
 | Create project | `projects.go` | Tab=next field, Enter=submit |

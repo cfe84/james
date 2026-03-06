@@ -64,6 +64,11 @@ var CommandHelp = map[string]string{
 	"complete session":    "Usage: hem complete session SESSION_ID\n\nMarks a session as completed in hem's local tracking.",
 	"diff session":        "Usage: hem diff session SESSION_ID\n\nShows git diff for a session's working directory.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)",
 	"run ":                "Usage: hem run [-m MONEYPENNY] [--path PATH] [--session-id ID] COMMAND\n\nExecutes a shell command on a remote moneypenny.\n\nFlags:\n  -m, --moneypenny   Moneypenny name (uses default if not set)\n  --path             Working directory on the remote host\n  --session-id       Use the moneypenny and path from this session",
+	"schedule session":    "Usage: hem schedule session SESSION_ID --at TIME --prompt PROMPT\n\nSchedules a prompt for a session at a future time.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)\n  --at               When to send (RFC3339, or relative like +2h, +30m)\n  --prompt           Prompt to send",
+	"list schedule":       "Usage: hem list schedules [--session-id SESSION_ID]\n\nLists scheduled prompts for a session.\n\nFlags:\n  --session-id       Session ID (required)",
+	"cancel schedule":     "Usage: hem cancel schedule SCHEDULE_ID\n\nCancels a pending schedule.",
+	"enable":              "Usage: hem enable SETTING\n\nEnables a boolean setting.\n\nAvailable settings:\n  sound-notification   Play a sound when a session finishes",
+	"disable":             "Usage: hem disable SETTING\n\nDisables a boolean setting.\n\nAvailable settings:\n  sound-notification   Play a sound when a session finishes",
 	"dashboard":           "Usage: hem dashboard [--project NAME] [--all]\n\nShows a dashboard of sessions grouped by attention state.\n\nFlags:\n  --project          Filter by project name\n  --all              Include completed sessions",
 	"import session":       "Usage: hem import session FILE.jsonl|SESSION_ID [-m MONEYPENNY] [--name NAME] [--project PROJECT]\n\nImports an existing Claude Code session from a JSONL file or by session ID.\nIf the argument is not a file on disk, it is treated as a session ID and\nsearched for in ~/.claude/projects/ subdirectories.\n\nFlags:\n  -m, --moneypenny   Moneypenny name (uses default if not set)\n  --name             Session name (default: first user message)\n  --agent            Agent (default: claude)\n  --path             Working directory (default: from JSONL or default)\n  --project          Project name or ID",
 }
@@ -91,6 +96,16 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 
 	if verb == "get-version" {
 		return protocol.OKResponse(map[string]string{"version": e.Version})
+	}
+
+	if verb == "enable" {
+		return e.EnableSetting(noun)
+	}
+	if verb == "disable" {
+		return e.DisableSetting(noun)
+	}
+	if verb == "list-directory" {
+		return e.ListDirectory(noun, args)
 	}
 
 	switch verb + " " + noun {
@@ -157,6 +172,12 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.DiffSession(args)
 	case "import session":
 		return e.ImportSession(args)
+	case "schedule session":
+		return e.ScheduleSession(args)
+	case "list schedule":
+		return e.ListSchedules(args)
+	case "cancel schedule":
+		return e.CancelSchedule(args)
 	default:
 		return protocol.ErrResponse(fmt.Sprintf("unknown command: %s %s", verb, noun))
 	}
@@ -230,6 +251,8 @@ func (e *Executor) pollUntilIdle(ctx context.Context, mp *store.Moneypenny, sess
 		}
 
 		if detail.Status != "working" {
+			e.playNotificationSound()
+
 			// Fetch conversation to get the last assistant response.
 			convResp, err := e.sendCommand(ctx, mp, "get_session_conversation", map[string]interface{}{"session_id": sessionID})
 			if err != nil {
@@ -746,6 +769,33 @@ func (e *Executor) ListDefaults(args []string) *protocol.Response {
 	}
 
 	return protocol.OKResponse(result)
+}
+
+// validSettings lists the settings that can be toggled with enable/disable.
+var validSettings = map[string]bool{
+	"sound-notification": true,
+}
+
+// EnableSetting enables a boolean setting.
+func (e *Executor) EnableSetting(name string) *protocol.Response {
+	if !validSettings[name] {
+		return protocol.ErrResponse(fmt.Sprintf("unknown setting: %q", name))
+	}
+	if err := e.store.SetDefault(name, "true"); err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	return protocol.OKResponse(TextResult{Message: fmt.Sprintf("%s enabled.", name)})
+}
+
+// DisableSetting disables a boolean setting.
+func (e *Executor) DisableSetting(name string) *protocol.Response {
+	if !validSettings[name] {
+		return protocol.ErrResponse(fmt.Sprintf("unknown setting: %q", name))
+	}
+	if err := e.store.SetDefault(name, "false"); err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	return protocol.OKResponse(TextResult{Message: fmt.Sprintf("%s disabled.", name)})
 }
 
 // ---------------------------------------------------------------------------
@@ -1852,6 +1902,71 @@ func (e *Executor) RunCommand(noun string, args []string) *protocol.Response {
 	return protocol.OKResponse(result)
 }
 
+// ListDirectoryResult is returned by ListDirectory.
+type ListDirectoryResult struct {
+	Path    string          `json:"path"`
+	Entries []DirEntryInfo  `json:"entries"`
+}
+
+type DirEntryInfo struct {
+	Name  string `json:"name"`
+	IsDir bool   `json:"is_dir"`
+}
+
+func (e *Executor) ListDirectory(noun string, args []string) *protocol.Response {
+	var mpName, pathArg string
+
+	remaining, err := parseFlagsFromArgs("list-directory", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&mpName, "m", "", "moneypenny name")
+		fs.StringVar(&mpName, "moneypenny", "", "moneypenny name")
+		fs.StringVar(&pathArg, "path", "", "directory path")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	// Path can come from noun or --path flag or remaining args.
+	if pathArg == "" && noun != "" {
+		pathArg = noun
+	}
+	if pathArg == "" && len(remaining) > 0 {
+		pathArg = remaining[0]
+	}
+	if pathArg == "" {
+		pathArg = "/"
+	}
+
+	if mpName == "" {
+		mpName, _ = e.store.GetDefault("moneypenny")
+	}
+	if mpName == "" {
+		return protocol.ErrResponse("moneypenny is required (use -m or set a default)")
+	}
+
+	mp, err := e.store.GetMoneypenny(mpName)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if mp == nil {
+		return protocol.ErrResponse(fmt.Sprintf("moneypenny %q not found", mpName))
+	}
+
+	ctx := context.Background()
+	resp, err := e.sendCommand(ctx, mp, "list_directory", map[string]interface{}{
+		"path": pathArg,
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	var result ListDirectoryResult
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("parsing result: %v", err))
+	}
+
+	return protocol.OKResponse(result)
+}
+
 func (e *Executor) ImportSession(args []string) *protocol.Response {
 	var mpName, sessionName, agentName, pathArg, projectNameOrID string
 
@@ -2241,7 +2356,10 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 		sortKey := 1 // WORKING
 		if sess.HemStatus == "completed" {
 			sortKey = 3
-		} else if mpStatus == "idle" || mpStatus == "offline" || mpStatus == "unknown" {
+		} else if mpStatus == "unknown" {
+			// Moneypenny is reachable but doesn't know this session — always IDLE.
+			sortKey = 2
+		} else if mpStatus == "idle" || mpStatus == "offline" {
 			if sess.Reviewed {
 				sortKey = 2 // IDLE
 			} else {
@@ -2251,7 +2369,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 
 		// Display "ready" instead of "idle" for unreviewed sessions.
 		displayStatus := mpStatus
-		if (mpStatus == "idle" || mpStatus == "offline" || mpStatus == "unknown") && !sess.Reviewed {
+		if (mpStatus == "idle" || mpStatus == "offline") && !sess.Reviewed {
 			displayStatus = "ready"
 		}
 
@@ -2340,4 +2458,231 @@ func (e *Executor) TestMI6(args []string) *protocol.Response {
 	return protocol.OKResponse(TextResult{
 		Message: fmt.Sprintf("MI6 connectivity OK. Connected to %s, session %s.", mi6Addr, sessionID),
 	})
+}
+
+// ScheduleSession schedules a prompt for a session at a future time.
+func (e *Executor) ScheduleSession(args []string) *protocol.Response {
+	var sessionID, atStr, prompt string
+
+	remaining, err := parseFlagsFromArgs("schedule-session", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&sessionID, "session-id", "", "session ID")
+		fs.StringVar(&atStr, "at", "", "when to send (RFC3339 or relative like +2h)")
+		fs.StringVar(&prompt, "prompt", "", "prompt to send")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if sessionID == "" && len(remaining) > 0 {
+		sessionID = remaining[0]
+		remaining = remaining[1:]
+	}
+	if sessionID == "" {
+		return protocol.ErrResponse("session_id is required")
+	}
+
+	if atStr == "" {
+		return protocol.ErrResponse("--at is required (e.g. --at +2h or --at 2026-03-07T15:00:00Z)")
+	}
+
+	if prompt == "" && len(remaining) > 0 {
+		prompt = strings.TrimSpace(strings.Join(remaining, " "))
+	}
+	if prompt == "" {
+		return protocol.ErrResponse("--prompt is required")
+	}
+
+	// Parse the time.
+	scheduledAt, err := parseScheduleTime(atStr)
+	if err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("invalid --at value: %v", err))
+	}
+
+	mp, err := e.resolveSessionMoneypenny(sessionID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	ctx := context.Background()
+	resp, err := e.sendCommand(ctx, mp, "schedule", map[string]interface{}{
+		"session_id":   sessionID,
+		"prompt":       prompt,
+		"scheduled_at": scheduledAt.UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	var result struct {
+		ScheduleID  int64  `json:"schedule_id"`
+		SessionID   string `json:"session_id"`
+		ScheduledAt string `json:"scheduled_at"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("parsing result: %v", err))
+	}
+
+	return protocol.OKResponse(TextResult{
+		Message: fmt.Sprintf("Scheduled prompt for session %s at %s (schedule #%d)", result.SessionID, result.ScheduledAt, result.ScheduleID),
+	})
+}
+
+// ListSchedules lists scheduled prompts for a session.
+func (e *Executor) ListSchedules(args []string) *protocol.Response {
+	var sessionID string
+
+	remaining, err := parseFlagsFromArgs("list-schedules", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&sessionID, "session-id", "", "session ID")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if sessionID == "" && len(remaining) > 0 {
+		sessionID = remaining[0]
+	}
+	if sessionID == "" {
+		return protocol.ErrResponse("session_id is required")
+	}
+
+	mp, err := e.resolveSessionMoneypenny(sessionID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	ctx := context.Background()
+	resp, err := e.sendCommand(ctx, mp, "list_schedules", map[string]interface{}{
+		"session_id": sessionID,
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	var result ScheduleListResult
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("parsing result: %v", err))
+	}
+
+	if len(result.Schedules) == 0 {
+		return protocol.OKResponse(TextResult{Message: "No schedules found."})
+	}
+
+	var rows [][]string
+	for _, s := range result.Schedules {
+		truncPrompt := s.Prompt
+		if len(truncPrompt) > 60 {
+			truncPrompt = truncPrompt[:57] + "..."
+		}
+		rows = append(rows, []string{
+			fmt.Sprintf("%d", s.ID),
+			s.Status,
+			s.ScheduledAt,
+			truncPrompt,
+		})
+	}
+
+	return protocol.OKResponse(TableResult{
+		Headers: []string{"ID", "Status", "Scheduled At", "Prompt"},
+		Rows:    rows,
+	})
+}
+
+// CancelSchedule cancels a pending schedule.
+func (e *Executor) CancelSchedule(args []string) *protocol.Response {
+	if len(args) == 0 {
+		return protocol.ErrResponse("schedule_id is required")
+	}
+
+	var scheduleID int64
+	if _, err := fmt.Sscanf(args[0], "%d", &scheduleID); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("invalid schedule_id: %s", args[0]))
+	}
+
+	// We need a session to find the moneypenny. For cancel, we need the schedule ID
+	// but we don't know which moneypenny has it. We'll need --session-id or try all.
+	var sessionID string
+	if len(args) > 1 {
+		// Check for --session-id flag.
+		for i, a := range args {
+			if a == "--session-id" && i+1 < len(args) {
+				sessionID = args[i+1]
+			}
+		}
+	}
+
+	if sessionID == "" {
+		return protocol.ErrResponse("--session-id is required for cancel schedule")
+	}
+
+	mp, err := e.resolveSessionMoneypenny(sessionID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	ctx := context.Background()
+	_, err = e.sendCommand(ctx, mp, "cancel_schedule", map[string]interface{}{
+		"schedule_id": scheduleID,
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	return protocol.OKResponse(TextResult{
+		Message: fmt.Sprintf("Schedule #%d cancelled.", scheduleID),
+	})
+}
+
+// ScheduleListResult holds the list_schedules response.
+type ScheduleListResult struct {
+	Schedules []ScheduleInfoResult `json:"schedules"`
+}
+
+// ScheduleInfoResult holds info about a single schedule.
+type ScheduleInfoResult struct {
+	ID          int64  `json:"id"`
+	SessionID   string `json:"session_id"`
+	Prompt      string `json:"prompt"`
+	ScheduledAt string `json:"scheduled_at"`
+	Status      string `json:"status"`
+	CreatedAt   string `json:"created_at"`
+}
+
+// parseScheduleTime parses a time string that can be RFC3339 or relative like "+2h", "+30m".
+func parseScheduleTime(s string) (time.Time, error) {
+	// Try RFC3339 first.
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+
+	// Try relative time.
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, "+") {
+		d, err := time.ParseDuration(s[1:])
+		if err == nil {
+			return time.Now().UTC().Add(d), nil
+		}
+	}
+
+	// Try common date/time formats (local time).
+	formats := []string{
+		"2006-01-02 15:04",
+		"2006-01-02T15:04",
+		"2006-01-02 15:04:05",
+		"15:04",
+	}
+	for _, f := range formats {
+		if t, err := time.ParseInLocation(f, s, time.Local); err == nil {
+			// For time-only, use today's date.
+			if f == "15:04" {
+				now := time.Now()
+				t = time.Date(now.Year(), now.Month(), now.Day(), t.Hour(), t.Minute(), 0, 0, time.Local)
+				if t.Before(now) {
+					t = t.Add(24 * time.Hour)
+				}
+			}
+			return t.UTC(), nil
+		}
+	}
+
+	return time.Time{}, fmt.Errorf("cannot parse time %q (use RFC3339, +2h, or YYYY-MM-DD HH:MM)", s)
 }

@@ -90,6 +90,62 @@ type ContinueSessionResponse struct {
 	Response  string `json:"response"`
 }
 
+// ListDirectoryData is the data payload for list_directory.
+type ListDirectoryData struct {
+	Path string `json:"path"`
+}
+
+// DirEntry represents a single directory entry.
+type DirEntry struct {
+	Name  string `json:"name"`
+	IsDir bool   `json:"is_dir"`
+}
+
+// ListDirectoryResponse is returned by list_directory.
+type ListDirectoryResponse struct {
+	Path    string     `json:"path"`
+	Entries []DirEntry `json:"entries"`
+}
+
+// ScheduleData is the data payload for schedule.
+type ScheduleData struct {
+	SessionID   string `json:"session_id"`
+	Prompt      string `json:"prompt"`
+	ScheduledAt string `json:"scheduled_at"` // RFC3339 UTC
+}
+
+// ScheduleResponse is returned by schedule on success.
+type ScheduleResponse struct {
+	ScheduleID  int64  `json:"schedule_id"`
+	SessionID   string `json:"session_id"`
+	ScheduledAt string `json:"scheduled_at"`
+}
+
+// ListSchedulesData is the data payload for list_schedules.
+type ListSchedulesData struct {
+	SessionID string `json:"session_id"`
+}
+
+// ScheduleInfo represents a schedule in list responses.
+type ScheduleInfo struct {
+	ID          int64  `json:"id"`
+	SessionID   string `json:"session_id"`
+	Prompt      string `json:"prompt"`
+	ScheduledAt string `json:"scheduled_at"`
+	Status      string `json:"status"`
+	CreatedAt   string `json:"created_at"`
+}
+
+// ListSchedulesResponse is returned by list_schedules.
+type ListSchedulesResponse struct {
+	Schedules []ScheduleInfo `json:"schedules"`
+}
+
+// CancelScheduleData is the data payload for cancel_schedule.
+type CancelScheduleData struct {
+	ScheduleID int64 `json:"schedule_id"`
+}
+
 // ExecuteCommandData is the data payload for execute_command.
 type ExecuteCommandData struct {
 	Command string `json:"command"`

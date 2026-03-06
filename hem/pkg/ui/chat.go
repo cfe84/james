@@ -23,6 +23,7 @@ type chatModel struct {
 	sessionID    string
 	sessionName  string
 	conversation []conversationTurn
+	schedules    []scheduleInfo
 	input        string
 	cursorPos    int
 	width        int
@@ -33,6 +34,8 @@ type chatModel struct {
 	sending       bool
 	commandMode   bool
 	confirmDelete bool
+	scheduling    bool   // in schedule prompt entry mode
+	scheduleAt    string // time for the scheduled prompt
 	client        *client
 }
 
@@ -57,6 +60,15 @@ type messageSentMsg struct {
 	err      error
 }
 
+type schedulesLoadedMsg struct {
+	schedules []scheduleInfo
+	err       error
+}
+
+type scheduleCreatedMsg struct {
+	err error
+}
+
 func (m chatModel) loadHistory() tea.Cmd {
 	return func() tea.Msg {
 		turns, err := m.client.getHistory(m.sessionID)
@@ -71,6 +83,20 @@ func (m chatModel) sendMessage(prompt string) tea.Cmd {
 	}
 }
 
+func (m chatModel) loadSchedules() tea.Cmd {
+	return func() tea.Msg {
+		schedules, err := m.client.listSchedules(m.sessionID)
+		return schedulesLoadedMsg{schedules: schedules, err: err}
+	}
+}
+
+func (m chatModel) createSchedule(at, prompt string) tea.Cmd {
+	return func() tea.Msg {
+		err := m.client.scheduleSession(m.sessionID, at, prompt)
+		return scheduleCreatedMsg{err: err}
+	}
+}
+
 func chatPollTick() tea.Cmd {
 	return tea.Tick(chatPollInterval, func(time.Time) tea.Msg {
 		return chatPollTickMsg{}
@@ -78,15 +104,15 @@ func chatPollTick() tea.Cmd {
 }
 
 func (m chatModel) Init() tea.Cmd {
-	return tea.Batch(m.loadHistory(), chatPollTick())
+	return tea.Batch(m.loadHistory(), m.loadSchedules(), chatPollTick())
 }
 
 func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case chatPollTickMsg:
-		// Periodically reload history to catch agent responses.
+		// Periodically reload history and schedules to catch agent responses.
 		if !m.sending && !m.loading {
-			return m, tea.Batch(m.loadHistory(), chatPollTick())
+			return m, tea.Batch(m.loadHistory(), m.loadSchedules(), chatPollTick())
 		}
 		return m, chatPollTick()
 
@@ -113,11 +139,22 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 					last.Queued = true
 				}
 			}
-			return m, nil
-		} else {
-			// Reload history to get the full updated conversation.
-			return m, m.loadHistory()
 		}
+		// Async mode: polling will pick up the response.
+		return m, nil
+
+	case schedulesLoadedMsg:
+		if msg.err == nil {
+			m.schedules = msg.schedules
+		}
+
+	case scheduleCreatedMsg:
+		m.scheduling = false
+		m.scheduleAt = ""
+		if msg.err != nil {
+			m.err = msg.err
+		}
+		return m, m.loadSchedules()
 
 	case chatSessionStoppedMsg:
 		if msg.err != nil {
@@ -128,6 +165,38 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
+		if m.scheduling {
+			switch msg.String() {
+			case "esc":
+				m.scheduling = false
+				m.scheduleAt = ""
+				m.input = ""
+				m.cursorPos = 0
+				return m, nil
+			case "enter":
+				if m.scheduleAt == "" {
+					// First enter: capture the time.
+					at := strings.TrimSpace(m.input)
+					if at == "" {
+						return m, nil
+					}
+					m.scheduleAt = at
+					m.input = ""
+					m.cursorPos = 0
+					return m, nil
+				}
+				// Second enter: capture the prompt and create schedule.
+				prompt := strings.TrimSpace(m.input)
+				if prompt == "" {
+					return m, nil
+				}
+				m.input = ""
+				m.cursorPos = 0
+				return m, m.createSchedule(m.scheduleAt, prompt)
+			}
+			// Fall through to normal input handling for text entry.
+		}
+
 		if m.commandMode {
 			// Most command mode keys are handled by updateChat in ui.go.
 			// Chat model only handles enter (resume) and scroll.
@@ -148,6 +217,9 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 
 		switch msg.String() {
 		case "enter":
+			if m.scheduling {
+				return m, nil // handled above
+			}
 			prompt := strings.TrimSpace(m.input)
 			if prompt != "" && !m.sending {
 				m.input = ""
@@ -170,6 +242,11 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 				m.input = m.input[:m.cursorPos-size] + m.input[m.cursorPos:]
 				m.cursorPos -= size
 			}
+		case "delete":
+			if m.cursorPos < len(m.input) {
+				_, size := utf8.DecodeRuneInString(m.input[m.cursorPos:])
+				m.input = m.input[:m.cursorPos] + m.input[m.cursorPos+size:]
+			}
 		case "left":
 			if m.cursorPos > 0 {
 				_, size := utf8.DecodeLastRuneInString(m.input[:m.cursorPos])
@@ -180,6 +257,10 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 				_, size := utf8.DecodeRuneInString(m.input[m.cursorPos:])
 				m.cursorPos += size
 			}
+		case "alt+left":
+			m.cursorPos = wordLeft(m.input, m.cursorPos)
+		case "alt+right":
+			m.cursorPos = wordRight(m.input, m.cursorPos)
 		case "home":
 			m.cursorPos = 0
 		case "end":
@@ -284,6 +365,25 @@ func (m chatModel) View() string {
 		msgLines = append(msgLines, "")
 	}
 
+	// Show pending schedules at the bottom.
+	for _, sch := range m.schedules {
+		if sch.Status != "pending" {
+			continue
+		}
+		schedTime := sch.ScheduledAt
+		// Try to format nicely.
+		if t, err := time.Parse(time.RFC3339, sch.ScheduledAt); err == nil {
+			schedTime = t.Local().Format("Jan 2, 3:04 PM")
+		}
+		truncPrompt := sch.Prompt
+		if len(truncPrompt) > 80 {
+			truncPrompt = truncPrompt[:77] + "..."
+		}
+		line := lipgloss.NewStyle().Foreground(colorWarning).Render(
+			fmt.Sprintf("  ⏰ %s — %s", schedTime, truncPrompt))
+		msgLines = append(msgLines, line)
+	}
+
 	// Apply scroll and show only what fits.
 	if msgHeight < 1 {
 		msgHeight = 20
@@ -320,7 +420,18 @@ func (m chatModel) View() string {
 	}
 
 	// Input line
-	if m.commandMode {
+	if m.scheduling {
+		var label string
+		if m.scheduleAt == "" {
+			label = " ⏰ When? (e.g. +2h, 15:04, 2026-03-07T15:00:00Z): "
+		} else {
+			label = fmt.Sprintf(" ⏰ [%s] Prompt: ", m.scheduleAt)
+		}
+		schedLabel := lipgloss.NewStyle().Foreground(colorWarning).Bold(true).Render(label)
+		cursor := "█"
+		displayInput := m.input[:m.cursorPos] + cursor + m.input[m.cursorPos:]
+		b.WriteString(schedLabel + displayInput)
+	} else if m.commandMode {
 		cmdBar := lipgloss.NewStyle().Foreground(colorWarning).Bold(true).Render(" COMMAND MODE ")
 		if m.confirmDelete {
 			cmdBar += lipgloss.NewStyle().Foreground(colorDanger).Bold(true).Render(
@@ -363,6 +474,58 @@ func renderMarkdown(content string, width int) string {
 	}
 	// Trim trailing whitespace from glamour output.
 	return strings.TrimRight(out, "\n ")
+}
+
+// wordLeft returns the cursor position after moving one word to the left.
+func wordLeft(s string, pos int) int {
+	if pos == 0 {
+		return 0
+	}
+	// Skip whitespace going left.
+	i := pos
+	for i > 0 {
+		_, size := utf8.DecodeLastRuneInString(s[:i])
+		r, _ := utf8.DecodeLastRuneInString(s[:i])
+		if r != ' ' && r != '\n' && r != '\t' {
+			break
+		}
+		i -= size
+	}
+	// Skip word chars going left.
+	for i > 0 {
+		r, size := utf8.DecodeLastRuneInString(s[:i])
+		if r == ' ' || r == '\n' || r == '\t' {
+			break
+		}
+		i -= size
+		_ = r
+	}
+	return i
+}
+
+// wordRight returns the cursor position after moving one word to the right.
+func wordRight(s string, pos int) int {
+	if pos >= len(s) {
+		return len(s)
+	}
+	i := pos
+	// Skip word chars going right.
+	for i < len(s) {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == ' ' || r == '\n' || r == '\t' {
+			break
+		}
+		i += size
+	}
+	// Skip whitespace going right.
+	for i < len(s) {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r != ' ' && r != '\n' && r != '\t' {
+			break
+		}
+		i += size
+	}
+	return i
 }
 
 // wordWrap wraps text at the given width, breaking on spaces.

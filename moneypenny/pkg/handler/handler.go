@@ -6,12 +6,23 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
+	"runtime"
 	"strings"
+	"time"
 
 	"james/moneypenny/pkg/agent"
 	"james/moneypenny/pkg/envelope"
 	"james/moneypenny/pkg/store"
 )
+
+const scheduleSystemPromptSuffix = `
+
+You can schedule a follow-up task by including a tag in your response:
+<schedule at="2026-03-07T15:00:00Z">Your follow-up prompt here</schedule>
+The "at" attribute accepts RFC3339 timestamps or relative durations like "+2h", "+30m".
+When you schedule a follow-up, the system will automatically send that prompt to you at the specified time.
+Use this to set reminders, check on long-running processes, or break work into timed phases.`
 
 // Handler processes commands and returns responses.
 type Handler struct {
@@ -63,6 +74,14 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.gitDiff(ctx, cmd)
 	case "execute_command":
 		return h.executeCommand(ctx, cmd)
+	case "list_directory":
+		return h.listDirectory(ctx, cmd)
+	case "schedule":
+		return h.schedule(ctx, cmd)
+	case "list_schedules":
+		return h.listSchedules(ctx, cmd)
+	case "cancel_schedule":
+		return h.cancelSchedule(ctx, cmd)
 	case "get_version":
 		return h.getVersion(cmd)
 	default:
@@ -91,12 +110,15 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrAgentNotFound, fmt.Sprintf("agent binary not found: %s", data.Agent))
 	}
 
+	// Append schedule instructions to system prompt.
+	systemPrompt := data.SystemPrompt + scheduleSystemPromptSuffix
+
 	// Create session in store.
 	sess := &store.Session{
 		SessionID:    data.SessionID,
 		Name:         data.Name,
 		Agent:        data.Agent,
-		SystemPrompt: data.SystemPrompt,
+		SystemPrompt: systemPrompt,
 		Yolo:         data.Yolo,
 		Path:         data.Path,
 	}
@@ -119,7 +141,7 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 		SessionID:    data.SessionID,
 		Agent:        data.Agent,
 		Prompt:       data.Prompt,
-		SystemPrompt: data.SystemPrompt,
+		SystemPrompt: systemPrompt,
 		Yolo:         data.Yolo,
 		Path:         data.Path,
 		Resume:       false,
@@ -224,7 +246,10 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 		return
 	}
 
-	if err := h.store.AddConversationTurn(sessionID, "assistant", result.Text); err != nil {
+	// Parse and create any <schedule> tags from agent output.
+	responseText := h.parseAndCreateSchedules(sessionID, result.Text)
+
+	if err := h.store.AddConversationTurn(sessionID, "assistant", responseText); err != nil {
 		h.vlog("failed to add conversation turn for session %s: %v", sessionID, err)
 	}
 
@@ -427,7 +452,12 @@ func (h *Handler) executeCommand(_ context.Context, cmd *envelope.Command) *enve
 		}
 	}
 
-	shellCmd := exec.Command("sh", "-c", data.Command)
+	var shellCmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		shellCmd = exec.Command("cmd", "/C", data.Command)
+	} else {
+		shellCmd = exec.Command("sh", "-c", data.Command)
+	}
 	if data.Path != "" {
 		shellCmd.Dir = data.Path
 	}
@@ -557,4 +587,256 @@ func (h *Handler) gitDiff(_ context.Context, cmd *envelope.Command) *envelope.Re
 	combined := string(unstaged) + string(staged)
 
 	return envelope.SuccessResponse(cmd.RequestID, map[string]string{"diff": combined})
+}
+
+func (h *Handler) listDirectory(_ context.Context, cmd *envelope.Command) *envelope.Response {
+	var data envelope.ListDirectoryData
+	if err := json.Unmarshal(cmd.Data, &data); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
+	}
+
+	path := data.Path
+	if path == "" {
+		path = "/"
+	}
+
+	dirEntries, err := os.ReadDir(path)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidPath, fmt.Sprintf("cannot read directory: %v", err))
+	}
+
+	var entries []envelope.DirEntry
+	for _, e := range dirEntries {
+		// Skip hidden files/directories.
+		if len(e.Name()) > 0 && e.Name()[0] == '.' {
+			continue
+		}
+		entries = append(entries, envelope.DirEntry{
+			Name:  e.Name(),
+			IsDir: e.IsDir(),
+		})
+	}
+
+	return envelope.SuccessResponse(cmd.RequestID, envelope.ListDirectoryResponse{
+		Path:    path,
+		Entries: entries,
+	})
+}
+
+func (h *Handler) schedule(_ context.Context, cmd *envelope.Command) *envelope.Response {
+	var data envelope.ScheduleData
+	if err := json.Unmarshal(cmd.Data, &data); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
+	}
+
+	if data.SessionID == "" || data.Prompt == "" || data.ScheduledAt == "" {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id, prompt, and scheduled_at are required")
+	}
+
+	// Verify session exists.
+	sess, err := h.store.GetSession(data.SessionID)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to get session: %v", err))
+	}
+	if sess == nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, fmt.Sprintf("session not found: %s", data.SessionID))
+	}
+
+	scheduledAt, err := time.Parse(time.RFC3339, data.ScheduledAt)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid scheduled_at (expected RFC3339): %v", err))
+	}
+
+	id, err := h.store.CreateSchedule(data.SessionID, data.Prompt, scheduledAt)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to create schedule: %v", err))
+	}
+
+	h.vlog("created schedule %d for session %s at %s", id, data.SessionID, scheduledAt.Format(time.RFC3339))
+
+	return envelope.SuccessResponse(cmd.RequestID, envelope.ScheduleResponse{
+		ScheduleID:  id,
+		SessionID:   data.SessionID,
+		ScheduledAt: scheduledAt.UTC().Format(time.RFC3339),
+	})
+}
+
+func (h *Handler) listSchedules(_ context.Context, cmd *envelope.Command) *envelope.Response {
+	var data envelope.ListSchedulesData
+	if err := json.Unmarshal(cmd.Data, &data); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
+	}
+
+	if data.SessionID == "" {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id is required")
+	}
+
+	schedules, err := h.store.ListSchedules(data.SessionID, "")
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to list schedules: %v", err))
+	}
+
+	var infos []envelope.ScheduleInfo
+	for _, s := range schedules {
+		infos = append(infos, envelope.ScheduleInfo{
+			ID:          s.ID,
+			SessionID:   s.SessionID,
+			Prompt:      s.Prompt,
+			ScheduledAt: s.ScheduledAt.UTC().Format(time.RFC3339),
+			Status:      s.Status,
+			CreatedAt:   s.CreatedAt.UTC().Format(time.RFC3339),
+		})
+	}
+
+	return envelope.SuccessResponse(cmd.RequestID, envelope.ListSchedulesResponse{Schedules: infos})
+}
+
+func (h *Handler) cancelSchedule(_ context.Context, cmd *envelope.Command) *envelope.Response {
+	var data envelope.CancelScheduleData
+	if err := json.Unmarshal(cmd.Data, &data); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
+	}
+
+	if data.ScheduleID == 0 {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "schedule_id is required")
+	}
+
+	if err := h.store.CancelSchedule(data.ScheduleID); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to cancel schedule: %v", err))
+	}
+
+	h.vlog("cancelled schedule %d", data.ScheduleID)
+
+	return envelope.SuccessResponse(cmd.RequestID, map[string]interface{}{"schedule_id": data.ScheduleID, "cancelled": true})
+}
+
+// scheduleTagRe matches <schedule at="...">...</schedule> tags in agent output.
+var scheduleTagRe = regexp.MustCompile(`<schedule\s+at="([^"]+)">([\s\S]*?)</schedule>`)
+
+// parseAndCreateSchedules extracts <schedule> tags from agent output, creates schedule entries,
+// and returns the cleaned output with tags replaced by human-readable notes.
+func (h *Handler) parseAndCreateSchedules(sessionID, output string) string {
+	return scheduleTagRe.ReplaceAllStringFunc(output, func(match string) string {
+		sub := scheduleTagRe.FindStringSubmatch(match)
+		if len(sub) != 3 {
+			return match
+		}
+		atStr := sub[1]
+		prompt := strings.TrimSpace(sub[2])
+
+		scheduledAt, err := parseScheduleTime(atStr)
+		if err != nil {
+			h.vlog("invalid schedule time %q in agent output for session %s: %v", atStr, sessionID, err)
+			return match
+		}
+
+		id, err := h.store.CreateSchedule(sessionID, prompt, scheduledAt)
+		if err != nil {
+			h.vlog("failed to create schedule from agent output for session %s: %v", sessionID, err)
+			return match
+		}
+
+		h.vlog("agent self-scheduled %d for session %s at %s", id, sessionID, scheduledAt.Format(time.RFC3339))
+		return fmt.Sprintf("\n[Scheduled follow-up for %s]\n", scheduledAt.Local().Format("Jan 2, 3:04 PM"))
+	})
+}
+
+// parseScheduleTime parses a time string that can be RFC3339 or a relative duration like "+2h", "+30m".
+func parseScheduleTime(s string) (time.Time, error) {
+	// Try RFC3339 first.
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t, nil
+	}
+
+	// Try relative time: +Nh, +Nm, +Ns, or combinations.
+	s = strings.TrimSpace(s)
+	if strings.HasPrefix(s, "+") {
+		d, err := parseRelativeDuration(s[1:])
+		if err == nil {
+			return time.Now().UTC().Add(d), nil
+		}
+	}
+
+	return time.Time{}, fmt.Errorf("cannot parse time %q", s)
+}
+
+// parseRelativeDuration parses duration strings like "2h", "30m", "2h30m", "1h30m15s".
+func parseRelativeDuration(s string) (time.Duration, error) {
+	// Go's time.ParseDuration handles "2h30m" etc.
+	return time.ParseDuration(s)
+}
+
+// StartScheduler starts the background scheduler that checks for due schedules.
+// It runs an immediate check, then ticks every 30 seconds.
+// Cancel the context to stop the scheduler.
+func (h *Handler) StartScheduler(ctx context.Context) {
+	h.processDueSchedules()
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				h.processDueSchedules()
+			}
+		}
+	}()
+}
+
+func (h *Handler) processDueSchedules() {
+	schedules, err := h.store.DueSchedules()
+	if err != nil {
+		h.vlog("scheduler: failed to query due schedules: %v", err)
+		return
+	}
+
+	for _, sch := range schedules {
+		h.vlog("scheduler: processing schedule %d for session %s", sch.ID, sch.SessionID)
+
+		// Mark as running.
+		if err := h.store.UpdateScheduleStatus(sch.ID, store.ScheduleRunning); err != nil {
+			h.vlog("scheduler: failed to update schedule %d status: %v", sch.ID, err)
+			continue
+		}
+
+		sess, err := h.store.GetSession(sch.SessionID)
+		if err != nil || sess == nil {
+			h.vlog("scheduler: session %s not found for schedule %d", sch.SessionID, sch.ID)
+			_ = h.store.UpdateScheduleStatus(sch.ID, store.ScheduleDone)
+			continue
+		}
+
+		if sess.Status == store.StateIdle {
+			// Session is idle — continue it directly.
+			if err := h.store.UpdateSessionStatus(sch.SessionID, store.StateWorking); err != nil {
+				h.vlog("scheduler: failed to set session %s to working: %v", sch.SessionID, err)
+				_ = h.store.UpdateScheduleStatus(sch.ID, store.SchedulePending)
+				continue
+			}
+			if err := h.store.AddConversationTurn(sch.SessionID, "user", sch.Prompt); err != nil {
+				h.vlog("scheduler: failed to add conversation turn for session %s: %v", sch.SessionID, err)
+			}
+			_ = h.store.UpdateScheduleStatus(sch.ID, store.ScheduleDone)
+			go h.runAgent(sch.SessionID, agent.RunParams{
+				SessionID:    sch.SessionID,
+				Agent:        sess.Agent,
+				Prompt:       sch.Prompt,
+				SystemPrompt: sess.SystemPrompt,
+				Yolo:         sess.Yolo,
+				Path:         sess.Path,
+				Resume:       true,
+			})
+		} else {
+			// Session is busy — queue the prompt, it'll run after current task finishes.
+			if err := h.store.QueuePrompt(sch.SessionID, sch.Prompt); err != nil {
+				h.vlog("scheduler: failed to queue prompt for session %s: %v", sch.SessionID, err)
+				_ = h.store.UpdateScheduleStatus(sch.ID, store.SchedulePending)
+				continue
+			}
+			_ = h.store.UpdateScheduleStatus(sch.ID, store.ScheduleDone)
+			h.vlog("scheduler: session %s busy, queued scheduled prompt (schedule %d)", sch.SessionID, sch.ID)
+		}
+	}
 }

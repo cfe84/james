@@ -568,6 +568,10 @@ Dashboard:
 Chat:
   chat [-m MONEYPENNY] [--session-id ID] [--agent, --name, --system-prompt, --yolo, --path]
 
+Settings:
+  enable sound-notification    Play a sound when a session finishes
+  disable sound-notification   Turn off the notification sound
+
 Remote execution:
   run [-m MONEYPENNY] [--path PATH] [--session-id ID] COMMAND
 
