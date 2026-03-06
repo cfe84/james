@@ -75,6 +75,7 @@ func main() {
 
 	runner := agent.New(vlog)
 	h := handler.New(st, runner, Version)
+	h.SetLogger(vlog.Printf)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

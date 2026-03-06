@@ -25,6 +25,7 @@ import (
 	"james/hem/pkg/protocol"
 	"james/hem/pkg/server"
 	"james/hem/pkg/store"
+	"james/hem/pkg/ui"
 )
 
 // Version is set at build time via -ldflags.
@@ -66,6 +67,12 @@ func main() {
 		return
 	case "chat":
 		runChat(cmd.Args)
+		return
+	case "ui":
+		if err := ui.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
 		return
 	case "start":
 		if cmd.Noun == "server" {
@@ -458,6 +465,9 @@ Chat:
 
 MI6:
   test mi6 --mi6 ADDRESS --session SESSION_ID
+
+UI:
+  ui                     Open the interactive terminal UI
 
 Other:
   show-public-key

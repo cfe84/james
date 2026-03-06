@@ -30,6 +30,7 @@ var verbAliases = map[string]string{
 var noNounVerbs = map[string]bool{
 	"show-public-key": true,
 	"chat":            true,
+	"ui":              true,
 }
 
 // Parse parses os.Args[1:] into a Command.

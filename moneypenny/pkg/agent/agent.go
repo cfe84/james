@@ -68,14 +68,12 @@ func (r *Runner) Run(ctx context.Context, params RunParams) (*Result, error) {
 		args = []string{
 			"--output-format", "json",
 			"--resume", params.SessionID,
-			"-p", params.Prompt,
 		}
 	} else {
 		// Create a new session.
 		args = []string{
 			"--output-format", "json",
 			"--session-id", params.SessionID,
-			"-p", params.Prompt,
 		}
 		if params.SystemPrompt != "" {
 			args = append(args, "--system-prompt", params.SystemPrompt)
@@ -85,6 +83,8 @@ func (r *Runner) Run(ctx context.Context, params RunParams) (*Result, error) {
 	if params.Yolo {
 		args = append(args, "--dangerously-skip-permissions")
 	}
+
+	args = append(args, "-p", params.Prompt)
 
 	cmd := exec.CommandContext(ctx, agentPath, args...)
 	if params.Path != "" {

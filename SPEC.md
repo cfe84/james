@@ -218,6 +218,22 @@ Hem manages sessions on moneypennies. It tracks which moneypenny each session li
 
 ### Chat
 
+### UI
+
+`hem ui` — launches an interactive terminal UI (TUI) built with bubbletea.
+
+- **Session list** (default view): browse all sessions with status, name, moneypenny, timestamps.
+  - `n` — create new session (opens form)
+  - `Enter` — open chat for selected session
+  - `d` — delete session
+  - `s` — stop a working session
+  - `r` — refresh list
+  - `q` — quit
+- **Chat view**: full conversation history with input. Send messages with Enter, scroll with PgUp/PgDn, Esc to go back.
+- **Create form**: fill in prompt, name, agent, system prompt, path, yolo. Tab between fields, Enter to submit.
+
+### Chat
+
 `hem chat [-m MONEYPENNY] [--session-id ID] [flags]` — interactive REPL for chatting with an agent.
 
 - By default, creates a new session (same flags as `create session`: `--agent`, `--name`, `--system-prompt`, `--yolo`, `--path`, `-m`).

@@ -17,11 +17,21 @@ type Handler struct {
 	store   *store.Store
 	runner  *agent.Runner
 	version string
+	vlog    func(string, ...interface{})
 }
+
+// resultCallback is called when an async agent execution completes.
+// It can be set to push notifications, but by default is nil.
+type resultCallback func(sessionID, response string, err error)
 
 // New creates a new Handler with the given store, runner, and version string.
 func New(s *store.Store, runner *agent.Runner, version string) *Handler {
-	return &Handler{store: s, runner: runner, version: version}
+	return &Handler{store: s, runner: runner, version: version, vlog: func(string, ...interface{}) {}}
+}
+
+// SetLogger sets a verbose logger.
+func (h *Handler) SetLogger(vlog func(string, ...interface{})) {
+	h.vlog = vlog
 }
 
 // Handle dispatches a command to the appropriate method handler.
@@ -93,8 +103,8 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to add conversation turn: %v", err))
 	}
 
-	// Run agent.
-	result, err := h.runner.Run(ctx, agent.RunParams{
+	// Run agent asynchronously.
+	go h.runAgent(data.SessionID, agent.RunParams{
 		SessionID:    data.SessionID,
 		Agent:        data.Agent,
 		Prompt:       data.Prompt,
@@ -103,24 +113,9 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 		Path:         data.Path,
 		Resume:       false,
 	})
-	if err != nil {
-		_ = h.store.UpdateSessionStatus(data.SessionID, store.StateIdle)
-		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrAgentError, fmt.Sprintf("agent error: %v", err))
-	}
-
-	// Update status to idle.
-	if err := h.store.UpdateSessionStatus(data.SessionID, store.StateIdle); err != nil {
-		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to update status: %v", err))
-	}
-
-	// Add assistant response to conversation.
-	if err := h.store.AddConversationTurn(data.SessionID, "assistant", result.Text); err != nil {
-		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to add conversation turn: %v", err))
-	}
 
 	return envelope.SuccessResponse(cmd.RequestID, envelope.CreateSessionResponse{
 		SessionID: data.SessionID,
-		Response:  result.Text,
 	})
 }
 
@@ -159,8 +154,8 @@ func (h *Handler) continueSession(ctx context.Context, cmd *envelope.Command) *e
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to add conversation turn: %v", err))
 	}
 
-	// Run agent with Resume=true, reusing stored session params.
-	result, err := h.runner.Run(ctx, agent.RunParams{
+	// Run agent asynchronously with Resume=true.
+	go h.runAgent(data.SessionID, agent.RunParams{
 		SessionID:    data.SessionID,
 		Agent:        sess.Agent,
 		Prompt:       data.Prompt,
@@ -169,25 +164,31 @@ func (h *Handler) continueSession(ctx context.Context, cmd *envelope.Command) *e
 		Path:         sess.Path,
 		Resume:       true,
 	})
-	if err != nil {
-		_ = h.store.UpdateSessionStatus(data.SessionID, store.StateIdle)
-		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrAgentError, fmt.Sprintf("agent error: %v", err))
-	}
-
-	// Update status to idle.
-	if err := h.store.UpdateSessionStatus(data.SessionID, store.StateIdle); err != nil {
-		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to update status: %v", err))
-	}
-
-	// Add assistant response to conversation.
-	if err := h.store.AddConversationTurn(data.SessionID, "assistant", result.Text); err != nil {
-		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to add conversation turn: %v", err))
-	}
 
 	return envelope.SuccessResponse(cmd.RequestID, envelope.ContinueSessionResponse{
 		SessionID: data.SessionID,
-		Response:  result.Text,
 	})
+}
+
+// runAgent executes the agent in the background, updating the store when done.
+func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
+	ctx := context.Background()
+	result, err := h.runner.Run(ctx, params)
+	if err != nil {
+		h.vlog("agent error for session %s: %v", sessionID, err)
+		_ = h.store.UpdateSessionStatus(sessionID, store.StateIdle)
+		return
+	}
+
+	if err := h.store.AddConversationTurn(sessionID, "assistant", result.Text); err != nil {
+		h.vlog("failed to add conversation turn for session %s: %v", sessionID, err)
+	}
+
+	if err := h.store.UpdateSessionStatus(sessionID, store.StateIdle); err != nil {
+		h.vlog("failed to update status for session %s: %v", sessionID, err)
+	}
+
+	h.vlog("agent completed for session %s", sessionID)
 }
 
 func (h *Handler) listSessions(_ context.Context, cmd *envelope.Command) *envelope.Response {

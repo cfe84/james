@@ -167,6 +167,44 @@ func (e *Executor) sendCommand(ctx context.Context, mp *store.Moneypenny, method
 	return resp, nil
 }
 
+// pollUntilIdle polls a moneypenny session until it transitions from working to idle.
+// Returns the last assistant response.
+func (e *Executor) pollUntilIdle(ctx context.Context, mp *store.Moneypenny, sessionID string) (string, error) {
+	for {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+
+		resp, err := e.sendCommand(ctx, mp, "get_session", map[string]interface{}{"session_id": sessionID})
+		if err != nil {
+			return "", fmt.Errorf("polling session: %w", err)
+		}
+
+		var detail struct {
+			Status       string `json:"status"`
+			Conversation []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"conversation"`
+		}
+		if err := json.Unmarshal(resp.Data, &detail); err != nil {
+			return "", fmt.Errorf("parsing poll response: %w", err)
+		}
+
+		if detail.Status != "working" {
+			// Find the last assistant message.
+			for i := len(detail.Conversation) - 1; i >= 0; i-- {
+				if detail.Conversation[i].Role == "assistant" {
+					return detail.Conversation[i].Content, nil
+				}
+			}
+			return "", nil
+		}
+	}
+}
+
 // resolveSessionMoneypenny looks up which moneypenny a session belongs to.
 // First checks local tracking, then scans all moneypennies as fallback.
 func (e *Executor) resolveSessionMoneypenny(sessionID string) (*store.Moneypenny, error) {
@@ -208,11 +246,43 @@ func (e *Executor) resolveSessionMoneypenny(sessionID string) (*store.Moneypenny
 
 // parseFlagsFromArgs creates a new FlagSet, applies the setup function to register flags,
 // parses the args, and returns remaining non-flag args.
+// It reorders args so flags come before positional args, since Go's flag package
+// stops parsing at the first non-flag argument.
 func parseFlagsFromArgs(name string, args []string, setup func(fs *flag.FlagSet)) ([]string, error) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	fs.SetOutput(io.Discard) // suppress flag's built-in usage output on the server
 	setup(fs)
-	if err := fs.Parse(args); err != nil {
+
+	// Separate flags from positional args so flags can appear after positional args.
+	// E.g., "SESSION_ID --yolo true" → "--yolo true SESSION_ID"
+	var flagArgs, positional []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if strings.HasPrefix(a, "-") {
+			flagArgs = append(flagArgs, a)
+			// Check if this flag takes a value (next arg is not a flag).
+			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+				// Check if the flag is a boolean flag (no value needed).
+				isBool := false
+				fs.VisitAll(func(f *flag.Flag) {
+					if f.Name == strings.TrimLeft(a, "-") {
+						if _, ok := f.Value.(interface{ IsBoolFlag() bool }); ok {
+							isBool = true
+						}
+					}
+				})
+				if !isBool {
+					i++
+					flagArgs = append(flagArgs, args[i])
+				}
+			}
+		} else {
+			positional = append(positional, a)
+		}
+	}
+
+	reordered := append(flagArgs, positional...)
+	if err := fs.Parse(reordered); err != nil {
 		return nil, err
 	}
 	return fs.Args(), nil
@@ -692,34 +762,28 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 		return protocol.ErrResponse(fmt.Sprintf("tracking session: %v", err))
 	}
 
+	ctx := context.Background()
+	_, err = e.sendCommand(ctx, mp, "create_session", cmdData)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
 	if async {
-		go func() {
-			ctx := context.Background()
-			e.sendCommand(ctx, mp, "create_session", cmdData)
-		}()
 		return protocol.OKResponse(SessionCreatedResult{
 			SessionID: sessionID,
 			Async:     true,
 		})
 	}
 
-	ctx := context.Background()
-	resp, err := e.sendCommand(ctx, mp, "create_session", cmdData)
+	// Poll until agent completes.
+	response, err := e.pollUntilIdle(ctx, mp, sessionID)
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
 
-	var respData struct {
-		Response string `json:"response"`
-	}
-	responseText := string(resp.Data)
-	if err := json.Unmarshal(resp.Data, &respData); err == nil && respData.Response != "" {
-		responseText = respData.Response
-	}
-
 	return protocol.OKResponse(SessionCreatedResult{
 		SessionID: sessionID,
-		Response:  responseText,
+		Response:  response,
 	})
 }
 
@@ -758,34 +822,28 @@ func (e *Executor) ContinueSession(args []string) *protocol.Response {
 		"prompt":     prompt,
 	}
 
+	ctx := context.Background()
+	_, err = e.sendCommand(ctx, mp, "continue_session", cmdData)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
 	if async {
-		go func() {
-			ctx := context.Background()
-			e.sendCommand(ctx, mp, "continue_session", cmdData)
-		}()
 		return protocol.OKResponse(SessionContinuedResult{
 			SessionID: sessionID,
 			Async:     true,
 		})
 	}
 
-	ctx := context.Background()
-	resp, err := e.sendCommand(ctx, mp, "continue_session", cmdData)
+	// Poll until agent completes.
+	response, err := e.pollUntilIdle(ctx, mp, sessionID)
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
 
-	var respData struct {
-		Response string `json:"response"`
-	}
-	responseText := string(resp.Data)
-	if err := json.Unmarshal(resp.Data, &respData); err == nil && respData.Response != "" {
-		responseText = respData.Response
-	}
-
 	return protocol.OKResponse(SessionContinuedResult{
 		SessionID: sessionID,
-		Response:  responseText,
+		Response:  response,
 	})
 }
 
