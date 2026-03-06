@@ -50,6 +50,7 @@ type conversationTurn struct {
 	Role      string `json:"role"`
 	Content   string `json:"content"`
 	CreatedAt string `json:"created_at"`
+	Queued    bool   `json:"-"` // local-only flag for optimistic UI
 }
 
 func (c *client) listSessions(mpFilter string) ([]sessionInfo, error) {

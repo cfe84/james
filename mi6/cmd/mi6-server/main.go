@@ -50,6 +50,8 @@ func main() {
 		log.Fatal("--authorized-keys is required")
 	}
 
+	log.Printf("mi6-server v%s", Version)
+
 	// Load authorized keys.
 	var (
 		authKeysMu     sync.RWMutex

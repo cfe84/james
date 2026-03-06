@@ -110,7 +110,7 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 			if len(m.conversation) > 0 {
 				last := &m.conversation[len(m.conversation)-1]
 				if last.Role == "user" {
-					last.Content = last.Content + " [queued]"
+					last.Queued = true
 				}
 			}
 			return m, nil
@@ -249,7 +249,11 @@ func (m chatModel) View() string {
 	for _, turn := range m.conversation {
 		var prefix string
 		if turn.Role == "user" {
-			prefix = userMsgStyle.Render("🧑‍💻 you")
+			if turn.Queued {
+				prefix = userMsgStyle.Render("⏳ you")
+			} else {
+				prefix = userMsgStyle.Render("🧑‍💻 you")
+			}
 		} else {
 			prefix = assistantMsgStyle.Render("🤖 assistant")
 		}

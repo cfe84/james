@@ -73,6 +73,8 @@ func main() {
 	}
 	defer st.Close()
 
+	log.Printf("moneypenny v%s", Version)
+
 	runner := agent.New(vlog)
 	h := handler.New(st, runner, Version)
 	h.SetLogger(vlog.Printf)

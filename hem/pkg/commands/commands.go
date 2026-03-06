@@ -22,6 +22,7 @@ import (
 type Executor struct {
 	store      *store.Store
 	mi6KeyPath string
+	Version    string
 }
 
 func New(s *store.Store, mi6KeyPath string) *Executor {
@@ -81,6 +82,10 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 
 	if verb == "dashboard" {
 		return e.Dashboard(args)
+	}
+
+	if verb == "get-version" {
+		return protocol.OKResponse(map[string]string{"version": e.Version})
 	}
 
 	switch verb + " " + noun {

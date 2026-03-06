@@ -43,7 +43,21 @@ func main() {
 		return
 	}
 	if os.Args[1] == "--version" || os.Args[1] == "-v" {
-		fmt.Println(Version)
+		fmt.Printf("hem client: %s\n", Version)
+		// Try to get server version.
+		sockPath := server.DefaultSocketPath()
+		req := &protocol.Request{Verb: "get-version"}
+		resp, err := hemclient.Send(sockPath, req)
+		if err != nil {
+			fmt.Println("hem server: not running")
+		} else {
+			var result struct {
+				Version string `json:"version"`
+			}
+			if json.Unmarshal(resp.Data, &result) == nil {
+				fmt.Printf("hem server: %s\n", result.Version)
+			}
+		}
 		return
 	}
 
@@ -469,7 +483,10 @@ func runServer() {
 		}
 	}
 
+	log.Printf("hem server v%s", Version)
+
 	exec := commands.New(st, keyPath)
+	exec.Version = Version
 	sockPath := server.DefaultSocketPath()
 
 	srv := server.New(sockPath, exec, vlog)

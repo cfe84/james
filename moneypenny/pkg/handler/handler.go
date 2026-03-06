@@ -235,13 +235,7 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 	}
 
 	if len(prompts) > 0 {
-		combinedPrompt := strings.Join(prompts, "\n")
 		h.vlog("processing %d queued prompt(s) for session %s", len(prompts), sessionID)
-
-		// Add the queued prompt as a user turn.
-		if err := h.store.AddConversationTurn(sessionID, "user", combinedPrompt); err != nil {
-			h.vlog("failed to add queued conversation turn for session %s: %v", sessionID, err)
-		}
 
 		// Re-fetch session for latest settings.
 		sess, err := h.store.GetSession(sessionID)
@@ -251,7 +245,15 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 			return
 		}
 
-		// Continue with queued prompt (recursive call to runAgent).
+		// Process each queued prompt as its own turn.
+		for _, prompt := range prompts {
+			if err := h.store.AddConversationTurn(sessionID, "user", prompt); err != nil {
+				h.vlog("failed to add queued conversation turn for session %s: %v", sessionID, err)
+			}
+		}
+
+		// Continue with all queued prompts joined for the agent.
+		combinedPrompt := strings.Join(prompts, "\n")
 		h.runAgent(sessionID, agent.RunParams{
 			SessionID:    sessionID,
 			Agent:        sess.Agent,
