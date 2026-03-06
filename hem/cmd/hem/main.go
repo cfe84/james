@@ -32,6 +32,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Handle help flags before parsing.
+	if os.Args[1] == "-h" || os.Args[1] == "--help" || os.Args[1] == "help" {
+		printUsage()
+		return
+	}
+
 	cmd, err := cli.Parse(os.Args[1:])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -54,9 +60,23 @@ func main() {
 		}
 		fmt.Print(string(ssh.MarshalAuthorizedKey(pubKey)))
 		return
-	case "server":
-		runServer()
-		return
+	case "start":
+		if cmd.Noun == "server" {
+			runServer()
+			return
+		}
+	}
+
+	// Handle subcommand help client-side (no server needed).
+	for _, a := range cmd.Args {
+		if a == "-h" || a == "--help" {
+			if help, ok := commands.CommandHelp[cmd.Verb+" "+cmd.Noun]; ok {
+				fmt.Println(help)
+			} else {
+				fmt.Fprintf(os.Stderr, "No help available for: %s %s\n", cmd.Verb, cmd.Noun)
+			}
+			return
+		}
 	}
 
 	// Everything else goes through the server.
@@ -256,7 +276,7 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, `Usage: hem <verb> <noun> [flags]
 
 Server:
-  server [-v]                Start the hem server daemon
+  start server [-v]          Start the hem server daemon
 
 Moneypenny management:
   add moneypenny -n NAME [--fifo-folder DIR | --fifo-in/--fifo-out | --mi6 ADDR]
@@ -268,7 +288,8 @@ Moneypenny management:
 Defaults:
   set-default agent VALUE        Set default agent (e.g. claude)
   set-default path VALUE         Set default working directory
-  get-default agent|path|moneypenny
+  set-default mi6 HOST           Set default MI6 server address
+  get-default agent|path|moneypenny|mi6
   list defaults
 
 Session management:
@@ -281,6 +302,9 @@ Session management:
   show session SESSION_ID
   history session SESSION_ID [-n N]
   list sessions [-m MONEYPENNY]
+
+MI6:
+  test mi6 --mi6 ADDRESS --session SESSION_ID
 
 Other:
   show-public-key

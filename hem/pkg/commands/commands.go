@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 	"time"
@@ -26,8 +27,46 @@ func New(s *store.Store, mi6KeyPath string) *Executor {
 	return &Executor{store: s, mi6KeyPath: mi6KeyPath}
 }
 
+// CommandHelp maps verb+noun to help text.
+var CommandHelp = map[string]string{
+	"add moneypenny":      "Usage: hem add moneypenny -n NAME [--fifo-folder DIR | --fifo-in PATH --fifo-out PATH | --mi6 ADDR]\n\nRegisters a new moneypenny instance.\n\nFlags:\n  -n, --name         Moneypenny name (required)\n  --fifo-folder      Folder containing moneypenny-in and moneypenny-out FIFOs\n  --fifo-in          Path to moneypenny input FIFO\n  --fifo-out         Path to moneypenny output FIFO\n  --mi6              MI6 server address (host or host/session_id)\n  --session-id       MI6 session ID (combined with --mi6 host; uses default mi6 if --mi6 omitted)",
+	"list moneypenny":     "Usage: hem list moneypennies\n\nLists all registered moneypennies with name, type, address, and default status.",
+	"ping moneypenny":     "Usage: hem ping moneypenny -n NAME\n\nPings a moneypenny using get_version, displays version.\n\nFlags:\n  -n, --name         Moneypenny name (required)",
+	"delete moneypenny":   "Usage: hem delete moneypenny -n NAME\n\nRemoves a registered moneypenny and its tracked sessions.\n\nFlags:\n  -n, --name         Moneypenny name (required)",
+	"set-default moneypenny": "Usage: hem set-default moneypenny -n NAME\n\nSets the default moneypenny for session commands.\n\nFlags:\n  -n, --name         Moneypenny name (required)",
+	"set-default agent":   "Usage: hem set-default agent VALUE\n\nSets the default agent for create session (fallback: claude).",
+	"set-default path":    "Usage: hem set-default path VALUE\n\nSets the default working directory for create session (fallback: .).",
+	"set-default mi6":     "Usage: hem set-default mi6 HOST\n\nSets the default MI6 server address (used by add moneypenny and test mi6 when --mi6 is omitted).",
+	"get-default moneypenny": "Usage: hem get-default moneypenny\n\nShows the current default moneypenny.",
+	"get-default agent":   "Usage: hem get-default agent\n\nShows the current default agent.",
+	"get-default path":    "Usage: hem get-default path\n\nShows the current default path.",
+	"get-default mi6":     "Usage: hem get-default mi6\n\nShows the current default MI6 server address.",
+	"list default":        "Usage: hem list defaults\n\nShows all configured defaults.",
+	"create session":      "Usage: hem create session [-m MONEYPENNY] PROMPT [flags]\n\nCreates a new session on a moneypenny and sends the initial prompt.\n\nFlags:\n  -m, --moneypenny   Moneypenny name (uses default if not set)\n  --agent            Agent to use (uses default, fallback: claude)\n  --name             Session name\n  --system-prompt    System prompt for the agent\n  --yolo             Skip permissions (--dangerously-skip-permissions)\n  --path             Working directory (uses default, fallback: .)\n  --async            Return immediately without waiting for response",
+	"continue session":    "Usage: hem continue session SESSION_ID PROMPT [flags]\n\nSends a follow-up prompt to an existing session.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)\n  --async            Return immediately without waiting for response",
+	"stop session":        "Usage: hem stop session SESSION_ID\n\nStops a working session (kills the agent, session goes back to idle).\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)",
+	"delete session":      "Usage: hem delete session SESSION_ID\n\nDeletes a session (kills agent if working, removes from moneypenny and local tracking).\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)",
+	"state session":       "Usage: hem state session SESSION_ID\n\nShows the current state of a session (idle/working).\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)",
+	"last session":        "Usage: hem last session SESSION_ID\n\nShows the last assistant response for a session.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)",
+	"show session":        "Usage: hem show session SESSION_ID\n\nShows session parameters (agent, system_prompt, yolo, path, name, status).\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)",
+	"history session":     "Usage: hem history session SESSION_ID [-n N]\n\nShows conversation history for a session.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)\n  -n                 Number of turns to show (default: all)",
+	"list session":        "Usage: hem list sessions [-m MONEYPENNY]\n\nLists all sessions across all moneypennies.\n\nFlags:\n  -m, --moneypenny   Filter by moneypenny name",
+	"test mi6":            "Usage: hem test mi6 --mi6 ADDRESS --session SESSION_ID\n\nTests connectivity to an MI6 server.\n\nFlags:\n  --mi6              MI6 server address (uses default if not set)\n  --session          Session ID to join (required)",
+}
+
 // Dispatch routes a verb+noun+args to the appropriate handler.
 func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response {
+	// Check for help flag in args.
+	for _, a := range args {
+		if a == "-h" || a == "--help" {
+			key := verb + " " + noun
+			if help, ok := CommandHelp[key]; ok {
+				return protocol.OKResponse(TextResult{Message: help})
+			}
+			return protocol.ErrResponse(fmt.Sprintf("no help available for: %s %s", verb, noun))
+		}
+	}
+
 	switch verb + " " + noun {
 	// Moneypenny commands
 	case "add moneypenny":
@@ -44,7 +83,9 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.SetDefaultValue("agent", args)
 	case "set-default path":
 		return e.SetDefaultValue("path", args)
-	case "get-default moneypenny", "get-default agent", "get-default path":
+	case "set-default mi6":
+		return e.SetDefaultValue("mi6", args)
+	case "get-default moneypenny", "get-default agent", "get-default path", "get-default mi6":
 		return e.GetDefaultValue(noun)
 	case "list default":
 		return e.ListDefaults(args)
@@ -68,6 +109,8 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.HistorySession(args)
 	case "list session":
 		return e.ListSessions(args)
+	case "test mi6":
+		return e.TestMI6(args)
 
 	default:
 		return protocol.ErrResponse(fmt.Sprintf("unknown command: %s %s", verb, noun))
@@ -142,6 +185,7 @@ func (e *Executor) resolveSessionMoneypenny(sessionID string) (*store.Moneypenny
 // parses the args, and returns remaining non-flag args.
 func parseFlagsFromArgs(name string, args []string, setup func(fs *flag.FlagSet)) ([]string, error) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(io.Discard) // suppress flag's built-in usage output on the server
 	setup(fs)
 	if err := fs.Parse(args); err != nil {
 		return nil, err
@@ -226,7 +270,7 @@ type HistoryResult struct {
 // ---------------------------------------------------------------------------
 
 func (e *Executor) AddMoneypenny(args []string) *protocol.Response {
-	var name, fifoFolder, fifoIn, fifoOut, mi6Addr string
+	var name, fifoFolder, fifoIn, fifoOut, mi6Addr, sessionID string
 
 	remaining, err := parseFlagsFromArgs("add-moneypenny", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&name, "n", "", "moneypenny name")
@@ -234,7 +278,8 @@ func (e *Executor) AddMoneypenny(args []string) *protocol.Response {
 		fs.StringVar(&fifoFolder, "fifo-folder", "", "folder containing moneypenny-in and moneypenny-out FIFOs")
 		fs.StringVar(&fifoIn, "fifo-in", "", "path to moneypenny input FIFO")
 		fs.StringVar(&fifoOut, "fifo-out", "", "path to moneypenny output FIFO")
-		fs.StringVar(&mi6Addr, "mi6", "", "MI6 address")
+		fs.StringVar(&mi6Addr, "mi6", "", "MI6 address (host or host/session_id)")
+		fs.StringVar(&sessionID, "session-id", "", "MI6 session ID (combined with --mi6 host)")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -243,6 +288,23 @@ func (e *Executor) AddMoneypenny(args []string) *protocol.Response {
 
 	if name == "" {
 		return protocol.ErrResponse("--name / -n is required")
+	}
+
+	// If --session-id is provided without --mi6, use default mi6.
+	if sessionID != "" && mi6Addr == "" {
+		if v, _ := e.store.GetDefault("mi6"); v != "" {
+			mi6Addr = v
+		}
+	}
+
+	// Combine mi6 host + session-id if both provided separately.
+	if mi6Addr != "" && sessionID != "" {
+		// If mi6Addr already contains a session (has /), replace it.
+		if strings.Contains(mi6Addr, "/") {
+			mi6Addr = mi6Addr[:strings.Index(mi6Addr, "/")] + "/" + sessionID
+		} else {
+			mi6Addr = mi6Addr + "/" + sessionID
+		}
 	}
 
 	hasFIFOFolder := fifoFolder != ""
@@ -261,6 +323,11 @@ func (e *Executor) AddMoneypenny(args []string) *protocol.Response {
 	}
 	if specCount != 1 {
 		return protocol.ErrResponse("exactly one transport must be specified: --fifo-folder, --fifo-in/--fifo-out, or --mi6")
+	}
+
+	// MI6 address must contain a session ID (host/session_id).
+	if hasMI6 && !strings.Contains(mi6Addr, "/") {
+		return protocol.ErrResponse("MI6 address must include a session ID (host/session_id) — use --session-id or include it in --mi6")
 	}
 
 	mp := &store.Moneypenny{
@@ -1021,4 +1088,47 @@ func (e *Executor) ListSessions(args []string) *protocol.Response {
 	}
 
 	return protocol.OKResponse(result)
+}
+
+// ---------------------------------------------------------------------------
+// MI6 commands
+// ---------------------------------------------------------------------------
+
+func (e *Executor) TestMI6(args []string) *protocol.Response {
+	var mi6Addr, sessionID string
+
+	_, err := parseFlagsFromArgs("test-mi6", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&mi6Addr, "mi6", "", "MI6 server address")
+		fs.StringVar(&sessionID, "session", "", "session ID to join")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	// Fall back to default mi6.
+	if mi6Addr == "" {
+		if v, _ := e.store.GetDefault("mi6"); v != "" {
+			mi6Addr = v
+		}
+	}
+
+	if mi6Addr == "" {
+		return protocol.ErrResponse("--mi6 is required (or set a default with 'hem set-default mi6 HOST')")
+	}
+	if sessionID == "" {
+		return protocol.ErrResponse("--session is required")
+	}
+
+	addr := mi6Addr + "/" + sessionID
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if err := transport.TestMI6(ctx, addr, e.mi6KeyPath); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("MI6 connectivity test failed: %v", err))
+	}
+
+	return protocol.OKResponse(TextResult{
+		Message: fmt.Sprintf("MI6 connectivity OK. Connected to %s, session %s.", mi6Addr, sessionID),
+	})
 }

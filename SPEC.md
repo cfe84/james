@@ -117,7 +117,7 @@ Line-delimited JSON, one request/response per connection:
 
 ## Server
 
-`hem server [-v]` — starts the hem server daemon.
+`hem start server [-v]` — starts the hem server daemon.
 
 - The server listens on a Unix domain socket at `~/.config/james/hem/hem.sock`.
 - `-v` enables verbose logging to stderr (requests received, responses sent).

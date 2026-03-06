@@ -13,7 +13,7 @@ import (
 func Send(sockPath string, req *protocol.Request) (*protocol.Response, error) {
 	conn, err := net.Dial("unix", sockPath)
 	if err != nil {
-		return nil, fmt.Errorf("connecting to hem server at %s: %w (is the server running? start it with 'hem server')", sockPath, err)
+		return nil, fmt.Errorf("connecting to hem server at %s: %w (is the server running? start it with 'hem start server')", sockPath, err)
 	}
 	defer conn.Close()
 

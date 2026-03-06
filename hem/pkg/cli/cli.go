@@ -29,7 +29,6 @@ var verbAliases = map[string]string{
 // noNounVerbs lists verbs that take no noun.
 var noNounVerbs = map[string]bool{
 	"show-public-key": true,
-	"server":          true,
 }
 
 // Parse parses os.Args[1:] into a Command.

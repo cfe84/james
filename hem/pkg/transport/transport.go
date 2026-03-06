@@ -173,6 +173,37 @@ func (c *Client) sendMI6(ctx context.Context, cmd *Command) (*Response, error) {
 	return &resp, nil
 }
 
+// TestMI6 tests connectivity to an MI6 server by spawning mi6-client and
+// verifying it can connect and join the session. Returns nil on success.
+func TestMI6(ctx context.Context, mi6Addr, keyPath string) error {
+	mi6Client, err := findMI6Client()
+	if err != nil {
+		return err
+	}
+
+	proc := exec.CommandContext(ctx, mi6Client, "--key", keyPath, mi6Addr)
+	proc.Stderr = os.Stderr
+
+	stdin, err := proc.StdinPipe()
+	if err != nil {
+		return fmt.Errorf("creating stdin pipe: %w", err)
+	}
+
+	if err := proc.Start(); err != nil {
+		return fmt.Errorf("starting mi6-client: %w", err)
+	}
+
+	// Close stdin immediately — mi6-client will connect, authenticate,
+	// join the session, then exit when stdin closes.
+	stdin.Close()
+
+	if err := proc.Wait(); err != nil {
+		return fmt.Errorf("mi6-client exited with error: %w", err)
+	}
+
+	return nil
+}
+
 func findMI6Client() (string, error) {
 	if path, err := exec.LookPath("mi6-client"); err == nil {
 		return path, nil
