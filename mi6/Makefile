@@ -1,5 +1,12 @@
-VERSION := $(shell cat ../VERSION)
+VERSION := $(shell type ..\VERSION 2>nul || cat ../VERSION 2>/dev/null || echo 0.1.0)
 LDFLAGS := -ldflags "-X main.Version=$(VERSION)"
+
+# Add .exe extension on Windows
+ifeq ($(OS),Windows_NT)
+    EXE := .exe
+else
+    EXE :=
+endif
 
 .PHONY: all build server client test clean docker
 
@@ -8,10 +15,10 @@ all: build
 build: server client
 
 server:
-	go build $(LDFLAGS) -o bin/mi6-server ./cmd/mi6-server/
+	go build $(LDFLAGS) -o bin/mi6-server$(EXE) ./cmd/mi6-server/
 
 client:
-	go build $(LDFLAGS) -o bin/mi6-client ./cmd/mi6-client/
+	go build $(LDFLAGS) -o bin/mi6-client$(EXE) ./cmd/mi6-client/
 
 test:
 	go test ./... -timeout 60s
