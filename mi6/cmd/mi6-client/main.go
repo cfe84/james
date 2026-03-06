@@ -98,14 +98,26 @@ func main() {
 		log.Fatalf("failed to load private key: %v", err)
 	}
 
+	// Determine known_hosts path for TOFU verification.
+	knownHostsPath := ""
+	if home, err := os.UserHomeDir(); err == nil {
+		knownHostsPath = home + "/.config/james/mi6/known_hosts"
+	}
+
 	// Connect to server via TCP.
 	conn, err := net.Dial("tcp", *server)
 	if err != nil {
 		log.Fatalf("failed to connect to server: %v", err)
 	}
 
-	// Perform handshake.
-	secureConn, err := transport.ClientHandshake(conn, signer, pubKey)
+	// Perform mutual-auth handshake with TOFU server verification.
+	secureConn, err := transport.ClientHandshake(transport.ClientHandshakeParams{
+		Conn:           conn,
+		Signer:         signer,
+		PubKey:         pubKey,
+		ServerAddr:     *server,
+		KnownHostsPath: knownHostsPath,
+	})
 	if err != nil {
 		log.Fatalf("handshake failed: %v", err)
 	}

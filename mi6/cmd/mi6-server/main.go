@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto"
 	"flag"
 	"fmt"
 	"log"
@@ -10,6 +11,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -19,6 +21,11 @@ import (
 	"james/mi6/pkg/transport"
 )
 
+const (
+	handshakeTimeout = 10 * time.Second
+	maxConcurrentConnections = 1000
+)
+
 // Version is set at build time via -ldflags.
 var Version = "dev"
 
@@ -26,6 +33,7 @@ func main() {
 	port := flag.String("port", "", "port to listen on (overrides PORT env, default 7007)")
 	listenAddr := flag.String("listen", "", "TCP address to listen on (overrides --port)")
 	authorizedKeysPath := flag.String("authorized-keys", "", "path to OpenSSH authorized_keys file (required)")
+	serverKeyPath := flag.String("server-key", "", "path to server SSH private key (auto-generated if missing)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
@@ -51,6 +59,17 @@ func main() {
 	}
 
 	log.Printf("mi6-server v%s", Version)
+
+	// Load or generate server key for mutual authentication.
+	if *serverKeyPath == "" {
+		home, _ := os.UserHomeDir()
+		*serverKeyPath = home + "/.config/james/mi6/server_ecdsa"
+	}
+	serverSigner, serverPubKey, err := auth.LoadOrGenerateServerKey(*serverKeyPath)
+	if err != nil {
+		log.Fatalf("Failed to load/generate server key: %v", err)
+	}
+	log.Printf("Server fingerprint: %s", ssh.FingerprintSHA256(serverPubKey))
 
 	// Load authorized keys.
 	var (
@@ -112,6 +131,9 @@ func main() {
 		ln.Close()
 	}()
 
+	// Connection semaphore to limit concurrent connections.
+	connSem := make(chan struct{}, maxConcurrentConnections)
+
 	// Accept loop.
 	for {
 		conn, err := ln.Accept()
@@ -125,10 +147,20 @@ func main() {
 			break
 		}
 
+		// Rate limit: block if too many concurrent connections.
+		select {
+		case connSem <- struct{}{}:
+		default:
+			log.Printf("Connection limit reached, rejecting %s", conn.RemoteAddr())
+			conn.Close()
+			continue
+		}
+
 		wg.Add(1)
 		go func(conn net.Conn) {
 			defer wg.Done()
-			handleConnection(ctx, conn, getAuthorizedKeys, manager)
+			defer func() { <-connSem }()
+			handleConnection(ctx, conn, serverSigner, serverPubKey, getAuthorizedKeys, manager)
 		}(conn)
 	}
 
@@ -139,20 +171,33 @@ func main() {
 func handleConnection(
 	ctx context.Context,
 	conn net.Conn,
+	serverSigner crypto.Signer,
+	serverPubKey ssh.PublicKey,
 	getAuthorizedKeys func() []ssh.PublicKey,
 	manager *session.Manager,
 ) {
 	remoteAddr := conn.RemoteAddr().String()
 	log.Printf("New connection from %s", remoteAddr)
 
-	// Handshake.
-	secureConn, pubKey, err := transport.ServerHandshake(conn, getAuthorizedKeys())
+	// Set handshake timeout to prevent slowloris attacks.
+	conn.SetDeadline(time.Now().Add(handshakeTimeout))
+
+	// Handshake with mutual authentication.
+	secureConn, pubKey, err := transport.ServerHandshake(transport.ServerHandshakeParams{
+		Conn:           conn,
+		Signer:         serverSigner,
+		PubKey:         serverPubKey,
+		AuthorizedKeys: getAuthorizedKeys(),
+	})
 	if err != nil {
 		log.Printf("Handshake failed for %s: %v", remoteAddr, err)
 		conn.Close()
 		return
 	}
 	defer secureConn.Close()
+
+	// Clear the deadline after successful handshake.
+	conn.SetDeadline(time.Time{})
 
 	fingerprint := ssh.FingerprintSHA256(pubKey)
 	log.Printf("Auth success for %s (key %s)", remoteAddr, fingerprint)
@@ -169,6 +214,11 @@ func handleConnection(
 	}
 
 	sessionID := string(joinMsg.Payload)
+	if err := session.ValidateSessionID(sessionID); err != nil {
+		log.Printf("Invalid session ID from %s: %v", remoteAddr, err)
+		_ = secureConn.Send(&protocol.Message{Type: protocol.MsgAuthFail, Payload: []byte("invalid session ID")})
+		return
+	}
 	client := manager.Join(sessionID)
 	log.Printf("Client %s (%s) joined session %q", client.ID, remoteAddr, sessionID)
 

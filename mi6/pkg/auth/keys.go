@@ -23,9 +23,9 @@ func LoadAuthorizedKeys(path string) ([]ssh.PublicKey, error) {
 	var keys []ssh.PublicKey
 	rest := data
 	for len(rest) > 0 {
-		// Skip blank lines
-		line := strings.TrimSpace(string(rest))
-		if line == "" {
+		// Skip blank lines and comment lines before parsing.
+		rest = skipBlankAndCommentLines(rest)
+		if len(rest) == 0 {
 			break
 		}
 
@@ -37,6 +37,31 @@ func LoadAuthorizedKeys(path string) ([]ssh.PublicKey, error) {
 		keys = append(keys, key)
 	}
 	return keys, nil
+}
+
+// skipBlankAndCommentLines advances past any leading blank or comment lines.
+func skipBlankAndCommentLines(data []byte) []byte {
+	for len(data) > 0 {
+		// Find end of current line.
+		idx := bytes.IndexByte(data, '\n')
+		var line []byte
+		if idx >= 0 {
+			line = data[:idx]
+		} else {
+			line = data
+		}
+		stripped := strings.TrimSpace(string(line))
+		if stripped != "" && !strings.HasPrefix(stripped, "#") {
+			return data // non-blank, non-comment line found
+		}
+		// Skip this line.
+		if idx >= 0 {
+			data = data[idx+1:]
+		} else {
+			return nil // no more data
+		}
+	}
+	return nil
 }
 
 // LoadPrivateKey reads an OpenSSH private key file (RSA or ECDSA, PEM format).

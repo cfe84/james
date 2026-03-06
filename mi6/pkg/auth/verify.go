@@ -55,14 +55,29 @@ func GenerateECDHKeyPair() (*ecdh.PrivateKey, error) {
 }
 
 // DeriveSessionKey performs ECDH with the peer's public key and derives a 32-byte
-// AES-256 key using HKDF-SHA256 with info="mi6-session-key".
+// AES-256 key using HKDF-SHA256.
+// Salt is the sorted concatenation of both ECDH public keys, which binds the
+// derived key to this specific exchange and prevents relay attacks.
 func DeriveSessionKey(privKey *ecdh.PrivateKey, peerPubKey *ecdh.PublicKey) ([]byte, error) {
 	shared, err := privKey.ECDH(peerPubKey)
 	if err != nil {
 		return nil, fmt.Errorf("ecdh exchange: %w", err)
 	}
 
-	hkdfReader := hkdf.New(sha256.New, shared, nil, []byte("mi6-session-key"))
+	// Build salt from both ECDH public keys (sorted for determinism).
+	myPub := privKey.PublicKey().Bytes()
+	peerPub := peerPubKey.Bytes()
+	salt := make([]byte, len(myPub)+len(peerPub))
+	// Deterministic order: smaller key first.
+	if string(myPub) < string(peerPub) {
+		copy(salt, myPub)
+		copy(salt[len(myPub):], peerPub)
+	} else {
+		copy(salt, peerPub)
+		copy(salt[len(peerPub):], myPub)
+	}
+
+	hkdfReader := hkdf.New(sha256.New, shared, salt, []byte("mi6-session-key"))
 	key := make([]byte, 32)
 	if _, err := io.ReadFull(hkdfReader, key); err != nil {
 		return nil, fmt.Errorf("deriving key: %w", err)

@@ -43,8 +43,15 @@ func generateECDSAKey(t *testing.T) (*ecdsa.PrivateKey, ssh.PublicKey) {
 	return key, pub
 }
 
+// generateServerKey creates a test ECDSA server key pair for mutual auth tests.
+func generateServerKey(t *testing.T) (*ecdsa.PrivateKey, ssh.PublicKey) {
+	t.Helper()
+	return generateECDSAKey(t)
+}
+
 func TestHandshakeRSA(t *testing.T) {
 	clientKey, clientPub := generateRSAKey(t)
+	serverKey, serverPub := generateServerKey(t)
 	authorizedKeys := []ssh.PublicKey{clientPub}
 
 	clientConn, serverConn := net.Pipe()
@@ -61,11 +68,20 @@ func TestHandshakeRSA(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		clientSC, clientErr = ClientHandshake(clientConn, clientKey, clientPub)
+		clientSC, clientErr = ClientHandshake(ClientHandshakeParams{
+			Conn:   clientConn,
+			Signer: clientKey,
+			PubKey: clientPub,
+		})
 	}()
 	go func() {
 		defer wg.Done()
-		serverSC, authedKey, serverErr = ServerHandshake(serverConn, authorizedKeys)
+		serverSC, authedKey, serverErr = ServerHandshake(ServerHandshakeParams{
+			Conn:           serverConn,
+			Signer:         serverKey,
+			PubKey:         serverPub,
+			AuthorizedKeys: authorizedKeys,
+		})
 	}()
 	wg.Wait()
 
@@ -86,6 +102,7 @@ func TestHandshakeRSA(t *testing.T) {
 
 func TestHandshakeECDSA(t *testing.T) {
 	clientKey, clientPub := generateECDSAKey(t)
+	serverKey, serverPub := generateServerKey(t)
 	authorizedKeys := []ssh.PublicKey{clientPub}
 
 	clientConn, serverConn := net.Pipe()
@@ -102,11 +119,20 @@ func TestHandshakeECDSA(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		clientSC, clientErr = ClientHandshake(clientConn, clientKey, clientPub)
+		clientSC, clientErr = ClientHandshake(ClientHandshakeParams{
+			Conn:   clientConn,
+			Signer: clientKey,
+			PubKey: clientPub,
+		})
 	}()
 	go func() {
 		defer wg.Done()
-		serverSC, authedKey, serverErr = ServerHandshake(serverConn, authorizedKeys)
+		serverSC, authedKey, serverErr = ServerHandshake(ServerHandshakeParams{
+			Conn:           serverConn,
+			Signer:         serverKey,
+			PubKey:         serverPub,
+			AuthorizedKeys: authorizedKeys,
+		})
 	}()
 	wg.Wait()
 
@@ -127,6 +153,7 @@ func TestHandshakeECDSA(t *testing.T) {
 
 func TestSendReceiveAfterHandshake(t *testing.T) {
 	clientKey, clientPub := generateRSAKey(t)
+	serverKey, serverPub := generateServerKey(t)
 	authorizedKeys := []ssh.PublicKey{clientPub}
 
 	clientConn, serverConn := net.Pipe()
@@ -141,7 +168,11 @@ func TestSendReceiveAfterHandshake(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		var err error
-		clientSC, err = ClientHandshake(clientConn, clientKey, clientPub)
+		clientSC, err = ClientHandshake(ClientHandshakeParams{
+			Conn:   clientConn,
+			Signer: clientKey,
+			PubKey: clientPub,
+		})
 		if err != nil {
 			t.Errorf("client handshake: %v", err)
 		}
@@ -149,7 +180,12 @@ func TestSendReceiveAfterHandshake(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		var err error
-		serverSC, _, err = ServerHandshake(serverConn, authorizedKeys)
+		serverSC, _, err = ServerHandshake(ServerHandshakeParams{
+			Conn:           serverConn,
+			Signer:         serverKey,
+			PubKey:         serverPub,
+			AuthorizedKeys: authorizedKeys,
+		})
 		if err != nil {
 			t.Errorf("server handshake: %v", err)
 		}
@@ -226,6 +262,7 @@ func TestSendReceiveAfterHandshake(t *testing.T) {
 
 func TestUnauthorizedKeyRejected(t *testing.T) {
 	clientKey, clientPub := generateRSAKey(t)
+	serverKey, serverPub := generateServerKey(t)
 	_, otherPub := generateRSAKey(t)
 
 	// Only the "other" key is authorized; the client key is not.
@@ -242,11 +279,20 @@ func TestUnauthorizedKeyRejected(t *testing.T) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		_, clientErr = ClientHandshake(clientConn, clientKey, clientPub)
+		_, clientErr = ClientHandshake(ClientHandshakeParams{
+			Conn:   clientConn,
+			Signer: clientKey,
+			PubKey: clientPub,
+		})
 	}()
 	go func() {
 		defer wg.Done()
-		_, _, serverErr = ServerHandshake(serverConn, authorizedKeys)
+		_, _, serverErr = ServerHandshake(ServerHandshakeParams{
+			Conn:           serverConn,
+			Signer:         serverKey,
+			PubKey:         serverPub,
+			AuthorizedKeys: authorizedKeys,
+		})
 	}()
 	wg.Wait()
 
@@ -260,6 +306,7 @@ func TestUnauthorizedKeyRejected(t *testing.T) {
 
 func TestMultipleMessagesInSequence(t *testing.T) {
 	clientKey, clientPub := generateECDSAKey(t)
+	serverKey, serverPub := generateServerKey(t)
 	authorizedKeys := []ssh.PublicKey{clientPub}
 
 	clientConn, serverConn := net.Pipe()
@@ -274,7 +321,11 @@ func TestMultipleMessagesInSequence(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		var err error
-		clientSC, err = ClientHandshake(clientConn, clientKey, clientPub)
+		clientSC, err = ClientHandshake(ClientHandshakeParams{
+			Conn:   clientConn,
+			Signer: clientKey,
+			PubKey: clientPub,
+		})
 		if err != nil {
 			t.Errorf("client handshake: %v", err)
 		}
@@ -282,7 +333,12 @@ func TestMultipleMessagesInSequence(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		var err error
-		serverSC, _, err = ServerHandshake(serverConn, authorizedKeys)
+		serverSC, _, err = ServerHandshake(ServerHandshakeParams{
+			Conn:           serverConn,
+			Signer:         serverKey,
+			PubKey:         serverPub,
+			AuthorizedKeys: authorizedKeys,
+		})
 		if err != nil {
 			t.Errorf("server handshake: %v", err)
 		}

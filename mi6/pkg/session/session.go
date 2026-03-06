@@ -2,6 +2,7 @@ package session
 
 import (
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"sync"
 )
@@ -34,6 +35,41 @@ type Session struct {
 type Manager struct {
 	mu       sync.RWMutex
 	sessions map[string]*Session
+}
+
+// MaxSessionIDLength is the maximum allowed session ID length.
+const MaxSessionIDLength = 256
+
+// ErrInvalidSessionID is returned when a session ID fails validation.
+var ErrInvalidSessionID = errors.New("session: invalid session ID")
+
+// ValidateSessionID checks that a session ID is valid: non-empty, within length limit,
+// and contains only allowed characters (alphanumeric + common specials).
+func ValidateSessionID(id string) error {
+	if id == "" {
+		return fmt.Errorf("%w: empty", ErrInvalidSessionID)
+	}
+	if len(id) > MaxSessionIDLength {
+		return fmt.Errorf("%w: exceeds %d characters", ErrInvalidSessionID, MaxSessionIDLength)
+	}
+	for _, r := range id {
+		if !isAllowedSessionIDChar(r) {
+			return fmt.Errorf("%w: invalid character %q", ErrInvalidSessionID, r)
+		}
+	}
+	return nil
+}
+
+func isAllowedSessionIDChar(r rune) bool {
+	if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' {
+		return true
+	}
+	switch r {
+	case '.', '-', '_', '~', '!', '@', '#', '$', '%', '^', '&', '*', '(', ')',
+		'+', '=', '{', '}', '[', ']', ';', '\'', ':', '"', ',', '<', '>', '/', '?', '`':
+		return true
+	}
+	return false
 }
 
 // NewManager creates a new Manager.
@@ -108,8 +144,11 @@ func (m *Manager) Broadcast(sessionID string, senderID string, data []byte) {
 		if id == senderID {
 			continue
 		}
+		// Copy data for each recipient to prevent shared mutable state.
+		dataCopy := make([]byte, len(data))
+		copy(dataCopy, data)
 		select {
-		case client.WriteCh <- data:
+		case client.WriteCh <- dataCopy:
 		default:
 			// slow consumer, skip
 		}

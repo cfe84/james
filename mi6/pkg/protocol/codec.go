@@ -85,13 +85,13 @@ func Decode(data []byte) (*Message, error) {
 	if off+4 > len(data) {
 		return nil, fmt.Errorf("%w: missing payload length", ErrInvalidMessage)
 	}
-	payloadLen := int(binary.BigEndian.Uint32(data[off:]))
+	payloadLen := binary.BigEndian.Uint32(data[off:])
 	off += 4
-	if off+payloadLen != len(data) {
+	if payloadLen > MaxMessageSize || int64(off)+int64(payloadLen) != int64(len(data)) {
 		return nil, fmt.Errorf("%w: payload length mismatch", ErrInvalidMessage)
 	}
 
-	payload := make([]byte, payloadLen)
+	payload := make([]byte, int(payloadLen))
 	copy(payload, data[off:])
 
 	return &Message{
