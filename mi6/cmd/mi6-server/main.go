@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -62,8 +63,7 @@ func main() {
 
 	// Load or generate server key for mutual authentication.
 	if *serverKeyPath == "" {
-		home, _ := os.UserHomeDir()
-		*serverKeyPath = home + "/.config/james/mi6/server_ecdsa"
+		*serverKeyPath = filepath.Join(filepath.Dir(*authorizedKeysPath), "server_ecdsa")
 	}
 	serverSigner, serverPubKey, err := auth.LoadOrGenerateServerKey(*serverKeyPath)
 	if err != nil {

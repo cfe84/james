@@ -268,18 +268,27 @@ func (e *Executor) pollUntilIdle(ctx context.Context, mp *store.Moneypenny, sess
 			if err != nil {
 				return "", fmt.Errorf("fetching conversation: %w", err)
 			}
-			var convData struct {
-				Conversation []struct {
-					Role    string `json:"role"`
-					Content string `json:"content"`
-				} `json:"conversation"`
+			type turnInfo struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
 			}
-			if err := json.Unmarshal(convResp.Data, &convData); err != nil {
-				return "", fmt.Errorf("parsing conversation: %w", err)
+			var turns []turnInfo
+			if len(convResp.Data) > 0 && convResp.Data[0] == '[' {
+				if err := json.Unmarshal(convResp.Data, &turns); err != nil {
+					return "", fmt.Errorf("parsing conversation: %w", err)
+				}
+			} else {
+				var convData struct {
+					Conversation []turnInfo `json:"conversation"`
+				}
+				if err := json.Unmarshal(convResp.Data, &convData); err != nil {
+					return "", fmt.Errorf("parsing conversation: %w", err)
+				}
+				turns = convData.Conversation
 			}
-			for i := len(convData.Conversation) - 1; i >= 0; i-- {
-				if convData.Conversation[i].Role == "assistant" {
-					return convData.Conversation[i].Content, nil
+			for i := len(turns) - 1; i >= 0; i-- {
+				if turns[i].Role == "assistant" {
+					return turns[i].Content, nil
 				}
 			}
 			return "", nil
@@ -1431,7 +1440,15 @@ func (e *Executor) HistorySession(args []string) *protocol.Response {
 		Conversation []ConversationTurn `json:"conversation"`
 		Total        int                `json:"total"`
 	}
-	if err := json.Unmarshal(resp.Data, &sessionData); err != nil {
+	// Handle both new format (object with conversation+total) and old format (bare array).
+	if len(resp.Data) > 0 && resp.Data[0] == '[' {
+		var conv []ConversationTurn
+		if err := json.Unmarshal(resp.Data, &conv); err != nil {
+			return protocol.ErrResponse(fmt.Sprintf("parsing conversation: %v", err))
+		}
+		sessionData.Conversation = conv
+		sessionData.Total = len(conv)
+	} else if err := json.Unmarshal(resp.Data, &sessionData); err != nil {
 		return protocol.ErrResponse(fmt.Sprintf("parsing conversation: %v", err))
 	}
 
