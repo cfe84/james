@@ -6,7 +6,7 @@ ifeq ($(OS),Windows_NT)
 	EXECUTABLE_SUFFIX := .exe
 else
     VERSION := $(shell cat VERSION 2>/dev/null || echo unknown)
-	INSTALL := cp -m 755
+	INSTALL := cp 
 	SEP := /
 	EXECUTABLE_SUFFIX :=
 endif
