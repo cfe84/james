@@ -2,6 +2,7 @@ package commands
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -9,13 +10,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"james/hem/pkg/protocol"
 	"james/hem/pkg/store"
 	"james/hem/pkg/transport"
-
-	"crypto/rand"
 )
 
 // Executor runs commands using the store and transport layer.
@@ -2037,40 +2037,99 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 		SortKey    int // 0=REVIEW, 1=WORKING, 2=COMPLETED
 	}
 
-	var entries []dashboardEntry
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
+	// Filter tracked sessions first.
+	var filteredSessions []*store.Session
 	for _, sess := range trackedSessions {
-		// Apply project filter.
 		if projectIDFilter != "" && sess.ProjectID != projectIDFilter {
 			continue
 		}
-
-		// Skip completed unless --all.
 		if sess.HemStatus == "completed" && !showAll {
 			continue
 		}
+		filteredSessions = append(filteredSessions, sess)
+	}
 
-		mp, err := e.store.GetMoneypenny(sess.MoneypennyName)
+	// Group filtered sessions by moneypenny name.
+	sessionsByMP := make(map[string][]*store.Session)
+	for _, sess := range filteredSessions {
+		sessionsByMP[sess.MoneypennyName] = append(sessionsByMP[sess.MoneypennyName], sess)
+	}
+
+	// Query each moneypenny in parallel with list_sessions (one call per moneypenny).
+	type mpSessionInfo struct {
+		Status       string `json:"status"`
+		Name         string `json:"name"`
+		SessionID    string `json:"session_id"`
+		LastAccessed string `json:"last_accessed"`
+	}
+
+	type mpResult struct {
+		mpName   string
+		sessions map[string]mpSessionInfo // keyed by session_id
+		err      error
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resultCh := make(chan mpResult, len(sessionsByMP))
+	var wg sync.WaitGroup
+
+	for mpName := range sessionsByMP {
+		mp, err := e.store.GetMoneypenny(mpName)
 		if err != nil || mp == nil {
+			resultCh <- mpResult{mpName: mpName, err: fmt.Errorf("moneypenny not found")}
 			continue
 		}
-
-		// Get session info from moneypenny (metadata only, no conversation).
-		var mpStatus, sessionName, lastAccessed string
-		resp, err := e.sendCommand(ctx, mp, "get_session", map[string]interface{}{"session_id": sess.SessionID})
-		if err == nil {
-			var detail struct {
-				Status       string `json:"status"`
-				Name         string `json:"name"`
-				LastAccessed string `json:"last_accessed"`
+		wg.Add(1)
+		go func(mp *store.Moneypenny) {
+			defer wg.Done()
+			resp, err := e.sendCommand(ctx, mp, "list_sessions", nil)
+			if err != nil {
+				resultCh <- mpResult{mpName: mp.Name, err: err}
+				return
 			}
-			if json.Unmarshal(resp.Data, &detail) == nil {
-				mpStatus = detail.Status
-				sessionName = detail.Name
-				lastAccessed = detail.LastAccessed
+			var sessions []mpSessionInfo
+			if err := json.Unmarshal(resp.Data, &sessions); err != nil {
+				resultCh <- mpResult{mpName: mp.Name, err: err}
+				return
+			}
+			m := make(map[string]mpSessionInfo, len(sessions))
+			for _, s := range sessions {
+				m[s.SessionID] = s
+			}
+			resultCh <- mpResult{mpName: mp.Name, sessions: m}
+		}(mp)
+	}
+
+	// Close channel after all goroutines complete.
+	go func() {
+		wg.Wait()
+		close(resultCh)
+	}()
+
+	// Collect results into a map by moneypenny name.
+	mpData := make(map[string]map[string]mpSessionInfo)
+	for res := range resultCh {
+		if res.err == nil {
+			mpData[res.mpName] = res.sessions
+		}
+		// On error, mpData[mpName] stays nil → sessions show as "offline".
+	}
+
+	// Build dashboard entries.
+	var entries []dashboardEntry
+
+	for _, sess := range filteredSessions {
+		var mpStatus, sessionName, lastAccessed string
+
+		if mpSessions, ok := mpData[sess.MoneypennyName]; ok {
+			if info, found := mpSessions[sess.SessionID]; found {
+				mpStatus = info.Status
+				sessionName = info.Name
+				lastAccessed = info.LastAccessed
+			} else {
+				mpStatus = "unknown"
 			}
 		} else {
 			mpStatus = "offline"
@@ -2083,7 +2142,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 		sortKey := 1 // WORKING
 		if sess.HemStatus == "completed" {
 			sortKey = 3
-		} else if mpStatus == "idle" || mpStatus == "offline" {
+		} else if mpStatus == "idle" || mpStatus == "offline" || mpStatus == "unknown" {
 			if sess.Reviewed {
 				sortKey = 2 // IDLE
 			} else {
@@ -2093,13 +2152,12 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 
 		// Display "ready" instead of "idle" for unreviewed sessions.
 		displayStatus := mpStatus
-		if (mpStatus == "idle" || mpStatus == "offline") && !sess.Reviewed {
+		if (mpStatus == "idle" || mpStatus == "offline" || mpStatus == "unknown") && !sess.Reviewed {
 			displayStatus = "ready"
 		}
 
 		displayName := sessionName
 		if displayName == "" {
-			// Truncate session ID for display.
 			if len(sess.SessionID) > 12 {
 				displayName = sess.SessionID[:12] + "..."
 			} else {
