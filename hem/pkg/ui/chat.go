@@ -250,7 +250,7 @@ func (m chatModel) View() string {
 		var prefix string
 		if turn.Role == "user" {
 			if turn.Queued {
-				prefix = userMsgStyle.Render("⏳ you")
+				prefix = userMsgStyle.Render("⏳ you") + " " + lipgloss.NewStyle().Foreground(colorMuted).Render("[Queued]")
 			} else {
 				prefix = userMsgStyle.Render("🧑‍💻 you")
 			}

@@ -61,6 +61,8 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.importSession(ctx, cmd)
 	case "git_diff":
 		return h.gitDiff(ctx, cmd)
+	case "execute_command":
+		return h.executeCommand(ctx, cmd)
 	case "get_version":
 		return h.getVersion(cmd)
 	default:
@@ -407,6 +409,42 @@ func (h *Handler) updateSession(_ context.Context, cmd *envelope.Command) *envel
 	}
 
 	return envelope.SuccessResponse(cmd.RequestID, map[string]string{"session_id": data.SessionID})
+}
+
+func (h *Handler) executeCommand(_ context.Context, cmd *envelope.Command) *envelope.Response {
+	var data envelope.ExecuteCommandData
+	if err := json.Unmarshal(cmd.Data, &data); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
+	}
+
+	if data.Command == "" {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "command is required")
+	}
+
+	if data.Path != "" {
+		if _, err := os.Stat(data.Path); err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidPath, fmt.Sprintf("path does not exist: %s", data.Path))
+		}
+	}
+
+	shellCmd := exec.Command("sh", "-c", data.Command)
+	if data.Path != "" {
+		shellCmd.Dir = data.Path
+	}
+	output, err := shellCmd.CombinedOutput()
+	exitCode := 0
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to execute command: %v", err))
+		}
+	}
+
+	return envelope.SuccessResponse(cmd.RequestID, envelope.ExecuteCommandResponse{
+		Output:   string(output),
+		ExitCode: exitCode,
+	})
 }
 
 func (h *Handler) getVersion(cmd *envelope.Command) *envelope.Response {

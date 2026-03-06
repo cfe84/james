@@ -104,8 +104,10 @@ moneypenny/
 - `update_session` - Update session parameters (name, system_prompt, yolo, path)
 - `delete_session` - Kill agent if running, remove session
 - `stop_session` - Kill running agent, set session back to idle
+- `queue_prompt` - Queue a prompt for a working session (auto-drained on completion)
 - `import_session` - Create session with pre-existing conversation (no agent run)
 - `git_diff` - Run git diff in session's working directory, return output
+- `execute_command` - Run arbitrary shell command on the host (`sh -c`), return output + exit code
 - `get_version` - Return the moneypenny version
 
 ## Hem - Agent Orchestration CLI
@@ -146,7 +148,9 @@ hem/
 │       ├── create.go        # Create session form
 │       ├── edit.go          # Edit session form
 │       ├── diff.go          # Git diff viewer
-│       └── importform.go    # Import session form
+│       ├── importform.go    # Import session form
+│       ├── shell.go         # Remote shell (execute_command)
+│       └── moneypennies.go  # Moneypenny management view
 └── Makefile
 ```
 
@@ -181,6 +185,16 @@ hem/
 14. **Session import**: Supports both JSONL file paths and bare session IDs. For session IDs, walks `~/.claude/projects/` looking for `{id}.jsonl`. Parses Claude Code JSONL format: user messages as string content, assistant messages as text blocks from content arrays.
 
 15. **Resilient deletion**: Session deletion proceeds with local tracking cleanup even when moneypenny is unreachable, reporting a warning rather than failing entirely. This handles stale/orphaned sessions.
+
+16. **Prompt queuing**: When `continue_session` is sent to a working session, hem automatically falls back to `queue_prompt`. Moneypenny stores queued prompts and drains them after agent completion. Each queued prompt is stored as its own conversation turn, but they're joined for the agent. TUI shows queued messages optimistically with ⏳ and `[Queued]` labels.
+
+17. **Dashboard parallelism**: Dashboard queries moneypennies in parallel (one `list_sessions` per moneypenny, not per session) with a 5-second timeout. If a moneypenny is offline, its sessions show as "offline" without blocking other results.
+
+18. **Reviewed/Ready state**: Hem tracks a `reviewed` flag per session. Sessions become unreviewed on `continue_session`, and reviewed when the user views conversation history AND the last turn is from the assistant. This ensures chat polling doesn't prematurely mark sessions as reviewed while agents are still working.
+
+19. **Remote command execution**: `execute_command` runs shell commands on moneypenny hosts via `sh -c`. Exposed in hem as `hem run` and in the TUI as a shell view (`x` key). Shell view can be opened from any session/moneypenny context, inheriting the moneypenny and working directory.
+
+20. **Version display**: All components log their version on startup. `hem --version` shows both client and server versions. TUI shows the version in the status bar.
 
 ## Versioning
 

@@ -87,7 +87,7 @@ func main() {
 		runChat(cmd.Args)
 		return
 	case "ui":
-		if err := ui.Run(); err != nil {
+		if err := ui.Run(Version); err != nil {
 			fmt.Fprintf(os.Stderr, "%sError: %v%s\n", colorRed, err, colorReset)
 			os.Exit(1)
 		}
@@ -106,6 +106,31 @@ func main() {
 			os.Exit(1)
 		}
 		printResponse(resp.Data, cmd.OutputType)
+		return
+	case "run":
+		// Run passes noun as part of the command args.
+		sockPath := server.DefaultSocketPath()
+		runArgs := cmd.Args
+		req := &protocol.Request{Verb: "run", Noun: cmd.Noun, Args: runArgs}
+		resp, err := hemclient.Send(sockPath, req)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%sError: %v%s\n", colorRed, err, colorReset)
+			os.Exit(1)
+		}
+		if resp.Status == protocol.StatusError {
+			fmt.Fprintf(os.Stderr, "%sError: %s%s\n", colorRed, resp.Message, colorReset)
+			os.Exit(1)
+		}
+		// Print command output directly.
+		var result commands.CommandResult
+		if json.Unmarshal(resp.Data, &result) == nil {
+			fmt.Print(result.Output)
+			if result.ExitCode != 0 {
+				os.Exit(result.ExitCode)
+			}
+		} else {
+			printResponse(resp.Data, cmd.OutputType)
+		}
 		return
 	case "start":
 		if cmd.Noun == "server" {
@@ -542,6 +567,9 @@ Dashboard:
 
 Chat:
   chat [-m MONEYPENNY] [--session-id ID] [--agent, --name, --system-prompt, --yolo, --path]
+
+Remote execution:
+  run [-m MONEYPENNY] [--path PATH] [--session-id ID] COMMAND
 
 MI6:
   test mi6 --mi6 ADDRESS --session SESSION_ID

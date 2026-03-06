@@ -74,14 +74,17 @@ Each component has its own `go.mod` and `Makefile`. Version is injected from `VE
 
 | View | File | Key bindings |
 |------|------|-------------|
-| Dashboard | `dashboard.go` | Enter=chat, c=complete, d=delete, g=diff, n=new, p=projects, l=sessions |
-| Projects | `projects.go` | Enter=open, n=new, d=delete |
-| Project detail | `dashboard.go` (reused) | Enter=chat, c=complete, d=delete, g=diff, n=new session |
-| Sessions | `sessions.go` | Enter=chat, n=new, e=edit, d=delete, g=diff, i=import, s=stop |
-| Chat | `chat.go` | Enter=send, PgUp/PgDn=scroll |
+| Dashboard | `dashboard.go` | Enter=chat, a=toggle done, c=complete, d=delete, e=edit, g=diff, n=new, x=shell, m=moneypennies, p=projects, l=sessions |
+| Projects | `projects.go` | Enter=open, e=edit, n=new, d=delete |
+| Project detail | `dashboard.go` (reused) | Enter=chat, c=complete, d=delete, e=edit, g=diff, n=new, x=shell |
+| Sessions | `sessions.go` | Enter=chat, n=new, e=edit, d=delete, g=diff, i=import, s=stop, x=shell |
+| Chat | `chat.go` | Enter=send, Esc=command mode. Command: c=complete, d=delete, e=edit, g=diff, s=stop, x=shell |
+| Shell | `shell.go` | Enter=run, Ctrl+U=clear, PgUp/PgDn=scroll |
+| Moneypennies | `moneypennies.go` | Enter=ping, s=set default, d=delete, x=shell |
 | Create session | `create.go` | Tab=next field, Enter=submit |
 | Edit session | `edit.go` | Tab=next field, Enter=save |
 | Create project | `projects.go` | Tab=next field, Enter=submit |
+| Edit project | `projects.go` | Tab=next field, Enter=save |
 | Import session | `importform.go` | Tab=next field, Enter=import |
 | Git diff | `diff.go` | Arrow keys=scroll, PgUp/PgDn=page |
 | Styles | `styles.go` | Color definitions (orange primary, not violet) |
@@ -95,3 +98,4 @@ Each component has its own `go.mod` and `Makefile`. Version is injected from `VE
 - Session deletion is resilient: if moneypenny is unreachable, local tracking is still cleaned up.
 - Projects are a hem-level concept (not known to moneypenny). Session-project mapping is in hem's SQLite.
 - `--async` flag on create/continue returns immediately; hem polls moneypenny for completion when sync.
+- **Documentation**: When making any functional change, update both `SPEC.md` (feature specification) and `ARCHITECTURE.md` (technical decisions). These must always reflect the current state of the codebase.

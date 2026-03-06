@@ -89,3 +89,15 @@ type ContinueSessionResponse struct {
 	SessionID string `json:"session_id"`
 	Response  string `json:"response"`
 }
+
+// ExecuteCommandData is the data payload for execute_command.
+type ExecuteCommandData struct {
+	Command string `json:"command"`
+	Path    string `json:"path"`
+}
+
+// ExecuteCommandResponse is returned by execute_command on success.
+type ExecuteCommandResponse struct {
+	Output   string `json:"output"`
+	ExitCode int    `json:"exit_code"`
+}

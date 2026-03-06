@@ -391,6 +391,34 @@ func (c *client) setDefaultMoneypenny(name string) error {
 	return nil
 }
 
+type runCommandResult struct {
+	Output   string `json:"output"`
+	ExitCode int    `json:"exit_code"`
+}
+
+func (c *client) runCommand(moneypenny, path, command string) (runCommandResult, error) {
+	args := []string{}
+	if moneypenny != "" {
+		args = append(args, "-m", moneypenny)
+	}
+	if path != "" {
+		args = append(args, "--path", path)
+	}
+	args = append(args, command)
+	resp, err := c.send("run", "", args...)
+	if err != nil {
+		return runCommandResult{}, err
+	}
+	if resp.Status == protocol.StatusError {
+		return runCommandResult{}, fmt.Errorf("%s", resp.Message)
+	}
+	var result runCommandResult
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return runCommandResult{}, fmt.Errorf("parsing result: %w", err)
+	}
+	return result, nil
+}
+
 func (c *client) moveSessionToProject(sessionID, projectNameOrID string) error {
 	resp, err := c.send("update", "session", sessionID, "--project", projectNameOrID)
 	if err != nil {

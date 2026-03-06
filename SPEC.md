@@ -70,9 +70,13 @@ Method: **stop_session**: stops the agent subprocess for a working session. Sess
 
 Method: **update_session**: updates session parameters. Data: `{ "session_id": "id", "name": "new name", "system_prompt": "new prompt", "yolo": true, "path": "/new/path" }`. Only non-nil fields are updated.
 
+Method: **queue_prompt**: queues a prompt for a session that is currently working. Data: `{ "session_id": "id", "prompt": "the prompt to queue" }`. When the agent finishes, moneypenny drains the queue and continues with all queued prompts. Each queued prompt is stored as its own conversation turn, but they are joined and sent to the agent as a single combined prompt.
+
 Method: **import_session**: creates a session with pre-existing conversation history without running an agent. Data: `{ "session_id": "id", "name": "name", "agent": "claude", "path": "/path", "conversation": [{"role": "user", "content": "..."}, ...] }`. Used by `hem import session`.
 
 Method: **git_diff**: runs `git diff` and `git diff --cached` in a session's working directory. Data: `{ "session_id": "id" }`. Returns `{ "diff": "..." }`.
+
+Method: **execute_command**: executes a shell command on the host. Data: `{ "command": "the shell command to run", "path": "/optional/working/directory" }`. Runs the command via `sh -c` in the specified path (or moneypenny's current directory if path is empty). Returns `{ "output": "combined stdout+stderr", "exit_code": 0 }`. Non-zero exit codes are returned in the response (not as errors). Only returns an error envelope if the command fails to execute at all (e.g., path doesn't exist).
 
 Method: **get_version**: returns the version of moneypenny
 
@@ -84,7 +88,7 @@ Local deployment: add a `--local` convenience flag that allows moneypenny to run
 - Moneypenny creates two fifo, `moneypenny-in` and `moneypenny-out`
 - Then it uses these fifo to get input and produce output
 
-Versioning: A single `VERSION` file at the project root is the source of truth for all components (mi6, moneypenny, hem). Semver format (e.g. `0.1.0`). The version is injected at compile time via Go's `-ldflags "-X main.Version=..."`. Each component's Makefile reads from `VERSION`. Bump minor for new features, patch for fixes.
+Versioning: A single `VERSION` file at the project root is the source of truth for all components (mi6, moneypenny, hem). Semver format (e.g. `0.1.0`). The version is injected at compile time via Go's `-ldflags "-X main.Version=..."`. Each component's Makefile reads from `VERSION`. Bump minor for new features, patch for fixes. All components display their version on startup (moneypenny, hem server, mi6-server log it; hem TUI shows it in the status bar). `hem --version` shows both client and server versions.
 
 # Hem
 
@@ -187,6 +191,7 @@ Hem manages sessions on moneypennies. It tracks which moneypenny each session li
 `hem continue session SESSION_ID PROMPT` or `hem continue session --session-id ID PROMPT`
 
 - Sends `continue_session` to the moneypenny that owns this session.
+- If the session is currently working, the prompt is automatically queued via `queue_prompt` instead. The response indicates `queued: true`.
 - By default: waits for the agent to complete, prints the response.
 - `--async`: return immediately without waiting.
 
@@ -274,14 +279,27 @@ Projects provide context for organizing sessions — a project groups related se
 
 `hem delete project NAME_OR_ID` — deletes a project. Sessions linked to it are unlinked but kept.
 
+## Remote Execution
+
+`hem run [-m MONEYPENNY] [--path PATH] [--session-id ID] COMMAND`
+
+- Executes a shell command on a remote moneypenny via `execute_command`.
+- `-m` specifies the moneypenny (uses default if not set).
+- `--path` sets the working directory on the remote host.
+- `--session-id` resolves the moneypenny and path from an existing session (can be overridden by `-m` and `--path`).
+- Output is printed directly to stdout. Exit code from the remote command is forwarded.
+
 ## Dashboard
 
 `hem dashboard [--project NAME] [--all]` — attention-based view of sessions.
 
 Groups sessions by state:
-1. **REVIEW** — session is idle and active (agent finished, needs user review)
+1. **READY** — session is idle and unreviewed (agent finished, needs user attention)
 2. **WORKING** — agent is currently running
-3. **COMPLETED** — user marked session as done (hidden unless `--all`)
+3. **IDLE** — session is idle and reviewed (user has seen the response)
+4. **COMPLETED** — user marked session as done (hidden unless `--all`)
+
+The "reviewed" flag tracks whether the user has seen the latest agent response. A session becomes unreviewed when `continue_session` is called. It becomes reviewed when the user views the conversation history and the last turn is from the assistant (i.e., the agent has finished). This prevents the chat view's polling from prematurely marking a session as reviewed while the agent is still working.
 
 ### Chat
 
@@ -289,24 +307,30 @@ Groups sessions by state:
 
 `hem ui` — launches an interactive terminal UI (TUI) built with bubbletea + lipgloss.
 
-- **Dashboard** (default view): attention-based grouped view of sessions (REVIEW, WORKING, COMPLETED). Shows project name alongside sessions when any have a project assigned.
+- **Dashboard** (default view): attention-based grouped view of sessions (READY, WORKING, IDLE, COMPLETED). Shows project name alongside sessions when any have a project assigned. Moneypenny queries run in parallel with a 5-second timeout.
   - `Enter` — open chat for selected session
+  - `a` — toggle show/hide completed sessions
   - `c` — mark session as completed
   - `d` — delete session
+  - `e` — edit session parameters
   - `g` — view git diff for session
   - `n` — create new session (opens form)
+  - `x` — open remote shell for session's moneypenny+path
+  - `m` — switch to moneypennies view
   - `p` — switch to projects view
   - `l` — switch to full session list
   - `r` — refresh
   - `q` — quit
 - **Projects**: browse all projects with status, moneypenny, agent, paths.
   - `Enter` — open project detail (filtered session list)
+  - `e` — edit project
   - `n` — create new project (opens form)
   - `d` — delete project
   - `r` — refresh
   - `esc` — back to dashboard
 - **Project detail**: dashboard filtered to a single project.
   - Same keys as dashboard, plus `n` creates session pre-filled with project name and in async mode.
+  - `x` — open remote shell for session's moneypenny+path
   - `esc` — back to projects
 - **Session list**: browse all sessions with status, name, moneypenny, timestamps.
   - `Enter` — open chat for selected session
@@ -316,12 +340,27 @@ Groups sessions by state:
   - `g` — view git diff
   - `i` — import session (opens form)
   - `s` — stop a working session
+  - `x` — open remote shell for session's moneypenny+path
   - `r` — refresh list
   - `esc` — back to dashboard
-- **Chat view**: full conversation history with markdown rendering (glamour) for assistant messages. Send messages with Enter, scroll with PgUp/PgDn, supports paste. Esc to go back.
+- **Chat view**: full conversation history with markdown rendering (glamour) for assistant messages. Send messages with Enter, scroll with PgUp/PgDn, supports paste. Queued messages show with ⏳ icon and `[Queued]` label. Esc enters command mode; second Esc leaves chat.
+  - Command mode: `c` complete, `d` delete (press twice to confirm), `e` edit, `g` git diff, `s` stop, `x` shell, Enter resume, Esc leave.
+- **Moneypennies view**: browse registered moneypennies.
+  - `Enter` — ping moneypenny
+  - `s` — set as default
+  - `d` — delete
+  - `x` — open remote shell on this moneypenny
+  - `r` — refresh
+  - `esc` — back to dashboard
+- **Shell view**: remote command execution on a moneypenny. Type commands and press Enter to execute them via `execute_command`. Shows command history with output. When opened from a session, uses that session's moneypenny and working directory.
+  - `Enter` — run command
+  - `Ctrl+U` — clear input
+  - `PgUp/PgDn` — scroll output
+  - `esc` — back
 - **Create form**: fill in prompt, name, project, agent, system prompt, path, yolo. Tab between fields, Enter to submit. When created from project detail, runs async and returns to project view.
 - **Edit form**: modify session parameters (name, project, system prompt, path, yolo). Shows change indicators (*) for modified fields. Enter to save, Esc to cancel.
 - **Create project form**: fill in name, moneypenny, agent, path, system prompt.
+- **Edit project form**: modify project parameters. Enter to save, Esc to cancel.
 - **Import form**: import session by JSONL file path or session ID. Optional name, project, path.
 - **Diff view**: colored git diff display (green=add, red=remove, blue=hunk, amber=header). Scrollable with arrow keys and PgUp/PgDn.
 

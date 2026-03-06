@@ -22,6 +22,7 @@ const (
 	viewDiff
 	viewEditProject
 	viewMoneypennies
+	viewShell
 )
 
 // Model is the top-level bubbletea model.
@@ -40,20 +41,23 @@ type Model struct {
 	importForm    importModel
 	diff          diffModel
 	moneypennies  moneypenniesModel
+	shell         shellModel
 	width         int
 	height        int
 	client        *client
 	statusMsg     string
+	version       string
 }
 
 // New creates the initial UI model.
-func New() Model {
+func New(version string) Model {
 	c := newClient()
 	return Model{
 		currentView: viewDashboard,
 		dashboard:   newDashboardModel(c),
 		sessions:    newSessionsModel(c),
 		client:      c,
+		version:     version,
 	}
 }
 
@@ -91,6 +95,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.diff.height = h
 		m.moneypennies.width = msg.Width
 		m.moneypennies.height = h
+		m.shell.width = msg.Width
+		m.shell.height = h
 		return m, nil
 
 	case tea.KeyMsg:
@@ -156,6 +162,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateEditProject(msg)
 		case viewMoneypennies:
 			return m.updateMoneypennies(msg)
+		case viewShell:
+			return m.updateShell(msg)
 		}
 
 	// Route messages to appropriate view.
@@ -261,6 +269,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessions.width = m.width
 		m.sessions.height = m.height - 3
 		return m, m.sessions.loadSessions()
+
+	case shellCommandDoneMsg:
+		var cmd tea.Cmd
+		m.shell, cmd = m.shell.Update(msg)
+		return m, cmd
 
 	case diffLoadedMsg:
 		var cmd tea.Cmd
@@ -444,6 +457,26 @@ func (m Model) handleEsc() (tea.Model, tea.Cmd) {
 			m.dashboard.loading = true
 			return m, m.dashboard.loadDashboard()
 		}
+	case viewShell:
+		prev := m.previousView
+		m.currentView = prev
+		m.statusMsg = ""
+		switch prev {
+		case viewProjectDetail:
+			m.projectDetail.loading = true
+			return m, m.projectDetail.loadDashboard()
+		case viewSessions:
+			m.sessions.loading = true
+			return m, m.sessions.loadSessions()
+		case viewMoneypennies:
+			m.moneypennies.loading = true
+			return m, m.moneypennies.loadMoneypennies()
+		case viewChat:
+			return m, nil
+		default:
+			m.dashboard.loading = true
+			return m, m.dashboard.loadDashboard()
+		}
 	}
 	return m, nil
 }
@@ -495,6 +528,16 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.currentView = viewDiff
 			m.previousView = viewDashboard
 			return m, m.diff.loadDiff()
+		}
+	case "x":
+		e := m.dashboard.selectedEntry()
+		if e != nil {
+			m.shell = newShellModelFromSession(m.client, e.SessionID, e.Name)
+			m.shell.width = m.width
+			m.shell.height = m.height - 3
+			m.currentView = viewShell
+			m.previousView = viewDashboard
+			return m, nil
 		}
 	case "l":
 		m.sessions = newSessionsModel(m.client)
@@ -612,6 +655,16 @@ func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.currentView = viewCreate
 		m.previousView = viewProjectDetail
 		return m, nil
+	case "x":
+		e := m.projectDetail.selectedEntry()
+		if e != nil {
+			m.shell = newShellModelFromSession(m.client, e.SessionID, e.Name)
+			m.shell.width = m.width
+			m.shell.height = m.height - 3
+			m.currentView = viewShell
+			m.previousView = viewProjectDetail
+			return m, nil
+		}
 	default:
 		var cmd tea.Cmd
 		m.projectDetail, cmd = m.projectDetail.Update(msg)
@@ -674,6 +727,16 @@ func (m Model) updateSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.previousView = viewSessions
 			return m, m.diff.loadDiff()
 		}
+	case "x":
+		s := m.sessions.selectedSession()
+		if s != nil {
+			m.shell = newShellModelFromSession(m.client, s.SessionID, s.Name)
+			m.shell.width = m.width
+			m.shell.height = m.height - 3
+			m.currentView = viewShell
+			m.previousView = viewSessions
+			return m, nil
+		}
 	default:
 		var cmd tea.Cmd
 		m.sessions, cmd = m.sessions.Update(msg)
@@ -729,6 +792,15 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.currentView = viewDiff
 			m.previousView = viewChat
 			return m, m.diff.loadDiff()
+		case "x":
+			m.chat.confirmDelete = false
+			m.chat.commandMode = false
+			m.shell = newShellModelFromSession(m.client, m.chat.sessionID, m.chat.sessionName)
+			m.shell.width = m.width
+			m.shell.height = m.height - 3
+			m.currentView = viewShell
+			m.previousView = viewChat
+			return m, nil
 		default:
 			m.chat.confirmDelete = false
 		}
@@ -781,6 +853,16 @@ func (m Model) updateMoneypennies(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if mp != nil {
 			return m, m.moneypennies.setDefault(mp.Name)
 		}
+	case "x":
+		mp := m.moneypennies.selectedMoneypenny()
+		if mp != nil {
+			m.shell = newShellModel(m.client, mp.Name, "", "Shell: "+mp.Name)
+			m.shell.width = m.width
+			m.shell.height = m.height - 3
+			m.currentView = viewShell
+			m.previousView = viewMoneypennies
+			return m, nil
+		}
 	default:
 		var cmd tea.Cmd
 		m.moneypennies, cmd = m.moneypennies.Update(msg)
@@ -798,6 +880,12 @@ func (m Model) updateEditProject(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) updateDiff(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.diff, cmd = m.diff.Update(msg)
+	return m, cmd
+}
+
+func (m Model) updateShell(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.shell, cmd = m.shell.Update(msg)
 	return m, cmd
 }
 
@@ -828,6 +916,8 @@ func (m Model) View() string {
 		content = m.diff.View()
 	case viewMoneypennies:
 		content = m.moneypennies.View()
+	case viewShell:
+		content = m.shell.View()
 	}
 
 	statusBar := m.renderStatusBar()
@@ -850,6 +940,7 @@ func (m Model) renderStatusBar() string {
 			statusKeyStyle.Render("e") + statusDescStyle.Render(" edit"),
 			statusKeyStyle.Render("g") + statusDescStyle.Render(" git diff"),
 			statusKeyStyle.Render("n") + statusDescStyle.Render(" new"),
+			statusKeyStyle.Render("x") + statusDescStyle.Render(" shell"),
 			statusKeyStyle.Render("m") + statusDescStyle.Render(" moneypennies"),
 			statusKeyStyle.Render("p") + statusDescStyle.Render(" projects"),
 			statusKeyStyle.Render("l") + statusDescStyle.Render(" all sessions"),
@@ -885,6 +976,7 @@ func (m Model) renderStatusBar() string {
 			statusKeyStyle.Render("e") + statusDescStyle.Render(" edit"),
 			statusKeyStyle.Render("g") + statusDescStyle.Render(" git diff"),
 			statusKeyStyle.Render("n") + statusDescStyle.Render(" new"),
+			statusKeyStyle.Render("x") + statusDescStyle.Render(" shell"),
 			statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
 			statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
 		}
@@ -897,6 +989,7 @@ func (m Model) renderStatusBar() string {
 			statusKeyStyle.Render("g") + statusDescStyle.Render(" git diff"),
 			statusKeyStyle.Render("i") + statusDescStyle.Render(" import"),
 			statusKeyStyle.Render("s") + statusDescStyle.Render(" stop"),
+			statusKeyStyle.Render("x") + statusDescStyle.Render(" shell"),
 			statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
 			statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
 		}
@@ -908,6 +1001,7 @@ func (m Model) renderStatusBar() string {
 				statusKeyStyle.Render("e") + statusDescStyle.Render(" edit"),
 				statusKeyStyle.Render("g") + statusDescStyle.Render(" git diff"),
 				statusKeyStyle.Render("s") + statusDescStyle.Render(" stop"),
+				statusKeyStyle.Render("x") + statusDescStyle.Render(" shell"),
 				statusKeyStyle.Render("↵") + statusDescStyle.Render(" resume"),
 				statusKeyStyle.Render("esc") + statusDescStyle.Render(" leave"),
 				statusKeyStyle.Render("^U/^D") + statusDescStyle.Render(" scroll"),
@@ -950,6 +1044,7 @@ func (m Model) renderStatusBar() string {
 			statusKeyStyle.Render("↵") + statusDescStyle.Render(" ping"),
 			statusKeyStyle.Render("s") + statusDescStyle.Render(" set default"),
 			statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
+			statusKeyStyle.Render("x") + statusDescStyle.Render(" shell"),
 			statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
 			statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
 		}
@@ -959,17 +1054,31 @@ func (m Model) renderStatusBar() string {
 			statusKeyStyle.Render("pgup/dn") + statusDescStyle.Render(" page"),
 			statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
 		}
+	case viewShell:
+		keys = []string{
+			statusKeyStyle.Render("↵") + statusDescStyle.Render(" run"),
+			statusKeyStyle.Render("^U") + statusDescStyle.Render(" clear"),
+			statusKeyStyle.Render("pgup/dn") + statusDescStyle.Render(" scroll"),
+			statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
+		}
 	}
 
 	left := lipgloss.JoinHorizontal(lipgloss.Left, keys...)
 	right := ""
 	if m.statusMsg != "" {
 		right = statusDescStyle.Render(m.statusMsg)
+	} else if m.version != "" {
+		right = statusDescStyle.Render("v" + m.version)
 	}
 
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 0 {
-		gap = 0
+		// Not enough room for right side — drop it.
+		right = ""
+		gap = m.width - lipgloss.Width(left)
+		if gap < 0 {
+			gap = 0
+		}
 	}
 	padding := statusBarStyle.Render(fmt.Sprintf("%*s", gap, ""))
 
@@ -977,8 +1086,8 @@ func (m Model) renderStatusBar() string {
 }
 
 // Run starts the TUI.
-func Run() error {
-	p := tea.NewProgram(New(), tea.WithAltScreen())
+func Run(version string) error {
+	p := tea.NewProgram(New(version), tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }

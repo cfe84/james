@@ -63,6 +63,7 @@ var CommandHelp = map[string]string{
 	"delete project":      "Usage: hem delete project NAME_OR_ID\n\nDeletes a project. Sessions keep their data but lose the project link.",
 	"complete session":    "Usage: hem complete session SESSION_ID\n\nMarks a session as completed in hem's local tracking.",
 	"diff session":        "Usage: hem diff session SESSION_ID\n\nShows git diff for a session's working directory.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)",
+	"run ":                "Usage: hem run [-m MONEYPENNY] [--path PATH] [--session-id ID] COMMAND\n\nExecutes a shell command on a remote moneypenny.\n\nFlags:\n  -m, --moneypenny   Moneypenny name (uses default if not set)\n  --path             Working directory on the remote host\n  --session-id       Use the moneypenny and path from this session",
 	"dashboard":           "Usage: hem dashboard [--project NAME] [--all]\n\nShows a dashboard of sessions grouped by attention state.\n\nFlags:\n  --project          Filter by project name\n  --all              Include completed sessions",
 	"import session":       "Usage: hem import session FILE.jsonl|SESSION_ID [-m MONEYPENNY] [--name NAME] [--project PROJECT]\n\nImports an existing Claude Code session from a JSONL file or by session ID.\nIf the argument is not a file on disk, it is treated as a session ID and\nsearched for in ~/.claude/projects/ subdirectories.\n\nFlags:\n  -m, --moneypenny   Moneypenny name (uses default if not set)\n  --name             Session name (default: first user message)\n  --agent            Agent (default: claude)\n  --path             Working directory (default: from JSONL or default)\n  --project          Project name or ID",
 }
@@ -82,6 +83,10 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 
 	if verb == "dashboard" {
 		return e.Dashboard(args)
+	}
+
+	if verb == "run" {
+		return e.RunCommand(noun, args)
 	}
 
 	if verb == "get-version" {
@@ -427,6 +432,12 @@ type ProjectResult struct {
 	Paths               string `json:"paths"`
 	DefaultAgent        string `json:"default_agent"`
 	DefaultSystemPrompt string `json:"default_system_prompt"`
+}
+
+// CommandResult is returned by the run command.
+type CommandResult struct {
+	Output   string `json:"output"`
+	ExitCode int    `json:"exit_code"`
 }
 
 // ---------------------------------------------------------------------------
@@ -1355,8 +1366,12 @@ func (e *Executor) HistorySession(args []string) *protocol.Response {
 		conv = conv[len(conv)-numTurns:]
 	}
 
-	// Mark session as reviewed — the user is seeing the response.
-	_ = e.store.SetSessionReviewed(sessionID, true)
+	// Mark session as reviewed only if the last turn is from the assistant,
+	// meaning the agent has finished and the user is seeing the final response.
+	// If the agent is still working (last turn is user), don't mark reviewed yet.
+	if len(conv) > 0 && conv[len(conv)-1].Role == "assistant" {
+		_ = e.store.SetSessionReviewed(sessionID, true)
+	}
 
 	return protocol.OKResponse(HistoryResult{
 		SessionID:    sessionID,
@@ -1751,6 +1766,90 @@ func (e *Executor) DiffSession(args []string) *protocol.Response {
 	}
 
 	return protocol.OKResponse(TextResult{Message: result.Diff})
+}
+
+// RunCommand executes a shell command on a remote moneypenny.
+// The noun parameter captures the first word after "run" which may be part of the command.
+func (e *Executor) RunCommand(noun string, args []string) *protocol.Response {
+	var mpName, pathArg, sessionID string
+
+	remaining, err := parseFlagsFromArgs("run", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&mpName, "m", "", "moneypenny name")
+		fs.StringVar(&mpName, "moneypenny", "", "moneypenny name")
+		fs.StringVar(&pathArg, "path", "", "working directory")
+		fs.StringVar(&sessionID, "session-id", "", "session ID")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	// Build the command string from noun + remaining args.
+	var parts []string
+	if noun != "" {
+		parts = append(parts, noun)
+	}
+	parts = append(parts, remaining...)
+	command := strings.Join(parts, " ")
+	if command == "" {
+		return protocol.ErrResponse("command is required")
+	}
+
+	// If session-id is provided, resolve moneypenny and path from it.
+	if sessionID != "" {
+		mp, err := e.resolveSessionMoneypenny(sessionID)
+		if err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		if mpName == "" {
+			mpName = mp.Name
+		}
+		if pathArg == "" {
+			// Get session details to find path.
+			ctx := context.Background()
+			resp, err := e.sendCommand(ctx, mp, "get_session", map[string]interface{}{"session_id": sessionID})
+			if err != nil {
+				return protocol.ErrResponse(err.Error())
+			}
+			var detail struct {
+				Path string `json:"path"`
+			}
+			if err := json.Unmarshal(resp.Data, &detail); err == nil && detail.Path != "" {
+				pathArg = detail.Path
+			}
+		}
+	}
+
+	// Resolve moneypenny.
+	if mpName == "" {
+		mpName, _ = e.store.GetDefault("moneypenny")
+	}
+	if mpName == "" {
+		return protocol.ErrResponse("moneypenny is required (use -m or set a default)")
+	}
+
+	mp, err := e.store.GetMoneypenny(mpName)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if mp == nil {
+		return protocol.ErrResponse(fmt.Sprintf("moneypenny %q not found", mpName))
+	}
+
+	ctx := context.Background()
+	resp, err := e.sendCommand(ctx, mp, "execute_command", map[string]interface{}{
+		"command": command,
+		"path":    pathArg,
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	var result CommandResult
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("parsing result: %v", err))
+	}
+
+	return protocol.OKResponse(result)
 }
 
 func (e *Executor) ImportSession(args []string) *protocol.Response {
