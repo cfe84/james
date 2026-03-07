@@ -611,11 +611,21 @@ Qew is a web-based UI for remote access to Hem via MI6. It serves a dashboard an
 ## Usage
 
 ```bash
-qew --mi6 mi6.example.com/hem-control --listen :8077
+# Remote via MI6
+qew --mi6 mi6.example.com/hem-control --password SECRET --listen :8077
+
+# Local via Unix socket (same machine as Hem)
+qew --password SECRET --listen :8077
+
+# Local development (no password, no Secure cookie)
+qew --development --listen 127.0.0.1:8077
 ```
 
-- `--mi6` (required): MI6 address for the Hem control channel.
+- `--mi6`: MI6 address for the Hem control channel.
+- `--socket`: Hem server Unix socket path (default `~/.config/james/hem/hem.sock`). Used when `--mi6` is not specified.
 - `--listen`: HTTP listen address (default `:8077`).
+- `--password`: Password for web UI authentication. Required when listening on non-loopback addresses.
+- `--development`: Development mode — allows no password and disables Secure cookie flag.
 - `--key`: SSH key path (default `~/.config/james/qew/qew_ecdsa`).
 - `--show-public-key`: Output the public key and exit.
 - `-v`: Verbose logging.
@@ -623,11 +633,20 @@ qew --mi6 mi6.example.com/hem-control --listen :8077
 ## Features
 
 - **Dashboard**: Groups sessions by state (READY, WORKING, IDLE, COMPLETED), same as TUI dashboard. Polls every 5 seconds.
-- **Chat**: View conversation history and send messages. Polls every 3 seconds. Shows optimistic message display.
-- **API proxy**: `POST /api` proxies JSON requests to Hem via MI6.
+- **Chat**: View conversation history and send messages. Polls every 3 seconds. Shows optimistic message display. Markdown rendering (headings, code blocks, tables, bold, inline code).
+- **API proxy**: `POST /api` proxies JSON requests to Hem.
 - **WebSocket**: `/ws` for real-time updates.
-- **SSH key management**: Auto-generates ECDSA key on first run.
+- **SSH key management**: Auto-generates ECDSA key on first run (MI6 mode only).
 - **Single binary**: Web frontend embedded at build time via `embed.FS`.
+
+## Security
+
+- **Authentication**: Cookie-based login with `--password`. Token includes timestamp, expires after 7 days, signed with per-instance HMAC secret. Password compared using constant-time comparison.
+- **CSRF protection**: API requires `X-Requested-With: QewClient` header on non-GET requests. Browsers block cross-origin custom headers without CORS preflight.
+- **WebSocket origin check**: WebSocket upgrades validate the Origin header matches the request Host.
+- **Login rate limiting**: Exponential backoff per IP on failed attempts (1s, 2s, 4s, ... up to 30s).
+- **Cookie security**: `HttpOnly`, `SameSite=Strict`, `Secure` flag set in production (not in `--development` mode).
+- **Known risk — no command allowlist**: The API proxies any Hem command. An authenticated user has full Hem access (delete sessions, modify projects, etc.). The web UI only uses dashboard/history/continue, but the API does not restrict commands.
 
 `hem chat [-m MONEYPENNY] [--session-id ID] [flags]` — interactive REPL for chatting with an agent.
 

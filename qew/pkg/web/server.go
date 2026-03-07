@@ -4,13 +4,17 @@ import (
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"embed"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,28 +24,43 @@ import (
 //go:embed static
 var staticFS embed.FS
 
-const authCookieName = "qew_session"
+const (
+	authCookieName = "qew_session"
+	tokenMaxAge    = 7 * 24 * time.Hour
+)
 
 // Server is the Qew web server.
 type Server struct {
-	hem      HemClient
-	vlog     *log.Logger
-	addr     string
-	password string
-	secret   []byte // HMAC signing key for session tokens
-	pollMu   sync.Mutex
+	hem         HemClient
+	vlog        *log.Logger
+	addr        string
+	password    string
+	development bool
+	secret      []byte // HMAC signing key for session tokens
+	pollMu      sync.Mutex
+
+	// Login rate limiting: per-IP tracking.
+	loginMu       sync.Mutex
+	loginAttempts map[string]*loginTracker
+}
+
+type loginTracker struct {
+	failures int
+	lastFail time.Time
 }
 
 // NewServer creates a new Qew web server.
-func NewServer(hem HemClient, listenAddr, password string, vlog *log.Logger) *Server {
+func NewServer(hem HemClient, listenAddr, password string, development bool, vlog *log.Logger) *Server {
 	secret := make([]byte, 32)
 	rand.Read(secret)
 	return &Server{
-		hem:      hem,
-		vlog:     vlog,
-		addr:     listenAddr,
-		password: password,
-		secret:   secret,
+		hem:           hem,
+		vlog:          vlog,
+		addr:          listenAddr,
+		password:      password,
+		development:   development,
+		secret:        secret,
+		loginAttempts: make(map[string]*loginTracker),
 	}
 }
 
@@ -53,11 +72,11 @@ func (s *Server) Run() error {
 		mux.HandleFunc("/login", s.handleLogin)
 	}
 
-	// API endpoint: POST /api — proxy to Hem via MI6.
-	mux.HandleFunc("/api", s.requireAuth(s.handleAPI))
+	// API endpoint: POST /api — proxy to Hem.
+	mux.HandleFunc("/api", s.requireAuth(s.csrfProtect(s.handleAPI)))
 
 	// WebSocket endpoint for real-time polling.
-	mux.Handle("/ws", s.requireAuthWS(websocket.Handler(s.handleWS)))
+	mux.Handle("/ws", s.requireAuthWS(http.HandlerFunc(s.handleWSUpgrade)))
 
 	// Static files.
 	staticSub, err := fs.Sub(staticFS, "static")
@@ -87,12 +106,46 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := s.hem.Send(&req)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("MI6 error: %v", err), http.StatusBadGateway)
+		http.Error(w, fmt.Sprintf("backend error: %v", err), http.StatusBadGateway)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+// handleWSUpgrade checks the Origin header before upgrading to WebSocket.
+func (s *Server) handleWSUpgrade(w http.ResponseWriter, r *http.Request) {
+	origin := r.Header.Get("Origin")
+	if origin != "" {
+		allowed := s.isAllowedOrigin(origin, r.Host)
+		if !allowed {
+			s.vlog.Printf("WebSocket rejected: origin %q vs host %q", origin, r.Host)
+			http.Error(w, "forbidden origin", http.StatusForbidden)
+			return
+		}
+	}
+
+	wsHandler := websocket.Handler(s.handleWS)
+	wsHandler.ServeHTTP(w, r)
+}
+
+func (s *Server) isAllowedOrigin(origin, host string) bool {
+	// Strip scheme from origin to compare with Host header.
+	o := origin
+	for _, prefix := range []string{"https://", "http://"} {
+		o = strings.TrimPrefix(o, prefix)
+	}
+	// Compare origin host with request host.
+	oHost, _, _ := net.SplitHostPort(o)
+	if oHost == "" {
+		oHost = o
+	}
+	rHost, _, _ := net.SplitHostPort(host)
+	if rHost == "" {
+		rHost = host
+	}
+	return oHost == rHost
 }
 
 func (s *Server) handleWS(ws *websocket.Conn) {
@@ -121,7 +174,7 @@ func (s *Server) handleWS(ws *websocket.Conn) {
 		if err != nil {
 			websocket.JSON.Send(ws, map[string]string{
 				"status":  "error",
-				"message": fmt.Sprintf("MI6 error: %v", err),
+				"message": fmt.Sprintf("backend error: %v", err),
 			})
 			continue
 		}
@@ -132,14 +185,42 @@ func (s *Server) handleWS(ws *websocket.Conn) {
 
 // --- Auth ---
 
+// makeToken creates a signed token embedding the issued-at timestamp.
 func (s *Server) makeToken() string {
+	ts := make([]byte, 8)
+	binary.BigEndian.PutUint64(ts, uint64(time.Now().Unix()))
 	mac := hmac.New(sha256.New, s.secret)
-	mac.Write([]byte("qew-auth"))
-	return hex.EncodeToString(mac.Sum(nil))
+	mac.Write(ts)
+	sig := mac.Sum(nil)
+	return hex.EncodeToString(ts) + "." + hex.EncodeToString(sig)
 }
 
+// validToken checks the token signature and expiry.
 func (s *Server) validToken(token string) bool {
-	return hmac.Equal([]byte(token), []byte(s.makeToken()))
+	parts := strings.SplitN(token, ".", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	tsBytes, err := hex.DecodeString(parts[0])
+	if err != nil || len(tsBytes) != 8 {
+		return false
+	}
+	sigBytes, err := hex.DecodeString(parts[1])
+	if err != nil {
+		return false
+	}
+
+	// Verify signature.
+	mac := hmac.New(sha256.New, s.secret)
+	mac.Write(tsBytes)
+	expected := mac.Sum(nil)
+	if !hmac.Equal(sigBytes, expected) {
+		return false
+	}
+
+	// Check expiry.
+	issuedAt := time.Unix(int64(binary.BigEndian.Uint64(tsBytes)), 0)
+	return time.Since(issuedAt) < tokenMaxAge
 }
 
 func (s *Server) isAuthenticated(r *http.Request) bool {
@@ -173,26 +254,108 @@ func (s *Server) requireAuthWS(next http.Handler) http.Handler {
 	})
 }
 
+// --- CSRF ---
+
+// csrfProtect requires a custom header on non-GET requests to prevent CSRF.
+// Browsers block cross-origin requests from setting custom headers without CORS preflight.
+func (s *Server) csrfProtect(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			if r.Header.Get("X-Requested-With") != "QewClient" {
+				http.Error(w, "missing X-Requested-With header", http.StatusForbidden)
+				return
+			}
+		}
+		next(w, r)
+	}
+}
+
+// --- Login with rate limiting ---
+
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
+		ip := remoteIP(r)
+
+		// Check rate limit.
+		if wait := s.loginDelay(ip); wait > 0 {
+			s.vlog.Printf("login rate-limited: %s (wait %v)", ip, wait)
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprintf(w, loginPageHTML(fmt.Sprintf("Too many attempts. Try again in %d seconds.", int(wait.Seconds())+1)))
+			return
+		}
+
 		r.ParseForm()
-		if r.FormValue("password") == s.password {
-			http.SetCookie(w, &http.Cookie{
+		pw := r.FormValue("password")
+		if subtle.ConstantTimeCompare([]byte(pw), []byte(s.password)) == 1 {
+			s.clearLoginAttempts(ip)
+			cookie := &http.Cookie{
 				Name:     authCookieName,
 				Value:    s.makeToken(),
 				Path:     "/",
 				HttpOnly: true,
-				SameSite: http.SameSiteLaxMode,
-				MaxAge:   int((7 * 24 * time.Hour).Seconds()),
-			})
+				SameSite: http.SameSiteStrictMode,
+				MaxAge:   int(tokenMaxAge.Seconds()),
+			}
+			if !s.development {
+				cookie.Secure = true
+			}
+			http.SetCookie(w, cookie)
 			http.Redirect(w, r, "/", http.StatusFound)
 			return
 		}
+
+		s.recordLoginFailure(ip)
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, loginPageHTML("Incorrect password"))
 		return
 	}
 	fmt.Fprint(w, loginPageHTML(""))
+}
+
+// loginDelay returns how long the IP must wait before next attempt.
+// Exponential backoff: 0, 1s, 2s, 4s, 8s, 16s, 30s max.
+func (s *Server) loginDelay(ip string) time.Duration {
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	t, ok := s.loginAttempts[ip]
+	if !ok || t.failures == 0 {
+		return 0
+	}
+	delay := time.Duration(1<<(t.failures-1)) * time.Second
+	if delay > 30*time.Second {
+		delay = 30 * time.Second
+	}
+	elapsed := time.Since(t.lastFail)
+	if elapsed >= delay {
+		return 0
+	}
+	return delay - elapsed
+}
+
+func (s *Server) recordLoginFailure(ip string) {
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	t, ok := s.loginAttempts[ip]
+	if !ok {
+		t = &loginTracker{}
+		s.loginAttempts[ip] = t
+	}
+	t.failures++
+	t.lastFail = time.Now()
+}
+
+func (s *Server) clearLoginAttempts(ip string) {
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	delete(s.loginAttempts, ip)
+}
+
+func remoteIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 func loginPageHTML(errorMsg string) string {

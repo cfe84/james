@@ -8,15 +8,20 @@
   let chatPollTimer = null;
   let requestQueue = [];
   let requestId = 0;
+  let lastChatHTML = '';
 
   // --- API ---
 
   async function apiCall(verb, noun, args) {
     const resp = await fetch('/api', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'QewClient' },
       body: JSON.stringify({ verb, noun, args: args || [] }),
     });
+    if (resp.status === 401 || resp.status === 302) {
+      window.location.href = '/login';
+      throw new Error('Session expired');
+    }
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     return resp.json();
   }
@@ -125,6 +130,7 @@
     document.getElementById('chat-title').textContent = name || sessionId.substring(0, 12);
     document.getElementById('chat-messages').innerHTML = '<div class="loading">Loading...</div>';
     document.getElementById('chat-input').value = '';
+    lastChatHTML = '';
     stopDashboardPoll();
     await loadChat();
     startChatPoll();
@@ -173,8 +179,13 @@
           <div class="msg-content">${formatContent(content)}</div>
         </div>`;
     }
+    // Skip re-render if content hasn't changed (preserves selection and scroll).
+    if (html === lastChatHTML) return;
+    lastChatHTML = html;
+    // Only auto-scroll if user is already near the bottom.
+    const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
     container.innerHTML = html;
-    container.scrollTop = container.scrollHeight;
+    if (atBottom) container.scrollTop = container.scrollHeight;
   }
 
   async function sendMessage() {
@@ -232,23 +243,31 @@
   }
 
   function escapeAttr(s) {
-    return s.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    return s.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+            .replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/`/g, '&#96;');
   }
 
   function formatContent(text) {
-    // Simple markdown-like formatting: code blocks, inline code, bold, tables.
+    // All content is HTML-escaped first, then structural markdown is applied.
+    // Since escapeHtml runs first, all user content is safe — regexes only
+    // wrap already-escaped text in HTML tags.
     let html = escapeHtml(text);
-    // Code blocks: ```...```
+    // Code blocks: ```...``` (must come first to protect contents from other rules)
     html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
+    // Headings: # ## ### #### (must be at start of line)
+    html = html.replace(/(^|\n)####\s+(.+)/g, '$1<h4>$2</h4>');
+    html = html.replace(/(^|\n)###\s+(.+)/g, '$1<h3>$2</h3>');
+    html = html.replace(/(^|\n)##\s+(.+)/g, '$1<h2>$2</h2>');
+    html = html.replace(/(^|\n)#\s+(.+)/g, '$1<h1>$2</h1>');
     // Tables: lines of | col | col |
     html = html.replace(/(^|\n)(\|.+\|(?:\n\|.+\|)+)/g, function(match, prefix, table) {
       const rows = table.trim().split('\n');
       let out = '<table>';
       for (let i = 0; i < rows.length; i++) {
         const cells = rows[i].split('|').slice(1, -1);
-        // Skip separator rows (e.g. |---|---|)
         if (cells.every(c => /^\s*[-:]+\s*$/.test(c))) continue;
         const tag = i === 0 ? 'th' : 'td';
+        // Cell content is already HTML-escaped from the initial escapeHtml call.
         out += '<tr>' + cells.map(c => `<${tag}>${c.trim()}</${tag}>`).join('') + '</tr>';
       }
       out += '</table>';

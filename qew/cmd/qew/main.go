@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 
@@ -24,7 +25,8 @@ func main() {
 	sockPath := flag.String("socket", "", "Hem server Unix socket path (default: ~/.config/james/hem/hem.sock)")
 	listenAddr := flag.String("listen", ":8077", "HTTP listen address")
 	keyPath := flag.String("key", "", "SSH key path (default: ~/.config/james/qew/qew_ecdsa)")
-	password := flag.String("password", "", "optional password for web UI authentication")
+	password := flag.String("password", "", "password for web UI authentication (required unless --development)")
+	development := flag.Bool("development", false, "development mode: allow no password, no Secure cookie flag")
 	showPubKey := flag.Bool("show-public-key", false, "output the public key and exit")
 	verbose := flag.Bool("v", false, "verbose logging")
 	flag.Parse()
@@ -60,6 +62,18 @@ func main() {
 		vlog = log.New(os.Stderr, "[qew] ", log.LstdFlags)
 	}
 
+	// Require password on non-loopback addresses unless --development.
+	if *password == "" && !*development {
+		host, _, _ := net.SplitHostPort(*listenAddr)
+		if host == "" || host == "0.0.0.0" || host == "::" {
+			log.Fatal("--password is required when listening on a non-loopback address (use --development to override)")
+		}
+		ip := net.ParseIP(host)
+		if ip != nil && !ip.IsLoopback() {
+			log.Fatal("--password is required when listening on a non-loopback address (use --development to override)")
+		}
+	}
+
 	log.Printf("Qew v%s", Version)
 
 	var hem web.HemClient
@@ -79,7 +93,7 @@ func main() {
 		hem = &web.SocketClient{SockPath: *sockPath}
 	}
 
-	srv := web.NewServer(hem, *listenAddr, *password, vlog)
+	srv := web.NewServer(hem, *listenAddr, *password, *development, vlog)
 	if err := srv.Run(); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
