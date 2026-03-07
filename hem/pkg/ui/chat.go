@@ -483,7 +483,7 @@ func (m chatModel) View() string {
 		}
 		var rendered string
 		switch turn.Role {
-		case "assistant":
+		case "assistant", "user":
 			rendered = renderMarkdown(content, contentWidth)
 		case "system":
 			rendered = wordWrap(content, contentWidth)
@@ -492,7 +492,7 @@ func (m chatModel) View() string {
 		}
 		for _, line := range strings.Split(rendered, "\n") {
 			switch turn.Role {
-			case "assistant":
+			case "assistant", "user":
 				msgLines = append(msgLines, "  "+line)
 			case "system":
 				msgLines = append(msgLines, "  "+systemMsgStyle.Render(line))

@@ -5,6 +5,119 @@ We are building James, a set of tools used to orchestrate agents (see the pun ye
 - Keep track of technical decisions in an ARCHITECTURE.md file. Always check if it needs updates
 - Keep the spec up to date, I might ask you to do changes out of the spec, they should be reflected here.
 
+# Architecture Overview
+
+```mermaid
+graph TB
+    subgraph "User Interfaces"
+        CLI["Hem CLI"]
+        TUI["Hem TUI (bubbletea)"]
+        CHAT["Hem Chat REPL"]
+    end
+
+    subgraph "Hem Server"
+        SERVER["Hem Server<br/>(Unix socket daemon)"]
+        SQLITE_HEM["SQLite Store<br/>(moneypenny registry,<br/>sessions, projects,<br/>templates, settings)"]
+    end
+
+    CLI -->|"JSON over Unix socket"| SERVER
+    TUI -->|"JSON over Unix socket"| SERVER
+    CHAT -->|"JSON over Unix socket"| SERVER
+    SERVER --- SQLITE_HEM
+
+    subgraph "Local Host"
+        MP_LOCAL["Moneypenny<br/>(local daemon)"]
+        FIFO["FIFO pipes<br/>(moneypenny-in/out)"]
+        SQLITE_MP1["SQLite Store<br/>(sessions, conversations,<br/>schedules)"]
+        AGENT1["Claude Code<br/>(agent subprocess)"]
+    end
+
+    SERVER -->|"JSON envelopes"| FIFO
+    FIFO --- MP_LOCAL
+    MP_LOCAL --- SQLITE_MP1
+    MP_LOCAL -->|"spawns & manages"| AGENT1
+
+    subgraph "Remote Host"
+        MP_REMOTE["Moneypenny<br/>(remote daemon)"]
+        SQLITE_MP2["SQLite Store"]
+        AGENT2["Claude Code<br/>(agent subprocess)"]
+    end
+
+    subgraph "MI6 Relay"
+        MI6_SERVER["MI6 Server<br/>(container)"]
+    end
+
+    SERVER -->|"mi6-client"| MI6_SERVER
+    MI6_SERVER -->|"encrypted relay"| MP_REMOTE
+    MP_REMOTE --- SQLITE_MP2
+    MP_REMOTE -->|"spawns & manages"| AGENT2
+```
+
+# Concepts
+
+```mermaid
+erDiagram
+    PROJECT ||--o{ SESSION : "groups"
+    PROJECT ||--o{ TEMPLATE : "has"
+    SESSION }o--|| MONEYPENNY : "runs on"
+    SESSION ||--o{ CONVERSATION_TURN : "contains"
+    SESSION ||--o{ SCHEDULE : "has"
+    TEMPLATE }o--|| PROJECT : "belongs to"
+
+    MONEYPENNY {
+        string name "unique identifier"
+        string type "fifo or mi6"
+        string address "FIFO path or MI6 address"
+        bool is_default "default for new sessions"
+    }
+
+    PROJECT {
+        string id "UUID"
+        string name "unique name"
+        string status "active, paused, done"
+        string moneypenny "default moneypenny"
+        string agent "default agent"
+        string path "default working directory"
+        string system_prompt "default system prompt"
+    }
+
+    SESSION {
+        string session_id "UUID"
+        string name "display name"
+        string agent "claude, etc."
+        string path "working directory"
+        string system_prompt "agent instructions"
+        bool yolo "skip permissions"
+        string status "idle, working"
+        string hem_status "active, completed"
+        bool reviewed "user has seen response"
+    }
+
+    TEMPLATE {
+        string id "UUID"
+        string name "template name"
+        string agent "agent to use"
+        string path "working directory"
+        string prompt "initial prompt"
+        string system_prompt "agent instructions"
+        bool yolo "skip permissions"
+    }
+
+    CONVERSATION_TURN {
+        string role "user, assistant, system"
+        string content "message text"
+        datetime created_at "timestamp"
+    }
+
+    SCHEDULE {
+        string id "UUID"
+        string prompt "scheduled prompt"
+        datetime scheduled_at "when to fire"
+        string status "pending, executed"
+        string cron_expr "optional recurring"
+    }
+```
+
 # MI6
 
 MI6 is a transport abstraction that allows, by creating a central place that all hosts can reach, to communicate between these hosts.
