@@ -2,11 +2,12 @@
 
 ## Overview
 
-James is a set of Go tools for orchestrating AI agents (Bond pun). Three components:
+James is a set of Go tools for orchestrating AI agents (Bond pun). Four components:
 
 - **MI6** — Transport relay for remote agent communication
-- **Moneypenny** — Per-host agent daemon that manages Claude Code sessions
+- **Moneypenny** — Per-host agent daemon that manages agent sessions (Claude Code, GitHub Copilot)
 - **Hem** — Orchestration CLI, server, and TUI
+- **Qew** — Web UI for remote access via MI6
 
 ## Project Structure
 
@@ -32,6 +33,9 @@ james/
 │       ├── transport/      # FIFO and MI6 clients for talking to moneypennies
 │       ├── output/         # Output formatting (json, text, table, tsv)
 │       └── ui/             # TUI (bubbletea + lipgloss)
+├── qew/                    # Web UI for remote access
+│   ├── cmd/qew/            # Binary (SSH key gen, MI6 connect, HTTP server)
+│   └── pkg/web/            # HTTP/WebSocket server, MI6 client, embedded static files
 ├── VERSION                 # Single version for all components
 ├── Makefile                # Top-level build orchestration
 ├── SPEC.md                 # Feature specification
@@ -49,6 +53,7 @@ make install        # Install binaries to ~/bin or similar
 cd hem && go build ./...
 cd moneypenny && go build ./...
 cd mi6 && go build ./...
+cd qew && go build ./...
 ```
 
 Each component has its own `go.mod` and `Makefile`. Version is injected from `VERSION` via `-ldflags`.
@@ -60,14 +65,16 @@ Each component has its own `go.mod` and `Makefile`. Version is injected from `VE
 - **`hem/pkg/ui/ui.go`** — TUI main model with view routing and key bindings.
 - **`hem/pkg/ui/dashboard.go`** — Dashboard view (attention-based session grouping).
 - **`hem/pkg/ui/wizard.go`** — 3-step create session wizard (moneypenny → path → form).
-- **`hem/pkg/ui/client.go`** — TUI client wrapper for server communication.
+- **`hem/pkg/ui/client.go`** — TUI client wrapper for server communication (Unix socket or MI6).
+- **`hem/pkg/server/mi6.go`** — MI6 control channel listener for hem server.
+- **`hem/pkg/hemclient/client.go`** — Sender interface with SocketSender and MI6Sender implementations.
 - **`hem/pkg/commands/notification.go`** — Sound notification on task completion.
 - **`moneypenny/pkg/handler/handler.go`** — All moneypenny command handlers.
 - **`moneypenny/pkg/envelope/data.go`** — Protocol data types for moneypenny commands.
 
 ## Architecture Patterns
 
-- **Hem client/server**: CLI is a thin client; server owns state. Both talk over Unix socket (`~/.config/james/hem/hem.sock`). TUI also connects to the same socket.
+- **Hem client/server**: CLI is a thin client; server owns state. Both talk over Unix socket (`~/.config/james/hem/hem.sock`) or MI6 transport. TUI also connects to the same socket or via MI6. Server can accept commands from an MI6 control channel (`--mi6-control`).
 - **Moneypenny protocol**: JSON envelopes over stdio or FIFO. Request/response with typed methods and error codes.
 - **TUI**: Bubbletea model-view-update pattern. `ui.go` is the router; each view is its own model in a separate file. Messages flow through the top-level `Update()` which routes to the appropriate view.
 - **Commands return structured data**: `commands.go` returns `protocol.Response` with typed data (TextResult, TableResult, etc). CLI and TUI both consume the same data.

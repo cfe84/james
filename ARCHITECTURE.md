@@ -87,7 +87,7 @@ moneypenny/
 
 2. **Storage**: SQLite with WAL mode. Two tables: `sessions` (metadata, params, state) and `conversation_turns` (ordered prompt/response history). Chosen for simplicity and zero external dependencies.
 
-3. **Agent invocation**: Shells out to `claude` CLI with `--output-format json --session-id <id> -p <prompt>`. Parses the JSON output to extract the text response. Processes are tracked for stop/kill support.
+3. **Agent invocation**: Supports multiple agent types. Claude: shells out to `claude` CLI with `--output-format json --session-id <id> -p <prompt>`, parses JSON output. GitHub Copilot: shells out to `copilot` CLI with `--resume <id> -s -p <prompt>`, uses `--yolo` for permissions, parses plain text output. Agent type is dispatched via `buildArgs()` and `parseOutput()` functions. Processes are tracked for stop/kill support.
 
 4. **MI6 integration**: Spawns `mi6-client` as a subprocess, piping stdio through it. Moneypenny auto-generates an ECDSA key on first MI6 use, stores it in `~/.config/james/moneypenny/`. Use `--show-public-key` to get the key for adding to mi6-server's authorized_keys.
 
@@ -169,7 +169,7 @@ hem/
 
 ### Key Technical Decisions
 
-1. **Client/server split**: Server maintains persistent state and connections. CLI is stateless. Future clients (UI, web) connect to the same socket.
+1. **Client/server split**: Server maintains persistent state and connections. CLI is stateless. Clients connect via Unix socket or MI6 transport (using the `Sender` interface: `SocketSender` for local, `MI6Sender` for remote). The server can also accept commands from an MI6 control channel (`--mi6-control` flag, implemented in `server/mi6.go`).
 
 2. **Internal protocol**: Line-delimited JSON over Unix socket. Request: `{"verb":"create","noun":"session","args":[...]}`. Response: `{"status":"ok","data":{...}}` or `{"status":"error","message":"..."}`. One request/response per connection.
 
@@ -193,7 +193,7 @@ hem/
 
 12. **TUI**: Built with bubbletea + lipgloss. View-based architecture: `ui.go` is the top-level router, each view is its own model in a separate file (dashboard.go, sessions.go, chat.go, diff.go, etc). Messages bubble up to the top-level `Update()` which routes to the appropriate view. All views communicate with the hem server via the same Unix socket as the CLI.
 
-13. **Markdown rendering**: Assistant messages in TUI chat use `glamour` with `WithStylePath("dark")`. Must NOT use `WithAutoStyle()` as it sends OSC terminal queries that conflict with bubbletea's terminal control and break the TUI.
+13. **Markdown rendering**: Both assistant and user messages in TUI chat use `glamour` with `WithStylePath("dark")`. Must NOT use `WithAutoStyle()` as it sends OSC terminal queries that conflict with bubbletea's terminal control and break the TUI.
 
 14. **Session import**: Supports both JSONL file paths and bare session IDs. For session IDs, walks `~/.claude/projects/` looking for `{id}.jsonl`. Parses Claude Code JSONL format: user messages as string content, assistant messages as text blocks from content arrays.
 
@@ -220,6 +220,36 @@ hem/
 25. **Dashboard auto-refresh**: The TUI dashboard polls moneypennies every 5 seconds in the background, regardless of which view is active. When a session transitions from WORKING to READY during a poll, a notification sound is triggered (if sound-notification is enabled) via a `notify` server command. This extends sound notifications from CLI-only (during `pollUntilIdle`) to also work in the TUI.
 
 26. **Queued message visual state**: The TUI preserves the "Queued" indicator (with its icon and label) on user messages across poll refreshes. The queued state is only cleared when an assistant response appears in the conversation, preventing the visual indicator from flickering or disappearing during polling cycles.
+
+## Qew - Web UI for Remote Access
+
+Qew is a web-based UI that connects to a Hem server via MI6, enabling remote access from phones and other computers.
+
+### Project Structure
+
+```
+qew/
+├── go.mod
+├── cmd/qew/main.go         # Entry point: SSH key gen, MI6 connect, HTTP server
+└── pkg/web/
+    ├── server.go            # HTTP server (API proxy, WebSocket, embedded static files)
+    ├── mi6.go               # MI6 client transport (persistent connection, auto-reconnect)
+    └── static/              # Embedded web frontend (HTML, CSS, JS)
+        ├── index.html       # Dashboard and chat UI (dark theme)
+        └── app.js           # Frontend logic (dashboard polling, chat, API calls)
+```
+
+### Key Technical Decisions
+
+1. **MI6 transport**: Connects to Hem server via MI6 control channel, using the same JSON request/response protocol as the Unix socket. Auto-reconnects with backoff on connection loss.
+
+2. **SSH key management**: Auto-generates ECDSA key on first run (`~/.config/james/qew/qew_ecdsa`). Use `--show-public-key` to export for MI6 authorized_keys.
+
+3. **API proxy**: HTTP `POST /api` proxies JSON requests to Hem via MI6. WebSocket at `/ws` provides real-time updates.
+
+4. **Static embedding**: Web frontend is embedded at build time via `embed.FS`, making Qew a single binary with no external dependencies.
+
+5. **Polling**: Dashboard polls every 5s, chat polls every 3s, matching the TUI behavior.
 
 ## Versioning
 

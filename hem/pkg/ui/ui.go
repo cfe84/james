@@ -6,6 +6,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"james/hem/pkg/hemclient"
 )
 
 type view int
@@ -56,8 +58,13 @@ type Model struct {
 }
 
 // New creates the initial UI model.
-func New(version string) Model {
-	c := newClient()
+func New(version string, sender ...hemclient.Sender) Model {
+	var c *client
+	if len(sender) > 0 && sender[0] != nil {
+		c = newMI6Client(sender[0])
+	} else {
+		c = newClient()
+	}
 	return Model{
 		currentView: viewDashboard,
 		dashboard:   newDashboardModel(c),
@@ -1456,8 +1463,12 @@ func (m Model) renderStatusBar() string {
 }
 
 // Run starts the TUI.
-func Run(version string) error {
-	p := tea.NewProgram(New(version), tea.WithAltScreen())
+func Run(version string, sender ...hemclient.Sender) error {
+	var s hemclient.Sender
+	if len(sender) > 0 {
+		s = sender[0]
+	}
+	p := tea.NewProgram(New(version, s), tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }

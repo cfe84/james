@@ -1,4 +1,4 @@
-COMPONENTS := mi6 moneypenny hem
+COMPONENTS := mi6 moneypenny hem qew
 ifeq ($(OS),Windows_NT)
     VERSION := $(shell type VERSION 2>NUL || echo unknown)
 	INSTALL := copy
@@ -30,7 +30,7 @@ endif
 all: build
 
 build: $(COMPONENTS)
-	@echo "Built james v$(VERSION): mi6-server mi6-client moneypenny hem"
+	@echo "Built james v$(VERSION): mi6-server mi6-client moneypenny hem qew"
 
 mi6:
 	$(MAKE) -C mi6 build
@@ -41,15 +41,20 @@ moneypenny:
 hem:
 	$(MAKE) -C hem build
 
+qew:
+	$(MAKE) -C qew build
+
 test:
 	$(MAKE) -C mi6 test
 	$(MAKE) -C moneypenny test
 	$(MAKE) -C hem test
+	$(MAKE) -C qew test
 
 clean:
 	$(MAKE) -C mi6 clean
 	$(MAKE) -C moneypenny clean
 	$(MAKE) -C hem clean
+	$(MAKE) -C qew clean
 
 install: build
 ifndef INSTALL_DIR
@@ -64,5 +69,6 @@ endif
 	$(INSTALL) mi6$(SEP)bin$(SEP)mi6-client$(EXECUTABLE_SUFFIX) "$(INSTALL_DIR)$(SEP)"
 	$(INSTALL) moneypenny$(SEP)bin$(SEP)moneypenny$(EXECUTABLE_SUFFIX) "$(INSTALL_DIR)$(SEP)"
 	$(INSTALL) hem$(SEP)bin$(SEP)hem$(EXECUTABLE_SUFFIX) "$(INSTALL_DIR)$(SEP)"
+	$(INSTALL) qew$(SEP)bin$(SEP)qew$(EXECUTABLE_SUFFIX) "$(INSTALL_DIR)$(SEP)"
 	@echo "Installed to: $(INSTALL_DIR)"
 	@echo "Make sure $(INSTALL_DIR) is in your PATH"

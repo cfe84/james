@@ -160,7 +160,14 @@ Moneypenny is a client deployed on each host, which handles agent sessions. It i
   - `SCHEDULE_NOT_FOUND` - cancel_schedule with a schedule_id that does not exist
   - `INTERNAL_ERROR` - unexpected internal error
 
-Method: **create_session**: creates a new session with an agent. For now, we'll always use claude. Format of the data is `{ "agent": "claude", "system_prompt": "a system prompt for the agent", "yolo": boolean indicating if the session should be started with --dangerously-skip-permissions, "prompt": "prompt for the agent", "session_id": "GUID used for communication about that session id", "name": "a session name", "path": "the path where to start the agent" }`
+### Agent Support
+
+Moneypenny supports multiple agent types:
+
+- **claude** (default): Claude Code CLI. Uses `--output-format json --session-id <id> -p <prompt>`. System prompt via `--system-prompt`. Permissions via `--dangerously-skip-permissions`. New sessions use bare flags, continuations add `--continue`.
+- **copilot**: GitHub Copilot CLI. Uses `--resume <id> -s -p <prompt>` for both new and continued sessions. Permissions via `--yolo`. No JSON output format — parses plain text. No system prompt support.
+
+Method: **create_session**: creates a new session with an agent. Format of the data is `{ "agent": "claude", "system_prompt": "a system prompt for the agent", "yolo": boolean indicating if the session should be started with --dangerously-skip-permissions, "prompt": "prompt for the agent", "session_id": "GUID used for communication about that session id", "name": "a session name", "path": "the path where to start the agent" }`
 
 - If session_id already exists, return `SESSION_ALREADY_EXISTS` error.
 - When a new session is started, moneypenny saves all the parameters in its local storage, and invokes the agent following the parameters in data of the method.
@@ -575,6 +582,52 @@ The dashboard auto-refreshes every 5 seconds by polling moneypennies. When a ses
 - **Diff view**: colored git diff display (green=add, red=remove, blue=hunk, amber=header). Scrollable with arrow keys and PgUp/PgDn.
 
 ### Chat
+
+## MI6 Transport for Hem
+
+Hem supports MI6 as an alternative transport for both server and client.
+
+### Server MI6 Control Channel
+
+`hem start server --mi6-control ADDRESS` — accepts commands from an MI6 session alongside the Unix socket.
+
+- The server spawns `mi6-client` connecting to the specified address.
+- Incoming JSON requests are dispatched through the same command handler as Unix socket requests.
+- Auto-reconnects with backoff on connection loss.
+- Implemented in `hem/pkg/server/mi6.go`.
+
+### Client MI6 Transport
+
+`hem --mi6 ADDRESS COMMAND` — sends commands to Hem server via MI6 instead of Unix socket.
+
+- Uses the `Sender` interface (`hemclient.MI6Sender`) which spawns a persistent `mi6-client` connection.
+- TUI also supports MI6 transport: `hem --mi6 ADDRESS ui`.
+- The `--mi6` flag is extracted before command parsing and applies to all commands.
+
+# Qew - Web UI
+
+Qew is a web-based UI for remote access to Hem via MI6. It serves a dashboard and chat interface accessible from any browser (phone, tablet, other computers).
+
+## Usage
+
+```bash
+qew --mi6 mi6.example.com/hem-control --listen :8077
+```
+
+- `--mi6` (required): MI6 address for the Hem control channel.
+- `--listen`: HTTP listen address (default `:8077`).
+- `--key`: SSH key path (default `~/.config/james/qew/qew_ecdsa`).
+- `--show-public-key`: Output the public key and exit.
+- `-v`: Verbose logging.
+
+## Features
+
+- **Dashboard**: Groups sessions by state (READY, WORKING, IDLE, COMPLETED), same as TUI dashboard. Polls every 5 seconds.
+- **Chat**: View conversation history and send messages. Polls every 3 seconds. Shows optimistic message display.
+- **API proxy**: `POST /api` proxies JSON requests to Hem via MI6.
+- **WebSocket**: `/ws` for real-time updates.
+- **SSH key management**: Auto-generates ECDSA key on first run.
+- **Single binary**: Web frontend embedded at build time via `embed.FS`.
 
 `hem chat [-m MONEYPENNY] [--session-id ID] [flags]` — interactive REPL for chatting with an agent.
 

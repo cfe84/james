@@ -11,16 +11,20 @@ import (
 
 // client wraps hemclient for the UI, providing typed methods.
 type client struct {
-	sockPath string
+	sender hemclient.Sender
 }
 
 func newClient() *client {
-	return &client{sockPath: server.DefaultSocketPath()}
+	return &client{sender: &hemclient.SocketSender{SockPath: server.DefaultSocketPath()}}
+}
+
+func newMI6Client(sender hemclient.Sender) *client {
+	return &client{sender: sender}
 }
 
 func (c *client) send(verb, noun string, args ...string) (*protocol.Response, error) {
 	req := &protocol.Request{Verb: verb, Noun: noun, Args: args}
-	return hemclient.Send(c.sockPath, req)
+	return c.sender.Send(req)
 }
 
 // sessionInfo is a parsed session from list sessions.

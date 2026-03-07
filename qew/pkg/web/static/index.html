@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Qew — James Web UI</title>
+<style>
+:root {
+  --bg: #1a1a2e;
+  --surface: #16213e;
+  --surface2: #0f3460;
+  --primary: #e94560;
+  --text: #eee;
+  --muted: #888;
+  --success: #10b981;
+  --warning: #f59e0b;
+  --info: #60a5fa;
+  --danger: #ef4444;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  height: 100vh;
+  overflow: hidden;
+}
+#app { max-width: 900px; margin: 0 auto; padding: 16px; height: 100vh; display: flex; flex-direction: column; }
+header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 12px 0; border-bottom: 1px solid var(--surface2); margin-bottom: 16px;
+}
+header h1 { font-size: 1.4em; }
+header h1 span { color: var(--primary); }
+.status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; }
+.status-dot.connected { background: var(--success); }
+.status-dot.disconnected { background: var(--danger); }
+
+/* Dashboard */
+.category { margin-bottom: 16px; }
+.category-label {
+  font-weight: bold; font-size: 0.85em; text-transform: uppercase;
+  padding: 4px 8px; border-radius: 4px; display: inline-block; margin-bottom: 8px;
+}
+.cat-ready { background: var(--info); color: #000; }
+.cat-working { background: var(--warning); color: #000; }
+.cat-idle { background: var(--success); color: #000; }
+.cat-completed { background: var(--muted); color: #000; }
+
+.session-row {
+  display: flex; align-items: center; padding: 10px 12px;
+  background: var(--surface); border-radius: 6px; margin-bottom: 4px;
+  cursor: pointer; transition: background 0.15s;
+}
+.session-row:hover { background: var(--surface2); }
+.session-name { flex: 1; font-weight: 500; }
+.session-project { color: var(--muted); margin-right: 12px; font-size: 0.9em; }
+.session-mp { color: var(--muted); font-size: 0.85em; }
+.session-status {
+  font-size: 0.75em; padding: 2px 8px; border-radius: 10px;
+  margin-left: 8px; font-weight: 600;
+}
+.session-status.working { background: var(--warning); color: #000; }
+.session-status.ready { background: var(--info); color: #000; }
+.session-status.idle { background: var(--surface2); color: var(--text); }
+
+/* Chat */
+#chat-view { display: none; flex-direction: column; flex: 1; overflow: hidden; }
+#dashboard-view { flex: 1; overflow-y: auto; }
+.chat-header {
+  display: flex; align-items: center; padding: 12px 0;
+  border-bottom: 1px solid var(--surface2); margin-bottom: 12px;
+}
+.chat-header .back { cursor: pointer; margin-right: 12px; font-size: 1.2em; }
+.chat-header h2 { font-size: 1.1em; flex: 1; }
+.chat-messages { flex: 1; overflow-y: auto; padding-bottom: 12px; }
+.msg { margin-bottom: 12px; }
+.msg-role {
+  font-size: 0.8em; font-weight: 600; margin-bottom: 4px;
+}
+.msg-role.user { color: var(--info); }
+.msg-role.assistant { color: var(--success); }
+.msg-role.system { color: var(--muted); font-style: italic; }
+.msg-content {
+  background: var(--surface); padding: 10px 14px; border-radius: 8px;
+  white-space: pre-wrap; word-break: break-word; font-size: 0.95em; line-height: 1.5;
+}
+.msg-content code {
+  background: var(--surface2); padding: 1px 4px; border-radius: 3px; font-size: 0.9em;
+}
+.msg-content pre {
+  background: var(--surface2); padding: 10px; border-radius: 6px;
+  overflow-x: auto; margin: 8px 0;
+}
+.msg-content pre code { background: none; padding: 0; }
+.msg-content table {
+  border-collapse: collapse; margin: 8px 0; width: 100%; font-size: 0.9em;
+}
+.msg-content th, .msg-content td {
+  border: 1px solid var(--surface2); padding: 6px 10px; text-align: left;
+}
+.msg-content th { background: var(--surface2); font-weight: 600; }
+.chat-input-row { display: flex; gap: 8px; padding-top: 12px; border-top: 1px solid var(--surface2); }
+.chat-input-row textarea {
+  flex: 1; background: var(--surface); color: var(--text); border: 1px solid var(--surface2);
+  border-radius: 6px; padding: 10px; font-size: 0.95em; resize: none;
+  font-family: inherit; min-height: 44px; max-height: 120px;
+}
+.chat-input-row textarea:focus { outline: none; border-color: var(--primary); }
+.chat-input-row button {
+  background: var(--primary); color: white; border: none; border-radius: 6px;
+  padding: 0 20px; cursor: pointer; font-weight: 600; font-size: 0.95em;
+}
+.chat-input-row button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.empty-state { text-align: center; color: var(--muted); padding: 40px 0; }
+.loading { text-align: center; color: var(--muted); padding: 20px 0; }
+
+/* Actions */
+.actions { display: flex; gap: 6px; margin-left: 8px; }
+.actions button {
+  background: var(--surface2); color: var(--text); border: none;
+  border-radius: 4px; padding: 4px 10px; cursor: pointer; font-size: 0.8em;
+}
+.actions button:hover { background: var(--primary); }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1><span>Qew</span> — James</h1>
+    <div id="conn-status"><span class="status-dot disconnected"></span>Connecting...</div>
+  </header>
+
+  <div id="dashboard-view">
+    <div class="loading" id="dash-loading">Loading dashboard...</div>
+    <div id="dash-content"></div>
+  </div>
+
+  <div id="chat-view">
+    <div class="chat-header">
+      <span class="back" id="chat-back">←</span>
+      <h2 id="chat-title">Chat</h2>
+    </div>
+    <div class="chat-messages" id="chat-messages"></div>
+    <div class="chat-input-row">
+      <textarea id="chat-input" placeholder="Type a message..." rows="1"></textarea>
+      <button id="chat-send">Send</button>
+    </div>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

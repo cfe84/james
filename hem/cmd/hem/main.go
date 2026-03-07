@@ -37,6 +37,28 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Extract --mi6 flag from args before cli.Parse (it's a global flag).
+	var mi6Addr string
+	filteredArgs := make([]string, 0, len(os.Args))
+	filteredArgs = append(filteredArgs, os.Args[0])
+	for i := 1; i < len(os.Args); i++ {
+		if os.Args[i] == "--mi6" && i+1 < len(os.Args) {
+			i++
+			mi6Addr = os.Args[i]
+		} else {
+			filteredArgs = append(filteredArgs, os.Args[i])
+		}
+	}
+	os.Args = filteredArgs
+
+	// Build sender based on transport.
+	sender := buildSender(mi6Addr)
+
+	if len(os.Args) < 2 {
+		printUsage()
+		os.Exit(1)
+	}
+
 	// Handle help and version flags before parsing.
 	if os.Args[1] == "-h" || os.Args[1] == "--help" || os.Args[1] == "help" {
 		printUsage()
@@ -44,10 +66,8 @@ func main() {
 	}
 	if os.Args[1] == "--version" || os.Args[1] == "-v" {
 		fmt.Printf("hem client: %s\n", Version)
-		// Try to get server version.
-		sockPath := server.DefaultSocketPath()
 		req := &protocol.Request{Verb: "get-version"}
-		resp, err := hemclient.Send(sockPath, req)
+		resp, err := sender.Send(req)
 		if err != nil {
 			fmt.Println("hem server: not running")
 		} else {
@@ -87,16 +107,14 @@ func main() {
 		runChat(cmd.Args)
 		return
 	case "ui":
-		if err := ui.Run(Version); err != nil {
+		if err := ui.Run(Version, sender); err != nil {
 			fmt.Fprintf(os.Stderr, "%sError: %v%s\n", colorRed, err, colorReset)
 			os.Exit(1)
 		}
 		return
 	case "dashboard":
-		// Dashboard is a server command but has no noun.
-		sockPath := server.DefaultSocketPath()
 		req := &protocol.Request{Verb: "dashboard", Noun: "", Args: cmd.Args}
-		resp, err := hemclient.Send(sockPath, req)
+		resp, err := sender.Send(req)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%sError: %v%s\n", colorRed, err, colorReset)
 			os.Exit(1)
@@ -108,11 +126,9 @@ func main() {
 		printResponse(resp.Data, cmd.OutputType)
 		return
 	case "run":
-		// Run passes noun as part of the command args.
-		sockPath := server.DefaultSocketPath()
 		runArgs := cmd.Args
 		req := &protocol.Request{Verb: "run", Noun: cmd.Noun, Args: runArgs}
-		resp, err := hemclient.Send(sockPath, req)
+		resp, err := sender.Send(req)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "%sError: %v%s\n", colorRed, err, colorReset)
 			os.Exit(1)
@@ -121,7 +137,6 @@ func main() {
 			fmt.Fprintf(os.Stderr, "%sError: %s%s\n", colorRed, resp.Message, colorReset)
 			os.Exit(1)
 		}
-		// Print command output directly.
 		var result commands.CommandResult
 		if json.Unmarshal(resp.Data, &result) == nil {
 			fmt.Print(result.Output)
@@ -152,14 +167,13 @@ func main() {
 	}
 
 	// Everything else goes through the server.
-	sockPath := server.DefaultSocketPath()
 	req := &protocol.Request{
 		Verb: cmd.Verb,
 		Noun: cmd.Noun,
 		Args: cmd.Args,
 	}
 
-	resp, err := hemclient.Send(sockPath, req)
+	resp, err := sender.Send(req)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%sError: %v%s\n", colorRed, err, colorReset)
 		os.Exit(1)
@@ -170,8 +184,21 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Format and print the response data.
 	printResponse(resp.Data, cmd.OutputType)
+}
+
+// buildSender creates a Sender based on whether --mi6 was specified.
+func buildSender(mi6Addr string) hemclient.Sender {
+	if mi6Addr == "" {
+		return &hemclient.SocketSender{SockPath: server.DefaultSocketPath()}
+	}
+	dataDir := defaultDataDir()
+	keyPath := filepath.Join(dataDir, "hem_ecdsa")
+	s := &hemclient.MI6Sender{Addr: mi6Addr, KeyPath: keyPath}
+	if err := s.Connect(); err != nil {
+		log.Fatalf("failed to connect to MI6 at %s: %v", mi6Addr, err)
+	}
+	return s
 }
 
 // printResponse formats and prints the server response data.
@@ -500,11 +527,18 @@ func runServer() {
 	defer st.Close()
 
 	vlog := log.New(io.Discard, "[hem-server] ", log.LstdFlags)
-	// Check for -v flag in remaining args.
-	for _, arg := range os.Args[2:] {
-		if arg == "-v" {
+	var mi6Control string
+	// Parse flags from remaining args.
+	args := os.Args[2:]
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-v":
 			vlog = log.New(os.Stderr, "[hem-server] ", log.LstdFlags)
-			break
+		case "--mi6-control":
+			if i+1 < len(args) {
+				i++
+				mi6Control = args[i]
+			}
 		}
 	}
 
@@ -515,6 +549,13 @@ func runServer() {
 
 	// Check connectivity to all registered moneypennies at startup.
 	exec.CheckConnectivity(log.Default())
+
+	// Start MI6 control listener if configured.
+	if mi6Control != "" {
+		mi6Listener := server.NewMI6Listener(mi6Control, keyPath, exec, vlog)
+		go mi6Listener.Run()
+		log.Printf("MI6 control channel: %s", mi6Control)
+	}
 
 	sockPath := server.DefaultSocketPath()
 
