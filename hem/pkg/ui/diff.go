@@ -44,6 +44,10 @@ type diffCommitDoneMsg struct {
 	err    error
 }
 
+type diffPushDoneMsg struct {
+	err error
+}
+
 func newDiffModel(c *client, sessionID string) diffModel {
 	return diffModel{
 		client:    c,
@@ -89,6 +93,14 @@ func (m diffModel) doCommit() tea.Cmd {
 	}
 }
 
+func (m diffModel) doPush() tea.Cmd {
+	sessionID := m.sessionID
+	return func() tea.Msg {
+		err := m.client.pushSession(sessionID)
+		return diffPushDoneMsg{err: err}
+	}
+}
+
 func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case diffLoadedMsg:
@@ -107,6 +119,14 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 			// Reload diff after commit.
 			m.loading = true
 			return m, m.loadDiff()
+		}
+
+	case diffPushDoneMsg:
+		m.committing = false
+		if msg.err != nil {
+			m.commitErr = msg.err
+		} else {
+			m.commitErr = nil
 		}
 
 	case tea.KeyMsg:
@@ -140,6 +160,12 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 				m.pushAfter = true
 				m.commitMsg = ""
 				m.commitErr = nil
+			}
+		case "p":
+			if !m.committing {
+				m.committing = true
+				m.commitErr = nil
+				return m, m.doPush()
 			}
 		}
 	}

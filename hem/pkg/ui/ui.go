@@ -357,6 +357,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 
+	case diffPushDoneMsg:
+		var cmd tea.Cmd
+		m.diff, cmd = m.diff.Update(msg)
+		if msg.err == nil {
+			m.statusMsg = "Pushed"
+		}
+		return m, cmd
+
 	case sessionImportedMsg:
 		im := msg
 		if im.err != nil {
@@ -1336,6 +1344,7 @@ func (m Model) renderStatusBar() string {
 				statusKeyStyle.Render("pgup/dn") + statusDescStyle.Render(" page"),
 				statusKeyStyle.Render("c") + statusDescStyle.Render(" commit"),
 				statusKeyStyle.Render("C") + statusDescStyle.Render(" commit+push"),
+				statusKeyStyle.Render("p") + statusDescStyle.Render(" push"),
 				statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
 			}
 		}
