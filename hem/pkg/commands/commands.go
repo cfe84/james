@@ -25,10 +25,17 @@ type Executor struct {
 	mi6KeyPath        string
 	Version           string
 	lastSessionStates map[string]string // sessionID → last known mpStatus ("working", "ready", etc.)
+	clients           map[string]*transport.Client // cached per moneypenny name
+	clientsMu         sync.Mutex
 }
 
 func New(s *store.Store, mi6KeyPath string) *Executor {
-	return &Executor{store: s, mi6KeyPath: mi6KeyPath, lastSessionStates: make(map[string]string)}
+	return &Executor{
+		store:             s,
+		mi6KeyPath:        mi6KeyPath,
+		lastSessionStates: make(map[string]string),
+		clients:           make(map[string]*transport.Client),
+	}
 }
 
 // CheckConnectivity pings all registered moneypennies and logs warnings for
@@ -87,6 +94,10 @@ var CommandHelp = map[string]string{
 	"show project":        "Usage: hem show project NAME_OR_ID\n\nShows project details.\n\nFlags:\n  --name             Project name (alternative to positional arg)",
 	"update project":      "Usage: hem update project NAME_OR_ID [flags]\n\nUpdates project fields.\n\nFlags:\n  --name             New project name\n  --status           New status (active, paused, done)\n  -m, --moneypenny   Default moneypenny\n  --path             Working directory path\n  --agent            Default agent\n  --system-prompt    Default system prompt",
 	"delete project":      "Usage: hem delete project NAME_OR_ID\n\nDeletes a project. Sessions keep their data but lose the project link.",
+	"create template":     "Usage: hem create template --project PROJECT --name NAME [--agent AGENT] [--path PATH] [--system-prompt TEXT] [--prompt TEXT]\n\nCreates an agent template for a project.\n\nFlags:\n  --project          Project name or ID (required)\n  --name             Template name (required)\n  --agent            Agent to use (default: claude)\n  --path             Working directory\n  --system-prompt    System prompt\n  --prompt           Initial prompt",
+	"list template":       "Usage: hem list templates --project PROJECT\n\nLists agent templates for a project.\n\nFlags:\n  --project          Project name or ID (required)",
+	"delete template":     "Usage: hem delete template NAME_OR_ID --project PROJECT\n\nDeletes an agent template.\n\nFlags:\n  --project          Project name or ID (required for name lookup)",
+	"use template":        "Usage: hem use template NAME_OR_ID --project PROJECT [--async]\n\nCreates a new session from a template.\n\nFlags:\n  --project          Project name or ID (required for name lookup)\n  --async            Return immediately without waiting",
 	"complete session":    "Usage: hem complete session SESSION_ID\n\nMarks a session as completed in hem's local tracking.",
 	"diff session":        "Usage: hem diff session SESSION_ID\n\nShows git diff for a session's working directory.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)",
 	"run ":                "Usage: hem run [-m MONEYPENNY] [--path PATH] [--session-id ID] COMMAND\n\nExecutes a shell command on a remote moneypenny.\n\nFlags:\n  -m, --moneypenny   Moneypenny name (uses default if not set)\n  --path             Working directory on the remote host\n  --session-id       Use the moneypenny and path from this session",
@@ -195,6 +206,17 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.UpdateProject(args)
 	case "delete project":
 		return e.DeleteProject(args)
+
+	// Template commands
+	case "create template":
+		return e.CreateTemplate(args)
+	case "list template":
+		return e.ListTemplates(args)
+	case "delete template":
+		return e.DeleteTemplate(args)
+	case "use template":
+		return e.UseTemplate(args)
+
 	case "complete session":
 		return e.CompleteSession(args)
 	case "diff session":
@@ -229,16 +251,28 @@ func generateSessionID() string {
 	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
-// clientForMoneypenny creates a transport.Client for the given moneypenny.
+// clientForMoneypenny returns a (cached) transport.Client for the given moneypenny.
+// Caching is important for FIFO clients: they hold a mutex that serialises
+// concurrent writes to the same named pipe.
 func (e *Executor) clientForMoneypenny(mp *store.Moneypenny) *transport.Client {
+	e.clientsMu.Lock()
+	defer e.clientsMu.Unlock()
+
+	if c, ok := e.clients[mp.Name]; ok {
+		return c
+	}
+
+	var c *transport.Client
 	switch mp.TransportType {
 	case store.TransportFIFO:
-		return transport.NewFIFOClient(mp.FIFOIn, mp.FIFOOut)
+		c = transport.NewFIFOClient(mp.FIFOIn, mp.FIFOOut)
 	case store.TransportMI6:
-		return transport.NewMI6Client(mp.MI6Addr, e.mi6KeyPath)
+		c = transport.NewMI6Client(mp.MI6Addr, e.mi6KeyPath)
 	default:
 		return nil
 	}
+	e.clients[mp.Name] = c
+	return c
 }
 
 // sendCommand sends a command to a moneypenny and returns the response.
@@ -817,8 +851,18 @@ func (e *Executor) ListDefaults(args []string) *protocol.Response {
 }
 
 // validSettings lists the settings that can be toggled with enable/disable.
+// validSettings lists the settings that can be toggled with enable/disable.
 var validSettings = map[string]bool{
-	"sound-notification": true,
+	"sound-notification":  true,
+	"sound-notifications": true,
+}
+
+// normalizeSetting maps aliases to canonical setting names.
+func normalizeSetting(name string) string {
+	if name == "sound-notifications" {
+		return "sound-notification"
+	}
+	return name
 }
 
 // EnableSetting enables a boolean setting.
@@ -826,6 +870,7 @@ func (e *Executor) EnableSetting(name string) *protocol.Response {
 	if !validSettings[name] {
 		return protocol.ErrResponse(fmt.Sprintf("unknown setting: %q", name))
 	}
+	name = normalizeSetting(name)
 	if err := e.store.SetDefault(name, "true"); err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
@@ -837,6 +882,7 @@ func (e *Executor) DisableSetting(name string) *protocol.Response {
 	if !validSettings[name] {
 		return protocol.ErrResponse(fmt.Sprintf("unknown setting: %q", name))
 	}
+	name = normalizeSetting(name)
 	if err := e.store.SetDefault(name, "false"); err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
@@ -1816,6 +1862,324 @@ func (e *Executor) DeleteProject(args []string) *protocol.Response {
 	})
 }
 
+// ---------------------------------------------------------------------------
+// Template commands
+// ---------------------------------------------------------------------------
+
+func (e *Executor) CreateTemplate(args []string) *protocol.Response {
+	var projectNameOrID, name, agent, pathArg, systemPrompt, prompt string
+	var yolo bool
+
+	_, err := parseFlagsFromArgs("create-template", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&projectNameOrID, "project", "", "project name or ID")
+		fs.StringVar(&name, "name", "", "template name")
+		fs.StringVar(&agent, "agent", "claude", "agent")
+		fs.StringVar(&pathArg, "path", "", "working directory")
+		fs.StringVar(&systemPrompt, "system-prompt", "", "system prompt")
+		fs.StringVar(&prompt, "prompt", "", "initial prompt")
+		fs.BoolVar(&yolo, "yolo", false, "enable yolo mode")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if projectNameOrID == "" {
+		return protocol.ErrResponse("--project is required")
+	}
+	if name == "" {
+		return protocol.ErrResponse("--name is required")
+	}
+
+	proj, err := e.store.GetProject(projectNameOrID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if proj == nil {
+		return protocol.ErrResponse(fmt.Sprintf("project %q not found", projectNameOrID))
+	}
+
+	t := &store.AgentTemplate{
+		ID:           generateSessionID(),
+		ProjectID:    proj.ID,
+		Name:         name,
+		Agent:        agent,
+		Path:         pathArg,
+		SystemPrompt: systemPrompt,
+		Prompt:       prompt,
+		Yolo:         yolo,
+		CreatedAt:    time.Now(),
+	}
+
+	if err := e.store.CreateTemplate(t); err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	return protocol.OKResponse(TextResult{
+		Message: fmt.Sprintf("Created template %q in project %q.", name, proj.Name),
+	})
+}
+
+func (e *Executor) ListTemplates(args []string) *protocol.Response {
+	var projectNameOrID string
+
+	_, err := parseFlagsFromArgs("list-templates", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&projectNameOrID, "project", "", "project name or ID")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if projectNameOrID == "" {
+		// List all templates across all projects.
+		templates, projectNames, err := e.store.ListAllTemplates()
+		if err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		result := TableResult{
+			Headers: []string{"ID", "Name", "Project", "Agent", "Path", "Prompt", "Yolo"},
+		}
+		for _, t := range templates {
+			prompt := t.Prompt
+			if len(prompt) > 50 {
+				prompt = prompt[:50] + "..."
+			}
+			yolo := "false"
+			if t.Yolo {
+				yolo = "true"
+			}
+			result.Rows = append(result.Rows, []string{t.ID, t.Name, projectNames[t.ID], t.Agent, t.Path, prompt, yolo})
+		}
+		return protocol.OKResponse(result)
+	}
+
+	proj, err := e.store.GetProject(projectNameOrID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if proj == nil {
+		return protocol.ErrResponse(fmt.Sprintf("project %q not found", projectNameOrID))
+	}
+
+	templates, err := e.store.ListTemplates(proj.ID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	result := TableResult{
+		Headers: []string{"ID", "Name", "Agent", "Path", "Prompt", "Yolo"},
+	}
+	for _, t := range templates {
+		prompt := t.Prompt
+		if len(prompt) > 50 {
+			prompt = prompt[:50] + "..."
+		}
+		yolo := "false"
+		if t.Yolo {
+			yolo = "true"
+		}
+		result.Rows = append(result.Rows, []string{t.ID, t.Name, t.Agent, t.Path, prompt, yolo})
+	}
+	return protocol.OKResponse(result)
+}
+
+func (e *Executor) DeleteTemplate(args []string) *protocol.Response {
+	var projectNameOrID string
+
+	remaining, err := parseFlagsFromArgs("delete-template", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&projectNameOrID, "project", "", "project name or ID")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	nameOrID := ""
+	if len(remaining) > 0 {
+		nameOrID = remaining[0]
+	}
+	if nameOrID == "" {
+		return protocol.ErrResponse("template name or ID is required")
+	}
+
+	// Resolve project for name lookup.
+	var projectID string
+	if projectNameOrID != "" {
+		proj, err := e.store.GetProject(projectNameOrID)
+		if err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		if proj == nil {
+			return protocol.ErrResponse(fmt.Sprintf("project %q not found", projectNameOrID))
+		}
+		projectID = proj.ID
+	}
+
+	t, err := e.store.GetTemplate(nameOrID, projectID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if t == nil {
+		return protocol.ErrResponse(fmt.Sprintf("template %q not found", nameOrID))
+	}
+
+	if err := e.store.DeleteTemplate(t.ID); err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	return protocol.OKResponse(TextResult{
+		Message: fmt.Sprintf("Deleted template %q.", t.Name),
+	})
+}
+
+// UseTemplate creates a session from a template.
+func (e *Executor) UseTemplate(args []string) *protocol.Response {
+	var projectNameOrID string
+	var async bool
+
+	remaining, err := parseFlagsFromArgs("use-template", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&projectNameOrID, "project", "", "project name or ID")
+		fs.BoolVar(&async, "async", true, "return immediately")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	nameOrID := ""
+	if len(remaining) > 0 {
+		nameOrID = remaining[0]
+	}
+	if nameOrID == "" {
+		return protocol.ErrResponse("template name or ID is required")
+	}
+
+	// Resolve project.
+	var projectID string
+	var proj *store.Project
+	if projectNameOrID != "" {
+		proj, err = e.store.GetProject(projectNameOrID)
+		if err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		if proj == nil {
+			return protocol.ErrResponse(fmt.Sprintf("project %q not found", projectNameOrID))
+		}
+		projectID = proj.ID
+	}
+
+	t, err := e.store.GetTemplate(nameOrID, projectID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if t == nil {
+		return protocol.ErrResponse(fmt.Sprintf("template %q not found", nameOrID))
+	}
+
+	// Resolve project from template if not provided.
+	if proj == nil {
+		proj, err = e.store.GetProject(t.ProjectID)
+		if err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		if proj == nil {
+			return protocol.ErrResponse("template's project not found")
+		}
+		projectID = proj.ID
+	}
+
+	// Resolve moneypenny from project.
+	mpName := proj.Moneypenny
+	agent := t.Agent
+	if agent == "" {
+		agent = proj.DefaultAgent
+	}
+	if agent == "" {
+		agent = "claude"
+	}
+	pathArg := t.Path
+	if pathArg == "" {
+		var paths []string
+		if json.Unmarshal([]byte(proj.Paths), &paths) == nil && len(paths) > 0 {
+			pathArg = paths[0]
+		}
+	}
+	if pathArg == "" {
+		pathArg = "."
+	}
+	systemPrompt := t.SystemPrompt
+	if systemPrompt == "" {
+		systemPrompt = proj.DefaultSystemPrompt
+	}
+	prompt := t.Prompt
+	if prompt == "" {
+		prompt = "Be ready"
+	}
+
+	var mp *store.Moneypenny
+	if mpName != "" {
+		mp, err = e.store.GetMoneypenny(mpName)
+		if err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		if mp == nil {
+			return protocol.ErrResponse(fmt.Sprintf("moneypenny %q not found", mpName))
+		}
+	} else {
+		mp, err = e.store.GetDefaultMoneypenny()
+		if err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		if mp == nil {
+			return protocol.ErrResponse("no moneypenny specified and no default set")
+		}
+	}
+
+	sessionID := generateSessionID()
+	sessionName := t.Name
+
+	cmdData := map[string]interface{}{
+		"agent":      agent,
+		"session_id": sessionID,
+		"name":       sessionName,
+		"path":       pathArg,
+	}
+	if prompt != "" {
+		cmdData["prompt"] = prompt
+	}
+	if systemPrompt != "" {
+		cmdData["system_prompt"] = systemPrompt
+	}
+	if t.Yolo {
+		cmdData["yolo"] = true
+	}
+
+	if err := e.store.TrackSession(sessionID, mp.Name, projectID); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("tracking session: %v", err))
+	}
+
+	ctx := context.Background()
+	_, err = e.sendCommand(ctx, mp, "create_session", cmdData)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if async {
+		return protocol.OKResponse(SessionCreatedResult{
+			SessionID: sessionID,
+			Async:     true,
+		})
+	}
+
+	response, pollErr := e.pollUntilIdle(ctx, mp, sessionID)
+	if pollErr != nil {
+		return protocol.ErrResponse(pollErr.Error())
+	}
+	_ = e.store.SetSessionReviewed(sessionID, true)
+
+	return protocol.OKResponse(SessionCreatedResult{
+		SessionID: sessionID,
+		Response:  response,
+	})
+}
+
 func (e *Executor) CompleteSession(args []string) *protocol.Response {
 	var sessionID string
 
@@ -1833,12 +2197,22 @@ func (e *Executor) CompleteSession(args []string) *protocol.Response {
 		sessionID = remaining[0]
 	}
 
-	if err := e.store.SetSessionHemStatus(sessionID, "completed"); err != nil {
+	current, err := e.store.GetSessionHemStatus(sessionID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	newStatus := "completed"
+	if current == "completed" {
+		newStatus = "active"
+	}
+
+	if err := e.store.SetSessionHemStatus(sessionID, newStatus); err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
 
 	return protocol.OKResponse(TextResult{
-		Message: fmt.Sprintf("Session %s marked as completed.", sessionID),
+		Message: fmt.Sprintf("Session %s marked as %s.", sessionID, newStatus),
 	})
 }
 

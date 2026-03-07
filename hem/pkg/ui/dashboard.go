@@ -129,7 +129,7 @@ func (m dashboardModel) loadDashboard() tea.Cmd {
 				e.Category = 3
 			} else if e.MPStatus == "ready" {
 				e.Category = 0
-			} else if e.MPStatus == "idle" || e.MPStatus == "offline" {
+			} else if e.MPStatus == "idle" || e.MPStatus == "offline" || e.MPStatus == "unknown" {
 				e.Category = 2
 			}
 

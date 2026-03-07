@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 )
 
@@ -35,8 +36,9 @@ type Client struct {
 	transportType string // "fifo" or "mi6"
 	fifoIn        string // write commands here (moneypenny reads from it)
 	fifoOut       string // read responses here (moneypenny writes to it)
-	mi6Addr       string // for mi6 transport
-	mi6KeyPath    string // SSH key for mi6
+	fifoMu        sync.Mutex // serialise FIFO requests (no concurrent writes)
+	mi6Addr       string     // for mi6 transport
+	mi6KeyPath    string     // SSH key for mi6
 }
 
 // NewFIFOClient creates a client that communicates via named pipes.
@@ -80,6 +82,11 @@ func (c *Client) Send(ctx context.Context, cmd *Command) (*Response, error) {
 }
 
 func (c *Client) sendFIFO(ctx context.Context, cmd *Command) (*Response, error) {
+	// Serialise FIFO access — concurrent writes can interleave and corrupt the
+	// line-based protocol (especially for messages larger than PIPE_BUF).
+	c.fifoMu.Lock()
+	defer c.fifoMu.Unlock()
+
 	data, err := json.Marshal(cmd)
 	if err != nil {
 		return nil, err

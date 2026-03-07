@@ -49,6 +49,19 @@ type Project struct {
 	UpdatedAt           time.Time
 }
 
+// AgentTemplate is a reusable session template attached to a project.
+type AgentTemplate struct {
+	ID           string
+	ProjectID    string
+	Name         string
+	Agent        string
+	Path         string
+	SystemPrompt string
+	Prompt       string
+	Yolo         bool
+	CreatedAt    time.Time
+}
+
 // Store manages Hem's SQLite database.
 type Store struct {
 	db *sql.DB
@@ -109,6 +122,18 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS defaults (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS agent_templates (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    agent TEXT NOT NULL DEFAULT 'claude',
+    path TEXT NOT NULL DEFAULT '',
+    system_prompt TEXT NOT NULL DEFAULT '',
+    prompt TEXT NOT NULL DEFAULT '',
+    yolo INTEGER NOT NULL DEFAULT 0,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );`
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
@@ -565,6 +590,113 @@ func scanProject(row *sql.Row) (*Project, error) {
 	return &p, nil
 }
 
+// ---------------------------------------------------------------------------
+// AgentTemplate methods
+// ---------------------------------------------------------------------------
+
+// CreateTemplate inserts a new agent template.
+func (s *Store) CreateTemplate(t *AgentTemplate) error {
+	_, err := s.db.Exec(
+		`INSERT INTO agent_templates (id, project_id, name, agent, path, system_prompt, prompt, yolo, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.ProjectID, t.Name, t.Agent, t.Path, t.SystemPrompt, t.Prompt, boolToInt(t.Yolo), t.CreatedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("create template %q: %w", t.Name, err)
+	}
+	return nil
+}
+
+// GetTemplate retrieves a template by ID first, then by name within a project.
+func (s *Store) GetTemplate(nameOrID string, projectID string) (*AgentTemplate, error) {
+	var t AgentTemplate
+	var yolo int
+	err := s.db.QueryRow(
+		`SELECT id, project_id, name, agent, path, system_prompt, prompt, yolo, created_at
+		 FROM agent_templates WHERE id = ?`, nameOrID,
+	).Scan(&t.ID, &t.ProjectID, &t.Name, &t.Agent, &t.Path, &t.SystemPrompt, &t.Prompt, &yolo, &t.CreatedAt)
+	if err == nil {
+		t.Yolo = yolo != 0
+		return &t, nil
+	}
+	if err != sql.ErrNoRows {
+		return nil, fmt.Errorf("get template %q: %w", nameOrID, err)
+	}
+	// Try by name within project.
+	err = s.db.QueryRow(
+		`SELECT id, project_id, name, agent, path, system_prompt, prompt, yolo, created_at
+		 FROM agent_templates WHERE name = ? AND project_id = ?`, nameOrID, projectID,
+	).Scan(&t.ID, &t.ProjectID, &t.Name, &t.Agent, &t.Path, &t.SystemPrompt, &t.Prompt, &yolo, &t.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get template %q: %w", nameOrID, err)
+	}
+	t.Yolo = yolo != 0
+	return &t, nil
+}
+
+// ListTemplates returns all templates for a project.
+func (s *Store) ListTemplates(projectID string) ([]*AgentTemplate, error) {
+	rows, err := s.db.Query(
+		`SELECT id, project_id, name, agent, path, system_prompt, prompt, yolo, created_at
+		 FROM agent_templates WHERE project_id = ? ORDER BY name`, projectID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list templates: %w", err)
+	}
+	defer rows.Close()
+	var result []*AgentTemplate
+	for rows.Next() {
+		var t AgentTemplate
+		var yolo int
+		if err := rows.Scan(&t.ID, &t.ProjectID, &t.Name, &t.Agent, &t.Path, &t.SystemPrompt, &t.Prompt, &yolo, &t.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan template: %w", err)
+		}
+		t.Yolo = yolo != 0
+		result = append(result, &t)
+	}
+	return result, rows.Err()
+}
+
+// ListAllTemplates returns all templates across all projects, with project name.
+func (s *Store) ListAllTemplates() ([]*AgentTemplate, map[string]string, error) {
+	rows, err := s.db.Query(
+		`SELECT t.id, t.project_id, t.name, t.agent, t.path, t.system_prompt, t.prompt, t.yolo, t.created_at, p.name
+		 FROM agent_templates t
+		 JOIN projects p ON t.project_id = p.id
+		 ORDER BY p.name, t.name`,
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("list all templates: %w", err)
+	}
+	defer rows.Close()
+	var result []*AgentTemplate
+	projectNames := make(map[string]string) // template ID → project name
+	for rows.Next() {
+		var t AgentTemplate
+		var yolo int
+		var projName string
+		if err := rows.Scan(&t.ID, &t.ProjectID, &t.Name, &t.Agent, &t.Path, &t.SystemPrompt, &t.Prompt, &yolo, &t.CreatedAt, &projName); err != nil {
+			return nil, nil, fmt.Errorf("scan template: %w", err)
+		}
+		t.Yolo = yolo != 0
+		result = append(result, &t)
+		projectNames[t.ID] = projName
+	}
+	return result, projectNames, rows.Err()
+}
+
+// DeleteTemplate removes a template by ID.
+func (s *Store) DeleteTemplate(id string) error {
+	_, err := s.db.Exec(`DELETE FROM agent_templates WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete template %q: %w", id, err)
+	}
+	return nil
+}
+
 // migrateSchema runs ALTER TABLE statements for existing databases,
 // ignoring "duplicate column name" errors.
 func (s *Store) migrateSchema() error {
@@ -572,6 +704,7 @@ func (s *Store) migrateSchema() error {
 		`ALTER TABLE sessions ADD COLUMN project_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sessions ADD COLUMN hem_status TEXT NOT NULL DEFAULT 'active'`,
 		`ALTER TABLE sessions ADD COLUMN reviewed INTEGER NOT NULL DEFAULT 1`,
+		`ALTER TABLE agent_templates ADD COLUMN yolo INTEGER NOT NULL DEFAULT 0`,
 	}
 	for _, m := range migrations {
 		_, err := s.db.Exec(m)

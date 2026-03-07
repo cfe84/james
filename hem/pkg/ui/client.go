@@ -580,3 +580,119 @@ func (c *client) moveSessionToProject(sessionID, projectNameOrID string) error {
 	}
 	return nil
 }
+
+type templateInfo struct {
+	ID      string
+	Name    string
+	Project string // only populated in global listing
+	Agent   string
+	Path    string
+	Prompt  string
+}
+
+func (c *client) listTemplates(projectName string) ([]templateInfo, error) {
+	var resp *protocol.Response
+	var err error
+	if projectName != "" {
+		resp, err = c.send("list", "template", "--project", projectName)
+	} else {
+		resp, err = c.send("list", "template")
+	}
+	if err != nil {
+		return nil, err
+	}
+	if resp.Status == protocol.StatusError {
+		return nil, fmt.Errorf("%s", resp.Message)
+	}
+	var table struct {
+		Headers []string   `json:"headers"`
+		Rows    [][]string `json:"rows"`
+	}
+	if err := json.Unmarshal(resp.Data, &table); err != nil {
+		return nil, fmt.Errorf("parsing templates: %w", err)
+	}
+	// Detect column layout from headers.
+	hasProject := len(table.Headers) > 2 && table.Headers[2] == "Project"
+
+	var templates []templateInfo
+	for _, row := range table.Rows {
+		t := templateInfo{}
+		if len(row) > 0 {
+			t.ID = row[0]
+		}
+		if len(row) > 1 {
+			t.Name = row[1]
+		}
+		if hasProject {
+			// Global: ID, Name, Project, Agent, Path, Prompt, Yolo
+			if len(row) > 2 {
+				t.Project = row[2]
+			}
+			if len(row) > 3 {
+				t.Agent = row[3]
+			}
+			if len(row) > 4 {
+				t.Path = row[4]
+			}
+			if len(row) > 5 {
+				t.Prompt = row[5]
+			}
+		} else {
+			// Per-project: ID, Name, Agent, Path, Prompt, Yolo
+			if len(row) > 2 {
+				t.Agent = row[2]
+			}
+			if len(row) > 3 {
+				t.Path = row[3]
+			}
+			if len(row) > 4 {
+				t.Prompt = row[4]
+			}
+		}
+		templates = append(templates, t)
+	}
+	return templates, nil
+}
+
+func (c *client) createTemplate(args []string) error {
+	resp, err := c.send("create", "template", args...)
+	if err != nil {
+		return err
+	}
+	if resp.Status == protocol.StatusError {
+		return fmt.Errorf("%s", resp.Message)
+	}
+	return nil
+}
+
+func (c *client) deleteTemplate(nameOrID, projectName string) error {
+	resp, err := c.send("delete", "template", nameOrID, "--project", projectName)
+	if err != nil {
+		return err
+	}
+	if resp.Status == protocol.StatusError {
+		return fmt.Errorf("%s", resp.Message)
+	}
+	return nil
+}
+
+func (c *client) useTemplate(templateNameOrID, projectName string) (string, error) {
+	args := []string{templateNameOrID, "--async"}
+	if projectName != "" {
+		args = append(args, "--project", projectName)
+	}
+	resp, err := c.send("use", "template", args...)
+	if err != nil {
+		return "", err
+	}
+	if resp.Status == protocol.StatusError {
+		return "", fmt.Errorf("%s", resp.Message)
+	}
+	var result struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return "", fmt.Errorf("parsing result: %w", err)
+	}
+	return result.SessionID, nil
+}

@@ -24,6 +24,8 @@ const (
 	viewMoneypennies
 	viewShell
 	viewWizard
+	viewTemplatePicker
+	viewCreateTemplate
 )
 
 // Model is the top-level bubbletea model.
@@ -42,8 +44,10 @@ type Model struct {
 	diff          diffModel
 	moneypennies  moneypenniesModel
 	shell         shellModel
-	wizard        wizardModel
-	width         int
+	wizard         wizardModel
+	templatePicker templatePickerModel
+	createTemplate createTemplateModel
+	width          int
 	height        int
 	client        *client
 	statusMsg     string
@@ -98,6 +102,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.shell.height = h
 		m.wizard.width = msg.Width
 		m.wizard.height = h
+		m.templatePicker.width = msg.Width
+		m.templatePicker.height = h
+		m.createTemplate.width = msg.Width
+		m.createTemplate.height = h
 		return m, nil
 
 	case tea.KeyMsg:
@@ -165,6 +173,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateShell(msg)
 		case viewWizard:
 			return m.updateWizard(msg)
+		case viewTemplatePicker:
+			return m.updateTemplatePicker(msg)
+		case viewCreateTemplate:
+			return m.updateCreateTemplate(msg)
 		}
 
 	// Route messages to appropriate view.
@@ -187,6 +199,51 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.wizard, cmd = m.wizard.Update(msg)
 		return m, cmd
+
+	case templatesLoadedMsg:
+		var cmd tea.Cmd
+		m.templatePicker, cmd = m.templatePicker.Update(msg)
+		return m, cmd
+
+	case templateUsedMsg:
+		if msg.err != nil {
+			m.statusMsg = fmt.Sprintf("Error: %v", msg.err)
+			return m, nil
+		}
+		sid := msg.sessionID
+		if len(sid) > 12 {
+			sid = sid[:12]
+		}
+		m.statusMsg = fmt.Sprintf("Session created: %s", sid)
+		if m.previousView == viewDashboard {
+			m.currentView = viewDashboard
+			m.dashboard.loading = true
+			return m, m.dashboard.loadDashboard()
+		}
+		m.currentView = viewProjectDetail
+		m.projectDetail.loading = true
+		return m, m.projectDetail.loadDashboard()
+
+	case templateDeletedMsg:
+		var cmd tea.Cmd
+		m.templatePicker, cmd = m.templatePicker.Update(msg)
+		return m, cmd
+
+	case templateProjectLoadedMsg:
+		var cmd tea.Cmd
+		m.createTemplate, cmd = m.createTemplate.Update(msg)
+		return m, cmd
+
+	case templateCreatedMsg:
+		if msg.err != nil {
+			m.createTemplate.creating = false
+			m.createTemplate.err = msg.err
+			return m, nil
+		}
+		m.statusMsg = "Template created"
+		m.templatePicker.loading = true
+		m.currentView = viewTemplatePicker
+		return m, m.templatePicker.loadTemplates()
 
 	case projectsLoadedMsg, projectDeletedMsg:
 		var cmd tea.Cmd
@@ -496,6 +553,21 @@ func (m Model) handleEsc() (tea.Model, tea.Cmd) {
 			m.dashboard.loading = true
 			return m, m.dashboard.loadDashboard()
 		}
+	case viewTemplatePicker:
+		m.statusMsg = ""
+		if m.previousView == viewDashboard {
+			m.currentView = viewDashboard
+			m.dashboard.loading = true
+			return m, m.dashboard.loadDashboard()
+		}
+		m.currentView = viewProjectDetail
+		m.projectDetail.loading = true
+		return m, m.projectDetail.loadDashboard()
+	case viewCreateTemplate:
+		m.currentView = viewTemplatePicker
+		m.statusMsg = ""
+		m.templatePicker.loading = true
+		return m, m.templatePicker.loadTemplates()
 	case viewWizard:
 		// Delegate to updateWizard which handles step-based back navigation.
 		return m.updateWizard(tea.KeyMsg{Type: tea.KeyEscape})
@@ -537,7 +609,7 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "c":
 		e := m.dashboard.selectedEntry()
-		if e != nil && e.HemStatus != "completed" {
+		if e != nil {
 			return m, m.dashboard.completeSession(e.SessionID)
 		}
 	case "d":
@@ -599,6 +671,13 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.projects.height = m.height - 3
 		m.currentView = viewProjects
 		return m, m.projects.loadProjects()
+	case "t":
+		m.templatePicker = newTemplatePickerModel(m.client, "")
+		m.templatePicker.width = m.width
+		m.templatePicker.height = m.height - 3
+		m.currentView = viewTemplatePicker
+		m.previousView = viewDashboard
+		return m, m.templatePicker.loadTemplates()
 	default:
 		var cmd tea.Cmd
 		m.dashboard, cmd = m.dashboard.Update(msg)
@@ -664,7 +743,7 @@ func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "c":
 		e := m.projectDetail.selectedEntry()
-		if e != nil && e.HemStatus != "completed" {
+		if e != nil {
 			return m, m.projectDetail.completeSession(e.SessionID)
 		}
 	case "d":
@@ -698,6 +777,13 @@ func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.currentView = viewWizard
 		m.previousView = viewProjectDetail
 		return m, m.wizard.Init()
+	case "t":
+		m.templatePicker = newTemplatePickerModel(m.client, m.projectDetail.projectFilter)
+		m.templatePicker.width = m.width
+		m.templatePicker.height = m.height - 3
+		m.currentView = viewTemplatePicker
+		m.previousView = viewProjectDetail
+		return m, m.templatePicker.loadTemplates()
 	case "x":
 		e := m.projectDetail.selectedEntry()
 		if e != nil {
@@ -714,6 +800,42 @@ func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	return m, nil
+}
+
+func (m Model) updateTemplatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		t := m.templatePicker.selectedTemplate()
+		if t != nil {
+			return m, m.templatePicker.useTemplate(t.ID)
+		}
+	case "n":
+		if m.templatePicker.projectName != "" {
+			m.createTemplate = newCreateTemplateModel(m.client, m.templatePicker.projectName)
+			m.createTemplate.width = m.width
+			m.createTemplate.height = m.height - 3
+			m.currentView = viewCreateTemplate
+			return m, m.createTemplate.loadProjectPath()
+		}
+	case "d":
+		if m.templatePicker.projectName != "" {
+			t := m.templatePicker.selectedTemplate()
+			if t != nil {
+				return m, m.templatePicker.deleteTemplate(t.ID)
+			}
+		}
+	default:
+		var cmd tea.Cmd
+		m.templatePicker, cmd = m.templatePicker.Update(msg)
+		return m, cmd
+	}
+	return m, nil
+}
+
+func (m Model) updateCreateTemplate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.createTemplate, cmd = m.createTemplate.Update(msg)
+	return m, cmd
 }
 
 func (m Model) updateSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1012,6 +1134,10 @@ func (m Model) View() string {
 		content = m.shell.View()
 	case viewWizard:
 		content = m.wizard.View()
+	case viewTemplatePicker:
+		content = m.templatePicker.View()
+	case viewCreateTemplate:
+		content = m.createTemplate.View()
 	}
 
 	statusBar := m.renderStatusBar()
@@ -1034,6 +1160,7 @@ func (m Model) renderStatusBar() string {
 			statusKeyStyle.Render("e") + statusDescStyle.Render(" edit"),
 			statusKeyStyle.Render("g") + statusDescStyle.Render(" git diff"),
 			statusKeyStyle.Render("n") + statusDescStyle.Render(" new"),
+			statusKeyStyle.Render("t") + statusDescStyle.Render(" templates"),
 			statusKeyStyle.Render("x") + statusDescStyle.Render(" shell"),
 			statusKeyStyle.Render("m") + statusDescStyle.Render(" moneypennies"),
 			statusKeyStyle.Render("p") + statusDescStyle.Render(" projects"),
@@ -1070,6 +1197,7 @@ func (m Model) renderStatusBar() string {
 			statusKeyStyle.Render("e") + statusDescStyle.Render(" edit"),
 			statusKeyStyle.Render("g") + statusDescStyle.Render(" git diff"),
 			statusKeyStyle.Render("n") + statusDescStyle.Render(" new"),
+			statusKeyStyle.Render("t") + statusDescStyle.Render(" template"),
 			statusKeyStyle.Render("x") + statusDescStyle.Render(" shell"),
 			statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
 			statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
@@ -1182,6 +1310,23 @@ func (m Model) renderStatusBar() string {
 				statusKeyStyle.Render("tab") + statusDescStyle.Render(" next"),
 				statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
 			}
+		}
+	case viewTemplatePicker:
+		keys = []string{
+			statusKeyStyle.Render("↵") + statusDescStyle.Render(" use"),
+		}
+		if m.templatePicker.projectName != "" {
+			keys = append(keys,
+				statusKeyStyle.Render("n")+statusDescStyle.Render(" new"),
+				statusKeyStyle.Render("d")+statusDescStyle.Render(" delete"),
+			)
+		}
+		keys = append(keys, statusKeyStyle.Render("esc")+statusDescStyle.Render(" back"))
+	case viewCreateTemplate:
+		keys = []string{
+			statusKeyStyle.Render("↵") + statusDescStyle.Render(" create"),
+			statusKeyStyle.Render("tab") + statusDescStyle.Render(" next"),
+			statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
 		}
 	}
 
