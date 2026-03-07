@@ -107,8 +107,8 @@ var CommandHelp = map[string]string{
 	"schedule session":    "Usage: hem schedule session SESSION_ID --at TIME --prompt PROMPT [--cron EXPR]\n\nSchedules a prompt for a session at a future time.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)\n  --at               When to send (RFC3339, or relative like +2h, +30m)\n  --prompt           Prompt to send\n  --cron             Cron expression for recurring schedules (e.g. '0 9 * * 1' for Mon 9am, '@every 2h', '@daily')",
 	"list schedule":       "Usage: hem list schedules [--session-id SESSION_ID]\n\nLists scheduled prompts for a session.\n\nFlags:\n  --session-id       Session ID (required)",
 	"cancel schedule":     "Usage: hem cancel schedule SCHEDULE_ID\n\nCancels a pending schedule.",
-	"enable":              "Usage: hem enable SETTING\n\nEnables a boolean setting.\n\nAvailable settings:\n  sound-notification   Play a sound when a session finishes",
-	"disable":             "Usage: hem disable SETTING\n\nDisables a boolean setting.\n\nAvailable settings:\n  sound-notification   Play a sound when a session finishes",
+	"enable":              "Usage: hem enable SETTING\n\nEnables a boolean setting.\n\nAvailable settings:\n  schedule-system-prompt   Include schedule instructions in agent system prompts",
+	"disable":             "Usage: hem disable SETTING\n\nDisables a boolean setting.\n\nAvailable settings:\n  schedule-system-prompt   Include schedule instructions in agent system prompts",
 	"dashboard":           "Usage: hem dashboard [--project NAME] [--all]\n\nShows a dashboard of sessions grouped by attention state.\n\nFlags:\n  --project          Filter by project name\n  --all              Include completed sessions",
 	"import session":       "Usage: hem import session FILE.jsonl|SESSION_ID [-m MONEYPENNY] [--name NAME] [--project PROJECT]\n\nImports an existing Claude Code session from a JSONL file or by session ID.\nIf the argument is not a file on disk, it is treated as a session ID and\nsearched for in ~/.claude/projects/ subdirectories.\n\nFlags:\n  -m, --moneypenny   Moneypenny name (uses default if not set)\n  --name             Session name (default: first user message)\n  --agent            Agent (default: claude)\n  --path             Working directory (default: from JSONL or default)\n  --project          Project name or ID",
 }
@@ -320,8 +320,6 @@ func (e *Executor) pollUntilIdle(ctx context.Context, mp *store.Moneypenny, sess
 		}
 
 		if detail.Status != "working" {
-			e.playNotificationSound()
-
 			// Fetch conversation to get the last assistant response.
 			convResp, err := e.sendCommand(ctx, mp, "get_session_conversation", map[string]interface{}{"session_id": sessionID})
 			if err != nil {
@@ -853,14 +851,14 @@ func (e *Executor) ListDefaults(args []string) *protocol.Response {
 // validSettings lists the settings that can be toggled with enable/disable.
 // validSettings lists the settings that can be toggled with enable/disable.
 var validSettings = map[string]bool{
-	"sound-notification":  true,
-	"sound-notifications": true,
+	"schedule-system-prompt":  true,
+	"schedule-system-prompts": true,
 }
 
 // normalizeSetting maps aliases to canonical setting names.
 func normalizeSetting(name string) string {
-	if name == "sound-notifications" {
-		return "sound-notification"
+	if name == "schedule-system-prompts" {
+		return "schedule-system-prompt"
 	}
 	return name
 }
@@ -2859,15 +2857,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 		}
 	}
 
-	// Detect working→ready transitions and play notification sound.
-	for _, entry := range entries {
-		prev := e.lastSessionStates[entry.SessionID]
-		if prev == "working" && entry.MPStatus == "ready" {
-			e.playNotificationSound()
-			break // one notification per poll cycle is enough
-		}
-	}
-	// Update state cache.
+	// Update state cache (clients detect working→ready transitions).
 	for _, entry := range entries {
 		e.lastSessionStates[entry.SessionID] = entry.MPStatus
 	}

@@ -37,14 +37,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Extract --mi6 flag from args before cli.Parse (it's a global flag).
+	// Extract global flags from args before cli.Parse.
 	var mi6Addr string
+	var silent bool
 	filteredArgs := make([]string, 0, len(os.Args))
 	filteredArgs = append(filteredArgs, os.Args[0])
 	for i := 1; i < len(os.Args); i++ {
 		if os.Args[i] == "--mi6" && i+1 < len(os.Args) {
 			i++
 			mi6Addr = os.Args[i]
+		} else if os.Args[i] == "--silent" {
+			silent = true
 		} else {
 			filteredArgs = append(filteredArgs, os.Args[i])
 		}
@@ -107,7 +110,7 @@ func main() {
 		runChat(cmd.Args)
 		return
 	case "ui":
-		if err := ui.Run(Version, sender); err != nil {
+		if err := ui.Run(Version, ui.UIOptions{Sender: sender, Silent: silent}); err != nil {
 			fmt.Fprintf(os.Stderr, "%sError: %v%s\n", colorRed, err, colorReset)
 			os.Exit(1)
 		}

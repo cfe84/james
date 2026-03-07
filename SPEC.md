@@ -491,7 +491,6 @@ Projects provide context for organizing sessions — a project groups related se
 `hem enable SETTING` / `hem disable SETTING` — toggle boolean settings stored in the defaults table.
 
 Available settings:
-- **sound-notification** — when enabled, plays a notification sound (embedded WAV via `afplay` on macOS, `aplay` on Linux) whenever a session finishes. Works in both CLI (via `pollUntilIdle`) and TUI (via dashboard auto-refresh polling detecting WORKING-to-READY transitions). The TUI triggers notifications through a `notify` server command. The WAV file is embedded at build time from `hem/assets/notification.wav` and written to `~/.config/james/hem/notification.wav` on first use. Disabled by default.
 - **schedule-system-prompt** — when enabled (default: enabled), schedule instructions are appended to every session's system prompt, informing agents of the `<schedule at="...">prompt</schedule>` self-scheduling syntax. Disable to prevent agents from creating their own schedules.
 
 ## Remote Execution
@@ -516,7 +515,7 @@ Groups sessions by state:
 
 The "reviewed" flag tracks whether the user has seen the latest agent response. A session becomes unreviewed when `continue_session` is called. It becomes reviewed when the user views the conversation history and the last turn is from the assistant (i.e., the agent has finished). This prevents the chat view's polling from prematurely marking a session as reviewed while the agent is still working.
 
-The dashboard auto-refreshes every 5 seconds by polling moneypennies. When a session transitions from WORKING to READY, a notification sound is triggered (if sound-notification is enabled). This works regardless of which TUI view is active, as the dashboard polling runs in the background.
+The dashboard auto-refreshes every 5 seconds by polling moneypennies. When a session transitions from WORKING to READY, a notification sound is played client-side. In the TUI, the embedded WAV file is played via `afplay` (macOS) or `aplay` (Linux). In Qew, a Web Audio API chime is played and a slide-in pop-over notification is shown. Both clients support disabling sound: `--silent` flag for `hem ui`, and a toggle button in Qew's header. This works regardless of which view is active, as the dashboard polling runs in the background.
 
 ### Chat
 

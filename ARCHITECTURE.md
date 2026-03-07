@@ -209,7 +209,7 @@ hem/
 
 20. **Version display**: All components log their version on startup. `hem --version` shows both client and server versions. TUI shows the version in the status bar.
 
-21. **Sound notifications**: Optional notification sound when a session finishes. Works in both CLI (agent goes idle after `pollUntilIdle`) and TUI (dashboard auto-refresh detects WORKING-to-READY transitions, triggers notification via a `notify` server command). The WAV file is embedded at build time from `hem/assets/notification.wav` using `go:embed`. On first play, it's written to `~/.config/james/hem/notification.wav`. Playback uses `afplay` (macOS) or `aplay` (Linux) in a fire-and-forget goroutine. Controlled via `hem enable sound-notification` / `hem disable sound-notification`, stored in the defaults table. The `enable`/`disable` verbs are generic and validate against a whitelist of known settings.
+21. **Client-side notifications**: Notification sounds are played client-side when a session transitions from WORKING to READY. The TUI detects these transitions during dashboard auto-refresh polling and plays the embedded WAV file via `afplay` (macOS) or `aplay` (Linux). The WAV is embedded at build time from `hem/assets/notification.wav` using `go:embed` and cached at `~/.config/james/hem/notification.wav`. The `--silent` flag on `hem ui` disables sound. Qew detects the same transitions during its dashboard polling and plays a Web Audio API chime, plus shows a slide-in pop-over notification. Qew has a header toggle button (bell icon) to enable/disable sound.
 
 22. **Create session wizard**: TUI session creation uses a 3-step wizard (`wizard.go`): (1) select moneypenny from a list, (2) browse remote filesystem to pick a working directory via `list_directory` moneypenny method, (3) fill in prompt and options. Esc navigates back through steps. The wizard replaces the old single-screen create form for all TUI entry points (dashboard, project detail, session list).
 
@@ -217,7 +217,7 @@ hem/
 
 24. **Git operations**: Moneypenny exposes `git_commit`, `git_branch`, and `git_push` methods alongside the existing `git_diff`. These run git commands in a session's working directory: `git_commit` stages all changes (`git add -A`) and commits; `git_branch` creates and checks out a new branch; `git_push` pushes the current branch to origin with `-u`. Hem exposes these as `hem commit session`, `hem branch session`, and `hem push session`.
 
-25. **Dashboard auto-refresh**: The TUI dashboard polls moneypennies every 5 seconds in the background, regardless of which view is active. When a session transitions from WORKING to READY during a poll, a notification sound is triggered (if sound-notification is enabled) via a `notify` server command. This extends sound notifications from CLI-only (during `pollUntilIdle`) to also work in the TUI.
+25. **Dashboard auto-refresh**: The TUI dashboard polls moneypennies every 5 seconds in the background, regardless of which view is active. When a session transitions from WORKING to READY during a poll, a notification sound is played client-side. Both the TUI and Qew track session states independently and detect transitions locally.
 
 26. **Queued message visual state**: The TUI preserves the "Queued" indicator (with its icon and label) on user messages across poll refreshes. The queued state is only cleared when an assistant response appears in the conversation, preventing the visual indicator from flickering or disappearing during polling cycles.
 
@@ -251,6 +251,29 @@ qew/
 
 5. **Polling**: Dashboard polls every 5s, chat polls every 3s, matching the TUI behavior.
 
+6. **Chat features**: Chat view fetches session status and schedules alongside history. Shows "working..." indicator when session is active, queued message labels for optimistic sends, and pending schedule times.
+
+7. **Client-side notifications**: Dashboard polling tracks session states and detects WORKING→READY transitions. Plays a Web Audio API chime and shows a slide-in pop-over notification. Sound can be toggled via a header button.
+
+## Docker Deployment
+
+A combined `Dockerfile` at the project root builds both Hem and Qew into a single `james` image. The entrypoint starts Hem server in the background, waits for its Unix socket, then starts Qew in the foreground connected via that socket.
+
+### Build
+- Two builder stages: `hem-builder` (CGO_ENABLED=1, needs `gcc`/`musl-dev` for SQLite) and `qew-builder` (CGO_ENABLED=0).
+- Final image is `alpine:3.20` with both binaries.
+- Pipeline: `.build/james.ini` triggers on `hem/`, `qew/`, or `VERSION` changes on main.
+- `.build/james-build.sh` — builds the `james` Docker image.
+
+### Runtime
+- **Entrypoint** (`docker/entrypoint.sh`): Prints both Hem and Qew SSH public keys (for MI6 `authorized_keys`), starts `hem server` in background, then `qew` in foreground.
+- **Env vars**: `HEM_MI6_URL` (MI6 address for Hem control channel), `QEW_PASSWORD` (Qew web auth, omit for `--development` mode), `LISTEN` (default `:8077`).
+- **Volume**: `JAMES_CONFIG_PATH` mounted to `/root/.config/james` (persists SQLite DB, SSH keys).
+- **Port**: 8077 (configurable via `QEW_PORT` env var in deploy script).
+
+### Deploy
+- `.build/james-deploy.sh` — requires `HEM_MI6_URL` and `JAMES_CONFIG_PATH`. Optional: `QEW_PASSWORD`, `QEW_PORT`. Stops existing container, creates new one.
+
 ## Versioning
 
-Single `VERSION` file at project root. Injected at compile time via `-ldflags "-X main.Version=..."`. All components (mi6, moneypenny, hem) share the same version. Semver format.
+Single `VERSION` file at project root. Injected at compile time via `-ldflags "-X main.Version=..."`. All components (mi6, moneypenny, hem, qew) share the same version. Semver format.

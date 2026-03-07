@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"james/hem/pkg/commands"
 	"james/hem/pkg/hemclient"
 )
 
@@ -49,29 +50,44 @@ type Model struct {
 	wizard         wizardModel
 	templatePicker templatePickerModel
 	createTemplate createTemplateModel
-	chatDrafts     map[string]string // sessionID → unsent input text
-	width          int
-	height        int
-	client        *client
-	statusMsg     string
-	version       string
+	chatDrafts        map[string]string // sessionID → unsent input text
+	width             int
+	height            int
+	client            *client
+	statusMsg         string
+	version           string
+	silent            bool
+	lastSessionStates map[string]string // sessionID → last known mpStatus
+}
+
+// UIOptions configures the TUI.
+type UIOptions struct {
+	Silent bool
+	Sender hemclient.Sender
 }
 
 // New creates the initial UI model.
-func New(version string, sender ...hemclient.Sender) Model {
+func New(version string, opts ...UIOptions) Model {
 	var c *client
-	if len(sender) > 0 && sender[0] != nil {
-		c = newMI6Client(sender[0])
-	} else {
+	var silent bool
+	if len(opts) > 0 {
+		if opts[0].Sender != nil {
+			c = newMI6Client(opts[0].Sender)
+		}
+		silent = opts[0].Silent
+	}
+	if c == nil {
 		c = newClient()
 	}
 	return Model{
-		currentView: viewDashboard,
-		dashboard:   newDashboardModel(c),
-		sessions:    newSessionsModel(c),
-		chatDrafts:  make(map[string]string),
-		client:      c,
-		version:     version,
+		currentView:       viewDashboard,
+		dashboard:         newDashboardModel(c),
+		sessions:          newSessionsModel(c),
+		chatDrafts:        make(map[string]string),
+		client:            c,
+		version:           version,
+		silent:            silent,
+		lastSessionStates: make(map[string]string),
 	}
 }
 
@@ -312,7 +328,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case dashboardPollTickMsg:
 		// Always reload the main dashboard in background regardless of current view,
-		// so session states stay fresh (the server handles notification sounds).
+		// so session states stay fresh and notifications can be detected.
 		if !m.dashboard.loading {
 			cmds := []tea.Cmd{m.dashboard.loadDashboard(), dashboardPollTick()}
 			// Also refresh project detail if active.
@@ -324,6 +340,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, dashboardPollTick()
 
 	case dashboardLoadedMsg:
+		// Detect working→ready transitions for notifications.
+		if msg.projectFilter == "" && msg.err == nil && !m.silent {
+			for _, entry := range msg.entries {
+				prev := m.lastSessionStates[entry.SessionID]
+				if prev == "working" && entry.MPStatus == "ready" {
+					go commands.PlayNotificationSound()
+					name := entry.Name
+					if name == "" {
+						name = entry.SessionID[:12]
+					}
+					m.statusMsg = fmt.Sprintf("Session ready: %s", name)
+					break
+				}
+			}
+			for _, entry := range msg.entries {
+				m.lastSessionStates[entry.SessionID] = entry.MPStatus
+			}
+		}
 		// Route to the matching dashboard instance based on projectFilter.
 		if msg.projectFilter == "" || msg.projectFilter == m.dashboard.projectFilter {
 			var cmd tea.Cmd
@@ -1463,12 +1497,12 @@ func (m Model) renderStatusBar() string {
 }
 
 // Run starts the TUI.
-func Run(version string, sender ...hemclient.Sender) error {
-	var s hemclient.Sender
-	if len(sender) > 0 {
-		s = sender[0]
+func Run(version string, opts ...UIOptions) error {
+	var o UIOptions
+	if len(opts) > 0 {
+		o = opts[0]
 	}
-	p := tea.NewProgram(New(version, s), tea.WithAltScreen())
+	p := tea.NewProgram(New(version, o), tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }

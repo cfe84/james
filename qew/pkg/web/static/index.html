@@ -130,13 +130,32 @@ header h1 span { color: var(--primary); }
   border-radius: 4px; padding: 4px 10px; cursor: pointer; font-size: 0.8em;
 }
 .actions button:hover { background: var(--primary); }
+
+/* Working / schedule indicators */
+.working-indicator { color: var(--success); font-weight: 500; padding: 8px 0; }
+.schedule-indicator { color: var(--warning); font-size: 0.9em; padding: 4px 0; }
+
+/* Notification pop-over */
+.notification-popover {
+  position: fixed; top: 20px; right: 20px; z-index: 1000;
+  background: var(--surface2); color: var(--text);
+  padding: 12px 20px; border-radius: 8px; font-weight: 500;
+  border-left: 4px solid var(--info);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  opacity: 0; transform: translateX(100px);
+  transition: opacity 0.3s, transform 0.3s;
+}
+.notification-popover.show { opacity: 1; transform: translateX(0); }
 </style>
 </head>
 <body>
 <div id="app">
   <header>
     <h1><span>Qew</span> — James</h1>
-    <div id="conn-status"><span class="status-dot disconnected"></span>Connecting...</div>
+    <div style="display:flex;align-items:center;gap:12px">
+      <button id="sound-toggle" title="Sound on (click to mute)" style="background:none;border:none;font-size:1.2em;cursor:pointer">🔔</button>
+      <div id="conn-status"><span class="status-dot disconnected"></span>Connecting...</div>
+    </div>
   </header>
 
   <div id="dashboard-view">

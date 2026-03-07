@@ -9,14 +9,8 @@ import (
 	"james/hem/assets"
 )
 
-// playNotificationSound plays the embedded notification sound if sound-notification is enabled.
-func (e *Executor) playNotificationSound() {
-	enabled, _ := e.store.GetDefault("sound-notification")
-	if enabled != "true" {
-		return
-	}
-
-	// Write the wav to a temp file in the data dir (reuse if exists).
+// PlayNotificationSound plays the embedded notification sound.
+func PlayNotificationSound() {
 	wavPath := notificationWavPath()
 	if _, err := os.Stat(wavPath); err != nil {
 		dir := filepath.Dir(wavPath)
@@ -26,7 +20,6 @@ func (e *Executor) playNotificationSound() {
 		}
 	}
 
-	// Play asynchronously.
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":

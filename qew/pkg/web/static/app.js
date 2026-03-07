@@ -9,6 +9,10 @@
   let requestQueue = [];
   let requestId = 0;
   let lastChatHTML = '';
+  let currentSessionStatus = '';
+  let queuedMessages = []; // optimistic messages not yet confirmed by server
+  let lastSessionStates = {}; // track WORKING→READY transitions for notifications
+  let soundEnabled = true;
 
   // --- API ---
 
@@ -35,6 +39,21 @@
         document.getElementById('dash-content').innerHTML =
           `<div class="empty-state">Error: ${escapeHtml(resp.message)}</div>`;
         return;
+      }
+      // Detect WORKING→READY transitions for notifications.
+      if (resp.data && resp.data.rows) {
+        for (const row of resp.data.rows) {
+          const sessionId = row[0] || '';
+          const statusRaw = row[3] || '';
+          const idx = statusRaw.indexOf(' (');
+          const mpStatus = idx >= 0 ? statusRaw.substring(0, idx) : statusRaw;
+          const prev = lastSessionStates[sessionId];
+          if (prev === 'working' && mpStatus === 'ready') {
+            const name = row[1] || sessionId.substring(0, 12);
+            showNotification(name);
+          }
+          lastSessionStates[sessionId] = mpStatus;
+        }
       }
       renderDashboard(resp.data);
     } catch (e) {
@@ -148,20 +167,36 @@
   async function loadChat() {
     if (!currentSession) return;
     try {
-      const resp = await apiCall('history', 'session', [currentSession, '--count', '50']);
-      if (resp.status === 'error') {
+      const [histResp, showResp, schedResp] = await Promise.all([
+        apiCall('history', 'session', [currentSession, '--count', '50']),
+        apiCall('show', 'session', [currentSession]),
+        apiCall('list', 'schedule', ['--session-id', currentSession]),
+      ]);
+      if (histResp.status === 'error') {
         document.getElementById('chat-messages').innerHTML =
-          `<div class="empty-state">Error: ${escapeHtml(resp.message)}</div>`;
+          `<div class="empty-state">Error: ${escapeHtml(histResp.message)}</div>`;
         return;
       }
-      renderChat(resp.data);
+      // Extract session status.
+      currentSessionStatus = '';
+      if (showResp.status === 'ok' && showResp.data) {
+        currentSessionStatus = showResp.data.status || '';
+      }
+      // Extract schedules.
+      let schedules = [];
+      if (schedResp.status === 'ok' && schedResp.data && schedResp.data.rows) {
+        schedules = schedResp.data.rows.map(r => ({
+          id: r[0], sessionId: r[1], prompt: r[2], scheduledAt: r[3], status: r[4],
+        })).filter(s => s.status === 'pending');
+      }
+      renderChat(histResp.data, schedules);
     } catch (e) {
       document.getElementById('chat-messages').innerHTML =
         `<div class="empty-state">Error: ${escapeHtml(e.message)}</div>`;
     }
   }
 
-  function renderChat(data) {
+  function renderChat(data, schedules) {
     const container = document.getElementById('chat-messages');
     if (!data || !data.conversation || data.conversation.length === 0) {
       container.innerHTML = '<div class="empty-state">No messages yet</div>';
@@ -169,7 +204,17 @@
     }
 
     let html = '';
-    for (const turn of data.conversation) {
+    // Merge server conversation with queued messages.
+    const serverTurns = data.conversation;
+    // Remove queued messages that the server now has.
+    queuedMessages = queuedMessages.filter(qm => {
+      for (const st of serverTurns) {
+        if (st.role === 'user' && st.content === qm.content) return false;
+      }
+      return true;
+    });
+
+    for (const turn of serverTurns) {
       const roleLabel = turn.role === 'user' ? '🧑‍💻 you' : (turn.role === 'assistant' ? '🤖 assistant' : '⚙ system');
       const roleClass = turn.role;
       const content = turn.content || '(empty)';
@@ -178,6 +223,25 @@
           <div class="msg-role ${roleClass}">${roleLabel}${turn.created_at ? ` <span style="color:var(--muted);font-weight:normal">${escapeHtml(turn.created_at)}</span>` : ''}</div>
           <div class="msg-content">${formatContent(content)}</div>
         </div>`;
+    }
+    // Show queued (optimistic) messages.
+    for (const qm of queuedMessages) {
+      html += `
+        <div class="msg">
+          <div class="msg-role user">⏳ you <span style="color:var(--muted);font-weight:normal">[Queued]</span></div>
+          <div class="msg-content">${formatContent(qm.content)}</div>
+        </div>`;
+    }
+    // Working indicator.
+    if (currentSessionStatus === 'working') {
+      html += '<div class="msg working-indicator">🤖 working...</div>';
+    }
+    // Pending schedules.
+    if (schedules && schedules.length > 0) {
+      for (const s of schedules) {
+        const prompt = s.prompt.length > 80 ? s.prompt.substring(0, 77) + '...' : s.prompt;
+        html += `<div class="msg schedule-indicator">⏰ ${escapeHtml(s.scheduledAt)} — ${escapeHtml(prompt)}</div>`;
+      }
     }
     // Skip re-render if content hasn't changed (preserves selection and scroll).
     if (html === lastChatHTML) return;
@@ -199,14 +263,10 @@
 
     try {
       await apiCall('continue', 'session', [currentSession, '--async', text]);
-      // Optimistically add the message.
-      const container = document.getElementById('chat-messages');
-      container.innerHTML += `
-        <div class="msg">
-          <div class="msg-role user">🧑‍💻 you</div>
-          <div class="msg-content">${formatContent(text)}</div>
-        </div>`;
-      container.scrollTop = container.scrollHeight;
+      // Track as queued and re-render.
+      queuedMessages.push({ content: text });
+      lastChatHTML = ''; // force re-render
+      await loadChat();
     } catch (e) {
       alert('Send error: ' + e.message);
     } finally {
@@ -287,10 +347,54 @@
     el.style.height = Math.min(el.scrollHeight, 120) + 'px';
   }
 
+  // --- Notifications ---
+
+  function playNotificationSound() {
+    if (!soundEnabled) return;
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      // Simple two-tone chime.
+      [440, 880].forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+        gain.gain.setValueAtTime(0.15, ctx.currentTime + i * 0.15);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + i * 0.15 + 0.3);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(ctx.currentTime + i * 0.15);
+        osc.stop(ctx.currentTime + i * 0.15 + 0.3);
+      });
+    } catch (e) { /* ignore audio errors */ }
+  }
+
+  function showNotification(sessionName) {
+    playNotificationSound();
+    // Pop-over notification.
+    const popover = document.createElement('div');
+    popover.className = 'notification-popover';
+    popover.textContent = 'Session ready: ' + sessionName;
+    document.body.appendChild(popover);
+    setTimeout(() => popover.classList.add('show'), 10);
+    setTimeout(() => {
+      popover.classList.remove('show');
+      setTimeout(() => popover.remove(), 300);
+    }, 4000);
+  }
+
+  function toggleSound() {
+    soundEnabled = !soundEnabled;
+    const btn = document.getElementById('sound-toggle');
+    btn.textContent = soundEnabled ? '🔔' : '🔕';
+    btn.title = soundEnabled ? 'Sound on (click to mute)' : 'Sound off (click to unmute)';
+  }
+
   // --- Init ---
 
   document.getElementById('chat-back').addEventListener('click', closeChat);
   document.getElementById('chat-send').addEventListener('click', sendMessage);
+  document.getElementById('sound-toggle').addEventListener('click', toggleSound);
 
   const chatInput = document.getElementById('chat-input');
   chatInput.addEventListener('keydown', e => {
