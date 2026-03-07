@@ -42,17 +42,11 @@ func New(vlog *log.Logger) *Runner {
 	}
 }
 
-// Run invokes claude with the given parameters. It blocks until claude completes.
-// Returns the text response extracted from Claude's JSON output.
+// Run invokes an agent with the given parameters. It blocks until the agent completes.
+// Returns the text response extracted from the agent's output.
 //
 // For create_session (no existing session), pass Resume=false.
 // For continue_session, pass Resume=true to continue the conversation.
-//
-// Claude is invoked as:
-//
-//	claude --output-format json --session-id <sessionID> -p <prompt>
-//	With optional: --system-prompt <systemPrompt> (only on create, not continue)
-//	With optional: --dangerously-skip-permissions (if yolo=true)
 //
 // The process is tracked so it can be killed via Stop().
 func (r *Runner) Run(ctx context.Context, params RunParams) (*Result, error) {
@@ -61,30 +55,7 @@ func (r *Runner) Run(ctx context.Context, params RunParams) (*Result, error) {
 		return nil, fmt.Errorf("agent binary %q not found: %w", params.Agent, err)
 	}
 
-	var args []string
-
-	if params.Resume {
-		// Continue an existing session: --resume SESSION_ID.
-		args = []string{
-			"--output-format", "json",
-			"--resume", params.SessionID,
-		}
-	} else {
-		// Create a new session.
-		args = []string{
-			"--output-format", "json",
-			"--session-id", params.SessionID,
-		}
-		if params.SystemPrompt != "" {
-			args = append(args, "--system-prompt", params.SystemPrompt)
-		}
-	}
-
-	if params.Yolo {
-		args = append(args, "--dangerously-skip-permissions")
-	}
-
-	args = append(args, "-p", params.Prompt)
+	args := buildArgs(params)
 
 	cmd := exec.CommandContext(ctx, agentPath, args...)
 	if params.Path != "" {
@@ -108,8 +79,64 @@ func (r *Runner) Run(ctx context.Context, params RunParams) (*Result, error) {
 		return nil, fmt.Errorf("agent process failed: %w", err)
 	}
 
-	text := parseClaudeOutput(output)
+	text := parseOutput(params.Agent, output)
 	return &Result{Text: text}, nil
+}
+
+// buildArgs constructs the command-line arguments for the given agent.
+func buildArgs(params RunParams) []string {
+	switch params.Agent {
+	case "copilot":
+		return buildCopilotArgs(params)
+	default:
+		return buildClaudeArgs(params)
+	}
+}
+
+func buildClaudeArgs(params RunParams) []string {
+	var args []string
+	if params.Resume {
+		args = []string{
+			"--output-format", "json",
+			"--resume", params.SessionID,
+		}
+	} else {
+		args = []string{
+			"--output-format", "json",
+			"--session-id", params.SessionID,
+		}
+		if params.SystemPrompt != "" {
+			args = append(args, "--system-prompt", params.SystemPrompt)
+		}
+	}
+	if params.Yolo {
+		args = append(args, "--dangerously-skip-permissions")
+	}
+	args = append(args, "-p", params.Prompt)
+	return args
+}
+
+func buildCopilotArgs(params RunParams) []string {
+	// Copilot uses --resume for both new sessions (with a UUID) and continuing.
+	args := []string{
+		"--resume", params.SessionID,
+		"-s", // silent mode: output only the agent response
+	}
+	if params.Yolo {
+		args = append(args, "--yolo")
+	}
+	args = append(args, "-p", params.Prompt)
+	return args
+}
+
+// parseOutput extracts text from agent output based on agent type.
+func parseOutput(agent string, output []byte) string {
+	switch agent {
+	case "copilot":
+		return strings.TrimSpace(string(output))
+	default:
+		return parseClaudeOutput(output)
+	}
 }
 
 // Stop kills the subprocess for the given session. Returns error if no process is running.

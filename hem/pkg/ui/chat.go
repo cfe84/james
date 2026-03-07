@@ -191,17 +191,24 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 			}
 
 			if changed {
-				// Preserve queued flags.
-				for i := len(m.conversation) - 1; i >= 0; i-- {
+				// Collect queued turns not yet in server data.
+				var pendingQueued []conversationTurn
+				for i := range m.conversation {
 					if m.conversation[i].Role == "user" && m.conversation[i].Queued {
-						for j := len(msg.conversation) - 1; j >= 0; j-- {
+						found := false
+						for j := range msg.conversation {
 							if msg.conversation[j].Role == "user" && msg.conversation[j].Content == m.conversation[i].Content {
+								found = true
+								// Mark as queued if no response yet.
 								hasResponse := j+1 < len(msg.conversation) && msg.conversation[j+1].Role == "assistant"
 								if !hasResponse {
 									msg.conversation[j].Queued = true
 								}
 								break
 							}
+						}
+						if !found {
+							pendingQueued = append(pendingQueued, m.conversation[i])
 						}
 					}
 				}
@@ -213,7 +220,10 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 				} else {
 					m.conversation = msg.conversation
 				}
-				m.recentCount = len(msg.conversation)
+
+				// Re-append queued turns that the server doesn't know about yet.
+				m.conversation = append(m.conversation, pendingQueued...)
+				m.recentCount = len(msg.conversation) + len(pendingQueued)
 				m.scroll = 0
 			}
 		}

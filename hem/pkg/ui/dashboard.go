@@ -3,6 +3,7 @@ package ui
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -135,6 +136,17 @@ func (m dashboardModel) loadDashboard() tea.Cmd {
 
 			entries = append(entries, e)
 		}
+
+		// Sort within each category by project, then name.
+		sort.SliceStable(entries, func(i, j int) bool {
+			if entries[i].Category != entries[j].Category {
+				return entries[i].Category < entries[j].Category
+			}
+			if entries[i].Project != entries[j].Project {
+				return entries[i].Project < entries[j].Project
+			}
+			return entries[i].Name < entries[j].Name
+		})
 
 		return dashboardLoadedMsg{entries: entries, projectFilter: projectFilter}
 	}
