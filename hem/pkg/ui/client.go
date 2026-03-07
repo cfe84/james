@@ -696,3 +696,25 @@ func (c *client) useTemplate(templateNameOrID, projectName string) (string, erro
 	}
 	return result.SessionID, nil
 }
+
+func (c *client) commitSession(sessionID, message string) error {
+	resp, err := c.send("commit", "session", sessionID, "-m", message)
+	if err != nil {
+		return err
+	}
+	if resp.Status == protocol.StatusError {
+		return fmt.Errorf("%s", resp.Message)
+	}
+	return nil
+}
+
+func (c *client) pushSession(sessionID string) error {
+	resp, err := c.send("push", "session", sessionID)
+	if err != nil {
+		return err
+	}
+	if resp.Status == protocol.StatusError {
+		return fmt.Errorf("%s", resp.Message)
+	}
+	return nil
+}

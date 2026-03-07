@@ -37,6 +37,7 @@ type chatModel struct {
 	err           error
 	loading       bool
 	loadingMore   bool // loading older messages
+	polling       bool // a poll loadHistory is in-flight
 	sending       bool
 	commandMode   bool
 	confirmDelete bool
@@ -156,15 +157,25 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case chatPollTickMsg:
 		// Periodically reload history and schedules to catch agent responses.
-		if !m.sending && !m.loading {
+		// Skip if a previous poll load is still in-flight to avoid races.
+		if !m.sending && !m.loading && !m.polling {
+			m.polling = true
 			return m, tea.Batch(m.loadHistory(), m.loadSchedules(), chatPollTick())
 		}
 		return m, chatPollTick()
 
 	case historyLoadedMsg:
 		m.loading = false
+		m.polling = false
 		if msg.err == nil {
 			m.sessionStatus = msg.status
+
+			// Don't replace existing conversation with empty data (race during working state).
+			if len(msg.conversation) == 0 && len(m.conversation) > 0 {
+				m.totalTurns = msg.total
+				return m, nil
+			}
+
 			m.totalTurns = msg.total
 
 			// Compare with the recent portion of our conversation.

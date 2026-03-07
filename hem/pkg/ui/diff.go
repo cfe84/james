@@ -9,6 +9,13 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+type diffMode int
+
+const (
+	diffModeView diffMode = iota
+	diffModeCommitMsg
+)
+
 // diffModel displays a git diff for a session.
 type diffModel struct {
 	sessionID string
@@ -19,11 +26,22 @@ type diffModel struct {
 	err       error
 	loading   bool
 	client    *client
+
+	mode       diffMode
+	commitMsg  string
+	pushAfter  bool // if true, push after commit
+	committing bool
+	commitErr  error
 }
 
 type diffLoadedMsg struct {
 	diff string
 	err  error
+}
+
+type diffCommitDoneMsg struct {
+	pushed bool
+	err    error
 }
 
 func newDiffModel(c *client, sessionID string) diffModel {
@@ -54,6 +72,23 @@ func (m diffModel) loadDiff() tea.Cmd {
 	}
 }
 
+func (m diffModel) doCommit() tea.Cmd {
+	sessionID := m.sessionID
+	msg := m.commitMsg
+	push := m.pushAfter
+	return func() tea.Msg {
+		err := m.client.commitSession(sessionID, msg)
+		if err != nil {
+			return diffCommitDoneMsg{err: err}
+		}
+		if push {
+			err = m.client.pushSession(sessionID)
+			return diffCommitDoneMsg{pushed: true, err: err}
+		}
+		return diffCommitDoneMsg{}
+	}
+}
+
 func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case diffLoadedMsg:
@@ -61,7 +96,23 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 		m.diff = msg.diff
 		m.err = msg.err
 
+	case diffCommitDoneMsg:
+		m.committing = false
+		if msg.err != nil {
+			m.commitErr = msg.err
+		} else {
+			m.commitErr = nil
+			m.mode = diffModeView
+			m.commitMsg = ""
+			// Reload diff after commit.
+			m.loading = true
+			return m, m.loadDiff()
+		}
+
 	case tea.KeyMsg:
+		if m.mode == diffModeCommitMsg {
+			return m.updateCommitInput(msg)
+		}
 		switch msg.String() {
 		case "up", "k":
 			if m.scroll > 0 {
@@ -76,6 +127,50 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 			}
 		case "pgdown":
 			m.scroll += 10
+		case "c":
+			if m.diff != "" {
+				m.mode = diffModeCommitMsg
+				m.pushAfter = false
+				m.commitMsg = ""
+				m.commitErr = nil
+			}
+		case "C":
+			if m.diff != "" {
+				m.mode = diffModeCommitMsg
+				m.pushAfter = true
+				m.commitMsg = ""
+				m.commitErr = nil
+			}
+		}
+	}
+	return m, nil
+}
+
+func (m diffModel) updateCommitInput(msg tea.KeyMsg) (diffModel, tea.Cmd) {
+	if m.committing {
+		return m, nil
+	}
+	switch msg.String() {
+	case "enter":
+		if strings.TrimSpace(m.commitMsg) != "" {
+			m.committing = true
+			return m, m.doCommit()
+		}
+	case "esc":
+		m.mode = diffModeView
+		m.commitMsg = ""
+		m.commitErr = nil
+	case "backspace":
+		if len(m.commitMsg) > 0 {
+			m.commitMsg = m.commitMsg[:len(m.commitMsg)-1]
+		}
+	case "ctrl+u":
+		m.commitMsg = ""
+	default:
+		if msg.Type == tea.KeyRunes {
+			m.commitMsg += string(msg.Runes)
+		} else if msg.String() == " " {
+			m.commitMsg += " "
 		}
 	}
 	return m, nil
@@ -101,9 +196,18 @@ func (m diffModel) View() string {
 		return b.String()
 	}
 
+	// Reserve space for commit input if active.
+	commitHeight := 0
+	if m.mode == diffModeCommitMsg {
+		commitHeight = 3
+		if m.commitErr != nil {
+			commitHeight = 4
+		}
+	}
+
 	// Render diff with colors.
 	lines := strings.Split(m.diff, "\n")
-	viewHeight := m.height - 4
+	viewHeight := m.height - 4 - commitHeight
 	if viewHeight < 1 {
 		viewHeight = 20
 	}
@@ -132,6 +236,28 @@ func (m diffModel) View() string {
 	if len(lines) > viewHeight {
 		b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render(
 			fmt.Sprintf("  line %d-%d of %d", m.scroll+1, end, len(lines))))
+		b.WriteString("\n")
+	}
+
+	// Commit message input.
+	if m.mode == diffModeCommitMsg {
+		b.WriteString("\n")
+		action := "Commit message"
+		if m.pushAfter {
+			action = "Commit+push message"
+		}
+		if m.committing {
+			if m.pushAfter {
+				b.WriteString("  Committing and pushing...")
+			} else {
+				b.WriteString("  Committing...")
+			}
+		} else {
+			b.WriteString("  " + labelStyle.Render(action+":") + " " + fieldActiveStyle.Render(m.commitMsg+"█"))
+		}
+		if m.commitErr != nil {
+			b.WriteString("\n  " + lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444")).Render(m.commitErr.Error()))
+		}
 	}
 
 	return b.String()

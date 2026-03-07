@@ -145,6 +145,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, m.dashboard.loadDashboard()
 				}
 			}
+			if m.currentView == viewDiff && m.diff.mode == diffModeCommitMsg {
+				m.diff.mode = diffModeView
+				m.diff.commitMsg = ""
+				m.diff.commitErr = nil
+				return m, nil
+			}
 			return m.handleEsc()
 		}
 
@@ -339,6 +345,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.chat, cmd = m.chat.Update(msg)
 		return m, cmd
 
+	case diffCommitDoneMsg:
+		var cmd tea.Cmd
+		m.diff, cmd = m.diff.Update(msg)
+		if msg.err == nil {
+			if msg.pushed {
+				m.statusMsg = "Committed and pushed"
+			} else {
+				m.statusMsg = "Committed"
+			}
+		}
+		return m, cmd
+
 	case sessionImportedMsg:
 		im := msg
 		if im.err != nil {
@@ -378,7 +396,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusMsg = "Session updated"
 		if m.previousView == viewChat {
 			m.currentView = viewChat
-			return m, m.chat.loadHistory()
+			return m, tea.Batch(m.chat.loadHistory(), chatPollTick())
 		}
 		m.currentView = viewSessions
 		m.sessions.loading = true
@@ -468,9 +486,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.currentView = viewChat
 		m.previousView = viewDashboard
 		if cm.response == "" {
-			return m, m.chat.loadHistory()
+			return m, tea.Batch(m.chat.loadHistory(), chatPollTick())
 		}
-		return m, nil
+		return m, chatPollTick()
 	}
 
 	return m, nil
@@ -628,7 +646,7 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m = m.withChatDraftRestored()
 			m.currentView = viewChat
 			m.previousView = viewDashboard
-			return m, m.chat.loadHistory()
+			return m, tea.Batch(m.chat.loadHistory(), chatPollTick())
 		}
 	case "c":
 		e := m.dashboard.selectedEntry()
@@ -763,7 +781,7 @@ func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m = m.withChatDraftRestored()
 			m.currentView = viewChat
 			m.previousView = viewProjectDetail
-			return m, m.chat.loadHistory()
+			return m, tea.Batch(m.chat.loadHistory(), chatPollTick())
 		}
 	case "c":
 		e := m.projectDetail.selectedEntry()
@@ -873,7 +891,7 @@ func (m Model) updateSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m = m.withChatDraftRestored()
 			m.currentView = viewChat
 			m.previousView = viewSessions
-			return m, m.chat.loadHistory()
+			return m, tea.Batch(m.chat.loadHistory(), chatPollTick())
 		}
 	case "n":
 		m.wizard = newWizardModel(m.client)
@@ -1303,10 +1321,23 @@ func (m Model) renderStatusBar() string {
 			statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
 		}
 	case viewDiff:
-		keys = []string{
-			statusKeyStyle.Render("↑↓") + statusDescStyle.Render(" scroll"),
-			statusKeyStyle.Render("pgup/dn") + statusDescStyle.Render(" page"),
-			statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
+		if m.diff.mode == diffModeCommitMsg {
+			action := "commit"
+			if m.diff.pushAfter {
+				action = "commit+push"
+			}
+			keys = []string{
+				statusKeyStyle.Render("↵") + statusDescStyle.Render(" "+action),
+				statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
+			}
+		} else {
+			keys = []string{
+				statusKeyStyle.Render("↑↓") + statusDescStyle.Render(" scroll"),
+				statusKeyStyle.Render("pgup/dn") + statusDescStyle.Render(" page"),
+				statusKeyStyle.Render("c") + statusDescStyle.Render(" commit"),
+				statusKeyStyle.Render("C") + statusDescStyle.Render(" commit+push"),
+				statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
+			}
 		}
 	case viewShell:
 		keys = []string{
