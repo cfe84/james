@@ -47,6 +47,7 @@ type Model struct {
 	wizard         wizardModel
 	templatePicker templatePickerModel
 	createTemplate createTemplateModel
+	chatDrafts     map[string]string // sessionID → unsent input text
 	width          int
 	height        int
 	client        *client
@@ -61,6 +62,7 @@ func New(version string) Model {
 		currentView: viewDashboard,
 		dashboard:   newDashboardModel(c),
 		sessions:    newSessionsModel(c),
+		chatDrafts:  make(map[string]string),
 		client:      c,
 		version:     version,
 	}
@@ -123,7 +125,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.chat.commandMode = true
 					return m, nil
 				}
-				// Second Esc: leave chat.
+				// Second Esc: leave chat. Save draft.
+				m = m.withChatDraftSaved()
 				m.chat.commandMode = false
 				m.chat.confirmDelete = false
 				prev := m.previousView
@@ -473,6 +476,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) withChatDraftSaved() Model {
+	if m.chat.sessionID != "" {
+		if m.chat.input != "" {
+			m.chatDrafts[m.chat.sessionID] = m.chat.input
+		} else {
+			delete(m.chatDrafts, m.chat.sessionID)
+		}
+	}
+	return m
+}
+
+func (m Model) withChatDraftRestored() Model {
+	if draft, ok := m.chatDrafts[m.chat.sessionID]; ok {
+		m.chat.input = draft
+		m.chat.cursorPos = len(draft)
+	}
+	return m
+}
+
 func (m Model) handleEsc() (tea.Model, tea.Cmd) {
 	switch m.currentView {
 	case viewDashboard:
@@ -603,6 +625,7 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.chat = newChatModel(m.client, e.SessionID, e.Name)
 			m.chat.width = m.width
 			m.chat.height = m.height - 3
+			m = m.withChatDraftRestored()
 			m.currentView = viewChat
 			m.previousView = viewDashboard
 			return m, m.chat.loadHistory()
@@ -737,6 +760,7 @@ func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.chat = newChatModel(m.client, e.SessionID, e.Name)
 			m.chat.width = m.width
 			m.chat.height = m.height - 3
+			m = m.withChatDraftRestored()
 			m.currentView = viewChat
 			m.previousView = viewProjectDetail
 			return m, m.chat.loadHistory()
@@ -846,6 +870,7 @@ func (m Model) updateSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.chat = newChatModel(m.client, s.SessionID, s.Name)
 			m.chat.width = m.width
 			m.chat.height = m.height - 3
+			m = m.withChatDraftRestored()
 			m.currentView = viewChat
 			m.previousView = viewSessions
 			return m, m.chat.loadHistory()
