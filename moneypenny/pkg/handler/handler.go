@@ -616,8 +616,16 @@ func (h *Handler) listDirectory(_ context.Context, cmd *envelope.Command) *envel
 	}
 
 	path := data.Path
-	if path == "" {
-		path = "/"
+	if path == "" || path == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			path = home
+		} else {
+			path = "/"
+		}
+	} else if len(path) > 1 && path[0] == '~' && path[1] == '/' {
+		if home, err := os.UserHomeDir(); err == nil {
+			path = home + path[1:]
+		}
 	}
 
 	dirEntries, err := os.ReadDir(path)
