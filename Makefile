@@ -70,5 +70,15 @@ endif
 	$(INSTALL) moneypenny$(SEP)bin$(SEP)moneypenny$(EXECUTABLE_SUFFIX) "$(INSTALL_DIR)$(SEP)"
 	$(INSTALL) hem$(SEP)bin$(SEP)hem$(EXECUTABLE_SUFFIX) "$(INSTALL_DIR)$(SEP)"
 	$(INSTALL) qew$(SEP)bin$(SEP)qew$(EXECUTABLE_SUFFIX) "$(INSTALL_DIR)$(SEP)"
+ifneq ($(OS),Windows_NT)
+ifeq ($(shell uname -s),Darwin)
+	@echo "Signing binaries for macOS Gatekeeper..."
+	@codesign -s - -f "$(INSTALL_DIR)/mi6-server" 2>/dev/null || true
+	@codesign -s - -f "$(INSTALL_DIR)/mi6-client" 2>/dev/null || true
+	@codesign -s - -f "$(INSTALL_DIR)/moneypenny" 2>/dev/null || true
+	@codesign -s - -f "$(INSTALL_DIR)/hem" 2>/dev/null || true
+	@codesign -s - -f "$(INSTALL_DIR)/qew" 2>/dev/null || true
+endif
+endif
 	@echo "Installed to: $(INSTALL_DIR)"
 	@echo "Make sure $(INSTALL_DIR) is in your PATH"
