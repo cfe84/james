@@ -2433,8 +2433,17 @@ func (e *Executor) ListDirectory(noun string, args []string) *protocol.Response 
 	if pathArg == "" && len(remaining) > 0 {
 		pathArg = remaining[0]
 	}
-	if pathArg == "" {
-		pathArg = "/"
+	// Default to home directory (matching TUI wizard behavior).
+	if pathArg == "" || pathArg == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			pathArg = home
+		} else {
+			pathArg = "/"
+		}
+	} else if len(pathArg) > 1 && pathArg[0] == '~' && pathArg[1] == '/' {
+		if home, err := os.UserHomeDir(); err == nil {
+			pathArg = home + pathArg[1:]
+		}
 	}
 
 	if mpName == "" {
