@@ -175,26 +175,36 @@
 
   // --- Chat ---
 
+  let currentSessionName = '';
+
   async function openChat(sessionId, name, mp) {
     currentSession = sessionId;
+    currentSessionName = name || sessionId.substring(0, 12);
     currentSessionMP = mp || '';
     document.getElementById('dashboard-view').style.display = 'none';
     document.getElementById('chat-view').style.display = 'flex';
-    document.getElementById('chat-title').textContent = name || sessionId.substring(0, 12);
+    document.getElementById('chat-title').textContent = currentSessionName;
     document.getElementById('chat-mp').textContent = currentSessionMP ? '@ ' + currentSessionMP : '';
     document.getElementById('chat-messages').innerHTML = '<div class="loading">Loading...</div>';
     document.getElementById('chat-input').value = '';
     lastChatHTML = '';
     queuedMessages = [];
+    // Update URL hash without triggering hashchange handler.
+    const newHash = '#/session/' + sessionId;
+    if (window.location.hash !== newHash) {
+      history.replaceState(null, '', newHash);
+    }
     await loadChat();
     startChatPoll();
   }
 
   function closeChat() {
     currentSession = null;
+    currentSessionName = '';
     currentSessionMP = '';
     document.getElementById('chat-view').style.display = 'none';
     document.getElementById('dashboard-view').style.display = 'flex';
+    if (window.location.hash) history.replaceState(null, '', window.location.pathname);
     stopChatPoll();
     loadDashboard();
     startDashboardPoll();
@@ -897,11 +907,30 @@
   });
   chatInput.addEventListener('input', () => autoResize(chatInput));
 
+  // --- Routing ---
+
+  function handleRoute() {
+    const hash = window.location.hash;
+    const match = hash.match(/^#\/session\/(.+)$/);
+    if (match) {
+      const sessionId = match[1];
+      // If already viewing this session, do nothing.
+      if (currentSession === sessionId) return;
+      openChat(sessionId);
+    } else if (currentSession) {
+      closeChat();
+    }
+  }
+
+  window.addEventListener('hashchange', handleRoute);
+
   // Initial load.
   Promise.all([loadProjects(), loadDashboard()]).then(() => {
     document.getElementById('conn-status').innerHTML =
       '<span class="status-dot connected"></span>Connected';
     startDashboardPoll();
+    // Check initial hash route after dashboard is loaded.
+    handleRoute();
   }).catch(() => {
     document.getElementById('conn-status').innerHTML =
       '<span class="status-dot disconnected"></span>Disconnected';
