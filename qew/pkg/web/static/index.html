@@ -199,6 +199,28 @@ header h1 span { color: var(--primary); }
 /* Checkbox toggle */
 .toggle-row { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
 .toggle-row input[type="checkbox"] { width: auto; }
+
+/* Chat action buttons */
+.chat-actions { display: flex; gap: 4px; margin-left: 8px; }
+.chat-actions .btn-muted { padding: 4px 10px; font-size: 0.8em; }
+
+/* Diff display */
+.diff-content {
+  font-family: 'SF Mono', 'Menlo', 'Monaco', 'Consolas', monospace;
+  font-size: 0.85em; line-height: 1.5; white-space: pre; overflow: auto;
+  max-height: 60vh; background: var(--surface); border-radius: 6px; padding: 12px;
+}
+.diff-content .diff-add { color: #4ade80; }
+.diff-content .diff-del { color: #f87171; }
+.diff-content .diff-hunk { color: var(--info); }
+.diff-content .diff-header { color: var(--primary); font-weight: 600; }
+
+/* Git result output */
+.git-output {
+  font-family: 'SF Mono', 'Menlo', 'Monaco', 'Consolas', monospace;
+  font-size: 0.85em; white-space: pre-wrap; background: var(--surface);
+  border-radius: 6px; padding: 12px; max-height: 40vh; overflow: auto;
+}
 </style>
 </head>
 <body>
@@ -228,6 +250,12 @@ header h1 span { color: var(--primary); }
       <span class="back" id="chat-back">←</span>
       <h2 id="chat-title">Chat</h2>
       <span class="chat-mp" id="chat-mp"></span>
+      <div class="chat-actions">
+        <button class="btn-muted" id="chat-diff" title="Git diff">Diff</button>
+        <button class="btn-muted" id="chat-commit" title="Git commit">Commit</button>
+        <button class="btn-muted" id="chat-branch" title="Git branch">Branch</button>
+        <button class="btn-muted" id="chat-push" title="Git push">Push</button>
+      </div>
     </div>
     <div class="chat-messages" id="chat-messages"></div>
     <div class="chat-input-row">

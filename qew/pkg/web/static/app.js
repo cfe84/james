@@ -531,6 +531,172 @@
   };
   window._qewWizardBackToPath = showWizardStep2;
 
+  // --- Git Actions ---
+
+  async function showDiff() {
+    if (!currentSession) return;
+    renderWizardModal(`
+      <h3>Git Diff</h3>
+      <div class="diff-content"><div class="loading">Loading diff...</div></div>
+      <div class="modal-actions">
+        <button class="btn-muted" onclick="window._qewCloseWizard()">Close</button>
+        <button class="btn" onclick="window._qewCommitFromDiff()">Commit</button>
+        <button class="btn" onclick="window._qewCommitAndPush()">Commit & Push</button>
+      </div>
+    `);
+
+    try {
+      const resp = await apiCall('diff', 'session', [currentSession]);
+      const diffContainer = document.querySelector('.diff-content');
+      if (resp.status === 'error') {
+        diffContainer.innerHTML = `<span style="color:var(--danger)">${escapeHtml(resp.message)}</span>`;
+        return;
+      }
+      const diffText = resp.data && resp.data.message ? resp.data.message : '';
+      if (!diffText) {
+        diffContainer.innerHTML = '<span style="color:var(--muted)">No changes (working tree clean)</span>';
+        return;
+      }
+      diffContainer.innerHTML = formatDiff(diffText);
+    } catch (e) {
+      document.querySelector('.diff-content').innerHTML =
+        `<span style="color:var(--danger)">Error: ${escapeHtml(e.message)}</span>`;
+    }
+  }
+
+  function formatDiff(text) {
+    return text.split('\n').map(line => {
+      const escaped = escapeHtml(line);
+      if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('diff ')) {
+        return `<span class="diff-header">${escaped}</span>`;
+      }
+      if (line.startsWith('@@')) return `<span class="diff-hunk">${escaped}</span>`;
+      if (line.startsWith('+')) return `<span class="diff-add">${escaped}</span>`;
+      if (line.startsWith('-')) return `<span class="diff-del">${escaped}</span>`;
+      return escaped;
+    }).join('\n');
+  }
+
+  let gitPushAfterCommit = false;
+
+  function showCommitModal(pushAfter) {
+    gitPushAfterCommit = !!pushAfter;
+    renderWizardModal(`
+      <h3>${gitPushAfterCommit ? 'Commit & Push' : 'Git Commit'}</h3>
+      <label for="git-commit-msg">Commit message</label>
+      <textarea id="git-commit-msg" rows="3" placeholder="Describe your changes..."></textarea>
+      <div class="modal-actions">
+        <button class="btn-muted" onclick="window._qewCloseWizard()">Cancel</button>
+        <button class="btn" id="git-commit-submit">${gitPushAfterCommit ? 'Commit & Push' : 'Commit'}</button>
+      </div>
+    `);
+    document.getElementById('git-commit-msg').focus();
+    document.getElementById('git-commit-submit').addEventListener('click', submitCommit);
+  }
+
+  async function submitCommit() {
+    const msg = document.getElementById('git-commit-msg').value.trim();
+    if (!msg) { alert('Commit message is required'); return; }
+    if (!currentSession) return;
+
+    const btn = document.getElementById('git-commit-submit');
+    btn.disabled = true;
+    btn.textContent = 'Committing...';
+
+    try {
+      const resp = await apiCall('commit', 'session', [currentSession, '-m', msg]);
+      if (resp.status === 'error') {
+        alert('Commit error: ' + resp.message);
+        btn.disabled = false;
+        btn.textContent = gitPushAfterCommit ? 'Commit & Push' : 'Commit';
+        return;
+      }
+      if (gitPushAfterCommit) {
+        btn.textContent = 'Pushing...';
+        const pushResp = await apiCall('push', 'session', [currentSession]);
+        if (pushResp.status === 'error') {
+          showGitResult('Committed but push failed: ' + pushResp.message);
+          return;
+        }
+        const pushOutput = pushResp.data && pushResp.data.message ? pushResp.data.message : 'Push complete';
+        const commitOutput = resp.data && resp.data.message ? resp.data.message : '';
+        showGitResult(commitOutput + '\n' + pushOutput);
+      } else {
+        showGitResult(resp.data && resp.data.message ? resp.data.message : 'Committed');
+      }
+    } catch (e) {
+      alert('Error: ' + e.message);
+      btn.disabled = false;
+      btn.textContent = gitPushAfterCommit ? 'Commit & Push' : 'Commit';
+    }
+  }
+
+  function showBranchModal() {
+    if (!currentSession) return;
+    renderWizardModal(`
+      <h3>Git Branch</h3>
+      <label for="git-branch-name">Branch name</label>
+      <input id="git-branch-name" type="text" placeholder="feature/my-branch">
+      <div class="modal-actions">
+        <button class="btn-muted" onclick="window._qewCloseWizard()">Cancel</button>
+        <button class="btn" id="git-branch-submit">Create & Switch</button>
+      </div>
+    `);
+    document.getElementById('git-branch-name').focus();
+    document.getElementById('git-branch-submit').addEventListener('click', async () => {
+      const name = document.getElementById('git-branch-name').value.trim();
+      if (!name) { alert('Branch name is required'); return; }
+      const btn = document.getElementById('git-branch-submit');
+      btn.disabled = true;
+      btn.textContent = 'Creating...';
+      try {
+        const resp = await apiCall('branch', 'session', [currentSession, '--name', name]);
+        if (resp.status === 'error') {
+          alert('Branch error: ' + resp.message);
+          btn.disabled = false;
+          btn.textContent = 'Create & Switch';
+          return;
+        }
+        showGitResult(resp.data && resp.data.message ? resp.data.message : 'Branch created');
+      } catch (e) {
+        alert('Error: ' + e.message);
+        btn.disabled = false;
+        btn.textContent = 'Create & Switch';
+      }
+    });
+  }
+
+  async function gitPush() {
+    if (!currentSession) return;
+    renderWizardModal(`
+      <h3>Git Push</h3>
+      <div class="loading">Pushing...</div>
+    `);
+    try {
+      const resp = await apiCall('push', 'session', [currentSession]);
+      if (resp.status === 'error') {
+        showGitResult('Push failed: ' + resp.message);
+        return;
+      }
+      showGitResult(resp.data && resp.data.message ? resp.data.message : 'Push complete');
+    } catch (e) {
+      showGitResult('Error: ' + e.message);
+    }
+  }
+
+  function showGitResult(output) {
+    renderWizardModal(`
+      <h3>Result</h3>
+      <div class="git-output">${escapeHtml(output)}</div>
+      <div class="modal-actions">
+        <button class="btn" onclick="window._qewCloseWizard()">OK</button>
+      </div>
+    `);
+  }
+
+  window._qewCommitFromDiff = function() { showCommitModal(false); };
+  window._qewCommitAndPush = function() { showCommitModal(true); };
+
   // --- Polling ---
 
   function startDashboardPoll() {
@@ -659,6 +825,10 @@
   document.getElementById('chat-send').addEventListener('click', sendMessage);
   document.getElementById('sound-toggle').addEventListener('click', toggleSound);
   document.getElementById('new-session-btn').addEventListener('click', openCreateWizard);
+  document.getElementById('chat-diff').addEventListener('click', showDiff);
+  document.getElementById('chat-commit').addEventListener('click', () => showCommitModal(false));
+  document.getElementById('chat-branch').addEventListener('click', showBranchModal);
+  document.getElementById('chat-push').addEventListener('click', gitPush);
   document.getElementById('project-filter').addEventListener('change', (e) => {
     projectFilter = e.target.value;
     loadDashboard();
