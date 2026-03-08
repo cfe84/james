@@ -226,7 +226,7 @@ func newCreateTemplateModel(c *client, projectName string) createTemplateModel {
 			{label: "Agent", flag: "--agent", value: "claude"},
 			{label: "Path", flag: "--path", value: ""},
 			{label: "System Prompt", flag: "--system-prompt", value: ""},
-			{label: "Yolo", flag: "--yolo", isBool: true, value: "true"},
+			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
 		},
 	}
 }

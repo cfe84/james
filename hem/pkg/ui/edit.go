@@ -41,7 +41,7 @@ func newEditModel(c *client, sessionID string) editModel {
 			{label: "Project", flag: "--project", value: ""},
 			{label: "System Prompt", flag: "--system-prompt", value: ""},
 			{label: "Path", flag: "--path", value: ""},
-			{label: "Yolo", flag: "--yolo", isBool: true, value: "true"},
+			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
 		},
 	}
 }

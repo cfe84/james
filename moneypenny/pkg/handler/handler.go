@@ -116,8 +116,7 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrAgentNotFound, fmt.Sprintf("agent binary not found: %s", data.Agent))
 	}
 
-	// Append schedule instructions to system prompt.
-	systemPrompt := data.SystemPrompt + scheduleSystemPromptSuffix
+	systemPrompt := data.SystemPrompt
 
 	// Create session in store.
 	sess := &store.Session{
@@ -616,8 +615,16 @@ func (h *Handler) listDirectory(_ context.Context, cmd *envelope.Command) *envel
 	}
 
 	path := data.Path
-	if path == "" {
-		path = "/"
+	if path == "" || path == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			path = home
+		} else {
+			path = "/"
+		}
+	} else if len(path) > 1 && path[0] == '~' && path[1] == '/' {
+		if home, err := os.UserHomeDir(); err == nil {
+			path = home + path[1:]
+		}
 	}
 
 	dirEntries, err := os.ReadDir(path)

@@ -36,7 +36,8 @@ func newCreateModel(c *client) createModel {
 			{label: "Agent", flag: "--agent", value: ""},
 			{label: "System Prompt", flag: "--system-prompt", value: ""},
 			{label: "Path", flag: "--path", value: ""},
-			{label: "Yolo", flag: "--yolo", isBool: true, value: "true"},
+			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
+			{label: "Gadgets (James tooling)", flag: "--gadgets", isBool: true, value: "true"},
 		},
 	}
 }
@@ -144,7 +145,7 @@ func (m createModel) Update(msg tea.Msg) (createModel, tea.Cmd) {
 func (m createModel) View() string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render(" New Session "))
+	b.WriteString(titleStyle.Render(" New Agent "))
 	b.WriteString("\n\n")
 
 	for i, f := range m.fields {

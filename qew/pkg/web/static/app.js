@@ -280,7 +280,7 @@
     });
 
     for (const turn of serverTurns) {
-      const roleLabel = turn.role === 'user' ? '🧑‍💻 you' : (turn.role === 'assistant' ? '🤖 assistant' : '⚙ system');
+      const roleLabel = turn.role === 'user' ? '🧑‍💻 you' : (turn.role === 'assistant' ? '🕴️ agent' : '⚙ system');
       const roleClass = turn.role;
       const content = turn.content || '(empty)';
       html += `
@@ -299,7 +299,9 @@
     }
     // Working indicator.
     if (currentSessionStatus === 'working') {
-      html += '<div class="msg working-indicator">🤖 working...</div>';
+      const spyVerbs = ['Infiltrating...', 'Surveilling...', 'Decrypting...', 'On a mission...', 'Going undercover...', 'Acquiring intel...', 'Intercepting...', 'Extracting...'];
+      const spyVerb = spyVerbs[Math.floor(Math.random() * spyVerbs.length)];
+      html += `<div class="msg working-indicator">🕴️ ${spyVerb}</div>`;
     }
     // Pending schedules.
     if (schedules && schedules.length > 0) {
@@ -340,7 +342,7 @@
     }
   }
 
-  // --- Create Session Wizard ---
+  // --- Deploy Agent Wizard ---
 
   let wizardState = { step: 1, moneypennies: [], selectedMP: '', currentPath: '', projects: [] };
 
@@ -382,7 +384,7 @@
     }
 
     renderWizardModal(`
-      <h3>New Session</h3>
+      <h3>New Agent</h3>
       <div class="step-label">Step 1 of 3 — Select Moneypenny</div>
       ${wizardState.moneypennies.map(m => `
         <div class="dir-entry${m.name === wizardState.selectedMP ? ' selected' : ''}" data-mp="${escapeAttr(m.name)}">
@@ -412,7 +414,7 @@
 
   async function renderPathBrowser() {
     renderWizardModal(`
-      <h3>New Session</h3>
+      <h3>New Agent</h3>
       <div class="step-label">Step 2 of 3 — Select Path</div>
       <div class="dir-current">📂 ${escapeHtml(wizardState.currentPath)}</div>
       <div class="dir-browser" id="wizard-dirs"><div class="loading">Loading...</div></div>
@@ -461,7 +463,7 @@
       .map(p => `<option value="${escapeAttr(p.name)}">${escapeHtml(p.name)}</option>`).join('');
 
     renderWizardModal(`
-      <h3>New Session</h3>
+      <h3>New Agent</h3>
       <div class="step-label">Step 3 of 3 — Session Details</div>
       <div style="font-size:0.85em;color:var(--muted);margin-bottom:8px">
         📡 ${escapeHtml(wizardState.selectedMP)} &nbsp; 📂 ${escapeHtml(wizardState.currentPath)}
@@ -478,11 +480,15 @@
       <textarea id="wiz-sysprompt" rows="2" placeholder=""></textarea>
       <div class="toggle-row">
         <input type="checkbox" id="wiz-yolo">
-        <label for="wiz-yolo" style="margin:0;color:var(--text)">Yolo mode (skip permission prompts)</label>
+        <label for="wiz-yolo" style="margin:0;color:var(--text)">License to Kill (skip permission prompts)</label>
+      </div>
+      <div class="toggle-row">
+        <input type="checkbox" id="wiz-gadgets" checked>
+        <label for="wiz-gadgets" style="margin:0;color:var(--text)">Gadgets (include James tooling in system prompt)</label>
       </div>
       <div class="modal-actions">
         <button class="btn-muted" onclick="window._qewWizardBackToPath()">Back</button>
-        <button class="btn" id="wiz-submit">Create Session</button>
+        <button class="btn" id="wiz-submit">Deploy Agent</button>
       </div>
     `);
 
@@ -511,6 +517,7 @@
     const sysprompt = document.getElementById('wiz-sysprompt').value.trim();
     if (sysprompt) args.push('--system-prompt', sysprompt);
     if (document.getElementById('wiz-yolo').checked) args.push('--yolo');
+    if (!document.getElementById('wiz-gadgets').checked) args.push('--gadgets=false');
     args.push(prompt);
 
     document.getElementById('wiz-submit').disabled = true;
@@ -521,7 +528,7 @@
       if (resp.status === 'error') {
         alert('Error: ' + resp.message);
         document.getElementById('wiz-submit').disabled = false;
-        document.getElementById('wiz-submit').textContent = 'Create Session';
+        document.getElementById('wiz-submit').textContent = 'Deploy Agent';
         return;
       }
       closeWizard();
@@ -529,7 +536,7 @@
     } catch (e) {
       alert('Error: ' + e.message);
       document.getElementById('wiz-submit').disabled = false;
-      document.getElementById('wiz-submit').textContent = 'Create Session';
+      document.getElementById('wiz-submit').textContent = 'Deploy Agent';
     }
   }
 
@@ -779,7 +786,7 @@
         <textarea id="es-sysprompt" rows="2">${escapeHtml(s.system_prompt || '')}</textarea>
         <div class="toggle-row">
           <input type="checkbox" id="es-yolo" ${s.yolo ? 'checked' : ''}>
-          <label for="es-yolo" style="margin:0;color:var(--text)">Yolo mode</label>
+          <label for="es-yolo" style="margin:0;color:var(--text)">License to Kill</label>
         </div>
         <div class="modal-actions">
           <button class="btn-muted" onclick="window._qewCloseWizard()">Cancel</button>

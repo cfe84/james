@@ -83,7 +83,8 @@ func newWizardModel(c *client) wizardModel {
 			{label: "Project", flag: "--project", value: ""},
 			{label: "Agent", flag: "--agent", value: ""},
 			{label: "System Prompt", flag: "--system-prompt", value: ""},
-			{label: "Yolo", flag: "--yolo", isBool: true, value: "true"},
+			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
+			{label: "Gadgets (James tooling)", flag: "--gadgets", isBool: true, value: "true"},
 		},
 	}
 }
@@ -452,7 +453,7 @@ func (m wizardModel) View() string {
 			stepParts = append(stepParts, lipgloss.NewStyle().Foreground(colorMuted).Render(n))
 		}
 	}
-	title := " New Session "
+	title := " New Agent "
 	if m.forProject {
 		title = " New Project "
 	}

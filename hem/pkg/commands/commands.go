@@ -19,6 +19,13 @@ import (
 	"james/hem/pkg/transport"
 )
 
+const gadgetsSystemPrompt = `
+You can schedule a follow-up task by including a tag in your response:
+<schedule at="2026-03-07T15:00:00Z">Your follow-up prompt here</schedule>
+The "at" attribute accepts RFC3339 timestamps or relative durations like "+2h", "+30m".
+When you schedule a follow-up, the system will automatically send that prompt to you at the specified time.
+Use this to set reminders, check on long-running processes, or break work into timed phases.`
+
 // Executor runs commands using the store and transport layer.
 type Executor struct {
 	store             *store.Store
@@ -943,7 +950,7 @@ func (e *Executor) DisableSetting(name string) *protocol.Response {
 
 func (e *Executor) CreateSession(args []string) *protocol.Response {
 	var mpName, sessionName, systemPrompt, pathArg, agentName, projectNameOrID string
-	var yolo, async bool
+	var yolo, async, gadgets bool
 
 	remaining, err := parseFlagsFromArgs("create-session", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&mpName, "m", "", "moneypenny name")
@@ -952,6 +959,7 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 		fs.StringVar(&sessionName, "name", "", "session name")
 		fs.StringVar(&systemPrompt, "system-prompt", "", "system prompt")
 		fs.BoolVar(&yolo, "yolo", false, "enable yolo mode")
+		fs.BoolVar(&gadgets, "gadgets", true, "include James tooling in system prompt")
 		fs.StringVar(&pathArg, "path", "", "working directory path")
 		fs.BoolVar(&async, "async", false, "return immediately without waiting for response")
 		fs.StringVar(&projectNameOrID, "project", "", "project name or ID")
@@ -1037,6 +1045,11 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 		if len(sessionName) > 40 {
 			sessionName = sessionName[:40]
 		}
+	}
+
+	// Append gadgets (James tooling instructions) to system prompt when enabled.
+	if gadgets {
+		systemPrompt += gadgetsSystemPrompt
 	}
 
 	cmdData := map[string]interface{}{
@@ -2186,6 +2199,9 @@ func (e *Executor) UseTemplate(args []string) *protocol.Response {
 	sessionID := generateSessionID()
 	sessionName := t.Name
 
+	// Templates always include gadgets (James tooling).
+	systemPrompt += gadgetsSystemPrompt
+
 	cmdData := map[string]interface{}{
 		"agent":      agent,
 		"session_id": sessionID,
@@ -2433,17 +2449,8 @@ func (e *Executor) ListDirectory(noun string, args []string) *protocol.Response 
 	if pathArg == "" && len(remaining) > 0 {
 		pathArg = remaining[0]
 	}
-	// Default to home directory (matching TUI wizard behavior).
-	if pathArg == "" || pathArg == "~" {
-		if home, err := os.UserHomeDir(); err == nil {
-			pathArg = home
-		} else {
-			pathArg = "/"
-		}
-	} else if len(pathArg) > 1 && pathArg[0] == '~' && pathArg[1] == '/' {
-		if home, err := os.UserHomeDir(); err == nil {
-			pathArg = home + pathArg[1:]
-		}
+	if pathArg == "" {
+		pathArg = "/"
 	}
 
 	if mpName == "" {

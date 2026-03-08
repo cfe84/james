@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"math/rand"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -475,7 +476,7 @@ func (m chatModel) View() string {
 		case "system":
 			prefix = systemMsgStyle.Render("⚙ system")
 		default:
-			prefix = assistantMsgStyle.Render("🤖 assistant")
+			prefix = assistantMsgStyle.Render("🕴️ agent")
 		}
 		if turn.CreatedAt != "" {
 			prefix += " " + lipgloss.NewStyle().Foreground(colorMuted).Render(turn.CreatedAt)
@@ -513,11 +514,10 @@ func (m chatModel) View() string {
 		msgLines = append(msgLines, "")
 	}
 
-	if m.sending {
-		msgLines = append(msgLines, assistantMsgStyle.Render("🤖 thinking..."))
-		msgLines = append(msgLines, "")
-	} else if m.sessionStatus == "working" {
-		msgLines = append(msgLines, assistantMsgStyle.Render("🤖 working..."))
+	if m.sending || m.sessionStatus == "working" {
+		spyVerbs := []string{"Infiltrating...", "Surveilling...", "Decrypting...", "On a mission...", "Going undercover...", "Acquiring intel...", "Intercepting...", "Extracting..."}
+		verb := spyVerbs[rand.Intn(len(spyVerbs))]
+		msgLines = append(msgLines, assistantMsgStyle.Render("🕴️ "+verb))
 		msgLines = append(msgLines, "")
 	}
 
