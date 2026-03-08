@@ -16,6 +16,7 @@
   let soundEnabled = true;
   let projectFilter = ''; // current project filter
   let projectsCache = []; // cached project list
+  let chatInputCache = {}; // sessionId → draft text
 
   // --- API ---
 
@@ -182,11 +183,15 @@
     currentSessionName = name || sessionId.substring(0, 12);
     currentSessionMP = mp || '';
     document.getElementById('dashboard-view').style.display = 'none';
+    document.getElementById('moneypennies-view').style.display = 'none';
+    document.getElementById('projects-view').style.display = 'none';
     document.getElementById('chat-view').style.display = 'flex';
     document.getElementById('chat-title').textContent = currentSessionName;
     document.getElementById('chat-mp').textContent = currentSessionMP ? '@ ' + currentSessionMP : '';
     document.getElementById('chat-messages').innerHTML = '<div class="loading">Loading...</div>';
-    document.getElementById('chat-input').value = '';
+    const chatInput = document.getElementById('chat-input');
+    chatInput.value = chatInputCache[sessionId] || '';
+    autoResize(chatInput);
     lastChatHTML = '';
     queuedMessages = [];
     // Update URL hash without triggering hashchange handler.
@@ -199,6 +204,12 @@
   }
 
   function closeChat() {
+    // Cache any draft text.
+    if (currentSession) {
+      const draft = document.getElementById('chat-input').value;
+      if (draft) chatInputCache[currentSession] = draft;
+      else delete chatInputCache[currentSession];
+    }
     currentSession = null;
     currentSessionName = '';
     currentSessionMP = '';
@@ -313,6 +324,7 @@
 
     input.value = '';
     input.style.height = 'auto';
+    delete chatInputCache[currentSession];
     document.getElementById('chat-send').disabled = true;
 
     try {
@@ -736,6 +748,450 @@
   window._qewCommitFromDiff = function() { showCommitModal(false); };
   window._qewCommitAndPush = function() { showCommitModal(true); };
 
+  // --- Session Edit & Delete ---
+
+  async function showEditSessionModal() {
+    if (!currentSession) return;
+    // Fetch current session details.
+    renderWizardModal(`
+      <h3>Edit Session</h3>
+      <div class="loading">Loading...</div>
+    `);
+    try {
+      const resp = await apiCall('show', 'session', [currentSession]);
+      if (resp.status === 'error') {
+        renderWizardModal(`<h3>Edit Session</h3><div class="empty-state">Error: ${escapeHtml(resp.message)}</div>
+          <div class="modal-actions"><button class="btn-muted" onclick="window._qewCloseWizard()">Close</button></div>`);
+        return;
+      }
+      const s = resp.data || {};
+      const projectOpts = projectsCache.filter(p => p.status !== 'done')
+        .map(p => `<option value="${escapeAttr(p.name)}"${p.name === (s.project || '') ? ' selected' : ''}>${escapeHtml(p.name)}</option>`).join('');
+
+      renderWizardModal(`
+        <h3>Edit Session</h3>
+        <label for="es-name">Name</label>
+        <input id="es-name" type="text" value="${escapeAttr(s.name || '')}">
+        <label for="es-project">Project</label>
+        <select id="es-project"><option value="">(none)</option>${projectOpts}</select>
+        <label for="es-sysprompt">System Prompt</label>
+        <textarea id="es-sysprompt" rows="2">${escapeHtml(s.system_prompt || '')}</textarea>
+        <div class="toggle-row">
+          <input type="checkbox" id="es-yolo" ${s.yolo ? 'checked' : ''}>
+          <label for="es-yolo" style="margin:0;color:var(--text)">Yolo mode</label>
+        </div>
+        <div class="modal-actions">
+          <button class="btn-muted" onclick="window._qewCloseWizard()">Cancel</button>
+          <button class="btn" id="es-submit">Save</button>
+        </div>
+      `);
+
+      document.getElementById('es-submit').addEventListener('click', async () => {
+        const args = [currentSession];
+        const name = document.getElementById('es-name').value.trim();
+        if (name && name !== (s.name || '')) args.push('--name', name);
+        const project = document.getElementById('es-project').value;
+        if (project !== (s.project || '')) args.push('--project', project);
+        const sysprompt = document.getElementById('es-sysprompt').value.trim();
+        if (sysprompt !== (s.system_prompt || '')) args.push('--system-prompt', sysprompt);
+        const yolo = document.getElementById('es-yolo').checked;
+        if (yolo !== !!s.yolo) args.push('--yolo', yolo ? 'true' : 'false');
+
+        if (args.length <= 1) { closeWizard(); return; }
+
+        const btn = document.getElementById('es-submit');
+        btn.disabled = true;
+        btn.textContent = 'Saving...';
+        try {
+          const resp = await apiCall('update', 'session', args);
+          if (resp.status === 'error') {
+            alert('Error: ' + resp.message);
+            btn.disabled = false;
+            btn.textContent = 'Save';
+            return;
+          }
+          closeWizard();
+          // Update displayed name if changed.
+          if (name && name !== currentSessionName) {
+            currentSessionName = name;
+            document.getElementById('chat-title').textContent = name;
+          }
+        } catch (e) {
+          alert('Error: ' + e.message);
+          btn.disabled = false;
+          btn.textContent = 'Save';
+        }
+      });
+    } catch (e) {
+      renderWizardModal(`<h3>Edit Session</h3><div class="empty-state">Error: ${escapeHtml(e.message)}</div>
+        <div class="modal-actions"><button class="btn-muted" onclick="window._qewCloseWizard()">Close</button></div>`);
+    }
+  }
+
+  async function deleteSession() {
+    if (!currentSession) return;
+    if (!confirm('Delete session "' + currentSessionName + '"? This cannot be undone.')) return;
+    try {
+      const resp = await apiCall('delete', 'session', [currentSession]);
+      if (resp.status === 'error') {
+        alert('Delete error: ' + resp.message);
+        return;
+      }
+      closeChat();
+    } catch (e) {
+      alert('Error: ' + e.message);
+    }
+  }
+
+  // --- Moneypennies Management ---
+
+  function showMoneypenniesView() {
+    document.getElementById('dashboard-view').style.display = 'none';
+    document.getElementById('moneypennies-view').style.display = 'flex';
+    stopDashboardPoll();
+    loadMoneypennies();
+  }
+
+  function hideMoneypenniesView() {
+    document.getElementById('moneypennies-view').style.display = 'none';
+    document.getElementById('dashboard-view').style.display = 'flex';
+    loadDashboard();
+    startDashboardPoll();
+  }
+
+  async function loadMoneypennies() {
+    const container = document.getElementById('mp-content');
+    container.innerHTML = '<div class="loading">Loading...</div>';
+    try {
+      const resp = await apiCall('list', 'moneypenny', []);
+      if (resp.status === 'error') {
+        container.innerHTML = `<div class="empty-state">Error: ${escapeHtml(resp.message)}</div>`;
+        return;
+      }
+      const rows = (resp.data && resp.data.rows) || [];
+      if (rows.length === 0) {
+        container.innerHTML = '<div class="empty-state">No moneypennies registered</div>';
+        return;
+      }
+      let html = '';
+      for (const r of rows) {
+        const name = r[0], type = r[1], addr = r[2], isDef = r[3] === '*';
+        html += `
+          <div class="mgmt-row">
+            <span class="mgmt-name">${escapeHtml(name)}</span>
+            <span class="mgmt-detail">${escapeHtml(type)}${addr ? ' — ' + escapeHtml(addr) : ''}</span>
+            ${isDef ? '<span class="mgmt-badge default">default</span>' : ''}
+            <span class="mgmt-actions">
+              <button data-mp="${escapeAttr(name)}" data-action="ping">Ping</button>
+              ${!isDef ? `<button data-mp="${escapeAttr(name)}" data-action="set-default">Set Default</button>` : ''}
+              <button data-mp="${escapeAttr(name)}" data-action="delete" class="danger">Delete</button>
+            </span>
+          </div>`;
+      }
+      container.innerHTML = html;
+      container.querySelectorAll('.mgmt-actions button').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const mp = btn.dataset.mp;
+          const action = btn.dataset.action;
+          if (action === 'ping') pingMoneypenny(mp);
+          else if (action === 'set-default') setDefaultMoneypenny(mp);
+          else if (action === 'delete') deleteMoneypenny(mp);
+        });
+      });
+    } catch (e) {
+      container.innerHTML = `<div class="empty-state">Error: ${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  async function pingMoneypenny(name) {
+    try {
+      const resp = await apiCall('ping', 'moneypenny', ['-n', name]);
+      if (resp.status === 'error') alert('Ping failed: ' + resp.message);
+      else alert('Ping OK: ' + (resp.data && resp.data.message ? resp.data.message : 'success'));
+    } catch (e) { alert('Error: ' + e.message); }
+  }
+
+  async function setDefaultMoneypenny(name) {
+    try {
+      const resp = await apiCall('set-default', 'moneypenny', ['-n', name]);
+      if (resp.status === 'error') alert('Error: ' + resp.message);
+      else loadMoneypennies();
+    } catch (e) { alert('Error: ' + e.message); }
+  }
+
+  async function deleteMoneypenny(name) {
+    if (!confirm('Delete moneypenny "' + name + '"? This will also remove all tracked sessions for it.')) return;
+    try {
+      const resp = await apiCall('delete', 'moneypenny', ['-n', name]);
+      if (resp.status === 'error') alert('Error: ' + resp.message);
+      else loadMoneypennies();
+    } catch (e) { alert('Error: ' + e.message); }
+  }
+
+  function showAddMoneypennyModal() {
+    renderWizardModal(`
+      <h3>Add Moneypenny</h3>
+      <label for="mp-name">Name *</label>
+      <input id="mp-name" type="text" placeholder="my-moneypenny">
+      <label for="mp-type">Type</label>
+      <select id="mp-type">
+        <option value="local">Local (default FIFO)</option>
+        <option value="fifo">FIFO (custom path)</option>
+        <option value="mi6">MI6 (remote)</option>
+      </select>
+      <div id="mp-fifo-fields" style="display:none">
+        <label for="mp-fifo-folder">FIFO Folder</label>
+        <input id="mp-fifo-folder" type="text" placeholder="~/.config/james/moneypenny/fifo">
+      </div>
+      <div id="mp-mi6-fields" style="display:none">
+        <label for="mp-mi6-addr">MI6 Address</label>
+        <input id="mp-mi6-addr" type="text" placeholder="host:port/session_id">
+      </div>
+      <div class="modal-actions">
+        <button class="btn-muted" onclick="window._qewCloseWizard()">Cancel</button>
+        <button class="btn" id="mp-submit">Add</button>
+      </div>
+    `);
+
+    const typeSelect = document.getElementById('mp-type');
+    typeSelect.addEventListener('change', () => {
+      document.getElementById('mp-fifo-fields').style.display = typeSelect.value === 'fifo' ? 'block' : 'none';
+      document.getElementById('mp-mi6-fields').style.display = typeSelect.value === 'mi6' ? 'block' : 'none';
+    });
+
+    document.getElementById('mp-submit').addEventListener('click', async () => {
+      const name = document.getElementById('mp-name').value.trim();
+      if (!name) { alert('Name is required'); return; }
+      const type = typeSelect.value;
+      const args = ['-n', name];
+      if (type === 'local') args.push('--local');
+      else if (type === 'fifo') {
+        const folder = document.getElementById('mp-fifo-folder').value.trim();
+        if (!folder) { alert('FIFO folder is required'); return; }
+        args.push('--fifo-folder', folder);
+      } else if (type === 'mi6') {
+        const addr = document.getElementById('mp-mi6-addr').value.trim();
+        if (!addr) { alert('MI6 address is required'); return; }
+        args.push('--mi6', addr);
+      }
+
+      const btn = document.getElementById('mp-submit');
+      btn.disabled = true;
+      btn.textContent = 'Adding...';
+      try {
+        const resp = await apiCall('add', 'moneypenny', args);
+        if (resp.status === 'error') {
+          alert('Error: ' + resp.message);
+          btn.disabled = false;
+          btn.textContent = 'Add';
+          return;
+        }
+        closeWizard();
+        loadMoneypennies();
+      } catch (e) {
+        alert('Error: ' + e.message);
+        btn.disabled = false;
+        btn.textContent = 'Add';
+      }
+    });
+  }
+
+  // --- Projects Management ---
+
+  function showProjectsView() {
+    document.getElementById('dashboard-view').style.display = 'none';
+    document.getElementById('projects-view').style.display = 'flex';
+    stopDashboardPoll();
+    loadProjectsList();
+  }
+
+  function hideProjectsView() {
+    document.getElementById('projects-view').style.display = 'none';
+    document.getElementById('dashboard-view').style.display = 'flex';
+    loadProjects(); // refresh cache
+    loadDashboard();
+    startDashboardPoll();
+  }
+
+  async function loadProjectsList() {
+    const container = document.getElementById('proj-content');
+    container.innerHTML = '<div class="loading">Loading...</div>';
+    try {
+      const resp = await apiCall('list', 'project', []);
+      if (resp.status === 'error') {
+        container.innerHTML = `<div class="empty-state">Error: ${escapeHtml(resp.message)}</div>`;
+        return;
+      }
+      const rows = (resp.data && resp.data.rows) || [];
+      if (rows.length === 0) {
+        container.innerHTML = '<div class="empty-state">No projects</div>';
+        return;
+      }
+      let html = '';
+      for (const r of rows) {
+        const id = r[0], name = r[1], status = r[2], mp = r[3], agent = r[4], paths = r[5];
+        html += `
+          <div class="mgmt-row" data-project-name="${escapeAttr(name)}" style="cursor:pointer">
+            <span class="mgmt-name">${escapeHtml(name)}</span>
+            <span class="mgmt-badge ${status}">${escapeHtml(status)}</span>
+            ${mp ? `<span class="mgmt-detail">${escapeHtml(mp)}</span>` : ''}
+            ${agent ? `<span class="mgmt-detail">${escapeHtml(agent)}</span>` : ''}
+            <span class="mgmt-actions">
+              <button data-proj-name="${escapeAttr(name)}" data-action="edit">Edit</button>
+              <button data-proj-name="${escapeAttr(name)}" data-action="delete" class="danger">Delete</button>
+            </span>
+          </div>`;
+      }
+      container.innerHTML = html;
+      // Click row to filter dashboard by project.
+      container.querySelectorAll('.mgmt-row').forEach(row => {
+        row.addEventListener('click', (e) => {
+          if (e.target.closest('.mgmt-actions')) return;
+          const projName = row.dataset.projectName;
+          projectFilter = projName;
+          document.getElementById('project-filter').value = projName;
+          hideProjectsView();
+        });
+      });
+      container.querySelectorAll('.mgmt-actions button').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const projName = btn.dataset.projName;
+          const action = btn.dataset.action;
+          if (action === 'edit') showEditProjectModal(projName);
+          else if (action === 'delete') deleteProject(projName);
+        });
+      });
+    } catch (e) {
+      container.innerHTML = `<div class="empty-state">Error: ${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  async function deleteProject(name) {
+    if (!confirm('Delete project "' + name + '"?')) return;
+    try {
+      const resp = await apiCall('delete', 'project', [name]);
+      if (resp.status === 'error') alert('Error: ' + resp.message);
+      else loadProjectsList();
+    } catch (e) { alert('Error: ' + e.message); }
+  }
+
+  function showCreateProjectModal() {
+    renderWizardModal(`
+      <h3>New Project</h3>
+      <label for="proj-name">Name *</label>
+      <input id="proj-name" type="text" placeholder="my-project">
+      <label for="proj-mp">Default Moneypenny</label>
+      <input id="proj-mp" type="text" placeholder="(optional)">
+      <label for="proj-path">Path</label>
+      <input id="proj-path" type="text" placeholder="(optional)">
+      <label for="proj-agent">Agent</label>
+      <input id="proj-agent" type="text" value="claude" placeholder="claude">
+      <label for="proj-sysprompt">System Prompt</label>
+      <textarea id="proj-sysprompt" rows="2" placeholder="(optional)"></textarea>
+      <div class="modal-actions">
+        <button class="btn-muted" onclick="window._qewCloseWizard()">Cancel</button>
+        <button class="btn" id="proj-submit">Create</button>
+      </div>
+    `);
+
+    document.getElementById('proj-submit').addEventListener('click', async () => {
+      const name = document.getElementById('proj-name').value.trim();
+      if (!name) { alert('Name is required'); return; }
+      const args = ['--name', name];
+      const mp = document.getElementById('proj-mp').value.trim();
+      if (mp) args.push('-m', mp);
+      const path = document.getElementById('proj-path').value.trim();
+      if (path) args.push('--path', path);
+      const agent = document.getElementById('proj-agent').value.trim();
+      if (agent) args.push('--agent', agent);
+      const sysprompt = document.getElementById('proj-sysprompt').value.trim();
+      if (sysprompt) args.push('--system-prompt', sysprompt);
+
+      const btn = document.getElementById('proj-submit');
+      btn.disabled = true;
+      btn.textContent = 'Creating...';
+      try {
+        const resp = await apiCall('create', 'project', args);
+        if (resp.status === 'error') {
+          alert('Error: ' + resp.message);
+          btn.disabled = false;
+          btn.textContent = 'Create';
+          return;
+        }
+        closeWizard();
+        loadProjectsList();
+      } catch (e) {
+        alert('Error: ' + e.message);
+        btn.disabled = false;
+        btn.textContent = 'Create';
+      }
+    });
+  }
+
+  async function showEditProjectModal(name) {
+    // Fetch current project data from cache.
+    const proj = projectsCache.find(p => p.name === name);
+    renderWizardModal(`
+      <h3>Edit Project</h3>
+      <label for="eproj-name">Name</label>
+      <input id="eproj-name" type="text" value="${escapeAttr(proj ? proj.name : name)}">
+      <label for="eproj-status">Status</label>
+      <select id="eproj-status">
+        <option value="active"${proj && proj.status === 'active' ? ' selected' : ''}>Active</option>
+        <option value="paused"${proj && proj.status === 'paused' ? ' selected' : ''}>Paused</option>
+        <option value="done"${proj && proj.status === 'done' ? ' selected' : ''}>Done</option>
+      </select>
+      <label for="eproj-mp">Default Moneypenny</label>
+      <input id="eproj-mp" type="text" value="${escapeAttr(proj ? proj.moneypenny : '')}">
+      <label for="eproj-agent">Agent</label>
+      <input id="eproj-agent" type="text" value="${escapeAttr(proj ? proj.agent : '')}">
+      <label for="eproj-path">Path</label>
+      <input id="eproj-path" type="text" value="${escapeAttr(proj ? proj.paths : '')}">
+      <div class="modal-actions">
+        <button class="btn-muted" onclick="window._qewCloseWizard()">Cancel</button>
+        <button class="btn" id="eproj-submit">Save</button>
+      </div>
+    `);
+
+    document.getElementById('eproj-submit').addEventListener('click', async () => {
+      const args = [name];
+      const newName = document.getElementById('eproj-name').value.trim();
+      if (newName && newName !== name) args.push('--name', newName);
+      const status = document.getElementById('eproj-status').value;
+      if (proj && status !== proj.status) args.push('--status', status);
+      const mp = document.getElementById('eproj-mp').value.trim();
+      if (proj && mp !== proj.moneypenny) args.push('-m', mp);
+      const agent = document.getElementById('eproj-agent').value.trim();
+      if (proj && agent !== proj.agent) args.push('--agent', agent);
+      const path = document.getElementById('eproj-path').value.trim();
+      if (proj && path !== proj.paths) args.push('--path', path);
+
+      if (args.length <= 1) { closeWizard(); return; } // no changes
+
+      const btn = document.getElementById('eproj-submit');
+      btn.disabled = true;
+      btn.textContent = 'Saving...';
+      try {
+        const resp = await apiCall('update', 'project', args);
+        if (resp.status === 'error') {
+          alert('Error: ' + resp.message);
+          btn.disabled = false;
+          btn.textContent = 'Save';
+          return;
+        }
+        closeWizard();
+        await loadProjects(); // refresh cache
+        loadProjectsList();
+      } catch (e) {
+        alert('Error: ' + e.message);
+        btn.disabled = false;
+        btn.textContent = 'Save';
+      }
+    });
+  }
+
   // --- Polling ---
 
   function startDashboardPoll() {
@@ -870,6 +1326,12 @@
   document.getElementById('chat-send').addEventListener('click', sendMessage);
   document.getElementById('sound-toggle').addEventListener('click', toggleSound);
   document.getElementById('new-session-btn').addEventListener('click', openCreateWizard);
+  document.getElementById('nav-moneypennies-btn').addEventListener('click', showMoneypenniesView);
+  document.getElementById('nav-projects-btn').addEventListener('click', showProjectsView);
+  document.getElementById('mp-back-btn').addEventListener('click', hideMoneypenniesView);
+  document.getElementById('mp-add-btn').addEventListener('click', showAddMoneypennyModal);
+  document.getElementById('proj-back-btn').addEventListener('click', hideProjectsView);
+  document.getElementById('proj-add-btn').addEventListener('click', showCreateProjectModal);
 
   // Actions dropdown menu.
   const menuBtn = document.getElementById('chat-menu-btn');
@@ -889,8 +1351,10 @@
     else if (action === 'commit-push') showCommitModal(true);
     else if (action === 'branch') showBranchModal();
     else if (action === 'push') gitPush();
+    else if (action === 'edit') showEditSessionModal();
     else if (action === 'stop') stopSession();
     else if (action === 'complete') completeSession();
+    else if (action === 'delete') deleteSession();
   });
 
   document.getElementById('project-filter').addEventListener('change', (e) => {

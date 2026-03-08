@@ -236,6 +236,28 @@ header h1 span { color: var(--primary); }
   font-size: 0.85em; white-space: pre-wrap; background: var(--surface);
   border-radius: 6px; padding: 12px; max-height: 40vh; overflow: auto;
 }
+
+/* Management rows (moneypennies, projects) */
+.mgmt-row {
+  display: flex; align-items: center; padding: 10px 12px;
+  background: var(--surface); border-radius: 6px; margin-bottom: 4px;
+}
+.mgmt-row .mgmt-name { flex: 1; font-weight: 500; }
+.mgmt-row .mgmt-detail { color: var(--muted); font-size: 0.9em; margin-right: 12px; }
+.mgmt-row .mgmt-badge {
+  font-size: 0.75em; padding: 2px 8px; border-radius: 10px; margin-right: 8px; font-weight: 600;
+}
+.mgmt-row .mgmt-badge.default { background: var(--primary); color: #fff; }
+.mgmt-row .mgmt-badge.active { background: var(--success); color: #000; }
+.mgmt-row .mgmt-badge.paused { background: var(--warning); color: #000; }
+.mgmt-row .mgmt-badge.done { background: var(--muted); color: #000; }
+.mgmt-row .mgmt-actions { display: flex; gap: 4px; }
+.mgmt-row .mgmt-actions button {
+  background: var(--surface2); color: var(--text); border: none;
+  border-radius: 4px; padding: 4px 10px; cursor: pointer; font-size: 0.8em;
+}
+.mgmt-row .mgmt-actions button:hover { background: var(--primary); }
+.mgmt-row .mgmt-actions button.danger:hover { background: var(--danger); }
 </style>
 </head>
 <body>
@@ -254,10 +276,30 @@ header h1 span { color: var(--primary); }
         <option value="">All sessions</option>
       </select>
       <div class="spacer"></div>
+      <button class="btn-muted" id="nav-moneypennies-btn">Moneypennies</button>
+      <button class="btn-muted" id="nav-projects-btn">Projects</button>
       <button class="btn" id="new-session-btn">+ New Session</button>
     </div>
     <div class="loading" id="dash-loading">Loading dashboard...</div>
     <div id="dash-content" style="flex:1;overflow-y:auto"></div>
+  </div>
+
+  <div id="moneypennies-view" style="display:none;flex:1;overflow-y:auto;flex-direction:column">
+    <div class="dash-toolbar">
+      <button class="btn-muted" id="mp-back-btn">← Dashboard</button>
+      <div class="spacer"></div>
+      <button class="btn" id="mp-add-btn">+ Add Moneypenny</button>
+    </div>
+    <div id="mp-content"></div>
+  </div>
+
+  <div id="projects-view" style="display:none;flex:1;overflow-y:auto;flex-direction:column">
+    <div class="dash-toolbar">
+      <button class="btn-muted" id="proj-back-btn">← Dashboard</button>
+      <div class="spacer"></div>
+      <button class="btn" id="proj-add-btn">+ New Project</button>
+    </div>
+    <div id="proj-content"></div>
   </div>
 
   <div id="chat-view">
@@ -274,8 +316,11 @@ header h1 span { color: var(--primary); }
           <button data-action="branch">Git Branch</button>
           <button data-action="push">Git Push</button>
           <hr>
+          <button data-action="edit">Edit Session</button>
           <button data-action="stop">Stop Session</button>
           <button data-action="complete">Complete Session</button>
+          <hr>
+          <button data-action="delete" style="color:var(--danger)">Delete Session</button>
         </div>
       </div>
     </div>
