@@ -448,7 +448,8 @@
           });
         });
       } else {
-        document.getElementById('wizard-dirs').innerHTML = '<div class="empty-state">Could not list directory</div>';
+        const errMsg = resp.message ? escapeHtml(resp.message) : 'Could not list directory';
+        document.getElementById('wizard-dirs').innerHTML = `<div class="empty-state">${errMsg}</div>`;
       }
     } catch (e) {
       document.getElementById('wizard-dirs').innerHTML = `<div class="empty-state">Error: ${escapeHtml(e.message)}</div>`;
