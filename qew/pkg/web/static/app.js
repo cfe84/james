@@ -10,9 +10,12 @@
   let requestId = 0;
   let lastChatHTML = '';
   let currentSessionStatus = '';
+  let currentSessionMP = '';
   let queuedMessages = []; // optimistic messages not yet confirmed by server
   let lastSessionStates = {}; // track WORKING→READY transitions for notifications
   let soundEnabled = true;
+  let projectFilter = ''; // current project filter
+  let projectsCache = []; // cached project list
 
   // --- API ---
 
@@ -30,11 +33,41 @@
     return resp.json();
   }
 
+  // --- Projects ---
+
+  async function loadProjects() {
+    try {
+      const resp = await apiCall('list', 'project', []);
+      if (resp.status === 'ok' && resp.data && resp.data.rows) {
+        projectsCache = resp.data.rows.map(r => ({
+          id: r[0], name: r[1], status: r[2], moneypenny: r[3], agent: r[4], paths: r[5],
+        }));
+      }
+    } catch (e) { /* ignore */ }
+    updateProjectFilter();
+  }
+
+  function updateProjectFilter() {
+    const select = document.getElementById('project-filter');
+    const current = select.value;
+    select.innerHTML = '<option value="">All sessions</option>';
+    for (const p of projectsCache) {
+      if (p.status === 'done') continue;
+      const opt = document.createElement('option');
+      opt.value = p.name;
+      opt.textContent = p.name;
+      select.appendChild(opt);
+    }
+    select.value = current || '';
+  }
+
   // --- Dashboard ---
 
   async function loadDashboard() {
     try {
-      const resp = await apiCall('dashboard', '', ['--all']);
+      const args = ['--all'];
+      if (projectFilter) args.push('--project', projectFilter);
+      const resp = await apiCall('dashboard', '', args);
       if (resp.status === 'error') {
         document.getElementById('dash-content').innerHTML =
           `<div class="empty-state">Error: ${escapeHtml(resp.message)}</div>`;
@@ -121,7 +154,7 @@
       const displayName = e.name || e.sessionId.substring(0, 12);
       const statusCls = e.mpStatus === 'working' ? 'working' : (e.mpStatus === 'ready' ? 'ready' : 'idle');
       html += `
-        <div class="session-row" data-session-id="${escapeAttr(e.sessionId)}" data-session-name="${escapeAttr(e.name || e.sessionId.substring(0, 12))}">
+        <div class="session-row" data-session-id="${escapeAttr(e.sessionId)}" data-session-name="${escapeAttr(e.name || e.sessionId.substring(0, 12))}" data-mp="${escapeAttr(e.moneypenny)}">
           <span class="session-name">${escapeHtml(displayName)}</span>
           ${e.project ? `<span class="session-project">${escapeHtml(e.project)}</span>` : ''}
           <span class="session-status ${statusCls}">${escapeHtml(e.mpStatus)}</span>
@@ -135,18 +168,20 @@
     // Click handlers.
     container.querySelectorAll('.session-row').forEach(row => {
       row.addEventListener('click', () => {
-        openChat(row.dataset.sessionId, row.dataset.sessionName);
+        openChat(row.dataset.sessionId, row.dataset.sessionName, row.dataset.mp);
       });
     });
   }
 
   // --- Chat ---
 
-  async function openChat(sessionId, name) {
+  async function openChat(sessionId, name, mp) {
     currentSession = sessionId;
+    currentSessionMP = mp || '';
     document.getElementById('dashboard-view').style.display = 'none';
     document.getElementById('chat-view').style.display = 'flex';
     document.getElementById('chat-title').textContent = name || sessionId.substring(0, 12);
+    document.getElementById('chat-mp').textContent = currentSessionMP ? '@ ' + currentSessionMP : '';
     document.getElementById('chat-messages').innerHTML = '<div class="loading">Loading...</div>';
     document.getElementById('chat-input').value = '';
     lastChatHTML = '';
@@ -157,8 +192,9 @@
 
   function closeChat() {
     currentSession = null;
+    currentSessionMP = '';
     document.getElementById('chat-view').style.display = 'none';
-    document.getElementById('dashboard-view').style.display = 'block';
+    document.getElementById('dashboard-view').style.display = 'flex';
     stopChatPoll();
     loadDashboard();
     startDashboardPoll();
@@ -177,10 +213,14 @@
           `<div class="empty-state">Error: ${escapeHtml(histResp.message)}</div>`;
         return;
       }
-      // Extract session status.
+      // Extract session status and moneypenny.
       currentSessionStatus = '';
       if (showResp && showResp.status === 'ok' && showResp.data) {
         currentSessionStatus = showResp.data.status || '';
+        if (showResp.data.moneypenny && !currentSessionMP) {
+          currentSessionMP = showResp.data.moneypenny;
+          document.getElementById('chat-mp').textContent = '@ ' + currentSessionMP;
+        }
       }
       // Extract schedules.
       let schedules = [];
@@ -277,6 +317,219 @@
       document.getElementById('chat-send').disabled = false;
     }
   }
+
+  // --- Create Session Wizard ---
+
+  let wizardState = { step: 1, moneypennies: [], selectedMP: '', currentPath: '', projects: [] };
+
+  async function openCreateWizard() {
+    wizardState = { step: 1, moneypennies: [], selectedMP: '', currentPath: '', projects: projectsCache };
+    showWizardStep1();
+  }
+
+  function closeWizard() {
+    const overlay = document.querySelector('.modal-overlay');
+    if (overlay) overlay.remove();
+  }
+
+  async function showWizardStep1() {
+    // Load moneypennies.
+    try {
+      const resp = await apiCall('list', 'moneypenny', []);
+      if (resp.status === 'ok' && resp.data && resp.data.rows) {
+        wizardState.moneypennies = resp.data.rows.map(r => ({
+          name: r[0], type: r[1], address: r[2], isDefault: r[3] === '*',
+        }));
+      }
+    } catch (e) { /* ignore */ }
+
+    if (wizardState.moneypennies.length === 0) {
+      alert('No moneypennies registered. Add one first via the TUI or CLI.');
+      return;
+    }
+
+    // Auto-select default.
+    const def = wizardState.moneypennies.find(m => m.isDefault);
+    if (def) wizardState.selectedMP = def.name;
+    else wizardState.selectedMP = wizardState.moneypennies[0].name;
+
+    // If only one moneypenny, skip to step 2.
+    if (wizardState.moneypennies.length === 1) {
+      showWizardStep2();
+      return;
+    }
+
+    renderWizardModal(`
+      <h3>New Session</h3>
+      <div class="step-label">Step 1 of 3 — Select Moneypenny</div>
+      ${wizardState.moneypennies.map(m => `
+        <div class="dir-entry${m.name === wizardState.selectedMP ? ' selected' : ''}" data-mp="${escapeAttr(m.name)}">
+          📡 ${escapeHtml(m.name)} <span style="color:var(--muted);font-size:0.85em">(${escapeHtml(m.type)})</span>
+          ${m.isDefault ? '<span style="color:var(--primary);font-size:0.8em;margin-left:4px">default</span>' : ''}
+        </div>
+      `).join('')}
+      <div class="modal-actions">
+        <button class="btn-muted" onclick="window._qewCloseWizard()">Cancel</button>
+        <button class="btn" onclick="window._qewWizardStep2()">Next</button>
+      </div>
+    `);
+
+    document.querySelectorAll('.modal .dir-entry').forEach(el => {
+      el.addEventListener('click', () => {
+        document.querySelectorAll('.modal .dir-entry').forEach(e => e.classList.remove('selected'));
+        el.classList.add('selected');
+        wizardState.selectedMP = el.dataset.mp;
+      });
+    });
+  }
+
+  async function showWizardStep2() {
+    if (!wizardState.currentPath) wizardState.currentPath = '~';
+    await renderPathBrowser();
+  }
+
+  async function renderPathBrowser() {
+    renderWizardModal(`
+      <h3>New Session</h3>
+      <div class="step-label">Step 2 of 3 — Select Path</div>
+      <div class="dir-current">📂 ${escapeHtml(wizardState.currentPath)}</div>
+      <div class="dir-browser" id="wizard-dirs"><div class="loading">Loading...</div></div>
+      <div class="modal-actions">
+        <button class="btn-muted" onclick="window._qewWizardBack()">Back</button>
+        <button class="btn" onclick="window._qewWizardStep3()">Use this path</button>
+      </div>
+    `);
+
+    try {
+      const resp = await apiCall('list-directory', '', ['-m', wizardState.selectedMP, '--path', wizardState.currentPath]);
+      if (resp.status === 'ok' && resp.data) {
+        wizardState.currentPath = resp.data.path || wizardState.currentPath;
+        document.querySelector('.dir-current').textContent = '📂 ' + wizardState.currentPath;
+        const entries = (resp.data.entries || []).filter(e => e.is_dir);
+        let html = '';
+        html += `<div class="dir-entry" data-path="..">📁 ..</div>`;
+        for (const entry of entries) {
+          html += `<div class="dir-entry" data-path="${escapeAttr(entry.name)}">📁 ${escapeHtml(entry.name)}</div>`;
+        }
+        document.getElementById('wizard-dirs').innerHTML = html;
+        document.querySelectorAll('#wizard-dirs .dir-entry').forEach(el => {
+          el.addEventListener('click', () => {
+            const name = el.dataset.path;
+            if (name === '..') {
+              const parts = wizardState.currentPath.split('/');
+              parts.pop();
+              wizardState.currentPath = parts.join('/') || '/';
+            } else {
+              wizardState.currentPath = wizardState.currentPath.replace(/\/$/, '') + '/' + name;
+            }
+            renderPathBrowser();
+          });
+        });
+      } else {
+        document.getElementById('wizard-dirs').innerHTML = '<div class="empty-state">Could not list directory</div>';
+      }
+    } catch (e) {
+      document.getElementById('wizard-dirs').innerHTML = `<div class="empty-state">Error: ${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  function showWizardStep3() {
+    const projectOpts = wizardState.projects.filter(p => p.status !== 'done')
+      .map(p => `<option value="${escapeAttr(p.name)}">${escapeHtml(p.name)}</option>`).join('');
+
+    renderWizardModal(`
+      <h3>New Session</h3>
+      <div class="step-label">Step 3 of 3 — Session Details</div>
+      <div style="font-size:0.85em;color:var(--muted);margin-bottom:8px">
+        📡 ${escapeHtml(wizardState.selectedMP)} &nbsp; 📂 ${escapeHtml(wizardState.currentPath)}
+      </div>
+      <label for="wiz-prompt">Prompt *</label>
+      <textarea id="wiz-prompt" rows="3" placeholder="What should the agent do?"></textarea>
+      <label for="wiz-name">Name (optional)</label>
+      <input id="wiz-name" type="text" placeholder="Auto-generated from prompt">
+      <label for="wiz-project">Project</label>
+      <select id="wiz-project"><option value="">(none)</option>${projectOpts}</select>
+      <label for="wiz-agent">Agent</label>
+      <input id="wiz-agent" type="text" placeholder="claude" value="claude">
+      <label for="wiz-sysprompt">System Prompt (optional)</label>
+      <textarea id="wiz-sysprompt" rows="2" placeholder=""></textarea>
+      <div class="toggle-row">
+        <input type="checkbox" id="wiz-yolo">
+        <label for="wiz-yolo" style="margin:0;color:var(--text)">Yolo mode (skip permission prompts)</label>
+      </div>
+      <div class="modal-actions">
+        <button class="btn-muted" onclick="window._qewWizardBackToPath()">Back</button>
+        <button class="btn" id="wiz-submit">Create Session</button>
+      </div>
+    `);
+
+    // If a project is pre-selected from the filter, select it.
+    if (projectFilter) {
+      document.getElementById('wiz-project').value = projectFilter;
+    }
+
+    document.getElementById('wiz-submit').addEventListener('click', submitCreateSession);
+  }
+
+  async function submitCreateSession() {
+    const prompt = document.getElementById('wiz-prompt').value.trim();
+    if (!prompt) {
+      alert('Prompt is required');
+      return;
+    }
+
+    const args = ['-m', wizardState.selectedMP, '--path', wizardState.currentPath, '--async'];
+    const name = document.getElementById('wiz-name').value.trim();
+    if (name) args.push('--name', name);
+    const project = document.getElementById('wiz-project').value;
+    if (project) args.push('--project', project);
+    const agent = document.getElementById('wiz-agent').value.trim();
+    if (agent) args.push('--agent', agent);
+    const sysprompt = document.getElementById('wiz-sysprompt').value.trim();
+    if (sysprompt) args.push('--system-prompt', sysprompt);
+    if (document.getElementById('wiz-yolo').checked) args.push('--yolo');
+    args.push(prompt);
+
+    document.getElementById('wiz-submit').disabled = true;
+    document.getElementById('wiz-submit').textContent = 'Creating...';
+
+    try {
+      const resp = await apiCall('create', 'session', args);
+      if (resp.status === 'error') {
+        alert('Error: ' + resp.message);
+        document.getElementById('wiz-submit').disabled = false;
+        document.getElementById('wiz-submit').textContent = 'Create Session';
+        return;
+      }
+      closeWizard();
+      await loadDashboard();
+    } catch (e) {
+      alert('Error: ' + e.message);
+      document.getElementById('wiz-submit').disabled = false;
+      document.getElementById('wiz-submit').textContent = 'Create Session';
+    }
+  }
+
+  function renderWizardModal(content) {
+    let overlay = document.querySelector('.modal-overlay');
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.className = 'modal-overlay';
+      overlay.addEventListener('click', (e) => { if (e.target === overlay) closeWizard(); });
+      document.body.appendChild(overlay);
+    }
+    overlay.innerHTML = `<div class="modal">${content}</div>`;
+  }
+
+  // Expose wizard functions for inline onclick handlers.
+  window._qewCloseWizard = closeWizard;
+  window._qewWizardStep2 = showWizardStep2;
+  window._qewWizardStep3 = showWizardStep3;
+  window._qewWizardBack = function() {
+    if (wizardState.moneypennies.length === 1) { closeWizard(); return; }
+    showWizardStep1();
+  };
+  window._qewWizardBackToPath = showWizardStep2;
 
   // --- Polling ---
 
@@ -405,6 +658,11 @@
   document.getElementById('chat-back').addEventListener('click', closeChat);
   document.getElementById('chat-send').addEventListener('click', sendMessage);
   document.getElementById('sound-toggle').addEventListener('click', toggleSound);
+  document.getElementById('new-session-btn').addEventListener('click', openCreateWizard);
+  document.getElementById('project-filter').addEventListener('change', (e) => {
+    projectFilter = e.target.value;
+    loadDashboard();
+  });
 
   const chatInput = document.getElementById('chat-input');
   chatInput.addEventListener('keydown', e => {
@@ -416,7 +674,7 @@
   chatInput.addEventListener('input', () => autoResize(chatInput));
 
   // Initial load.
-  loadDashboard().then(() => {
+  Promise.all([loadProjects(), loadDashboard()]).then(() => {
     document.getElementById('conn-status').innerHTML =
       '<span class="status-dot connected"></span>Connected';
     startDashboardPoll();
