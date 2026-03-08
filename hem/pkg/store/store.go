@@ -282,6 +282,21 @@ func (s *Store) TrackSession(sessionID, moneypennyName string, projectID ...stri
 	return nil
 }
 
+// TrackSessionIfNew tracks a session only if it doesn't already exist in the store.
+// Returns true if the session was newly inserted.
+// Used by sync to adopt sessions from moneypennies without overwriting existing tracking data.
+func (s *Store) TrackSessionIfNew(sessionID, moneypennyName string) (bool, error) {
+	res, err := s.db.Exec(
+		`INSERT OR IGNORE INTO sessions (session_id, moneypenny_name, project_id, hem_status, reviewed) VALUES (?, ?, '', 'active', 0)`,
+		sessionID, moneypennyName,
+	)
+	if err != nil {
+		return false, fmt.Errorf("track session if new %q: %w", sessionID, err)
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
 // GetSessionMoneypenny returns the moneypenny name for a session. Returns "" if not found.
 func (s *Store) GetSessionMoneypenny(sessionID string) (string, error) {
 	var name string

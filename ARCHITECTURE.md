@@ -221,6 +221,8 @@ hem/
 
 26. **Queued message visual state**: The TUI preserves the "Queued" indicator (with its icon and label) on user messages across poll refreshes. The queued state is only cleared when an assistant response appears in the conversation, preventing the visual indicator from flickering or disappearing during polling cycles.
 
+27. **Session sync**: Hem server periodically syncs sessions from all registered moneypennies (on startup + every 5 minutes). Queries `list_sessions` on each moneypenny and uses `INSERT OR IGNORE` to adopt unknown sessions without overwriting existing tracking data. This allows multiple hem instances to share moneypennies and discover each other's sessions.
+
 ## Qew - Web UI for Remote Access
 
 Qew is a web-based UI that connects to a Hem server via MI6, enabling remote access from phones and other computers.

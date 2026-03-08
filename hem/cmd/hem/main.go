@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -550,8 +551,12 @@ func runServer() {
 	exec := commands.New(st, keyPath)
 	exec.Version = Version
 
-	// Check connectivity to all registered moneypennies at startup.
+	// Check connectivity and sync sessions from moneypennies at startup.
 	exec.CheckConnectivity(log.Default())
+	go exec.SyncSessions(log.Default())
+
+	// Sync sessions periodically (every 5 minutes).
+	exec.StartPeriodicSync(log.Default(), 5*time.Minute)
 
 	// Start MI6 control listener if configured.
 	if mi6Control != "" {

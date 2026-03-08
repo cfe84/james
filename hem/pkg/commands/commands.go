@@ -62,6 +62,56 @@ func (e *Executor) CheckConnectivity(logger *log.Logger) {
 	}
 }
 
+// SyncSessions queries all moneypennies for their sessions and tracks any
+// that hem doesn't know about yet. This allows hem to adopt sessions that
+// were created by other hem instances or before this hem was connected.
+func (e *Executor) SyncSessions(logger *log.Logger) {
+	mps, err := e.store.ListMoneypennies()
+	if err != nil {
+		logger.Printf("sync: failed to list moneypennies: %v", err)
+		return
+	}
+
+	for _, mp := range mps {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		resp, err := e.sendCommand(ctx, mp, "list_sessions", nil)
+		cancel()
+		if err != nil {
+			continue
+		}
+
+		var sessions []struct {
+			SessionID string `json:"session_id"`
+		}
+		if err := json.Unmarshal(resp.Data, &sessions); err != nil {
+			continue
+		}
+
+		adopted := 0
+		for _, s := range sessions {
+			isNew, err := e.store.TrackSessionIfNew(s.SessionID, mp.Name)
+			if err != nil {
+				logger.Printf("sync: failed to track session %s: %v", s.SessionID, err)
+			} else if isNew {
+				adopted++
+			}
+		}
+		if adopted > 0 {
+			logger.Printf("sync: adopted %d new sessions from moneypenny %q", adopted, mp.Name)
+		}
+	}
+}
+
+// StartPeriodicSync runs SyncSessions on a regular interval in the background.
+func (e *Executor) StartPeriodicSync(logger *log.Logger, interval time.Duration) {
+	go func() {
+		for {
+			time.Sleep(interval)
+			e.SyncSessions(logger)
+		}
+	}()
+}
+
 // CommandHelp maps verb+noun to help text.
 var CommandHelp = map[string]string{
 	"add moneypenny":      "Usage: hem add moneypenny -n NAME [--local | --fifo-folder DIR | --fifo-in PATH --fifo-out PATH | --mi6 ADDR]\n\nRegisters a new moneypenny instance.\n\nFlags:\n  -n, --name         Moneypenny name (required)\n  --local            Use default local FIFO path (~/.config/james/moneypenny/fifo)\n  --fifo-folder      Folder containing moneypenny-in and moneypenny-out FIFOs\n  --fifo-in          Path to moneypenny input FIFO\n  --fifo-out         Path to moneypenny output FIFO\n  --mi6              MI6 server address (host or host/session_id)\n  --session-id       MI6 session ID (combined with --mi6 host; uses default mi6 if --mi6 omitted)",

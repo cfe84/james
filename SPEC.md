@@ -586,6 +586,10 @@ The dashboard auto-refreshes every 5 seconds by polling moneypennies. When a ses
 
 Hem supports MI6 as an alternative transport for both server and client.
 
+### Session Sync
+
+Hem periodically syncs sessions from all registered moneypennies. On startup (async) and every 5 minutes, hem queries each moneypenny's `list_sessions` and adopts any sessions not already tracked in hem's SQLite. This allows a new hem instance to discover sessions created by other hem instances or directly on the moneypenny. Adopted sessions are inserted with `INSERT OR IGNORE` so existing tracking data (project assignment, completed status, reviewed flag) is never overwritten.
+
 ### Server MI6 Control Channel
 
 `hem start server --mi6-control ADDRESS` — accepts commands from an MI6 session alongside the Unix socket.
