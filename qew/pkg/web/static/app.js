@@ -851,6 +851,43 @@
     }
   }
 
+  function showMoveToProjectModal() {
+    if (!currentSession) return;
+    const projectOpts = projectsCache.filter(p => p.status !== 'done')
+      .map(p => `<option value="${escapeAttr(p.name)}">${escapeHtml(p.name)}</option>`).join('');
+
+    renderWizardModal(`
+      <h3>Move to Project</h3>
+      <label for="move-project">Project</label>
+      <select id="move-project"><option value="">(none — remove from project)</option>${projectOpts}</select>
+      <div class="modal-actions">
+        <button class="btn-muted" onclick="window._qewCloseWizard()">Cancel</button>
+        <button class="btn" id="move-project-submit">Move</button>
+      </div>
+    `);
+
+    document.getElementById('move-project-submit').addEventListener('click', async () => {
+      const project = document.getElementById('move-project').value;
+      const btn = document.getElementById('move-project-submit');
+      btn.disabled = true;
+      btn.textContent = 'Moving...';
+      try {
+        const resp = await apiCall('update', 'session', [currentSession, '--project', project]);
+        if (resp.status === 'error') {
+          alert('Error: ' + resp.message);
+          btn.disabled = false;
+          btn.textContent = 'Move';
+          return;
+        }
+        closeWizard();
+      } catch (e) {
+        alert('Error: ' + e.message);
+        btn.disabled = false;
+        btn.textContent = 'Move';
+      }
+    });
+  }
+
   // --- Moneypennies Management ---
 
   function showMoneypenniesView() {
@@ -1085,15 +1122,42 @@
     } catch (e) { alert('Error: ' + e.message); }
   }
 
-  function showCreateProjectModal() {
+  let projFormState = { selectedMP: '', currentPath: '', moneypennies: [] };
+
+  async function showCreateProjectModal() {
+    projFormState = { selectedMP: '', currentPath: '', moneypennies: [] };
+
+    // Load moneypennies for dropdown.
+    try {
+      const resp = await apiCall('list', 'moneypenny', []);
+      if (resp.status === 'ok' && resp.data && resp.data.rows) {
+        projFormState.moneypennies = resp.data.rows.map(r => ({
+          name: r[0], type: r[1], isDefault: r[3] === '*',
+        }));
+        const def = projFormState.moneypennies.find(m => m.isDefault);
+        if (def) projFormState.selectedMP = def.name;
+        else if (projFormState.moneypennies.length > 0) projFormState.selectedMP = projFormState.moneypennies[0].name;
+      }
+    } catch (e) { /* ignore */ }
+
+    const mpOpts = projFormState.moneypennies
+      .map(m => `<option value="${escapeAttr(m.name)}"${m.name === projFormState.selectedMP ? ' selected' : ''}>${escapeHtml(m.name)} (${escapeHtml(m.type)})</option>`).join('');
+
     renderWizardModal(`
       <h3>New Project</h3>
       <label for="proj-name">Name *</label>
       <input id="proj-name" type="text" placeholder="my-project">
       <label for="proj-mp">Default Moneypenny</label>
-      <input id="proj-mp" type="text" placeholder="(optional)">
-      <label for="proj-path">Path</label>
-      <input id="proj-path" type="text" placeholder="(optional)">
+      <select id="proj-mp"><option value="">(none)</option>${mpOpts}</select>
+      <label>Path</label>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+        <input id="proj-path" type="text" placeholder="(none)" style="flex:1" readonly>
+        <button class="btn-muted" id="proj-browse-btn">Browse</button>
+      </div>
+      <div id="proj-dir-browser" style="display:none">
+        <div class="dir-current" id="proj-dir-current"></div>
+        <div class="dir-browser" id="proj-dirs"></div>
+      </div>
       <label for="proj-agent">Agent</label>
       <input id="proj-agent" type="text" value="claude" placeholder="claude">
       <label for="proj-sysprompt">System Prompt</label>
@@ -1104,43 +1168,106 @@
       </div>
     `);
 
-    document.getElementById('proj-submit').addEventListener('click', async () => {
-      const name = document.getElementById('proj-name').value.trim();
-      if (!name) { alert('Name is required'); return; }
-      const args = ['--name', name];
-      const mp = document.getElementById('proj-mp').value.trim();
-      if (mp) args.push('-m', mp);
-      const path = document.getElementById('proj-path').value.trim();
-      if (path) args.push('--path', path);
-      const agent = document.getElementById('proj-agent').value.trim();
-      if (agent) args.push('--agent', agent);
-      const sysprompt = document.getElementById('proj-sysprompt').value.trim();
-      if (sysprompt) args.push('--system-prompt', sysprompt);
+    document.getElementById('proj-browse-btn').addEventListener('click', () => {
+      const mp = document.getElementById('proj-mp').value;
+      if (!mp) { alert('Select a moneypenny first to browse paths'); return; }
+      projFormState.selectedMP = mp;
+      if (!projFormState.currentPath) projFormState.currentPath = '~';
+      document.getElementById('proj-dir-browser').style.display = 'block';
+      loadProjDirBrowser();
+    });
 
-      const btn = document.getElementById('proj-submit');
-      btn.disabled = true;
-      btn.textContent = 'Creating...';
-      try {
-        const resp = await apiCall('create', 'project', args);
-        if (resp.status === 'error') {
-          alert('Error: ' + resp.message);
-          btn.disabled = false;
-          btn.textContent = 'Create';
-          return;
+    document.getElementById('proj-submit').addEventListener('click', submitCreateProject);
+  }
+
+  async function loadProjDirBrowser() {
+    const dirsEl = document.getElementById('proj-dirs');
+    const currentEl = document.getElementById('proj-dir-current');
+    dirsEl.innerHTML = '<div class="loading">Loading...</div>';
+    currentEl.textContent = '📂 ' + projFormState.currentPath;
+
+    try {
+      const resp = await apiCall('list-directory', '', ['-m', projFormState.selectedMP, '--path', projFormState.currentPath]);
+      if (resp.status === 'ok' && resp.data) {
+        projFormState.currentPath = resp.data.path || projFormState.currentPath;
+        currentEl.textContent = '📂 ' + projFormState.currentPath;
+        document.getElementById('proj-path').value = projFormState.currentPath;
+        const entries = (resp.data.entries || []).filter(e => e.is_dir);
+        let html = '<div class="dir-entry" data-path="..">📁 ..</div>';
+        for (const entry of entries) {
+          html += `<div class="dir-entry" data-path="${escapeAttr(entry.name)}">📁 ${escapeHtml(entry.name)}</div>`;
         }
-        closeWizard();
-        loadProjectsList();
-      } catch (e) {
-        alert('Error: ' + e.message);
+        dirsEl.innerHTML = html;
+        dirsEl.querySelectorAll('.dir-entry').forEach(el => {
+          el.addEventListener('click', () => {
+            const name = el.dataset.path;
+            if (name === '..') {
+              const parts = projFormState.currentPath.split('/');
+              parts.pop();
+              projFormState.currentPath = parts.join('/') || '/';
+            } else {
+              projFormState.currentPath = projFormState.currentPath.replace(/\/$/, '') + '/' + name;
+            }
+            loadProjDirBrowser();
+          });
+        });
+      } else {
+        const errMsg = resp.message ? escapeHtml(resp.message) : 'Could not list directory';
+        dirsEl.innerHTML = `<div class="empty-state">${errMsg}</div>`;
+      }
+    } catch (e) {
+      dirsEl.innerHTML = `<div class="empty-state">Error: ${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  async function submitCreateProject() {
+    const name = document.getElementById('proj-name').value.trim();
+    if (!name) { alert('Name is required'); return; }
+    const args = ['--name', name];
+    const mp = document.getElementById('proj-mp').value;
+    if (mp) args.push('-m', mp);
+    const path = document.getElementById('proj-path').value.trim();
+    if (path) args.push('--path', path);
+    const agent = document.getElementById('proj-agent').value.trim();
+    if (agent) args.push('--agent', agent);
+    const sysprompt = document.getElementById('proj-sysprompt').value.trim();
+    if (sysprompt) args.push('--system-prompt', sysprompt);
+
+    const btn = document.getElementById('proj-submit');
+    btn.disabled = true;
+    btn.textContent = 'Creating...';
+    try {
+      const resp = await apiCall('create', 'project', args);
+      if (resp.status === 'error') {
+        alert('Error: ' + resp.message);
         btn.disabled = false;
         btn.textContent = 'Create';
+        return;
       }
-    });
+      closeWizard();
+      loadProjectsList();
+    } catch (e) {
+      alert('Error: ' + e.message);
+      btn.disabled = false;
+      btn.textContent = 'Create';
+    }
   }
 
   async function showEditProjectModal(name) {
-    // Fetch current project data from cache.
     const proj = projectsCache.find(p => p.name === name);
+    projFormState = { selectedMP: proj ? proj.moneypenny : '', currentPath: proj ? proj.paths : '', moneypennies: [] };
+
+    // Load moneypennies for dropdown.
+    try {
+      const resp = await apiCall('list', 'moneypenny', []);
+      if (resp.status === 'ok' && resp.data && resp.data.rows) {
+        projFormState.moneypennies = resp.data.rows.map(r => ({ name: r[0], type: r[1], isDefault: r[3] === '*' }));
+      }
+    } catch (e) { /* ignore */ }
+
+    const mpOpts = projFormState.moneypennies
+      .map(m => `<option value="${escapeAttr(m.name)}"${m.name === projFormState.selectedMP ? ' selected' : ''}>${escapeHtml(m.name)} (${escapeHtml(m.type)})</option>`).join('');
+
     renderWizardModal(`
       <h3>Edit Project</h3>
       <label for="eproj-name">Name</label>
@@ -1152,16 +1279,32 @@
         <option value="done"${proj && proj.status === 'done' ? ' selected' : ''}>Done</option>
       </select>
       <label for="eproj-mp">Default Moneypenny</label>
-      <input id="eproj-mp" type="text" value="${escapeAttr(proj ? proj.moneypenny : '')}">
+      <select id="eproj-mp"><option value="">(none)</option>${mpOpts}</select>
+      <label>Path</label>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+        <input id="eproj-path" type="text" value="${escapeAttr(proj ? proj.paths : '')}" style="flex:1" readonly>
+        <button class="btn-muted" id="eproj-browse-btn">Browse</button>
+      </div>
+      <div id="eproj-dir-browser" style="display:none">
+        <div class="dir-current" id="eproj-dir-current"></div>
+        <div class="dir-browser" id="eproj-dirs"></div>
+      </div>
       <label for="eproj-agent">Agent</label>
       <input id="eproj-agent" type="text" value="${escapeAttr(proj ? proj.agent : '')}">
-      <label for="eproj-path">Path</label>
-      <input id="eproj-path" type="text" value="${escapeAttr(proj ? proj.paths : '')}">
       <div class="modal-actions">
         <button class="btn-muted" onclick="window._qewCloseWizard()">Cancel</button>
         <button class="btn" id="eproj-submit">Save</button>
       </div>
     `);
+
+    document.getElementById('eproj-browse-btn').addEventListener('click', () => {
+      const mp = document.getElementById('eproj-mp').value;
+      if (!mp) { alert('Select a moneypenny first to browse paths'); return; }
+      projFormState.selectedMP = mp;
+      if (!projFormState.currentPath) projFormState.currentPath = '~';
+      document.getElementById('eproj-dir-browser').style.display = 'block';
+      loadEditProjDirBrowser();
+    });
 
     document.getElementById('eproj-submit').addEventListener('click', async () => {
       const args = [name];
@@ -1169,14 +1312,14 @@
       if (newName && newName !== name) args.push('--name', newName);
       const status = document.getElementById('eproj-status').value;
       if (proj && status !== proj.status) args.push('--status', status);
-      const mp = document.getElementById('eproj-mp').value.trim();
+      const mp = document.getElementById('eproj-mp').value;
       if (proj && mp !== proj.moneypenny) args.push('-m', mp);
       const agent = document.getElementById('eproj-agent').value.trim();
       if (proj && agent !== proj.agent) args.push('--agent', agent);
       const path = document.getElementById('eproj-path').value.trim();
       if (proj && path !== proj.paths) args.push('--path', path);
 
-      if (args.length <= 1) { closeWizard(); return; } // no changes
+      if (args.length <= 1) { closeWizard(); return; }
 
       const btn = document.getElementById('eproj-submit');
       btn.disabled = true;
@@ -1190,7 +1333,7 @@
           return;
         }
         closeWizard();
-        await loadProjects(); // refresh cache
+        await loadProjects();
         loadProjectsList();
       } catch (e) {
         alert('Error: ' + e.message);
@@ -1198,6 +1341,46 @@
         btn.textContent = 'Save';
       }
     });
+  }
+
+  async function loadEditProjDirBrowser() {
+    const dirsEl = document.getElementById('eproj-dirs');
+    const currentEl = document.getElementById('eproj-dir-current');
+    dirsEl.innerHTML = '<div class="loading">Loading...</div>';
+    currentEl.textContent = '📂 ' + projFormState.currentPath;
+
+    try {
+      const resp = await apiCall('list-directory', '', ['-m', projFormState.selectedMP, '--path', projFormState.currentPath]);
+      if (resp.status === 'ok' && resp.data) {
+        projFormState.currentPath = resp.data.path || projFormState.currentPath;
+        currentEl.textContent = '📂 ' + projFormState.currentPath;
+        document.getElementById('eproj-path').value = projFormState.currentPath;
+        const entries = (resp.data.entries || []).filter(e => e.is_dir);
+        let html = '<div class="dir-entry" data-path="..">📁 ..</div>';
+        for (const entry of entries) {
+          html += `<div class="dir-entry" data-path="${escapeAttr(entry.name)}">📁 ${escapeHtml(entry.name)}</div>`;
+        }
+        dirsEl.innerHTML = html;
+        dirsEl.querySelectorAll('.dir-entry').forEach(el => {
+          el.addEventListener('click', () => {
+            const entryName = el.dataset.path;
+            if (entryName === '..') {
+              const parts = projFormState.currentPath.split('/');
+              parts.pop();
+              projFormState.currentPath = parts.join('/') || '/';
+            } else {
+              projFormState.currentPath = projFormState.currentPath.replace(/\/$/, '') + '/' + entryName;
+            }
+            loadEditProjDirBrowser();
+          });
+        });
+      } else {
+        const errMsg = resp.message ? escapeHtml(resp.message) : 'Could not list directory';
+        dirsEl.innerHTML = `<div class="empty-state">${errMsg}</div>`;
+      }
+    } catch (e) {
+      dirsEl.innerHTML = `<div class="empty-state">Error: ${escapeHtml(e.message)}</div>`;
+    }
   }
 
   // --- Polling ---
@@ -1360,6 +1543,7 @@
     else if (action === 'branch') showBranchModal();
     else if (action === 'push') gitPush();
     else if (action === 'edit') showEditSessionModal();
+    else if (action === 'move-project') showMoveToProjectModal();
     else if (action === 'stop') stopSession();
     else if (action === 'complete') completeSession();
     else if (action === 'delete') deleteSession();
