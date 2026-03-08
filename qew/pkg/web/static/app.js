@@ -83,7 +83,7 @@
           const prev = lastSessionStates[sessionId];
           if (prev === 'working' && mpStatus === 'ready') {
             const name = row[1] || sessionId.substring(0, 12);
-            showNotification(name);
+            showNotification(name, sessionId);
           }
           lastSessionStates[sessionId] = mpStatus;
         }
@@ -694,6 +694,35 @@
     `);
   }
 
+  async function stopSession() {
+    if (!currentSession) return;
+    try {
+      const resp = await apiCall('stop', 'session', [currentSession]);
+      if (resp.status === 'error') {
+        alert('Stop error: ' + resp.message);
+        return;
+      }
+      lastChatHTML = '';
+      await loadChat();
+    } catch (e) {
+      alert('Error: ' + e.message);
+    }
+  }
+
+  async function completeSession() {
+    if (!currentSession) return;
+    try {
+      const resp = await apiCall('complete', 'session', [currentSession]);
+      if (resp.status === 'error') {
+        alert('Complete error: ' + resp.message);
+        return;
+      }
+      closeChat();
+    } catch (e) {
+      alert('Error: ' + e.message);
+    }
+  }
+
   window._qewCommitFromDiff = function() { showCommitModal(false); };
   window._qewCommitAndPush = function() { showCommitModal(true); };
 
@@ -792,12 +821,18 @@
     } catch (e) { /* ignore audio errors */ }
   }
 
-  function showNotification(sessionName) {
+  function showNotification(sessionName, sessionId) {
     playNotificationSound();
-    // Pop-over notification.
+    // Pop-over notification — clickable to open session.
     const popover = document.createElement('div');
     popover.className = 'notification-popover';
     popover.textContent = 'Session ready: ' + sessionName;
+    if (sessionId) {
+      popover.addEventListener('click', () => {
+        popover.remove();
+        openChat(sessionId, sessionName);
+      });
+    }
     document.body.appendChild(popover);
     setTimeout(() => popover.classList.add('show'), 10);
     setTimeout(() => {
@@ -825,10 +860,29 @@
   document.getElementById('chat-send').addEventListener('click', sendMessage);
   document.getElementById('sound-toggle').addEventListener('click', toggleSound);
   document.getElementById('new-session-btn').addEventListener('click', openCreateWizard);
-  document.getElementById('chat-diff').addEventListener('click', showDiff);
-  document.getElementById('chat-commit').addEventListener('click', () => showCommitModal(false));
-  document.getElementById('chat-branch').addEventListener('click', showBranchModal);
-  document.getElementById('chat-push').addEventListener('click', gitPush);
+
+  // Actions dropdown menu.
+  const menuBtn = document.getElementById('chat-menu-btn');
+  const menu = document.getElementById('chat-menu');
+  menuBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    menu.classList.toggle('open');
+  });
+  document.addEventListener('click', () => menu.classList.remove('open'));
+  menu.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    menu.classList.remove('open');
+    const action = btn.dataset.action;
+    if (action === 'diff') showDiff();
+    else if (action === 'commit') showCommitModal(false);
+    else if (action === 'commit-push') showCommitModal(true);
+    else if (action === 'branch') showBranchModal();
+    else if (action === 'push') gitPush();
+    else if (action === 'stop') stopSession();
+    else if (action === 'complete') completeSession();
+  });
+
   document.getElementById('project-filter').addEventListener('change', (e) => {
     projectFilter = e.target.value;
     loadDashboard();

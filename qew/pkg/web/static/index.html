@@ -163,7 +163,9 @@ header h1 span { color: var(--primary); }
   box-shadow: 0 4px 12px rgba(0,0,0,0.4);
   opacity: 0; transform: translateX(100px);
   transition: opacity 0.3s, transform 0.3s;
+  cursor: pointer;
 }
+.notification-popover:hover { background: var(--surface); }
 .notification-popover.show { opacity: 1; transform: translateX(0); }
 
 /* Create wizard modal */
@@ -200,9 +202,22 @@ header h1 span { color: var(--primary); }
 .toggle-row { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
 .toggle-row input[type="checkbox"] { width: auto; }
 
-/* Chat action buttons */
-.chat-actions { display: flex; gap: 4px; margin-left: 8px; }
-.chat-actions .btn-muted { padding: 4px 10px; font-size: 0.8em; }
+/* Dropdown menu */
+.dropdown { position: relative; margin-left: 8px; }
+.dropdown-menu {
+  display: none; position: absolute; right: 0; top: 100%; margin-top: 4px;
+  background: var(--surface); border: 1px solid var(--surface2); border-radius: 6px;
+  min-width: 160px; z-index: 100; padding: 4px 0;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+}
+.dropdown-menu.open { display: block; }
+.dropdown-menu button {
+  display: block; width: 100%; text-align: left; padding: 8px 14px;
+  background: none; border: none; color: var(--text); cursor: pointer;
+  font-size: 0.9em; font-family: inherit;
+}
+.dropdown-menu button:hover { background: var(--surface2); }
+.dropdown-menu hr { border: none; border-top: 1px solid var(--surface2); margin: 4px 0; }
 
 /* Diff display */
 .diff-content {
@@ -250,11 +265,18 @@ header h1 span { color: var(--primary); }
       <span class="back" id="chat-back">←</span>
       <h2 id="chat-title">Chat</h2>
       <span class="chat-mp" id="chat-mp"></span>
-      <div class="chat-actions">
-        <button class="btn-muted" id="chat-diff" title="Git diff">Diff</button>
-        <button class="btn-muted" id="chat-commit" title="Git commit">Commit</button>
-        <button class="btn-muted" id="chat-branch" title="Git branch">Branch</button>
-        <button class="btn-muted" id="chat-push" title="Git push">Push</button>
+      <div class="dropdown" id="chat-menu-wrap">
+        <button class="btn-muted" id="chat-menu-btn">Actions ▾</button>
+        <div class="dropdown-menu" id="chat-menu">
+          <button data-action="diff">Git Diff</button>
+          <button data-action="commit">Git Commit</button>
+          <button data-action="commit-push">Commit & Push</button>
+          <button data-action="branch">Git Branch</button>
+          <button data-action="push">Git Push</button>
+          <hr>
+          <button data-action="stop">Stop Session</button>
+          <button data-action="complete">Complete Session</button>
+        </div>
       </div>
     </div>
     <div class="chat-messages" id="chat-messages"></div>
