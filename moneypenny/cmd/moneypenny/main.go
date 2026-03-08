@@ -113,6 +113,19 @@ func defaultDataDir() string {
 	return filepath.Join(home, ".config", "james", "moneypenny")
 }
 
+// truncateLog truncates a byte slice for logging, showing the first and last portions.
+func truncateLog(b []byte, maxLen int) string {
+	if len(b) <= maxLen {
+		return string(b)
+	}
+	tail := 50
+	head := maxLen - tail - 3 // 3 for "..."
+	if head < 10 {
+		head = 10
+	}
+	return string(b[:head]) + "..." + string(b[len(b)-tail:])
+}
+
 // runStdio reads JSON commands from r (one per line), processes them, and writes responses to w.
 func runStdio(ctx context.Context, h *handler.Handler, vlog *log.Logger, r io.Reader, w io.Writer) {
 	scanner := bufio.NewScanner(r)
@@ -125,19 +138,19 @@ func runStdio(ctx context.Context, h *handler.Handler, vlog *log.Logger, r io.Re
 		if len(line) == 0 {
 			continue
 		}
-		vlog.Printf("recv: %s", line)
+		vlog.Printf("recv: %s", truncateLog(line, 200))
 		cmd, err := envelope.ParseCommand(line)
 		if err != nil {
 			resp := envelope.ErrorResponse("", envelope.ErrInvalidRequest, err.Error())
 			b, _ := resp.Marshal()
-			vlog.Printf("send: %s", b)
+			vlog.Printf("send: %s", truncateLog(b, 200))
 			w.Write(b)
 			continue
 		}
 		vlog.Printf("exec: method=%s request_id=%s", cmd.Method, cmd.RequestID)
 		resp := h.Handle(ctx, cmd)
 		b, _ := resp.Marshal()
-		vlog.Printf("send: %s", b)
+		vlog.Printf("send: %s", truncateLog(b, 200))
 		w.Write(b)
 	}
 }

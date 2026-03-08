@@ -150,6 +150,7 @@
     document.getElementById('chat-messages').innerHTML = '<div class="loading">Loading...</div>';
     document.getElementById('chat-input').value = '';
     lastChatHTML = '';
+    queuedMessages = [];
     await loadChat();
     startChatPoll();
   }

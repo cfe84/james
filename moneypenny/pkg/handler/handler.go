@@ -516,18 +516,17 @@ func (h *Handler) stopSession(_ context.Context, cmd *envelope.Command) *envelop
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, fmt.Sprintf("session not found: %s", data.SessionID))
 	}
 
-	if sess.Status != store.StateWorking {
-		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotWorking, fmt.Sprintf("session is not working: %s", sess.Status))
-	}
+	// Try to kill the process if running; ignore errors (process may already be gone).
+	_ = h.runner.Stop(data.SessionID)
 
-	if err := h.runner.Stop(data.SessionID); err != nil {
-		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to stop session: %v", err))
-	}
+	// Drain queued prompts so they don't restart the session.
+	_, _ = h.store.DrainQueue(data.SessionID)
 
 	if err := h.store.UpdateSessionStatus(data.SessionID, store.StateIdle); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to update status: %v", err))
 	}
 
+	h.vlog("force-stopped session %s (was %s)", data.SessionID, sess.Status)
 	return envelope.SuccessResponse(cmd.RequestID, map[string]string{"session_id": data.SessionID})
 }
 
