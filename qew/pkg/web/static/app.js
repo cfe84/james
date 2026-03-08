@@ -188,10 +188,8 @@
           id: r[0], sessionId: r[1], prompt: r[2], scheduledAt: r[3], status: r[4],
         })).filter(s => s.status === 'pending');
       }
-      console.log('histResp:', JSON.stringify(histResp).substring(0, 500));
       renderChat(histResp.data, schedules);
     } catch (e) {
-      console.error('loadChat error:', e);
       document.getElementById('chat-messages').innerHTML =
         `<div class="empty-state">Error: ${escapeHtml(e.message)}</div>`;
     }

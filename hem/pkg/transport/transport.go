@@ -39,6 +39,7 @@ type Client struct {
 	fifoMu        sync.Mutex // serialise FIFO requests (no concurrent writes)
 	mi6Addr       string     // for mi6 transport
 	mi6KeyPath    string     // SSH key for mi6
+	mi6Mu         sync.Mutex // serialise MI6 requests (concurrent clients cause response mixing)
 }
 
 // NewFIFOClient creates a client that communicates via named pipes.
@@ -174,6 +175,12 @@ func isENXIO(err error) bool {
 }
 
 func (c *Client) sendMI6(ctx context.Context, cmd *Command) (*Response, error) {
+	// Serialise MI6 access — multiple mi6-client processes joining the same
+	// MI6 session causes the relay to broadcast responses to all participants,
+	// so concurrent requests would receive each other's responses.
+	c.mi6Mu.Lock()
+	defer c.mi6Mu.Unlock()
+
 	mi6Client, err := findMI6Client()
 	if err != nil {
 		return nil, err
