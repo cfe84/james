@@ -44,7 +44,7 @@ func main() {
 	filteredArgs := make([]string, 0, len(os.Args))
 	filteredArgs = append(filteredArgs, os.Args[0])
 	for i := 1; i < len(os.Args); i++ {
-		if os.Args[i] == "--mi6-control" && i+1 < len(os.Args) {
+		if os.Args[i] == "--hem" && i+1 < len(os.Args) {
 			i++
 			mi6Addr = os.Args[i]
 		} else if os.Args[i] == "--silent" {
@@ -191,7 +191,7 @@ func main() {
 	printResponse(resp.Data, cmd.OutputType)
 }
 
-// buildSender creates a Sender based on whether --mi6-control was specified.
+// buildSender creates a Sender based on whether --hem was specified.
 func buildSender(mi6Addr string) hemclient.Sender {
 	if mi6Addr == "" {
 		return &hemclient.SocketSender{SockPath: server.DefaultSocketPath()}
@@ -635,7 +635,7 @@ Other:
   version
 
 Global flags:
-  --mi6-control ADDR    Connect to hem server via MI6 instead of Unix socket
+  --hem ADDR            Connect to hem server via MI6 instead of Unix socket
   -o, --output-type     Output format: json, text, table, tsv (default: text)`)
 }
 

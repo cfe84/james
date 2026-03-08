@@ -601,12 +601,12 @@ Hem periodically syncs sessions from all registered moneypennies. On startup (as
 
 ### Client MI6 Transport
 
-`hem --mi6-control ADDRESS COMMAND` — sends commands to Hem server via MI6 instead of Unix socket.
+`hem --hem ADDRESS COMMAND` — sends commands to Hem server via MI6 instead of Unix socket.
 
 - Uses the `Sender` interface (`hemclient.MI6Sender`) which spawns a persistent `mi6-client` connection.
-- TUI also supports MI6 transport: `hem --mi6-control ADDRESS ui`.
-- The `--mi6-control` flag is extracted before command parsing and applies to all commands.
-- Named `--mi6-control` (not `--mi6`) to avoid conflict with `add moneypenny --mi6 ADDR`.
+- TUI also supports MI6 transport: `hem --hem ADDRESS ui`.
+- The `--hem` flag is extracted before command parsing and applies to all commands.
+- Named `--hem` (not `--mi6` or `--mi6-control`) to avoid conflict with `add moneypenny --mi6 ADDR` and `start server --mi6-control ADDR`.
 
 # Qew - Web UI
 
