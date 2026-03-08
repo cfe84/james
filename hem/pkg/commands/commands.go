@@ -1564,6 +1564,13 @@ func (e *Executor) HistorySession(args []string) *protocol.Response {
 		return protocol.ErrResponse(err.Error())
 	}
 
+	// Log a preview of the response for debugging.
+	preview := string(resp.Data)
+	if len(preview) > 50 {
+		preview = preview[:10] + "..." + preview[len(preview)-50:]
+	}
+	log.Printf("history: session=%s mp=%s(%s) bytes=%d preview=%s", sessionID, mp.Name, mp.TransportType, len(resp.Data), preview)
+
 	var sessionData struct {
 		Conversation []ConversationTurn `json:"conversation"`
 		Total        int                `json:"total"`
