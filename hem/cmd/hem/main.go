@@ -560,9 +560,9 @@ func runServer() {
 
 	// Start MI6 control listener if configured.
 	if mi6Control != "" {
+		log.Printf("connecting MI6 control channel: %s", mi6Control)
 		mi6Listener := server.NewMI6Listener(mi6Control, keyPath, exec, vlog)
 		go mi6Listener.Run()
-		log.Printf("MI6 control channel: %s", mi6Control)
 	}
 
 	sockPath := server.DefaultSocketPath()
