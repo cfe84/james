@@ -12,6 +12,8 @@ echo "======================"
 HEM_ARGS="start server -v"
 if [ -n "$HEM_MI6_URL" ]; then
   HEM_ARGS="$HEM_ARGS --mi6-control $HEM_MI6_URL"
+else
+  echo "Warning, no mi6 URL"
 fi
 hem $HEM_ARGS &
 HEM_PID=$!
