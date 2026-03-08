@@ -169,8 +169,8 @@
     try {
       const [histResp, showResp, schedResp] = await Promise.all([
         apiCall('history', 'session', [currentSession, '--count', '50']),
-        apiCall('show', 'session', [currentSession]),
-        apiCall('list', 'schedule', ['--session-id', currentSession]),
+        apiCall('show', 'session', [currentSession]).catch(() => null),
+        apiCall('list', 'schedule', ['--session-id', currentSession]).catch(() => null),
       ]);
       if (histResp.status === 'error') {
         document.getElementById('chat-messages').innerHTML =
@@ -179,12 +179,12 @@
       }
       // Extract session status.
       currentSessionStatus = '';
-      if (showResp.status === 'ok' && showResp.data) {
+      if (showResp && showResp.status === 'ok' && showResp.data) {
         currentSessionStatus = showResp.data.status || '';
       }
       // Extract schedules.
       let schedules = [];
-      if (schedResp.status === 'ok' && schedResp.data && schedResp.data.rows) {
+      if (schedResp && schedResp.status === 'ok' && schedResp.data && schedResp.data.rows) {
         schedules = schedResp.data.rows.map(r => ({
           id: r[0], sessionId: r[1], prompt: r[2], scheduledAt: r[3], status: r[4],
         })).filter(s => s.status === 'pending');
