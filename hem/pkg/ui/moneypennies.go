@@ -136,7 +136,7 @@ func (m moneypenniesModel) View() string {
 		return fmt.Sprintf("\n  Error: %v", m.err)
 	}
 	if len(m.moneypennies) == 0 {
-		return "\n  No moneypennies registered. Use CLI: hem add moneypenny -n NAME --local"
+		return "\n  No moneypennies registered. Press 'n' to add one."
 	}
 
 	var b strings.Builder

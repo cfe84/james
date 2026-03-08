@@ -89,7 +89,8 @@ Each component has its own `go.mod` and `Makefile`. Version is injected from `VE
 | Sessions | `sessions.go` | Enter=chat, n=new (wizard), e=edit, d=delete, g=diff, i=import, s=stop, x=shell |
 | Chat | `chat.go` | Enter=send, ^J=newline, Esc=command mode, Del=delete right, Alt+←/→=word nav. Command: c=complete, d=delete, e=edit, g=diff, s=stop, t=schedule, x=shell |
 | Shell | `shell.go` | Enter=run, Ctrl+U=clear, PgUp/PgDn=scroll |
-| Moneypennies | `moneypennies.go` | Enter=ping, s=set default, d=delete, x=shell |
+| Moneypennies | `moneypennies.go` | Enter=ping, n=new, s=set default, d=delete, x=shell |
+| Add moneypenny | `addmoneypenny.go` | Tab=next field, Space=cycle type, Enter=add |
 | Create wizard | `wizard.go` | 3-step: select moneypenny → browse path → fill form. Esc=back/cancel, Enter=select/submit, Tab=confirm path (step 2) |
 | Create session | `create.go` | Tab=next field, Enter=submit |
 | Edit session | `edit.go` | Tab=next field, Enter=save |

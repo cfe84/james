@@ -597,11 +597,12 @@ Hem supports MI6 as an alternative transport for both server and client.
 
 ### Client MI6 Transport
 
-`hem --mi6 ADDRESS COMMAND` — sends commands to Hem server via MI6 instead of Unix socket.
+`hem --mi6-control ADDRESS COMMAND` — sends commands to Hem server via MI6 instead of Unix socket.
 
 - Uses the `Sender` interface (`hemclient.MI6Sender`) which spawns a persistent `mi6-client` connection.
-- TUI also supports MI6 transport: `hem --mi6 ADDRESS ui`.
-- The `--mi6` flag is extracted before command parsing and applies to all commands.
+- TUI also supports MI6 transport: `hem --mi6-control ADDRESS ui`.
+- The `--mi6-control` flag is extracted before command parsing and applies to all commands.
+- Named `--mi6-control` (not `--mi6`) to avoid conflict with `add moneypenny --mi6 ADDR`.
 
 # Qew - Web UI
 

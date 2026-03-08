@@ -25,6 +25,7 @@ const (
 	viewDiff
 	viewEditProject
 	viewMoneypennies
+	viewAddMoneypenny
 	viewShell
 	viewWizard
 	viewTemplatePicker
@@ -45,8 +46,9 @@ type Model struct {
 	editProject   editProjectModel
 	importForm    importModel
 	diff          diffModel
-	moneypennies  moneypenniesModel
-	shell         shellModel
+	moneypennies    moneypenniesModel
+	addMoneypenny   addMoneypennyModel
+	shell           shellModel
 	wizard         wizardModel
 	templatePicker templatePickerModel
 	createTemplate createTemplateModel
@@ -201,6 +203,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateEditProject(msg)
 		case viewMoneypennies:
 			return m.updateMoneypennies(msg)
+		case viewAddMoneypenny:
+			return m.updateAddMoneypenny(msg)
 		case viewShell:
 			return m.updateShell(msg)
 		case viewWizard:
@@ -226,6 +230,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.moneypennies, cmd = m.moneypennies.Update(msg)
 		return m, cmd
+
+	case moneypennyAddedMsg:
+		if msg.err != nil {
+			m.addMoneypenny.err = msg.err
+			m.addMoneypenny.creating = false
+			return m, nil
+		}
+		m.statusMsg = "Moneypenny added"
+		m.currentView = viewMoneypennies
+		m.moneypennies = newMoneypenniesModel(m.client)
+		m.moneypennies.width = m.width
+		m.moneypennies.height = m.height - 3
+		return m, m.moneypennies.loadMoneypennies()
 
 	case wizardMPLoadedMsg, wizardDirLoadedMsg, wizardProjectLoadedMsg:
 		var cmd tea.Cmd
@@ -617,6 +634,11 @@ func (m Model) handleEsc() (tea.Model, tea.Cmd) {
 		m.statusMsg = ""
 		m.projects.loading = true
 		return m, m.projects.loadProjects()
+	case viewAddMoneypenny:
+		m.currentView = viewMoneypennies
+		m.statusMsg = ""
+		m.moneypennies.loading = true
+		return m, m.moneypennies.loadMoneypennies()
 	case viewMoneypennies:
 		m.currentView = viewDashboard
 		m.statusMsg = ""
@@ -1112,6 +1134,12 @@ func (m Model) updateMoneypennies(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if mp != nil {
 			return m, m.moneypennies.setDefault(mp.Name)
 		}
+	case "n":
+		m.addMoneypenny = newAddMoneypennyModel(m.client)
+		m.addMoneypenny.width = m.width
+		m.addMoneypenny.height = m.height - 3
+		m.currentView = viewAddMoneypenny
+		return m, nil
 	case "x":
 		mp := m.moneypennies.selectedMoneypenny()
 		if mp != nil {
@@ -1128,6 +1156,12 @@ func (m Model) updateMoneypennies(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	return m, nil
+}
+
+func (m Model) updateAddMoneypenny(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.addMoneypenny, cmd = m.addMoneypenny.Update(msg)
+	return m, cmd
 }
 
 func (m Model) updateEditProject(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1222,6 +1256,8 @@ func (m Model) View() string {
 		content = m.diff.View()
 	case viewMoneypennies:
 		content = m.moneypennies.View()
+	case viewAddMoneypenny:
+		content = m.addMoneypenny.View()
 	case viewShell:
 		content = m.shell.View()
 	case viewWizard:
@@ -1363,11 +1399,18 @@ func (m Model) renderStatusBar() string {
 	case viewMoneypennies:
 		keys = []string{
 			statusKeyStyle.Render("↵") + statusDescStyle.Render(" ping"),
+			statusKeyStyle.Render("n") + statusDescStyle.Render(" new"),
 			statusKeyStyle.Render("s") + statusDescStyle.Render(" set default"),
 			statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
 			statusKeyStyle.Render("x") + statusDescStyle.Render(" shell"),
 			statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
 			statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
+		}
+	case viewAddMoneypenny:
+		keys = []string{
+			statusKeyStyle.Render("↵") + statusDescStyle.Render(" add"),
+			statusKeyStyle.Render("tab") + statusDescStyle.Render(" next"),
+			statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
 		}
 	case viewDiff:
 		if m.diff.mode == diffModeCommitMsg {

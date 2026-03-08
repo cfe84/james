@@ -400,6 +400,17 @@ func (c *client) listMoneypennies() ([]moneypennyInfo, error) {
 	return mps, nil
 }
 
+func (c *client) addMoneypenny(args []string) error {
+	resp, err := c.send("add", "moneypenny", args...)
+	if err != nil {
+		return err
+	}
+	if resp.Status == protocol.StatusError {
+		return fmt.Errorf("%s", resp.Message)
+	}
+	return nil
+}
+
 func (c *client) pingMoneypenny(name string) (string, error) {
 	resp, err := c.send("ping", "moneypenny", "-n", name)
 	if err != nil {
