@@ -22,10 +22,10 @@ body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
   background: var(--bg);
   color: var(--text);
-  height: 100vh;
+  height: 100vh; height: 100dvh;
   overflow: hidden;
 }
-#app { max-width: 900px; margin: 0 auto; padding: 16px; height: 100vh; display: flex; flex-direction: column; }
+#app { max-width: 900px; margin: 0 auto; padding: 16px; height: 100vh; height: 100dvh; display: flex; flex-direction: column; }
 header {
   display: flex; justify-content: space-between; align-items: center;
   padding: 12px 0; border-bottom: 1px solid var(--surface2); margin-bottom: 16px;
@@ -65,15 +65,15 @@ header h1 span { color: var(--primary); }
 .session-status.idle { background: var(--surface2); color: var(--text); }
 
 /* Chat */
-#chat-view { display: none; flex-direction: column; flex: 1; overflow: hidden; }
+#chat-view { display: none; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
 #dashboard-view { flex: 1; overflow-y: auto; }
 .chat-header {
   display: flex; align-items: center; padding: 12px 0;
-  border-bottom: 1px solid var(--surface2); margin-bottom: 12px;
+  border-bottom: 1px solid var(--surface2); margin-bottom: 12px; flex-shrink: 0;
 }
 .chat-header .back { cursor: pointer; margin-right: 12px; font-size: 1.2em; }
 .chat-header h2 { font-size: 1.1em; flex: 1; }
-.chat-messages { flex: 1; overflow-y: auto; padding-bottom: 12px; }
+.chat-messages { flex: 1; overflow-y: auto; padding-bottom: 12px; min-height: 0; }
 .msg { margin-bottom: 12px; }
 .msg-role {
   font-size: 0.8em; font-weight: 600; margin-bottom: 4px;
@@ -107,7 +107,7 @@ header h1 span { color: var(--primary); }
   border: 1px solid var(--surface2); padding: 6px 10px; text-align: left;
 }
 .msg-content th { background: var(--surface2); font-weight: 600; }
-.chat-input-row { display: flex; gap: 8px; padding-top: 12px; border-top: 1px solid var(--surface2); }
+.chat-input-row { display: flex; gap: 8px; padding-top: 12px; border-top: 1px solid var(--surface2); flex-shrink: 0; }
 .chat-input-row textarea {
   flex: 1; background: var(--surface); color: var(--text); border: 1px solid var(--surface2);
   border-radius: 6px; padding: 10px; font-size: 0.95em; resize: none;

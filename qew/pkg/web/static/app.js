@@ -150,7 +150,6 @@
     document.getElementById('chat-messages').innerHTML = '<div class="loading">Loading...</div>';
     document.getElementById('chat-input').value = '';
     lastChatHTML = '';
-    stopDashboardPoll();
     await loadChat();
     startChatPoll();
   }
@@ -198,7 +197,11 @@
 
   function renderChat(data, schedules) {
     const container = document.getElementById('chat-messages');
-    if (!data || !data.conversation || data.conversation.length === 0) {
+    if (!data) {
+      container.innerHTML = '<div class="empty-state">No data received</div>';
+      return;
+    }
+    if (!data.conversation || data.conversation.length === 0) {
       container.innerHTML = '<div class="empty-state">No messages yet</div>';
       return;
     }
@@ -381,6 +384,12 @@
       popover.classList.remove('show');
       setTimeout(() => popover.remove(), 300);
     }, 4000);
+    // Browser notification (works when tab is in background).
+    if (Notification.permission === 'granted') {
+      new Notification('Session ready', { body: sessionName });
+    } else if (Notification.permission !== 'denied') {
+      Notification.requestPermission();
+    }
   }
 
   function toggleSound() {

@@ -1581,6 +1581,9 @@ func (e *Executor) HistorySession(args []string) *protocol.Response {
 	}
 
 	conv := sessionData.Conversation
+	if conv == nil {
+		conv = []ConversationTurn{}
+	}
 	if numTurns > 0 && numTurns < len(conv) {
 		conv = conv[len(conv)-numTurns:]
 	}
