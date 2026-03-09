@@ -1,6 +1,8 @@
 package transport
 
 import (
+	"bytes"
+	"compress/gzip"
 	"crypto"
 	"crypto/aes"
 	"crypto/cipher"
@@ -20,6 +22,14 @@ import (
 	"james/mi6/pkg/protocol"
 )
 
+// Capability flags negotiated during handshake.
+const (
+	CapGzip uint8 = 1 << 0 // gzip compression on encrypted payloads
+)
+
+// minCompressSize is the minimum plaintext size worth compressing.
+const minCompressSize = 128
+
 var (
 	ErrUnauthorized = errors.New("transport: unauthorized public key")
 	ErrAuthFailed   = errors.New("transport: authentication failed")
@@ -34,6 +44,7 @@ type SecureConn struct {
 	sendMu      sync.Mutex    // protects Send from concurrent writes
 	sendCount   atomic.Uint64 // monotonic counter for nonce generation
 	noncePrefix [4]byte       // random prefix set at init, differentiates connection restarts
+	compressed  bool          // true if both sides negotiated gzip
 }
 
 // ClientHandshakeParams holds the parameters for a client handshake.
@@ -53,20 +64,25 @@ type ClientHandshakeParams struct {
 func ClientHandshake(params ClientHandshakeParams) (*SecureConn, error) {
 	conn := params.Conn
 
-	// Step 1: Generate ECDH keypair and send MsgHello with our ECDH pub.
+	// Step 1: Generate ECDH keypair and send MsgHello with our ECDH pub + capabilities.
 	clientECDH, err := auth.GenerateECDHKeyPair()
 	if err != nil {
 		return nil, fmt.Errorf("transport: generating ECDH keypair: %w", err)
 	}
 
+	clientCaps := CapGzip
+	helloPayload := make([]byte, 33)
+	copy(helloPayload[:32], clientECDH.PublicKey().Bytes())
+	helloPayload[32] = clientCaps
+
 	if err := protocol.WriteMessage(conn, &protocol.Message{
 		Type:    protocol.MsgHello,
-		Payload: clientECDH.PublicKey().Bytes(),
+		Payload: helloPayload,
 	}); err != nil {
 		return nil, fmt.Errorf("transport: sending hello: %w", err)
 	}
 
-	// Step 2: Receive MsgServerHello with server's ECDH pub.
+	// Step 2: Receive MsgServerHello with server's ECDH pub + optional capabilities.
 	serverHello, err := protocol.ReadMessage(conn)
 	if err != nil {
 		return nil, fmt.Errorf("transport: reading server hello: %w", err)
@@ -77,11 +93,17 @@ func ClientHandshake(params ClientHandshakeParams) (*SecureConn, error) {
 		}
 		return nil, fmt.Errorf("%w: expected MsgServerHello, got %d", ErrBadHandshake, serverHello.Type)
 	}
-	if len(serverHello.Payload) != 32 {
-		return nil, fmt.Errorf("%w: server ECDH pub must be 32 bytes", ErrBadHandshake)
+	if len(serverHello.Payload) < 32 {
+		return nil, fmt.Errorf("%w: server ECDH pub must be at least 32 bytes", ErrBadHandshake)
 	}
 
-	serverECDHPub, err := ecdh.X25519().NewPublicKey(serverHello.Payload)
+	var serverCaps uint8
+	if len(serverHello.Payload) > 32 {
+		serverCaps = serverHello.Payload[32]
+	}
+	negotiatedCaps := clientCaps & serverCaps
+
+	serverECDHPub, err := ecdh.X25519().NewPublicKey(serverHello.Payload[:32])
 	if err != nil {
 		return nil, fmt.Errorf("transport: parsing server ECDH public key: %w", err)
 	}
@@ -97,7 +119,11 @@ func ClientHandshake(params ClientHandshakeParams) (*SecureConn, error) {
 		return nil, err
 	}
 
-	sc := &SecureConn{conn: conn, cipher: aesCipher}
+	sc := &SecureConn{
+		conn:       conn,
+		cipher:     aesCipher,
+		compressed: negotiatedCaps&CapGzip != 0,
+	}
 	if _, err := rand.Read(sc.noncePrefix[:]); err != nil {
 		return nil, fmt.Errorf("generating nonce prefix: %w", err)
 	}
@@ -124,7 +150,7 @@ func ClientHandshake(params ClientHandshakeParams) (*SecureConn, error) {
 	// Verify server's signature over the transcript (client_ecdh_pub || server_ecdh_pub).
 	transcript := make([]byte, 64)
 	copy(transcript[:32], clientECDH.PublicKey().Bytes())
-	copy(transcript[32:], serverHello.Payload)
+	copy(transcript[32:], serverHello.Payload[:32])
 	if err := auth.VerifyChallenge(serverSSHPubKey, transcript, serverSig); err != nil {
 		return nil, fmt.Errorf("transport: server identity verification failed: %w", err)
 	}
@@ -138,7 +164,7 @@ func ClientHandshake(params ClientHandshakeParams) (*SecureConn, error) {
 
 	// Step 5: Send encrypted MsgClientAuth: [SSH pubkey] + [signature of (server_ecdh_pub || client_ecdh_pub)].
 	clientTranscript := make([]byte, 64)
-	copy(clientTranscript[:32], serverHello.Payload)
+	copy(clientTranscript[:32], serverHello.Payload[:32])
 	copy(clientTranscript[32:], clientECDH.PublicKey().Bytes())
 	clientSig, err := auth.SignChallenge(params.Signer, clientTranscript)
 	if err != nil {
@@ -180,7 +206,7 @@ type ServerHandshakeParams struct {
 func ServerHandshake(params ServerHandshakeParams) (*SecureConn, ssh.PublicKey, error) {
 	conn := params.Conn
 
-	// Step 1: Receive MsgHello with client's ECDH pub.
+	// Step 1: Receive MsgHello with client's ECDH pub + optional capabilities.
 	clientHello, err := protocol.ReadMessage(conn)
 	if err != nil {
 		return nil, nil, fmt.Errorf("transport: reading client hello: %w", err)
@@ -188,24 +214,35 @@ func ServerHandshake(params ServerHandshakeParams) (*SecureConn, ssh.PublicKey, 
 	if clientHello.Type != protocol.MsgHello {
 		return nil, nil, fmt.Errorf("%w: expected MsgHello, got %d", ErrBadHandshake, clientHello.Type)
 	}
-	if len(clientHello.Payload) != 32 {
-		return nil, nil, fmt.Errorf("%w: client ECDH pub must be 32 bytes", ErrBadHandshake)
+	if len(clientHello.Payload) < 32 {
+		return nil, nil, fmt.Errorf("%w: client ECDH pub must be at least 32 bytes", ErrBadHandshake)
 	}
 
-	clientECDHPub, err := ecdh.X25519().NewPublicKey(clientHello.Payload)
+	var clientCaps uint8
+	if len(clientHello.Payload) > 32 {
+		clientCaps = clientHello.Payload[32]
+	}
+
+	clientECDHPub, err := ecdh.X25519().NewPublicKey(clientHello.Payload[:32])
 	if err != nil {
 		return nil, nil, fmt.Errorf("transport: parsing client ECDH public key: %w", err)
 	}
 
-	// Step 2: Generate ECDH keypair, send MsgServerHello.
+	// Step 2: Generate ECDH keypair, send MsgServerHello with capabilities.
 	serverECDH, err := auth.GenerateECDHKeyPair()
 	if err != nil {
 		return nil, nil, fmt.Errorf("transport: generating ECDH keypair: %w", err)
 	}
 
+	serverCaps := CapGzip
+	serverHelloPayload := make([]byte, 33)
+	copy(serverHelloPayload[:32], serverECDH.PublicKey().Bytes())
+	serverHelloPayload[32] = serverCaps
+	negotiatedCaps := clientCaps & serverCaps
+
 	if err := protocol.WriteMessage(conn, &protocol.Message{
 		Type:    protocol.MsgServerHello,
-		Payload: serverECDH.PublicKey().Bytes(),
+		Payload: serverHelloPayload,
 	}); err != nil {
 		return nil, nil, fmt.Errorf("transport: sending server hello: %w", err)
 	}
@@ -221,14 +258,18 @@ func ServerHandshake(params ServerHandshakeParams) (*SecureConn, ssh.PublicKey, 
 		return nil, nil, err
 	}
 
-	sc := &SecureConn{conn: conn, cipher: aesCipher}
+	sc := &SecureConn{
+		conn:       conn,
+		cipher:     aesCipher,
+		compressed: negotiatedCaps&CapGzip != 0,
+	}
 	if _, err := rand.Read(sc.noncePrefix[:]); err != nil {
 		return nil, nil, fmt.Errorf("generating nonce prefix: %w", err)
 	}
 
 	// Step 4: Send encrypted MsgServerAuth: [SSH pubkey] + [signature of (client_ecdh_pub || server_ecdh_pub)].
 	transcript := make([]byte, 64)
-	copy(transcript[:32], clientHello.Payload)
+	copy(transcript[:32], clientHello.Payload[:32])
 	copy(transcript[32:], serverECDH.PublicKey().Bytes())
 	serverSig, err := auth.SignChallenge(params.Signer, transcript)
 	if err != nil {
@@ -267,7 +308,7 @@ func ServerHandshake(params ServerHandshakeParams) (*SecureConn, ssh.PublicKey, 
 	// Verify client's signature over (server_ecdh_pub || client_ecdh_pub).
 	clientTranscript := make([]byte, 64)
 	copy(clientTranscript[:32], serverECDH.PublicKey().Bytes())
-	copy(clientTranscript[32:], clientHello.Payload)
+	copy(clientTranscript[32:], clientHello.Payload[:32])
 	if err := auth.VerifyChallenge(clientSSHPubKey, clientTranscript, clientSig); err != nil {
 		_ = sc.Send(&protocol.Message{Type: protocol.MsgAuthFail, Payload: []byte("verification failed")})
 		return nil, nil, fmt.Errorf("transport: client signature verification failed: %w", err)
@@ -313,11 +354,21 @@ func parseAuthPayload(payload []byte) (ssh.PublicKey, []byte, error) {
 
 // Send encrypts and sends a protocol message.
 // Frame format: [4-byte length][12-byte nonce][ciphertext+tag]
+// If compression is negotiated, plaintext is gzip-compressed before encryption
+// for messages above minCompressSize. A 1-byte prefix (0x00=raw, 0x01=gzip)
+// is prepended so the receiver knows how to decode.
 // Safe for concurrent use.
 func (sc *SecureConn) Send(msg *protocol.Message) error {
 	plaintext, err := protocol.Encode(msg)
 	if err != nil {
 		return fmt.Errorf("transport: encoding message: %w", err)
+	}
+
+	if sc.compressed {
+		plaintext, err = compressFrame(plaintext)
+		if err != nil {
+			return fmt.Errorf("transport: compressing message: %w", err)
+		}
 	}
 
 	// Counter-based nonce: 4 random bytes (set at init) + 8-byte monotonic counter.
@@ -380,6 +431,13 @@ func (sc *SecureConn) Receive() (*protocol.Message, error) {
 		return nil, fmt.Errorf("transport: decrypting message: %w", err)
 	}
 
+	if sc.compressed {
+		plaintext, err = decompressFrame(plaintext)
+		if err != nil {
+			return nil, fmt.Errorf("transport: decompressing message: %w", err)
+		}
+	}
+
 	return protocol.Decode(plaintext)
 }
 
@@ -401,4 +459,64 @@ func newAESGCM(key []byte) (cipher.AEAD, error) {
 	}
 
 	return gcm, nil
+}
+
+// Frame compression prefix bytes.
+const (
+	frameRaw  = 0x00
+	frameGzip = 0x01
+)
+
+// compressFrame prepends a 1-byte flag and optionally gzip-compresses data.
+// Small payloads (< minCompressSize) are sent raw to avoid overhead.
+func compressFrame(data []byte) ([]byte, error) {
+	if len(data) < minCompressSize {
+		out := make([]byte, 1+len(data))
+		out[0] = frameRaw
+		copy(out[1:], data)
+		return out, nil
+	}
+
+	var buf bytes.Buffer
+	buf.WriteByte(frameGzip)
+	gz, err := gzip.NewWriterLevel(&buf, gzip.BestSpeed)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := gz.Write(data); err != nil {
+		return nil, err
+	}
+	if err := gz.Close(); err != nil {
+		return nil, err
+	}
+
+	// If compression didn't help, send raw.
+	if buf.Len() >= 1+len(data) {
+		out := make([]byte, 1+len(data))
+		out[0] = frameRaw
+		copy(out[1:], data)
+		return out, nil
+	}
+
+	return buf.Bytes(), nil
+}
+
+// decompressFrame reads the 1-byte flag and decompresses if needed.
+func decompressFrame(data []byte) ([]byte, error) {
+	if len(data) < 1 {
+		return nil, fmt.Errorf("compressed frame too short")
+	}
+	switch data[0] {
+	case frameRaw:
+		return data[1:], nil
+	case frameGzip:
+		gz, err := gzip.NewReader(bytes.NewReader(data[1:]))
+		if err != nil {
+			return nil, fmt.Errorf("gzip reader: %w", err)
+		}
+		defer gz.Close()
+		return io.ReadAll(gz)
+	default:
+		return nil, fmt.Errorf("unknown compression flag: 0x%02x", data[0])
+	}
 }

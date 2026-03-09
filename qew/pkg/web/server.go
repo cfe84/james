@@ -280,7 +280,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		if wait := s.loginDelay(ip); wait > 0 {
 			s.vlog.Printf("login rate-limited: %s (wait %v)", ip, wait)
 			w.WriteHeader(http.StatusTooManyRequests)
-			fmt.Fprintf(w, loginPageHTML(fmt.Sprintf("Too many attempts. Try again in %d seconds.", int(wait.Seconds())+1)))
+			fmt.Fprint(w, loginPageHTML(fmt.Sprintf("Too many attempts. Try again in %d seconds.", int(wait.Seconds())+1)))
 			return
 		}
 

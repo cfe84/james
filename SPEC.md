@@ -128,7 +128,7 @@ MI6 is a transport abstraction that allows, by creating a central place that all
 - It is built using golang.
 - mi-6 client opens a session to mi6-server. That session is authenticated using ssh-keys, and has a session-id determined by the client.
 - mi-6 server has a list of authorized_keys, we should support ecdsa and rsa.
-- communication between client and server is encrypted using the ssh-key
+- communication between client and server is encrypted using the ssh-key, with per-message gzip compression negotiated during handshake
 - 2 or more clients will open the same session on mi-6 server, then communicate through it.
 - Communication on the client happens through stdio. Client should batch some of the text coming through stdin, then send to the server. Server then broadcasts to all _other_ connected clients to their stdout.
 - For the client, let's support `mi6-client mi6.servername.com/session_id` as a valid command, in addition to flags.
@@ -321,7 +321,8 @@ Hem manages sessions on moneypennies. It tracks which moneypenny each session li
 - Hem generates a session_id (UUID) and sends `create_session` to the moneypenny.
 - By default: waits for the agent to complete, prints the session_id and the response.
 - With `--async`: prints the session_id and returns immediately without waiting.
-- Flags: `--agent NAME` (default "claude"), `--name NAME` (session name, default empty), `--system-prompt TEXT`, `--yolo` (skip permissions), `--path PATH` (working directory for the agent).
+- Flags: `--agent NAME` (default "claude"), `--name NAME` (session name, default empty), `--system-prompt TEXT`, `--yolo` (skip permissions), `--path PATH` (working directory for the agent), `--gadgets` (include James tooling instructions in system prompt).
+- `--gadgets`: Appends instructions telling the agent about `hem` CLI access and scheduling. For MI6-connected moneypennies, includes the MI6 server address so the agent can connect back. Templates always include gadgets.
 
 ### Continue
 

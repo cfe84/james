@@ -33,11 +33,13 @@ mi6/
 
 4. **Wire Protocol**: Binary framed messages. Pre-auth messages are plaintext; post-auth encrypted with AES-256-GCM. Frame: `[length:4][nonce:12][encrypted_payload][tag:16]`.
 
-5. **Sessions**: Lazy creation (first client join creates session). In-memory only (no persistence). Server broadcasts data to all OTHER connected clients in the same session.
+5. **Compression**: Per-message gzip, negotiated during handshake via capability flags in MsgHello/MsgServerHello payloads (byte 33+). Both sides advertise capabilities; intersection is used. When enabled, plaintext is prefixed with a 1-byte flag (`0x00`=raw, `0x01`=gzip) before encryption. Messages under 128 bytes skip compression. Falls back to raw if gzip doesn't reduce size. Backward compatible: old clients send 32-byte hello payloads (no capabilities), new peers detect this and disable compression.
 
-6. **Batching**: Client batches stdin with triple trigger: newline, buffer size (4KB), or idle timeout (100ms).
+6. **Sessions**: Lazy creation (first client join creates session). In-memory only (no persistence). Server broadcasts data to all OTHER connected clients in the same session.
 
-7. **authorized_keys**: Standard OpenSSH format, reloaded on SIGHUP.
+7. **Batching**: Client batches stdin with triple trigger: newline, buffer size (4KB), or idle timeout (100ms).
+
+8. **authorized_keys**: Standard OpenSSH format, reloaded on SIGHUP.
 
 ### Auth Flow
 

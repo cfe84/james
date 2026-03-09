@@ -435,6 +435,121 @@ func TestMultipleMessagesInSequence(t *testing.T) {
 	}
 }
 
+func TestCompressionNegotiated(t *testing.T) {
+	clientKey, clientPub := generateRSAKey(t)
+	serverKey, serverPub := generateServerKey(t)
+	authorizedKeys := []ssh.PublicKey{clientPub}
+
+	clientConn, serverConn := net.Pipe()
+
+	var (
+		wg       sync.WaitGroup
+		clientSC *SecureConn
+		serverSC *SecureConn
+	)
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		var err error
+		clientSC, err = ClientHandshake(ClientHandshakeParams{
+			Conn:   clientConn,
+			Signer: clientKey,
+			PubKey: clientPub,
+		})
+		if err != nil {
+			t.Errorf("client handshake: %v", err)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		var err error
+		serverSC, _, err = ServerHandshake(ServerHandshakeParams{
+			Conn:           serverConn,
+			Signer:         serverKey,
+			PubKey:         serverPub,
+			AuthorizedKeys: authorizedKeys,
+		})
+		if err != nil {
+			t.Errorf("server handshake: %v", err)
+		}
+	}()
+	wg.Wait()
+
+	if t.Failed() {
+		return
+	}
+	defer clientSC.Close()
+	defer serverSC.Close()
+
+	if !clientSC.compressed {
+		t.Fatal("client should have compression enabled")
+	}
+	if !serverSC.compressed {
+		t.Fatal("server should have compression enabled")
+	}
+
+	// Send a large compressible payload.
+	bigPayload := bytes.Repeat([]byte("hello world, this is a test of gzip compression "), 100)
+	sent := &protocol.Message{
+		Type:      protocol.MsgData,
+		SessionID: "compress-test",
+		Payload:   bigPayload,
+	}
+
+	var (
+		received *protocol.Message
+		sendErr  error
+		recvErr  error
+	)
+
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		sendErr = clientSC.Send(sent)
+	}()
+	go func() {
+		defer wg.Done()
+		received, recvErr = serverSC.Receive()
+	}()
+	wg.Wait()
+
+	if sendErr != nil {
+		t.Fatalf("send: %v", sendErr)
+	}
+	if recvErr != nil {
+		t.Fatalf("receive: %v", recvErr)
+	}
+	assertMessageEqual(t, sent, received)
+
+	// Also test a small message (should skip compression).
+	small := &protocol.Message{
+		Type:      protocol.MsgPing,
+		SessionID: "",
+		Payload:   []byte("hi"),
+	}
+
+	var smallRecv *protocol.Message
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		sendErr = serverSC.Send(small)
+	}()
+	go func() {
+		defer wg.Done()
+		smallRecv, recvErr = clientSC.Receive()
+	}()
+	wg.Wait()
+
+	if sendErr != nil {
+		t.Fatalf("send small: %v", sendErr)
+	}
+	if recvErr != nil {
+		t.Fatalf("receive small: %v", recvErr)
+	}
+	assertMessageEqual(t, small, smallRecv)
+}
+
 // assertMessageEqual compares two protocol messages field by field.
 func assertMessageEqual(t *testing.T, want, got *protocol.Message) {
 	t.Helper()

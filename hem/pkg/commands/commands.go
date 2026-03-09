@@ -19,12 +19,27 @@ import (
 	"james/hem/pkg/transport"
 )
 
-const gadgetsSystemPrompt = `
+func gadgetsSystemPrompt(mp *store.Moneypenny) string {
+	var hemHint string
+	if mp != nil && mp.TransportType == "mi6" && mp.MI6Addr != "" {
+		// Extract the MI6 server host (before the /session_id part).
+		host := mp.MI6Addr
+		if idx := strings.Index(host, "/"); idx >= 0 {
+			host = host[:idx]
+		}
+		hemHint = fmt.Sprintf("You have access to agent orchestration using the `hem` CLI. Use `hem --mi6 %s` to connect. Run `hem -h` to see available commands.", host)
+	} else {
+		hemHint = "You have access to agent orchestration using the `hem` CLI. Run `hem -h` to see available commands."
+	}
+
+	return fmt.Sprintf(`
+%s
 You can schedule a follow-up task by including a tag in your response:
 <schedule at="2026-03-07T15:00:00Z">Your follow-up prompt here</schedule>
 The "at" attribute accepts RFC3339 timestamps or relative durations like "+2h", "+30m".
 When you schedule a follow-up, the system will automatically send that prompt to you at the specified time.
-Use this to set reminders, check on long-running processes, or break work into timed phases.`
+Use this to set reminders, check on long-running processes, or break work into timed phases.`, hemHint)
+}
 
 // Executor runs commands using the store and transport layer.
 type Executor struct {
@@ -1055,7 +1070,7 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 
 	// Append gadgets (James tooling instructions) to system prompt when enabled.
 	if gadgets {
-		systemPrompt += gadgetsSystemPrompt
+		systemPrompt += gadgetsSystemPrompt(mp)
 	}
 
 	cmdData := map[string]interface{}{
@@ -2206,7 +2221,7 @@ func (e *Executor) UseTemplate(args []string) *protocol.Response {
 	sessionName := t.Name
 
 	// Templates always include gadgets (James tooling).
-	systemPrompt += gadgetsSystemPrompt
+	systemPrompt += gadgetsSystemPrompt(mp)
 
 	cmdData := map[string]interface{}{
 		"agent":      agent,

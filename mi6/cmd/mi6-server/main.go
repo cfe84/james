@@ -292,6 +292,8 @@ func handleConnection(
 				log.Printf("Failed to send pong to client %s: %v", client.ID, err)
 				return
 			}
+		case protocol.MsgPong:
+			// Keepalive response from client — nothing to do.
 		case protocol.MsgLeaveSession:
 			log.Printf("Client %s requested leave", client.ID)
 			return
