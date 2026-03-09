@@ -25,6 +25,7 @@ const chatPageSize = 10
 type chatModel struct {
 	sessionID     string
 	sessionName   string
+	moneypennyName string
 	sessionStatus string // moneypenny status (ready, working, etc.)
 	conversation  []conversationTurn
 	totalTurns    int // total turns on server
@@ -48,12 +49,13 @@ type chatModel struct {
 	client        *client
 }
 
-func newChatModel(c *client, sessionID, sessionName string) chatModel {
+func newChatModel(c *client, sessionID, sessionName, moneypennyName string) chatModel {
 	return chatModel{
-		client:      c,
-		sessionID:   sessionID,
-		sessionName: sessionName,
-		loading:     true,
+		client:         c,
+		sessionID:      sessionID,
+		sessionName:    sessionName,
+		moneypennyName: moneypennyName,
+		loading:        true,
 	}
 }
 
@@ -423,9 +425,13 @@ func (m chatModel) View() string {
 	var b strings.Builder
 
 	// Title bar
-	title := fmt.Sprintf(" Chat: %s ", m.sessionName)
-	if m.sessionName == "" {
-		title = fmt.Sprintf(" Chat: %s ", truncate(m.sessionID, 20))
+	name := m.sessionName
+	if name == "" {
+		name = truncate(m.sessionID, 20)
+	}
+	title := fmt.Sprintf(" Chat: %s ", name)
+	if m.moneypennyName != "" {
+		title = fmt.Sprintf(" Chat: %s (%s) ", name, m.moneypennyName)
 	}
 	b.WriteString(titleStyle.Render(title))
 	b.WriteString("\n")
@@ -486,7 +492,7 @@ func (m chatModel) View() string {
 			prefix = assistantMsgStyle.Render("🕴️ agent")
 		}
 		if turn.CreatedAt != "" {
-			prefix += " " + lipgloss.NewStyle().Foreground(colorMuted).Render(turn.CreatedAt)
+			prefix += " " + lipgloss.NewStyle().Foreground(colorMuted).Render(localTime(turn.CreatedAt))
 		}
 		msgLines = append(msgLines, prefix)
 
@@ -753,4 +759,17 @@ var spyVerbs = []string{"Infiltrating...", "Surveilling...", "Decrypting...", "O
 
 func pickSpyVerb() string {
 	return spyVerbs[rand.Intn(len(spyVerbs))]
+}
+
+// localTime parses a UTC timestamp string and returns it formatted in local time.
+func localTime(s string) string {
+	for _, layout := range []string{
+		"2006-01-02T15:04:05Z",
+		time.RFC3339,
+	} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.Local().Format("15:04:05")
+		}
+	}
+	return s
 }

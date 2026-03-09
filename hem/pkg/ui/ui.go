@@ -533,7 +533,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		m.chat = newChatModel(m.client, cm.sessionID, "")
+		var mpName string
+		if isWizard {
+			mpName = m.wizard.selectedMP
+		}
+		m.chat = newChatModel(m.client, cm.sessionID, "", mpName)
 		m.chat.width = m.width
 		m.chat.height = m.height - 3
 		if cm.response != "" {
@@ -711,7 +715,7 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		e := m.dashboard.selectedEntry()
 		if e != nil {
-			m.chat = newChatModel(m.client, e.SessionID, e.Name)
+			m.chat = newChatModel(m.client, e.SessionID, e.Name, e.Moneypenny)
 			m.chat.width = m.width
 			m.chat.height = m.height - 3
 			m = m.withChatDraftRestored()
@@ -846,7 +850,7 @@ func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		e := m.projectDetail.selectedEntry()
 		if e != nil {
-			m.chat = newChatModel(m.client, e.SessionID, e.Name)
+			m.chat = newChatModel(m.client, e.SessionID, e.Name, e.Moneypenny)
 			m.chat.width = m.width
 			m.chat.height = m.height - 3
 			m = m.withChatDraftRestored()
@@ -956,7 +960,7 @@ func (m Model) updateSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		s := m.sessions.selectedSession()
 		if s != nil {
-			m.chat = newChatModel(m.client, s.SessionID, s.Name)
+			m.chat = newChatModel(m.client, s.SessionID, s.Name, s.Moneypenny)
 			m.chat.width = m.width
 			m.chat.height = m.height - 3
 			m = m.withChatDraftRestored()
