@@ -84,7 +84,7 @@ func newWizardModel(c *client) wizardModel {
 			{label: "Agent", flag: "--agent", value: ""},
 			{label: "System Prompt", flag: "--system-prompt", value: ""},
 			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
-			{label: "Gadgets (James tooling)", flag: "--gadgets", isBool: true, value: "true"},
+			{label: "Gadgets (James tooling)", flag: "--gadgets", isBool: true, value: "false"},
 		},
 	}
 }
@@ -590,8 +590,8 @@ func (m wizardModel) viewFormStep() string {
 		mpLabel, lipgloss.NewStyle().Foreground(colorSuccess).Render(m.selectedMP),
 		pathLabel, lipgloss.NewStyle().Foreground(colorSuccess).Render(m.selectedPath)))
 
-	// labelWidth (16) + indent (2) + space (1) = 19 chars before value.
-	const valueIndent = 19
+	// labelWidth (24) + indent (2) + space (1) = 27 chars before value.
+	const valueIndent = 27
 	maxValueWidth := m.width - valueIndent - 2
 	if maxValueWidth < 20 {
 		maxValueWidth = 20

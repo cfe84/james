@@ -483,7 +483,7 @@
         <label for="wiz-yolo" style="margin:0;color:var(--text)">License to Kill (skip permission prompts)</label>
       </div>
       <div class="toggle-row">
-        <input type="checkbox" id="wiz-gadgets" checked>
+        <input type="checkbox" id="wiz-gadgets">
         <label for="wiz-gadgets" style="margin:0;color:var(--text)">Gadgets (include James tooling in system prompt)</label>
       </div>
       <div class="modal-actions">
@@ -517,7 +517,7 @@
     const sysprompt = document.getElementById('wiz-sysprompt').value.trim();
     if (sysprompt) args.push('--system-prompt', sysprompt);
     if (document.getElementById('wiz-yolo').checked) args.push('--yolo');
-    if (!document.getElementById('wiz-gadgets').checked) args.push('--gadgets=false');
+    if (document.getElementById('wiz-gadgets').checked) args.push('--gadgets');
     args.push(prompt);
 
     document.getElementById('wiz-submit').disabled = true;

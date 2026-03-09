@@ -24,7 +24,8 @@ COPY qew/ .
 RUN CGO_ENABLED=0 go build -ldflags "-X main.Version=${VERSION}" -o qew ./cmd/qew/
 
 FROM alpine:3.20
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates tzdata
+ENV TZ=America/Denver
 COPY --from=hem-builder /build/hem /usr/local/bin/hem
 COPY --from=mi6-builder /build/mi6-client /usr/local/bin/mi6-client
 COPY --from=qew-builder /build/qew /usr/local/bin/qew

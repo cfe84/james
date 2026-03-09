@@ -37,5 +37,5 @@ func notificationWavPath() string {
 	if err != nil {
 		home = "."
 	}
-	return filepath.Join(home, ".config", "james", "hem", "notification.wav")
+	return filepath.Join(home, ".config", "james", "hem", "james.wav")
 }

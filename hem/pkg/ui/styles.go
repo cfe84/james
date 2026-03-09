@@ -82,7 +82,7 @@ var (
 
 	labelStyle = lipgloss.NewStyle().
 			Foreground(colorSecondary).
-			Width(16)
+			Width(24)
 
 	fieldActiveStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#FFFFFF")).

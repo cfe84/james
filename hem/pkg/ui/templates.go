@@ -336,14 +336,14 @@ func (m createTemplateModel) View() string {
 	b.WriteString(titleStyle.Render(" New Template "))
 	b.WriteString("\n\n")
 
-	labelWidth := 16
+	labelWidth := 24
 	wrapWidth := m.width - labelWidth - 6
 	if wrapWidth < 30 {
 		wrapWidth = 60
 	}
 
 	for i, f := range m.fields {
-		label := labelStyle.Render(fmt.Sprintf("%-14s:", f.label))
+		label := labelStyle.Render(fmt.Sprintf("%-22s:", f.label))
 		if i == m.cursor {
 			if f.isBool {
 				check := "[ ]"

@@ -40,7 +40,7 @@ func main() {
 
 	// Extract global flags from args before cli.Parse.
 	var mi6Addr string
-	var silent bool
+	var silent, verbose bool
 	filteredArgs := make([]string, 0, len(os.Args))
 	filteredArgs = append(filteredArgs, os.Args[0])
 	for i := 1; i < len(os.Args); i++ {
@@ -49,6 +49,8 @@ func main() {
 			mi6Addr = os.Args[i]
 		} else if os.Args[i] == "--silent" {
 			silent = true
+		} else if os.Args[i] == "--verbose" {
+			verbose = true
 		} else {
 			filteredArgs = append(filteredArgs, os.Args[i])
 		}
@@ -56,7 +58,11 @@ func main() {
 	os.Args = filteredArgs
 
 	// Build sender based on transport.
-	sender := buildSender(mi6Addr)
+	var sender hemclient.Sender
+	sender = buildSender(mi6Addr)
+	if verbose {
+		sender = &verboseSender{inner: sender}
+	}
 
 	if len(os.Args) < 2 {
 		printUsage()
@@ -203,6 +209,24 @@ func buildSender(mi6Addr string) hemclient.Sender {
 		log.Fatalf("failed to connect to MI6 at %s: %v", mi6Addr, err)
 	}
 	return s
+}
+
+// verboseSender wraps a Sender and logs request/response details to stderr.
+type verboseSender struct {
+	inner hemclient.Sender
+}
+
+func (v *verboseSender) Send(req *protocol.Request) (*protocol.Response, error) {
+	fmt.Fprintf(os.Stderr, "%s→ %s %s %v%s\n", colorMuted, req.Verb, req.Noun, req.Args, colorReset)
+	start := time.Now()
+	resp, err := v.inner.Send(req)
+	elapsed := time.Since(start)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%s✗ error after %v: %v%s\n", colorRed, elapsed, err, colorReset)
+	} else {
+		fmt.Fprintf(os.Stderr, "%s← %s (%v)%s\n", colorMuted, resp.Status, elapsed, colorReset)
+	}
+	return resp, err
 }
 
 // printResponse formats and prints the server response data.
@@ -377,6 +401,7 @@ const (
 	colorReset     = "\033[0m"
 	colorYellow    = "\033[33m"
 	colorRed       = "\033[31m"
+	colorMuted     = "\033[90m"
 )
 
 // runChat runs an interactive chat session.

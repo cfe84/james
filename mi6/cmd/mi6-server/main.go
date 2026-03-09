@@ -156,6 +156,12 @@ func main() {
 			continue
 		}
 
+		// Enable TCP keepalive to detect dead connections.
+		if tc, ok := conn.(*net.TCPConn); ok {
+			tc.SetKeepAlive(true)
+			tc.SetKeepAlivePeriod(30 * time.Second)
+		}
+
 		wg.Add(1)
 		go func(conn net.Conn) {
 			defer wg.Done()
@@ -250,6 +256,26 @@ func handleConnection(
 		}
 	}()
 
+	// Keepalive goroutine: send periodic pings to detect dead connections.
+	pingDone := make(chan struct{})
+	go func() {
+		defer close(pingDone)
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := secureConn.Send(&protocol.Message{Type: protocol.MsgPing}); err != nil {
+					log.Printf("Ping failed for client %s: %v", client.ID, err)
+					conn.Close() // force read loop to exit
+					return
+				}
+			case <-writeDone:
+				return
+			}
+		}
+	}()
+
 	// Read loop: receive messages from the client.
 	for {
 		msg, err := secureConn.Receive()
@@ -274,6 +300,7 @@ func handleConnection(
 		}
 	}
 
-	// Wait for write goroutine to finish (Leave will close WriteCh via defer).
+	// Wait for write and ping goroutines to finish (Leave will close WriteCh via defer).
 	<-writeDone
+	<-pingDone
 }

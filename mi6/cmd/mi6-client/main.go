@@ -109,6 +109,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("failed to connect to server: %v", err)
 	}
+	// Enable TCP keepalive to detect dead connections.
+	if tc, ok := conn.(*net.TCPConn); ok {
+		tc.SetKeepAlive(true)
+		tc.SetKeepAlivePeriod(30 * time.Second)
+	}
 
 	// Perform mutual-auth handshake with TOFU server verification.
 	secureConn, err := transport.ClientHandshake(transport.ClientHandshakeParams{

@@ -959,7 +959,7 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 		fs.StringVar(&sessionName, "name", "", "session name")
 		fs.StringVar(&systemPrompt, "system-prompt", "", "system prompt")
 		fs.BoolVar(&yolo, "yolo", false, "enable yolo mode")
-		fs.BoolVar(&gadgets, "gadgets", true, "include James tooling in system prompt")
+		fs.BoolVar(&gadgets, "gadgets", false, "include James tooling in system prompt")
 		fs.StringVar(&pathArg, "path", "", "working directory path")
 		fs.BoolVar(&async, "async", false, "return immediately without waiting for response")
 		fs.StringVar(&projectNameOrID, "project", "", "project name or ID")
