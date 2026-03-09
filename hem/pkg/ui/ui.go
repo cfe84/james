@@ -442,7 +442,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.shell, cmd = m.shell.Update(msg)
 		return m, cmd
 
-	case diffLoadedMsg:
+	case diffLoadedMsg, gitLogLoadedMsg, gitInfoLoadedMsg:
 		var cmd tea.Cmd
 		m.diff, cmd = m.diff.Update(msg)
 		return m, cmd
@@ -753,7 +753,7 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.diff.height = m.height - 3
 			m.currentView = viewDiff
 			m.previousView = viewDashboard
-			return m, m.diff.loadDiff()
+			return m, tea.Batch(m.diff.loadDiff(), m.diff.loadGitLog(), m.diff.loadGitInfo())
 		}
 	case "x":
 		e := m.dashboard.selectedEntry()
@@ -881,7 +881,7 @@ func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.diff.height = m.height - 3
 			m.currentView = viewDiff
 			m.previousView = viewProjectDetail
-			return m, m.diff.loadDiff()
+			return m, tea.Batch(m.diff.loadDiff(), m.diff.loadGitLog(), m.diff.loadGitInfo())
 		}
 	case "n":
 		m.wizard = newWizardModelForProject(m.client, m.projectDetail.projectFilter)
@@ -1004,7 +1004,7 @@ func (m Model) updateSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.diff.height = m.height - 3
 			m.currentView = viewDiff
 			m.previousView = viewSessions
-			return m, m.diff.loadDiff()
+			return m, tea.Batch(m.diff.loadDiff(), m.diff.loadGitLog(), m.diff.loadGitInfo())
 		}
 	case "x":
 		s := m.sessions.selectedSession()
@@ -1070,7 +1070,7 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.diff.height = m.height - 3
 			m.currentView = viewDiff
 			m.previousView = viewChat
-			return m, m.diff.loadDiff()
+			return m, tea.Batch(m.diff.loadDiff(), m.diff.loadGitLog(), m.diff.loadGitInfo())
 		case "x":
 			m.chat.confirmDelete = false
 			m.chat.commandMode = false
@@ -1410,13 +1410,19 @@ func (m Model) renderStatusBar() string {
 				statusKeyStyle.Render("↵") + statusDescStyle.Render(" "+action),
 				statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
 			}
-		} else {
+		} else if m.diff.tab == diffTabDiff {
 			keys = []string{
+				statusKeyStyle.Render("tab") + statusDescStyle.Render(" log"),
 				statusKeyStyle.Render("↑↓") + statusDescStyle.Render(" scroll"),
-				statusKeyStyle.Render("pgup/dn") + statusDescStyle.Render(" page"),
 				statusKeyStyle.Render("c") + statusDescStyle.Render(" commit"),
 				statusKeyStyle.Render("C") + statusDescStyle.Render(" commit+push"),
 				statusKeyStyle.Render("p") + statusDescStyle.Render(" push"),
+				statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
+			}
+		} else {
+			keys = []string{
+				statusKeyStyle.Render("tab") + statusDescStyle.Render(" diff"),
+				statusKeyStyle.Render("↑↓") + statusDescStyle.Render(" scroll"),
 				statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
 			}
 		}

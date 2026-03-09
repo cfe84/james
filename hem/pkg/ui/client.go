@@ -733,3 +733,37 @@ func (c *client) pushSession(sessionID string) error {
 	}
 	return nil
 }
+
+func (c *client) gitLog(sessionID string) (string, error) {
+	resp, err := c.send("git-log", "session", sessionID)
+	if err != nil {
+		return "", err
+	}
+	if resp.Status == protocol.StatusError {
+		return "", fmt.Errorf("%s", resp.Message)
+	}
+	var result struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return "", err
+	}
+	return result.Message, nil
+}
+
+func (c *client) gitInfo(sessionID string) (string, error) {
+	resp, err := c.send("git-info", "session", sessionID)
+	if err != nil {
+		return "", err
+	}
+	if resp.Status == protocol.StatusError {
+		return "", fmt.Errorf("%s", resp.Message)
+	}
+	var result struct {
+		Branch string `json:"branch"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return "", err
+	}
+	return result.Branch, nil
+}

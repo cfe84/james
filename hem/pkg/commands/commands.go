@@ -280,6 +280,10 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.CompleteSession(args)
 	case "diff session":
 		return e.DiffSession(args)
+	case "git-log session":
+		return e.GitLogSession(args)
+	case "git-info session":
+		return e.GitInfoSession(args)
 	case "commit session":
 		return e.CommitSession(args)
 	case "branch session":
@@ -2335,6 +2339,104 @@ func (e *Executor) DiffSession(args []string) *protocol.Response {
 	}
 
 	return protocol.OKResponse(TextResult{Message: result.Diff})
+}
+
+func (e *Executor) GitLogSession(args []string) *protocol.Response {
+	var sessionID string
+
+	remaining, err := parseFlagsFromArgs("log-session", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&sessionID, "session-id", "", "session ID")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if sessionID == "" {
+		if len(remaining) == 0 {
+			return protocol.ErrResponse("session_id is required")
+		}
+		sessionID = remaining[0]
+	}
+
+	mpName, err := e.store.GetSessionMoneypenny(sessionID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if mpName == "" {
+		return protocol.ErrResponse(fmt.Sprintf("session %q not tracked", sessionID))
+	}
+	mp, err := e.store.GetMoneypenny(mpName)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if mp == nil {
+		return protocol.ErrResponse(fmt.Sprintf("moneypenny %q not found", mpName))
+	}
+
+	ctx := context.Background()
+	resp, err := e.sendCommand(ctx, mp, "git_log", map[string]interface{}{
+		"session_id": sessionID,
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	var result struct {
+		Log string `json:"log"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("parsing log: %v", err))
+	}
+
+	return protocol.OKResponse(TextResult{Message: result.Log})
+}
+
+func (e *Executor) GitInfoSession(args []string) *protocol.Response {
+	var sessionID string
+
+	remaining, err := parseFlagsFromArgs("git-info-session", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&sessionID, "session-id", "", "session ID")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if sessionID == "" {
+		if len(remaining) == 0 {
+			return protocol.ErrResponse("session_id is required")
+		}
+		sessionID = remaining[0]
+	}
+
+	mpName, err := e.store.GetSessionMoneypenny(sessionID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if mpName == "" {
+		return protocol.ErrResponse(fmt.Sprintf("session %q not tracked", sessionID))
+	}
+	mp, err := e.store.GetMoneypenny(mpName)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if mp == nil {
+		return protocol.ErrResponse(fmt.Sprintf("moneypenny %q not found", mpName))
+	}
+
+	ctx := context.Background()
+	resp, err := e.sendCommand(ctx, mp, "git_info", map[string]interface{}{
+		"session_id": sessionID,
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	var result struct {
+		Branch string `json:"branch"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("parsing git info: %v", err))
+	}
+
+	return protocol.OKResponse(map[string]string{"branch": result.Branch})
 }
 
 // RunCommand executes a shell command on a remote moneypenny.

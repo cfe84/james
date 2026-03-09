@@ -566,7 +566,7 @@
   async function showDiff() {
     if (!currentSession) return;
     renderWizardModal(`
-      <h3>Git Diff</h3>
+      <h3>Git Diff <span id="git-branch-label" style="color:var(--muted);font-size:0.85em"></span></h3>
       <div class="diff-content"><div class="loading">Loading diff...</div></div>
       <div class="modal-actions">
         <button class="btn-muted" onclick="window._qewCloseWizard()">Close</button>
@@ -574,6 +574,14 @@
         <button class="btn" onclick="window._qewCommitAndPush()">Commit & Push</button>
       </div>
     `);
+
+    // Fetch branch name in parallel.
+    apiCall('git-info', 'session', [currentSession]).then(resp => {
+      if (resp.status === 'ok' && resp.data && resp.data.branch) {
+        const el = document.getElementById('git-branch-label');
+        if (el) el.textContent = '(' + resp.data.branch + ')';
+      }
+    }).catch(() => {});
 
     try {
       const resp = await apiCall('diff', 'session', [currentSession]);
@@ -594,6 +602,43 @@
     }
   }
 
+  async function showGitLog() {
+    if (!currentSession) return;
+    renderWizardModal(`
+      <h3>Git Log <span id="git-log-branch-label" style="color:var(--muted);font-size:0.85em"></span></h3>
+      <div class="diff-content"><div class="loading">Loading git log...</div></div>
+      <div class="modal-actions">
+        <button class="btn-muted" onclick="window._qewCloseWizard()">Close</button>
+      </div>
+    `);
+
+    // Fetch branch name in parallel.
+    apiCall('git-info', 'session', [currentSession]).then(resp => {
+      if (resp.status === 'ok' && resp.data && resp.data.branch) {
+        const el = document.getElementById('git-log-branch-label');
+        if (el) el.textContent = '(' + resp.data.branch + ')';
+      }
+    }).catch(() => {});
+
+    try {
+      const resp = await apiCall('git-log', 'session', [currentSession]);
+      const container = document.querySelector('.diff-content');
+      if (resp.status === 'error') {
+        container.innerHTML = `<span style="color:var(--danger)">${escapeHtml(resp.message)}</span>`;
+        return;
+      }
+      const logText = resp.data && resp.data.message ? resp.data.message : '';
+      if (!logText) {
+        container.innerHTML = '<span style="color:var(--muted)">No commits</span>';
+        return;
+      }
+      container.innerHTML = formatGitLog(logText);
+    } catch (e) {
+      document.querySelector('.diff-content').innerHTML =
+        `<span style="color:var(--danger)">Error: ${escapeHtml(e.message)}</span>`;
+    }
+  }
+
   function formatDiff(text) {
     return text.split('\n').map(line => {
       const escaped = escapeHtml(line);
@@ -604,6 +649,19 @@
       if (line.startsWith('+')) return `<span class="diff-add">${escaped}</span>`;
       if (line.startsWith('-')) return `<span class="diff-del">${escaped}</span>`;
       return escaped;
+    }).join('\n');
+  }
+
+  function formatGitLog(text) {
+    return text.split('\n').map(line => {
+      const escaped = escapeHtml(line);
+      // Color graph characters (*, |, /, \)
+      return escaped.replace(/^([*|/\\ ]+)([0-9a-f]{7,})(.*)$/, (_, graph, hash, rest) => {
+        let msg = rest;
+        // Color decorations like (HEAD -> main)
+        msg = msg.replace(/\(([^)]+)\)/g, '<span style="color:var(--success)">($1)</span>');
+        return `<span style="color:var(--warning)">${graph}</span><span style="color:var(--info)">${hash}</span>${msg}`;
+      });
     }).join('\n');
   }
 
@@ -1525,6 +1583,7 @@
     menu.classList.remove('open');
     const action = btn.dataset.action;
     if (action === 'diff') showDiff();
+    else if (action === 'git-log') showGitLog();
     else if (action === 'commit') showCommitModal(false);
     else if (action === 'commit-push') showCommitModal(true);
     else if (action === 'branch') showBranchModal();

@@ -16,15 +16,27 @@ const (
 	diffModeCommitMsg
 )
 
+type diffTab int
+
+const (
+	diffTabDiff diffTab = iota
+	diffTabLog
+)
+
 // diffModel displays a git diff for a session.
 type diffModel struct {
 	sessionID string
 	diff      string
+	gitLog    string
+	branch    string
+	tab       diffTab
 	scroll    int
+	logScroll int
 	width     int
 	height    int
 	err       error
 	loading   bool
+	logLoading bool
 	client    *client
 
 	mode       diffMode
@@ -37,6 +49,16 @@ type diffModel struct {
 type diffLoadedMsg struct {
 	diff string
 	err  error
+}
+
+type gitLogLoadedMsg struct {
+	log string
+	err error
+}
+
+type gitInfoLoadedMsg struct {
+	branch string
+	err    error
 }
 
 type diffCommitDoneMsg struct {
@@ -53,6 +75,7 @@ func newDiffModel(c *client, sessionID string) diffModel {
 		client:    c,
 		sessionID: sessionID,
 		loading:   true,
+		logLoading: true,
 	}
 }
 
@@ -73,6 +96,22 @@ func (m diffModel) loadDiff() tea.Cmd {
 			return diffLoadedMsg{err: fmt.Errorf("parsing diff: %w", err)}
 		}
 		return diffLoadedMsg{diff: result.Message}
+	}
+}
+
+func (m diffModel) loadGitLog() tea.Cmd {
+	sessionID := m.sessionID
+	return func() tea.Msg {
+		log, err := m.client.gitLog(sessionID)
+		return gitLogLoadedMsg{log: log, err: err}
+	}
+}
+
+func (m diffModel) loadGitInfo() tea.Cmd {
+	sessionID := m.sessionID
+	return func() tea.Msg {
+		branch, err := m.client.gitInfo(sessionID)
+		return gitInfoLoadedMsg{branch: branch, err: err}
 	}
 }
 
@@ -108,6 +147,17 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 		m.diff = msg.diff
 		m.err = msg.err
 
+	case gitLogLoadedMsg:
+		m.logLoading = false
+		if msg.err == nil {
+			m.gitLog = msg.log
+		}
+
+	case gitInfoLoadedMsg:
+		if msg.err == nil {
+			m.branch = msg.branch
+		}
+
 	case diffCommitDoneMsg:
 		m.committing = false
 		if msg.err != nil {
@@ -118,7 +168,8 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 			m.commitMsg = ""
 			// Reload diff after commit.
 			m.loading = true
-			return m, m.loadDiff()
+			m.logLoading = true
+			return m, tea.Batch(m.loadDiff(), m.loadGitLog())
 		}
 
 	case diffPushDoneMsg:
@@ -134,28 +185,55 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 			return m.updateCommitInput(msg)
 		}
 		switch msg.String() {
+		case "tab":
+			if m.tab == diffTabDiff {
+				m.tab = diffTabLog
+			} else {
+				m.tab = diffTabDiff
+			}
 		case "up", "k":
-			if m.scroll > 0 {
-				m.scroll--
+			if m.tab == diffTabLog {
+				if m.logScroll > 0 {
+					m.logScroll--
+				}
+			} else {
+				if m.scroll > 0 {
+					m.scroll--
+				}
 			}
 		case "down", "j":
-			m.scroll++
+			if m.tab == diffTabLog {
+				m.logScroll++
+			} else {
+				m.scroll++
+			}
 		case "pgup":
-			m.scroll -= 10
-			if m.scroll < 0 {
-				m.scroll = 0
+			if m.tab == diffTabLog {
+				m.logScroll -= 10
+				if m.logScroll < 0 {
+					m.logScroll = 0
+				}
+			} else {
+				m.scroll -= 10
+				if m.scroll < 0 {
+					m.scroll = 0
+				}
 			}
 		case "pgdown":
-			m.scroll += 10
+			if m.tab == diffTabLog {
+				m.logScroll += 10
+			} else {
+				m.scroll += 10
+			}
 		case "c":
-			if m.diff != "" {
+			if m.tab == diffTabDiff && m.diff != "" {
 				m.mode = diffModeCommitMsg
 				m.pushAfter = false
 				m.commitMsg = ""
 				m.commitErr = nil
 			}
 		case "C":
-			if m.diff != "" {
+			if m.tab == diffTabDiff && m.diff != "" {
 				m.mode = diffModeCommitMsg
 				m.pushAfter = true
 				m.commitMsg = ""
@@ -205,9 +283,38 @@ func (m diffModel) updateCommitInput(msg tea.KeyMsg) (diffModel, tea.Cmd) {
 func (m diffModel) View() string {
 	var b strings.Builder
 
-	title := fmt.Sprintf(" Git Diff: %s ", truncate(m.sessionID, 20))
+	// Title with branch name.
+	title := " Git "
+	if m.branch != "" {
+		title += fmt.Sprintf("(%s) ", m.branch)
+	}
+	title += truncate(m.sessionID, 20) + " "
 	b.WriteString(titleStyle.Render(title))
+
+	// Tab bar.
+	diffLabel := " Diff "
+	logLabel := " Log "
+	if m.tab == diffTabDiff {
+		diffLabel = lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render(diffLabel)
+		logLabel = lipgloss.NewStyle().Foreground(colorMuted).Render(logLabel)
+	} else {
+		diffLabel = lipgloss.NewStyle().Foreground(colorMuted).Render(diffLabel)
+		logLabel = lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render(logLabel)
+	}
+	b.WriteString("  " + diffLabel + " " + logLabel)
 	b.WriteString("\n")
+
+	if m.tab == diffTabDiff {
+		b.WriteString(m.viewDiff())
+	} else {
+		b.WriteString(m.viewLog())
+	}
+
+	return b.String()
+}
+
+func (m diffModel) viewDiff() string {
+	var b strings.Builder
 
 	if m.loading {
 		b.WriteString("\n  Loading diff...")
@@ -233,7 +340,7 @@ func (m diffModel) View() string {
 
 	// Render diff with colors.
 	lines := strings.Split(m.diff, "\n")
-	viewHeight := m.height - 4 - commitHeight
+	viewHeight := m.height - 5 - commitHeight
 	if viewHeight < 1 {
 		viewHeight = 20
 	}
@@ -289,11 +396,60 @@ func (m diffModel) View() string {
 	return b.String()
 }
 
+func (m diffModel) viewLog() string {
+	var b strings.Builder
+
+	if m.logLoading {
+		b.WriteString("\n  Loading git log...")
+		return b.String()
+	}
+	if m.gitLog == "" {
+		b.WriteString("\n  No commits")
+		return b.String()
+	}
+
+	lines := strings.Split(m.gitLog, "\n")
+	viewHeight := m.height - 5
+	if viewHeight < 1 {
+		viewHeight = 20
+	}
+
+	maxScroll := len(lines) - viewHeight
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if m.logScroll > maxScroll {
+		m.logScroll = maxScroll
+	}
+
+	end := m.logScroll + viewHeight
+	if end > len(lines) {
+		end = len(lines)
+	}
+
+	for i := m.logScroll; i < end; i++ {
+		line := lines[i]
+		b.WriteString(colorLogLine(line))
+		b.WriteString("\n")
+	}
+
+	if len(lines) > viewHeight {
+		b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render(
+			fmt.Sprintf("  line %d-%d of %d", m.logScroll+1, end, len(lines))))
+		b.WriteString("\n")
+	}
+
+	return b.String()
+}
+
 var (
 	diffAddStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#10B981"))
 	diffRemoveStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444"))
 	diffHunkStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#60A5FA"))
 	diffHeaderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B")).Bold(true)
+	logGraphStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B"))
+	logHashStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("#60A5FA"))
+	logDecorStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#10B981"))
 )
 
 func colorDiffLine(line string) string {
@@ -311,6 +467,50 @@ func colorDiffLine(line string) string {
 	}
 	if strings.HasPrefix(line, "diff ") {
 		return diffHeaderStyle.Render(line)
+	}
+	return line
+}
+
+func colorLogLine(line string) string {
+	// Color the graph characters and hash in git log --oneline --graph output.
+	// Lines look like: "* abc1234 Some commit message" or "| * abc1234 msg"
+	trimmed := strings.TrimLeft(line, " ")
+
+	// Find where graph chars end and hash begins.
+	graphEnd := 0
+	for i, c := range line {
+		if c == '*' || c == '|' || c == '/' || c == '\\' || c == ' ' || c == '_' {
+			graphEnd = i + 1
+		} else {
+			break
+		}
+	}
+
+	if graphEnd > 0 && graphEnd < len(line) {
+		graph := logGraphStyle.Render(line[:graphEnd])
+		rest := line[graphEnd:]
+		// Try to color the hash (first word after graph).
+		if idx := strings.Index(rest, " "); idx > 0 {
+			hash := logHashStyle.Render(rest[:idx])
+			msg := rest[idx:]
+			// Color decorations like (HEAD -> main, origin/main).
+			if strings.Contains(msg, "(") {
+				parts := strings.SplitN(msg, "(", 2)
+				if len(parts) == 2 {
+					closeParen := strings.Index(parts[1], ")")
+					if closeParen >= 0 {
+						decor := logDecorStyle.Render("(" + parts[1][:closeParen] + ")")
+						msg = parts[0] + decor + parts[1][closeParen+1:]
+					}
+				}
+			}
+			return graph + hash + msg
+		}
+		return graph + rest
+	}
+
+	if len(trimmed) > 0 && trimmed[0] == '*' {
+		return logGraphStyle.Render(line)
 	}
 	return line
 }
