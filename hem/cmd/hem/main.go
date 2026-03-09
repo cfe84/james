@@ -40,7 +40,7 @@ func main() {
 
 	// Extract global flags from args before cli.Parse.
 	var mi6Addr string
-	var silent, verbose bool
+	var silent, verbose, forceLocal bool
 	filteredArgs := make([]string, 0, len(os.Args))
 	filteredArgs = append(filteredArgs, os.Args[0])
 	for i := 1; i < len(os.Args); i++ {
@@ -51,11 +51,20 @@ func main() {
 			silent = true
 		} else if os.Args[i] == "--verbose" {
 			verbose = true
+		} else if os.Args[i] == "--local" {
+			forceLocal = true
 		} else {
 			filteredArgs = append(filteredArgs, os.Args[i])
 		}
 	}
 	os.Args = filteredArgs
+
+	// Resolve server address: --hem flag > --local flag > stored default.
+	if mi6Addr == "" && !forceLocal {
+		if stored := getStoredDefaultServer(); stored != "" {
+			mi6Addr = stored
+		}
+	}
 
 	// Build sender based on transport.
 	var sender hemclient.Sender
@@ -99,6 +108,14 @@ func main() {
 	}
 
 	// Handle local-only commands that don't need the server.
+	switch cmd.Verb + " " + cmd.Noun {
+	case "set-default server":
+		handleSetDefaultServer(cmd.Args)
+		return
+	case "get-default server":
+		handleGetDefaultServer()
+		return
+	}
 	switch cmd.Verb {
 	case "version":
 		fmt.Println(Version)
@@ -195,6 +212,73 @@ func main() {
 	}
 
 	printResponse(resp.Data, cmd.OutputType)
+}
+
+// handleSetDefaultServer handles `hem set-default server` locally (no server needed).
+func handleSetDefaultServer(args []string) {
+	var hemAddr string
+	var local bool
+	fs := flag.NewFlagSet("set-default-server", flag.ContinueOnError)
+	fs.StringVar(&hemAddr, "hem", "", "MI6 address")
+	fs.BoolVar(&local, "local", false, "use local Unix socket")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(os.Stderr, "%sError: %v%s\n", colorRed, err, colorReset)
+		os.Exit(1)
+	}
+	if hemAddr == "" && !local {
+		fmt.Fprintf(os.Stderr, "Usage: hem set-default server --hem HOST/SESSION | --local\n")
+		os.Exit(1)
+	}
+	if hemAddr != "" && local {
+		fmt.Fprintf(os.Stderr, "%sError: cannot specify both --hem and --local%s\n", colorRed, colorReset)
+		os.Exit(1)
+	}
+
+	dataDir := defaultDataDir()
+	os.MkdirAll(dataDir, 0700)
+	dbPath := filepath.Join(dataDir, "hem.db")
+	st, err := store.New(dbPath)
+	if err != nil {
+		log.Fatalf("failed to open store: %v", err)
+	}
+	defer st.Close()
+
+	if local {
+		st.DeleteDefault("server")
+		fmt.Println("Default server set to local.")
+	} else {
+		if err := st.SetDefault("server", hemAddr); err != nil {
+			log.Fatalf("failed to set default: %v", err)
+		}
+		fmt.Printf("Default server set to MI6 %q.\n", hemAddr)
+	}
+}
+
+// handleGetDefaultServer handles `hem get-default server` locally (no server needed).
+func handleGetDefaultServer() {
+	v := getStoredDefaultServer()
+	if v == "" {
+		fmt.Println("local (default)")
+	} else {
+		fmt.Println(v)
+	}
+}
+
+// getStoredDefaultServer reads the stored default server from the database.
+// Returns "" for local, or an MI6 address.
+func getStoredDefaultServer() string {
+	dataDir := defaultDataDir()
+	dbPath := filepath.Join(dataDir, "hem.db")
+	if _, err := os.Stat(dbPath); err != nil {
+		return ""
+	}
+	st, err := store.New(dbPath)
+	if err != nil {
+		return ""
+	}
+	defer st.Close()
+	v, _ := st.GetDefault("server")
+	return v
 }
 
 // buildSender creates a Sender based on whether --hem was specified.
@@ -615,7 +699,8 @@ Defaults:
   set-default agent VALUE        Set default agent (e.g. claude)
   set-default path VALUE         Set default working directory
   set-default mi6 HOST           Set default MI6 server address
-  get-default agent|path|moneypenny|mi6
+  set-default server [--hem ADDR | --local]  Set default hem server connection
+  get-default agent|path|moneypenny|mi6|server
   list defaults
 
 Project management:
@@ -661,6 +746,7 @@ Other:
 
 Global flags:
   --hem ADDR            Connect to hem server via MI6 instead of Unix socket
+  --local               Force local Unix socket connection (overrides stored default)
   -o, --output-type     Output format: json, text, table, tsv (default: text)`)
 }
 

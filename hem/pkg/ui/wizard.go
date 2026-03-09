@@ -66,6 +66,10 @@ type wizardMPLoadedMsg struct {
 	err          error
 }
 
+type wizardProjectsLoadedMsg struct {
+	projects []projectInfo
+}
+
 type wizardDirLoadedMsg struct {
 	entries []dirEntry
 	err     error
@@ -139,6 +143,13 @@ func (m wizardModel) loadMoneypennies() tea.Cmd {
 	}
 }
 
+func (m wizardModel) loadProjects() tea.Cmd {
+	return func() tea.Msg {
+		projects, _ := m.client.listProjects("")
+		return wizardProjectsLoadedMsg{projects: projects}
+	}
+}
+
 func (m wizardModel) loadDirectory() tea.Cmd {
 	mp := m.selectedMP
 	path := m.currentPath
@@ -197,9 +208,12 @@ func (m wizardModel) createSession() tea.Cmd {
 
 func (m wizardModel) Init() tea.Cmd {
 	if m.projectName != "" {
-		return m.loadProjectDetails()
+		return tea.Batch(m.loadProjectDetails(), m.loadProjects())
 	}
-	return m.loadMoneypennies()
+	if m.forProject {
+		return m.loadMoneypennies()
+	}
+	return tea.Batch(m.loadMoneypennies(), m.loadProjects())
 }
 
 func (m wizardModel) Update(msg tea.Msg) (wizardModel, tea.Cmd) {
@@ -218,6 +232,20 @@ func (m wizardModel) Update(msg tea.Msg) (wizardModel, tea.Cmd) {
 				break
 			}
 		}
+
+	case wizardProjectsLoadedMsg:
+		// Populate the Project selector options.
+		options := []string{""}
+		for _, p := range msg.projects {
+			options = append(options, p.Name)
+		}
+		for i := range m.fields {
+			if m.fields[i].flag == "--project" {
+				m.fields[i].options = options
+				break
+			}
+		}
+		return m, nil
 
 	case wizardProjectLoadedMsg:
 		if msg.err != nil {
@@ -376,15 +404,17 @@ func (m wizardModel) updateFormStep(msg tea.KeyMsg) (wizardModel, tea.Cmd) {
 			return m, m.createSession()
 		}
 	case "backspace":
-		if !field.isBool && len(field.value) > 0 {
+		if !field.isBool && field.options == nil && len(field.value) > 0 {
 			field.value = field.value[:len(field.value)-1]
 		}
 	case "ctrl+u":
-		if !field.isBool {
+		if !field.isBool && field.options == nil {
 			field.value = ""
 		}
 	case " ":
-		if field.isBool {
+		if field.options != nil {
+			cycleFieldOptions(field)
+		} else if field.isBool {
 			if field.value == "true" {
 				field.value = "false"
 			} else {
@@ -394,7 +424,7 @@ func (m wizardModel) updateFormStep(msg tea.KeyMsg) (wizardModel, tea.Cmd) {
 			field.value += " "
 		}
 	default:
-		if !field.isBool {
+		if !field.isBool && field.options == nil {
 			if msg.Type == tea.KeyRunes {
 				field.value += string(msg.Runes)
 			}
@@ -601,7 +631,13 @@ func (m wizardModel) viewFormStep() string {
 		label := labelStyle.Render(f.label + ":")
 		var value string
 		if i == m.fCursor {
-			if f.isBool {
+			if f.options != nil {
+				display := f.value
+				if display == "" {
+					display = "(none)"
+				}
+				value = fieldActiveStyle.Render("◀ " + display + " ▶")
+			} else if f.isBool {
 				if f.value == "true" {
 					value = fieldActiveStyle.Render("[x] " + f.value)
 				} else {
@@ -621,7 +657,13 @@ func (m wizardModel) viewFormStep() string {
 				value = strings.Join(parts, "\n")
 			}
 		} else {
-			if f.isBool {
+			if f.options != nil {
+				if f.value == "" {
+					value = fieldInactiveStyle.Render("(none)")
+				} else {
+					value = fieldInactiveStyle.Render(f.value)
+				}
+			} else if f.isBool {
 				value = fieldInactiveStyle.Render(f.value)
 			} else if f.value == "" {
 				value = fieldInactiveStyle.Render("(empty)")

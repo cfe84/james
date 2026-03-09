@@ -257,8 +257,10 @@ Line-delimited JSON, one request/response per connection:
 - `hem set-default moneypenny -n NAME` sets the default moneypenny. Session commands use this default when `-m` is not specified.
 - `hem set-default agent VALUE` sets the default agent (used by `create session` when `--agent` is not specified, fallback: `claude`).
 - `hem set-default path VALUE` sets the default working directory (used by `create session` when `--path` is not specified, fallback: `.`).
-- `hem get-default agent|path|moneypenny` shows the current default for a given key.
+- `hem set-default server --hem HOST/SESSION` sets the default hem server to connect via MI6. `hem set-default server --local` resets to local Unix socket (the default).
+- `hem get-default agent|path|moneypenny|server` shows the current default for a given key.
 - `hem list defaults` shows all configured defaults.
+- The `--local` global flag forces local Unix socket connection, overriding any stored default server.
 
 ## Server
 

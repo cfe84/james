@@ -12,12 +12,11 @@ import (
 // PlayNotificationSound plays the embedded notification sound.
 func PlayNotificationSound() {
 	wavPath := notificationWavPath()
-	if _, err := os.Stat(wavPath); err != nil {
-		dir := filepath.Dir(wavPath)
-		os.MkdirAll(dir, 0700)
-		if err := os.WriteFile(wavPath, assets.NotificationWav, 0644); err != nil {
-			return
-		}
+	dir := filepath.Dir(wavPath)
+	os.MkdirAll(dir, 0700)
+	// Always write to pick up embedded file changes across builds.
+	if err := os.WriteFile(wavPath, assets.NotificationWav, 0644); err != nil {
+		return
 	}
 
 	var cmd *exec.Cmd

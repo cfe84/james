@@ -2,5 +2,5 @@ package assets
 
 import _ "embed"
 
-//go:embed notification.wav
+//go:embed james.wav
 var NotificationWav []byte

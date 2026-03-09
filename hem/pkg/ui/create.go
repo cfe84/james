@@ -24,6 +24,7 @@ type formField struct {
 	value    string
 	flag     string // CLI flag name
 	isBool   bool
+	options  []string // if set, field is a selector (cycle with Space)
 }
 
 func newCreateModel(c *client) createModel {
@@ -122,7 +123,9 @@ func (m createModel) Update(msg tea.Msg) (createModel, tea.Cmd) {
 				field.value = ""
 			}
 		case " ":
-			if field.isBool {
+			if field.options != nil {
+				cycleFieldOptions(field)
+			} else if field.isBool {
 				if field.value == "true" {
 					field.value = "false"
 				} else {
@@ -132,7 +135,7 @@ func (m createModel) Update(msg tea.Msg) (createModel, tea.Cmd) {
 				field.value += " "
 			}
 		default:
-			if !field.isBool {
+			if !field.isBool && field.options == nil {
 				if msg.Type == tea.KeyRunes {
 					field.value += string(msg.Runes)
 				}
@@ -140,6 +143,24 @@ func (m createModel) Update(msg tea.Msg) (createModel, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// cycleFieldOptions cycles a selector field to the next option.
+func cycleFieldOptions(f *formField) {
+	if len(f.options) == 0 {
+		return
+	}
+	idx := 0
+	for i, o := range f.options {
+		if o == f.value {
+			idx = i + 1
+			break
+		}
+	}
+	if idx >= len(f.options) {
+		idx = 0
+	}
+	f.value = f.options[idx]
 }
 
 func (m createModel) View() string {
@@ -152,7 +173,13 @@ func (m createModel) View() string {
 		label := labelStyle.Render(f.label + ":")
 		var value string
 		if i == m.cursor {
-			if f.isBool {
+			if f.options != nil {
+				display := f.value
+				if display == "" {
+					display = "(none)"
+				}
+				value = fieldActiveStyle.Render("◀ " + display + " ▶")
+			} else if f.isBool {
 				if f.value == "true" {
 					value = fieldActiveStyle.Render("[x] " + f.value)
 				} else {
@@ -162,7 +189,13 @@ func (m createModel) View() string {
 				value = fieldActiveStyle.Render(f.value + "█")
 			}
 		} else {
-			if f.isBool {
+			if f.options != nil {
+				if f.value == "" {
+					value = fieldInactiveStyle.Render("(none)")
+				} else {
+					value = fieldInactiveStyle.Render(f.value)
+				}
+			} else if f.isBool {
 				value = fieldInactiveStyle.Render(f.value)
 			} else if f.value == "" {
 				value = fieldInactiveStyle.Render("(empty)")

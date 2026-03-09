@@ -244,7 +244,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.moneypennies.height = m.height - 3
 		return m, m.moneypennies.loadMoneypennies()
 
-	case wizardMPLoadedMsg, wizardDirLoadedMsg, wizardProjectLoadedMsg:
+	case wizardMPLoadedMsg, wizardDirLoadedMsg, wizardProjectLoadedMsg, wizardProjectsLoadedMsg:
 		var cmd tea.Cmd
 		m.wizard, cmd = m.wizard.Update(msg)
 		return m, cmd
@@ -1208,22 +1208,10 @@ func (m Model) updateWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.wizard.err = nil
 			return m, nil
 		case wizardStepForm:
-			if m.wizard.projectName != "" {
-				// Came from project — skip back to leaving wizard entirely.
-				m.currentView = m.previousView
-				switch m.previousView {
-				case viewProjectDetail:
-					m.projectDetail.loading = true
-					return m, m.projectDetail.loadDashboard()
-				default:
-					m.currentView = viewDashboard
-					m.dashboard.loading = true
-					return m, m.dashboard.loadDashboard()
-				}
-			}
-			m.wizard.step = wizardStepPath
+			m.wizard.step = wizardStepMoneypenny
+			m.wizard.mpLoading = true
 			m.wizard.err = nil
-			return m, nil
+			return m, m.wizard.loadMoneypennies()
 		}
 	}
 	var cmd tea.Cmd

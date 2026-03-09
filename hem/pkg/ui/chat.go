@@ -44,6 +44,7 @@ type chatModel struct {
 	confirmDelete bool
 	scheduling    bool   // in schedule prompt entry mode
 	scheduleAt    string // time for the scheduled prompt
+	workingVerb   string // random spy verb chosen once per working session
 	client        *client
 }
 
@@ -170,6 +171,11 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 		m.polling = false
 		if msg.err == nil {
 			m.sessionStatus = msg.status
+			if msg.status == "working" && m.workingVerb == "" {
+				m.workingVerb = pickSpyVerb()
+			} else if msg.status != "working" {
+				m.workingVerb = ""
+			}
 
 			// Don't replace existing conversation with empty data (race during working state).
 			if len(msg.conversation) == 0 && len(m.conversation) > 0 {
@@ -254,6 +260,7 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 			// Sent successfully — optimistically show working status
 			// until the next poll confirms the real state.
 			m.sessionStatus = "working"
+			m.workingVerb = pickSpyVerb()
 		}
 		// Start polling immediately so the working indicator and eventual
 		// response are picked up without waiting for the next tick.
@@ -515,8 +522,11 @@ func (m chatModel) View() string {
 	}
 
 	if m.sending || m.sessionStatus == "working" {
-		spyVerbs := []string{"Infiltrating...", "Surveilling...", "Decrypting...", "On a mission...", "Going undercover...", "Acquiring intel...", "Intercepting...", "Extracting..."}
-		verb := spyVerbs[rand.Intn(len(spyVerbs))]
+		verb := m.workingVerb
+		if verb == "" {
+			verb = pickSpyVerb()
+			m.workingVerb = verb
+		}
 		msgLines = append(msgLines, assistantMsgStyle.Render("🕴️ "+verb))
 		msgLines = append(msgLines, "")
 	}
@@ -737,4 +747,10 @@ func wordWrap(s string, width int) string {
 		}
 	}
 	return result.String()
+}
+
+var spyVerbs = []string{"Infiltrating...", "Surveilling...", "Decrypting...", "On a mission...", "Going undercover...", "Acquiring intel...", "Intercepting...", "Extracting..."}
+
+func pickSpyVerb() string {
+	return spyVerbs[rand.Intn(len(spyVerbs))]
 }

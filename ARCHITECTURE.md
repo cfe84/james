@@ -169,7 +169,7 @@ hem/
 
 ### Key Technical Decisions
 
-1. **Client/server split**: Server maintains persistent state and connections. CLI is stateless. Clients connect via Unix socket or MI6 transport (using the `Sender` interface: `SocketSender` for local, `MI6Sender` for remote). The server can also accept commands from an MI6 control channel (`--mi6-control` flag, implemented in `server/mi6.go`).
+1. **Client/server split**: Server maintains persistent state and connections. CLI is stateless. Clients connect via Unix socket or MI6 transport (using the `Sender` interface: `SocketSender` for local, `MI6Sender` for remote). The server can also accept commands from an MI6 control channel (`--mi6-control` flag, implemented in `server/mi6.go`). The default connection can be persisted with `hem set-default server --hem ADDR` (MI6) or `--local` (Unix socket). The `--local` global flag overrides any stored default.
 
 2. **Internal protocol**: Line-delimited JSON over Unix socket. Request: `{"verb":"create","noun":"session","args":[...]}`. Response: `{"status":"ok","data":{...}}` or `{"status":"error","message":"..."}`. One request/response per connection.
 
