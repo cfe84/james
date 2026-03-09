@@ -19,26 +19,27 @@ import (
 	"james/hem/pkg/transport"
 )
 
-func gadgetsSystemPrompt(mp *store.Moneypenny) string {
-	var hemHint string
+func gadgetsSystemPrompt(mp *store.Moneypenny, sessionID string) string {
+	var hemCmd string
 	if mp != nil && mp.TransportType == "mi6" && mp.MI6Addr != "" {
 		// Extract the MI6 server host (before the /session_id part).
 		host := mp.MI6Addr
 		if idx := strings.Index(host, "/"); idx >= 0 {
 			host = host[:idx]
 		}
-		hemHint = fmt.Sprintf("You have access to agent orchestration using the `hem` CLI. Use `hem --mi6 %s` to connect. Run `hem -h` to see available commands.", host)
+		hemCmd = fmt.Sprintf("hem --mi6 %s", host)
 	} else {
-		hemHint = "You have access to agent orchestration using the `hem` CLI. Run `hem -h` to see available commands."
+		hemCmd = "hem"
 	}
 
 	return fmt.Sprintf(`
-%s
-You can schedule a follow-up task by including a tag in your response:
-<schedule at="2026-03-07T15:00:00Z">Your follow-up prompt here</schedule>
-The "at" attribute accepts RFC3339 timestamps or relative durations like "+2h", "+30m".
-When you schedule a follow-up, the system will automatically send that prompt to you at the specified time.
-Use this to set reminders, check on long-running processes, or break work into timed phases.`, hemHint)
+You have access to agent orchestration using the %s command. Run %s -h to see available commands.
+Your session ID is %s.
+To schedule a follow-up task: %s schedule session %s --at TIME --prompt "your prompt"
+  TIME accepts RFC3339 timestamps or relative durations like +2h, +30m.
+  Add --cron EXPR for recurring tasks (e.g. --cron "@every 2h", --cron "0 9 * * 1").
+To list scheduled tasks: %s list schedules --session-id %s
+To cancel a schedule: %s cancel schedule SCHEDULE_ID`, hemCmd, hemCmd, sessionID, hemCmd, sessionID, hemCmd, sessionID, hemCmd)
 }
 
 // Executor runs commands using the store and transport layer.
@@ -1070,7 +1071,7 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 
 	// Append gadgets (James tooling instructions) to system prompt when enabled.
 	if gadgets {
-		systemPrompt += gadgetsSystemPrompt(mp)
+		systemPrompt += gadgetsSystemPrompt(mp, sessionID)
 	}
 
 	cmdData := map[string]interface{}{
@@ -2221,7 +2222,7 @@ func (e *Executor) UseTemplate(args []string) *protocol.Response {
 	sessionName := t.Name
 
 	// Templates always include gadgets (James tooling).
-	systemPrompt += gadgetsSystemPrompt(mp)
+	systemPrompt += gadgetsSystemPrompt(mp, sessionID)
 
 	cmdData := map[string]interface{}{
 		"agent":      agent,
