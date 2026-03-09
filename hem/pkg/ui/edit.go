@@ -31,6 +31,10 @@ type sessionDetailLoadedMsg struct {
 	err    error
 }
 
+type editProjectsLoadedMsg struct {
+	projects []projectInfo
+}
+
 func newEditModel(c *client, sessionID string) editModel {
 	return editModel{
 		client:    c,
@@ -38,11 +42,18 @@ func newEditModel(c *client, sessionID string) editModel {
 		loading:   true,
 		fields: []formField{
 			{label: "Name", flag: "--name", value: ""},
-			{label: "Project", flag: "--project", value: ""},
+			{label: "Project", flag: "--project", value: "", options: []string{""}},
 			{label: "System Prompt", flag: "--system-prompt", value: ""},
 			{label: "Path", flag: "--path", value: ""},
 			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
 		},
+	}
+}
+
+func (m editModel) loadProjects() tea.Cmd {
+	return func() tea.Msg {
+		projects, _ := m.client.listProjects("")
+		return editProjectsLoadedMsg{projects: projects}
 	}
 }
 
@@ -94,6 +105,18 @@ func (m editModel) Update(msg tea.Msg) (editModel, tea.Cmd) {
 			m.original[i] = f.value
 		}
 
+	case editProjectsLoadedMsg:
+		options := []string{""}
+		for _, p := range msg.projects {
+			options = append(options, p.Name)
+		}
+		for i := range m.fields {
+			if m.fields[i].flag == "--project" {
+				m.fields[i].options = options
+				break
+			}
+		}
+
 	case tea.KeyMsg:
 		if m.saving || m.loading {
 			return m, nil
@@ -114,15 +137,25 @@ func (m editModel) Update(msg tea.Msg) (editModel, tea.Cmd) {
 			m.saving = true
 			return m, m.save()
 		case "backspace":
-			if !field.isBool && len(field.value) > 0 {
+			if !field.isBool && field.options == nil && len(field.value) > 0 {
 				field.value = field.value[:len(field.value)-1]
 			}
 		case "ctrl+u":
-			if !field.isBool {
+			if !field.isBool && field.options == nil {
 				field.value = ""
 			}
+		case "left":
+			if field.options != nil {
+				cycleFieldOptionsBack(field)
+			}
+		case "right":
+			if field.options != nil {
+				cycleFieldOptions(field)
+			}
 		case " ":
-			if field.isBool {
+			if field.options != nil {
+				cycleFieldOptions(field)
+			} else if field.isBool {
 				if field.value == "true" {
 					field.value = "false"
 				} else {
@@ -132,7 +165,7 @@ func (m editModel) Update(msg tea.Msg) (editModel, tea.Cmd) {
 				field.value += " "
 			}
 		default:
-			if !field.isBool {
+			if !field.isBool && field.options == nil {
 				if msg.Type == tea.KeyRunes {
 					field.value += string(msg.Runes)
 				}
@@ -145,7 +178,7 @@ func (m editModel) Update(msg tea.Msg) (editModel, tea.Cmd) {
 func (m editModel) View() string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render(fmt.Sprintf(" Edit Session: %s ", truncate(m.sessionID, 20))))
+	b.WriteString(titleStyle.Render(fmt.Sprintf(" Edit Agent: %s ", truncate(m.sessionID, 20))))
 	b.WriteString("\n\n")
 
 	if m.loading {
@@ -164,7 +197,13 @@ func (m editModel) View() string {
 
 		var value string
 		if i == m.cursor {
-			if f.isBool {
+			if f.options != nil {
+				display := f.value
+				if display == "" {
+					display = "(none)"
+				}
+				value = fieldActiveStyle.Render("◀ " + display + " ▶")
+			} else if f.isBool {
 				if f.value == "true" {
 					value = fieldActiveStyle.Render("[x] " + f.value)
 				} else {
@@ -174,7 +213,13 @@ func (m editModel) View() string {
 				value = fieldActiveStyle.Render(f.value + "█")
 			}
 		} else {
-			if f.isBool {
+			if f.options != nil {
+				if f.value == "" {
+					value = fieldInactiveStyle.Render("(none)")
+				} else {
+					value = fieldInactiveStyle.Render(f.value)
+				}
+			} else if f.isBool {
 				value = fieldInactiveStyle.Render(f.value)
 			} else if f.value == "" {
 				value = fieldInactiveStyle.Render("(empty)")

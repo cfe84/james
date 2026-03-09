@@ -122,6 +122,14 @@ func (m createModel) Update(msg tea.Msg) (createModel, tea.Cmd) {
 			if !field.isBool {
 				field.value = ""
 			}
+		case "left":
+			if field.options != nil {
+				cycleFieldOptionsBack(field)
+			}
+		case "right":
+			if field.options != nil {
+				cycleFieldOptions(field)
+			}
 		case " ":
 			if field.options != nil {
 				cycleFieldOptions(field)
@@ -147,18 +155,29 @@ func (m createModel) Update(msg tea.Msg) (createModel, tea.Cmd) {
 
 // cycleFieldOptions cycles a selector field to the next option.
 func cycleFieldOptions(f *formField) {
+	cycleFieldOptionsDir(f, 1)
+}
+
+// cycleFieldOptionsBack cycles a selector field to the previous option.
+func cycleFieldOptionsBack(f *formField) {
+	cycleFieldOptionsDir(f, -1)
+}
+
+func cycleFieldOptionsDir(f *formField, dir int) {
 	if len(f.options) == 0 {
 		return
 	}
 	idx := 0
 	for i, o := range f.options {
 		if o == f.value {
-			idx = i + 1
+			idx = i + dir
 			break
 		}
 	}
 	if idx >= len(f.options) {
 		idx = 0
+	} else if idx < 0 {
+		idx = len(f.options) - 1
 	}
 	f.value = f.options[idx]
 }

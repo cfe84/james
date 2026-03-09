@@ -411,6 +411,14 @@ func (m wizardModel) updateFormStep(msg tea.KeyMsg) (wizardModel, tea.Cmd) {
 		if !field.isBool && field.options == nil {
 			field.value = ""
 		}
+	case "left":
+		if field.options != nil {
+			cycleFieldOptionsBack(field)
+		}
+	case "right":
+		if field.options != nil {
+			cycleFieldOptions(field)
+		}
 	case " ":
 		if field.options != nil {
 			cycleFieldOptions(field)

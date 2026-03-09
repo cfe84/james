@@ -447,7 +447,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.diff, cmd = m.diff.Update(msg)
 		return m, cmd
 
-	case sessionDetailLoadedMsg:
+	case sessionDetailLoadedMsg, editProjectsLoadedMsg:
 		var cmd tea.Cmd
 		m.edit, cmd = m.edit.Update(msg)
 		return m, cmd
@@ -538,9 +538,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.chat.height = m.height - 3
 		if cm.response != "" {
 			var prompt string
-			if isWizard {
+			if isWizard && len(m.wizard.fields) > 0 {
 				prompt = m.wizard.fields[0].value
-			} else {
+			} else if !isWizard && len(m.create.fields) > 0 {
 				prompt = m.create.fields[0].value
 			}
 			m.chat.conversation = []conversationTurn{
@@ -743,7 +743,7 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.edit.width = m.width
 			m.edit.height = m.height - 3
 			m.currentView = viewEdit
-			return m, m.edit.loadDetail()
+			return m, tea.Batch(m.edit.loadDetail(), m.edit.loadProjects())
 		}
 	case "g":
 		e := m.dashboard.selectedEntry()
@@ -871,7 +871,7 @@ func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.edit.width = m.width
 			m.edit.height = m.height - 3
 			m.currentView = viewEdit
-			return m, m.edit.loadDetail()
+			return m, tea.Batch(m.edit.loadDetail(), m.edit.loadProjects())
 		}
 	case "g":
 		e := m.projectDetail.selectedEntry()
@@ -978,7 +978,7 @@ func (m Model) updateSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.edit.width = m.width
 			m.edit.height = m.height - 3
 			m.currentView = viewEdit
-			return m, m.edit.loadDetail()
+			return m, tea.Batch(m.edit.loadDetail(), m.edit.loadProjects())
 		}
 	case "d":
 		s := m.sessions.selectedSession()
@@ -1061,7 +1061,7 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.edit.height = m.height - 3
 			m.currentView = viewEdit
 			m.previousView = viewChat
-			return m, m.edit.loadDetail()
+			return m, tea.Batch(m.edit.loadDetail(), m.edit.loadProjects())
 		case "g":
 			m.chat.confirmDelete = false
 			m.chat.commandMode = false
