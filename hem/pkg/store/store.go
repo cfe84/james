@@ -28,12 +28,13 @@ type Moneypenny struct {
 
 // Session represents a tracked session (mapping session to moneypenny).
 type Session struct {
-	SessionID      string
-	MoneypennyName string
-	ProjectID      string
-	HemStatus      string // "active" or "completed"
-	Reviewed       bool   // true if user has seen latest response
-	CreatedAt      time.Time
+	SessionID       string
+	MoneypennyName  string
+	ProjectID       string
+	ParentSessionID string // non-empty for sub-sessions
+	HemStatus       string // "active" or "completed"
+	Reviewed        bool   // true if user has seen latest response
+	CreatedAt       time.Time
 }
 
 // Project represents a project that groups sessions.
@@ -273,7 +274,7 @@ func (s *Store) TrackSession(sessionID, moneypennyName string, projectID ...stri
 		pid = projectID[0]
 	}
 	_, err := s.db.Exec(
-		`INSERT OR REPLACE INTO sessions (session_id, moneypenny_name, project_id, hem_status, reviewed) VALUES (?, ?, ?, 'active', 0)`,
+		`INSERT OR REPLACE INTO sessions (session_id, moneypenny_name, project_id, parent_session_id, hem_status, reviewed) VALUES (?, ?, ?, '', 'active', 0)`,
 		sessionID, moneypennyName, pid,
 	)
 	if err != nil {
@@ -287,7 +288,7 @@ func (s *Store) TrackSession(sessionID, moneypennyName string, projectID ...stri
 // Used by sync to adopt sessions from moneypennies without overwriting existing tracking data.
 func (s *Store) TrackSessionIfNew(sessionID, moneypennyName string) (bool, error) {
 	res, err := s.db.Exec(
-		`INSERT OR IGNORE INTO sessions (session_id, moneypenny_name, project_id, hem_status, reviewed) VALUES (?, ?, '', 'active', 0)`,
+		`INSERT OR IGNORE INTO sessions (session_id, moneypenny_name, project_id, parent_session_id, hem_status, reviewed) VALUES (?, ?, '', '', 'active', 0)`,
 		sessionID, moneypennyName,
 	)
 	if err != nil {
@@ -319,11 +320,11 @@ func (s *Store) ListTrackedSessions(moneypennyFilter string) ([]*Session, error)
 	var err error
 	if moneypennyFilter == "" {
 		rows, err = s.db.Query(
-			`SELECT session_id, moneypenny_name, project_id, hem_status, reviewed, created_at FROM sessions ORDER BY session_id`,
+			`SELECT session_id, moneypenny_name, project_id, parent_session_id, hem_status, reviewed, created_at FROM sessions ORDER BY session_id`,
 		)
 	} else {
 		rows, err = s.db.Query(
-			`SELECT session_id, moneypenny_name, project_id, hem_status, reviewed, created_at FROM sessions WHERE moneypenny_name = ? ORDER BY session_id`,
+			`SELECT session_id, moneypenny_name, project_id, parent_session_id, hem_status, reviewed, created_at FROM sessions WHERE moneypenny_name = ? ORDER BY session_id`,
 			moneypennyFilter,
 		)
 	}
@@ -336,7 +337,7 @@ func (s *Store) ListTrackedSessions(moneypennyFilter string) ([]*Session, error)
 	for rows.Next() {
 		var sess Session
 		var reviewed int
-		if err := rows.Scan(&sess.SessionID, &sess.MoneypennyName, &sess.ProjectID, &sess.HemStatus, &reviewed, &sess.CreatedAt); err != nil {
+		if err := rows.Scan(&sess.SessionID, &sess.MoneypennyName, &sess.ProjectID, &sess.ParentSessionID, &sess.HemStatus, &reviewed, &sess.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
 		sess.Reviewed = reviewed != 0
@@ -345,9 +346,72 @@ func (s *Store) ListTrackedSessions(moneypennyFilter string) ([]*Session, error)
 	return result, rows.Err()
 }
 
-// DeleteTrackedSession removes a tracked session by ID.
+// TrackSubSession records a sub-session with a parent link.
+func (s *Store) TrackSubSession(sessionID, moneypennyName, parentSessionID string, projectID ...string) error {
+	pid := ""
+	if len(projectID) > 0 {
+		pid = projectID[0]
+	}
+	_, err := s.db.Exec(
+		`INSERT OR REPLACE INTO sessions (session_id, moneypenny_name, project_id, parent_session_id, hem_status, reviewed) VALUES (?, ?, ?, ?, 'active', 0)`,
+		sessionID, moneypennyName, pid, parentSessionID,
+	)
+	if err != nil {
+		return fmt.Errorf("track sub-session %q: %w", sessionID, err)
+	}
+	return nil
+}
+
+// ListSubSessions returns all sub-sessions for a given parent session.
+func (s *Store) ListSubSessions(parentSessionID string) ([]*Session, error) {
+	rows, err := s.db.Query(
+		`SELECT session_id, moneypenny_name, project_id, parent_session_id, hem_status, reviewed, created_at FROM sessions WHERE parent_session_id = ? ORDER BY created_at`,
+		parentSessionID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list sub-sessions: %w", err)
+	}
+	defer rows.Close()
+
+	var result []*Session
+	for rows.Next() {
+		var sess Session
+		var reviewed int
+		if err := rows.Scan(&sess.SessionID, &sess.MoneypennyName, &sess.ProjectID, &sess.ParentSessionID, &sess.HemStatus, &reviewed, &sess.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan sub-session: %w", err)
+		}
+		sess.Reviewed = reviewed != 0
+		result = append(result, &sess)
+	}
+	return result, rows.Err()
+}
+
+// GetSession returns a tracked session by ID. Returns nil, nil if not found.
+func (s *Store) GetSession(sessionID string) (*Session, error) {
+	var sess Session
+	var reviewed int
+	err := s.db.QueryRow(
+		`SELECT session_id, moneypenny_name, project_id, parent_session_id, hem_status, reviewed, created_at FROM sessions WHERE session_id = ?`,
+		sessionID,
+	).Scan(&sess.SessionID, &sess.MoneypennyName, &sess.ProjectID, &sess.ParentSessionID, &sess.HemStatus, &reviewed, &sess.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get session %q: %w", sessionID, err)
+	}
+	sess.Reviewed = reviewed != 0
+	return &sess, nil
+}
+
+// DeleteTrackedSession removes a tracked session by ID, including all sub-sessions.
 func (s *Store) DeleteTrackedSession(sessionID string) error {
-	_, err := s.db.Exec(`DELETE FROM sessions WHERE session_id = ?`, sessionID)
+	// Cascade: delete sub-sessions first.
+	_, err := s.db.Exec(`DELETE FROM sessions WHERE parent_session_id = ?`, sessionID)
+	if err != nil {
+		return fmt.Errorf("delete sub-sessions of %q: %w", sessionID, err)
+	}
+	_, err = s.db.Exec(`DELETE FROM sessions WHERE session_id = ?`, sessionID)
 	if err != nil {
 		return fmt.Errorf("delete session %q: %w", sessionID, err)
 	}
@@ -720,6 +784,7 @@ func (s *Store) migrateSchema() error {
 		`ALTER TABLE sessions ADD COLUMN hem_status TEXT NOT NULL DEFAULT 'active'`,
 		`ALTER TABLE sessions ADD COLUMN reviewed INTEGER NOT NULL DEFAULT 1`,
 		`ALTER TABLE agent_templates ADD COLUMN yolo INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE sessions ADD COLUMN parent_session_id TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, m := range migrations {
 		_, err := s.db.Exec(m)

@@ -585,6 +585,52 @@ func (c *client) cancelSchedule(sessionID string, scheduleID int64) error {
 	return nil
 }
 
+func (c *client) listSubagents(parentSessionID string) ([]struct {
+	SessionID string
+	Name      string
+	Status    string
+}, error) {
+	resp, err := c.send("list", "subsession", parentSessionID)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Status == protocol.StatusError {
+		return nil, fmt.Errorf("%s", resp.Message)
+	}
+
+	var table struct {
+		Headers []string   `json:"headers"`
+		Rows    [][]string `json:"rows"`
+	}
+	if err := json.Unmarshal(resp.Data, &table); err != nil {
+		return nil, fmt.Errorf("parsing subagents: %w", err)
+	}
+
+	var result []struct {
+		SessionID string
+		Name      string
+		Status    string
+	}
+	for _, row := range table.Rows {
+		entry := struct {
+			SessionID string
+			Name      string
+			Status    string
+		}{}
+		if len(row) > 0 {
+			entry.SessionID = row[0]
+		}
+		if len(row) > 1 {
+			entry.Name = row[1]
+		}
+		if len(row) > 2 {
+			entry.Status = row[2]
+		}
+		result = append(result, entry)
+	}
+	return result, nil
+}
+
 func (c *client) moveSessionToProject(sessionID, projectNameOrID string) error {
 	resp, err := c.send("update", "session", sessionID, "--project", projectNameOrID)
 	if err != nil {

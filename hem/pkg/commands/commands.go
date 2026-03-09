@@ -35,11 +35,27 @@ func gadgetsSystemPrompt(mp *store.Moneypenny, sessionID string) string {
 	return fmt.Sprintf(`
 You have access to agent orchestration using the %s command. Run %s -h to see available commands.
 Your session ID is %s.
-To schedule a follow-up task: %s schedule session %s --at TIME --prompt "your prompt"
+
+Scheduling:
+  Schedule a follow-up: %s schedule session %s --at TIME --prompt "your prompt"
   TIME accepts RFC3339 timestamps or relative durations like +2h, +30m.
   Add --cron EXPR for recurring tasks (e.g. --cron "@every 2h", --cron "0 9 * * 1").
-To list scheduled tasks: %s list schedules --session-id %s
-To cancel a schedule: %s cancel schedule SCHEDULE_ID`, hemCmd, hemCmd, sessionID, hemCmd, sessionID, hemCmd, sessionID, hemCmd)
+  List schedules: %s list schedules --session-id %s
+  Cancel a schedule: %s cancel schedule SCHEDULE_ID
+
+Subagents (parallel tasks):
+  Create a subagent: %s create subsession %s --async --name "task name" PROMPT
+  List subagents: %s list subsessions %s
+  Watch for completion: %s watch session %s
+  The --async flag returns immediately. Use watch to wait for results, which queues
+  completed subagent responses back to your session.
+  Show subagent details: %s show subsession SUBSESSION_ID
+  Stop a subagent: %s stop subsession SUBSESSION_ID
+  Delete a subagent: %s delete subsession SUBSESSION_ID`,
+		hemCmd, hemCmd, sessionID,
+		hemCmd, sessionID, hemCmd, sessionID, hemCmd,
+		hemCmd, sessionID, hemCmd, sessionID, hemCmd, sessionID,
+		hemCmd, hemCmd, hemCmd)
 }
 
 // Executor runs commands using the store and transport layer.
@@ -50,6 +66,8 @@ type Executor struct {
 	lastSessionStates map[string]string // sessionID → last known mpStatus ("working", "ready", etc.)
 	clients           map[string]*transport.Client // cached per moneypenny name
 	clientsMu         sync.Mutex
+	watchers          map[string][]string // parentSessionID → []childSessionIDs being watched
+	watchersMu        sync.Mutex
 }
 
 func New(s *store.Store, mi6KeyPath string) *Executor {
@@ -58,6 +76,7 @@ func New(s *store.Store, mi6KeyPath string) *Executor {
 		mi6KeyPath:        mi6KeyPath,
 		lastSessionStates: make(map[string]string),
 		clients:           make(map[string]*transport.Client),
+		watchers:          make(map[string][]string),
 	}
 }
 
@@ -184,6 +203,12 @@ var CommandHelp = map[string]string{
 	"cancel schedule":     "Usage: hem cancel schedule SCHEDULE_ID\n\nCancels a pending schedule.",
 	"enable":              "Usage: hem enable SETTING\n\nEnables a boolean setting.\n\nAvailable settings:\n  schedule-system-prompt   Include schedule instructions in agent system prompts",
 	"disable":             "Usage: hem disable SETTING\n\nDisables a boolean setting.\n\nAvailable settings:\n  schedule-system-prompt   Include schedule instructions in agent system prompts",
+	"create subsession":   "Usage: hem create subsession PARENT_SESSION_ID PROMPT [flags]\n\nCreates a sub-session (subagent) under a parent session.\n\nFlags:\n  -m, --moneypenny   Moneypenny name (defaults to parent's moneypenny)\n  --agent            Agent to use (uses default, fallback: claude)\n  --name             Sub-session name\n  --system-prompt    System prompt for the subagent\n  --yolo             Skip permissions\n  --path             Working directory (defaults to parent's path)\n  --async            Return immediately without waiting for response\n  --gadgets          Include James tooling in system prompt",
+	"list subsession":     "Usage: hem list subsessions PARENT_SESSION_ID\n\nLists all subagents for a parent session.\n\nFlags:\n  --session-id       Parent session ID (alternative to positional arg)",
+	"show subsession":     "Usage: hem show subsession SUBSESSION_ID\n\nShows subagent session parameters.\n\nFlags:\n  --session-id       Sub-session ID (alternative to positional arg)",
+	"stop subsession":     "Usage: hem stop subsession SUBSESSION_ID\n\nStops a working subagent.\n\nFlags:\n  --session-id       Sub-session ID (alternative to positional arg)",
+	"delete subsession":   "Usage: hem delete subsession SUBSESSION_ID\n\nDeletes a subagent session.\n\nFlags:\n  --session-id       Sub-session ID (alternative to positional arg)",
+	"watch session":       "Usage: hem watch session SESSION_ID\n\nWatches a session and its subagents. Returns when any subagent completes,\nqueuing the result to the parent session.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)\n  --timeout          Timeout duration (default: 30m)",
 	"dashboard":           "Usage: hem dashboard [--project NAME] [--all]\n\nShows a dashboard of sessions grouped by attention state.\n\nFlags:\n  --project          Filter by project name\n  --all              Include completed sessions",
 	"import session":       "Usage: hem import session FILE.jsonl|SESSION_ID [-m MONEYPENNY] [--name NAME] [--project PROJECT]\n\nImports an existing Claude Code session from a JSONL file or by session ID.\nIf the argument is not a file on disk, it is treated as a session ID and\nsearched for in ~/.claude/projects/ subdirectories.\n\nFlags:\n  -m, --moneypenny   Moneypenny name (uses default if not set)\n  --name             Session name (default: first user message)\n  --agent            Agent (default: claude)\n  --path             Working directory (default: from JSONL or default)\n  --project          Project name or ID",
 }
@@ -314,6 +339,20 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.ListSchedules(args)
 	case "cancel schedule":
 		return e.CancelSchedule(args)
+
+	// Subsession commands
+	case "create subsession":
+		return e.CreateSubSession(args)
+	case "list subsession":
+		return e.ListSubSessions(args)
+	case "show subsession":
+		return e.ShowSubSession(args)
+	case "stop subsession":
+		return e.StopSubSession(args)
+	case "delete subsession":
+		return e.DeleteSubSession(args)
+	case "watch session":
+		return e.WatchSession(args)
 	default:
 		return protocol.ErrResponse(fmt.Sprintf("unknown command: %s %s", verb, noun))
 	}
@@ -1671,8 +1710,12 @@ func (e *Executor) ListSessions(args []string) *protocol.Response {
 	// Build a set of tracked sessions with their hem_status for filtering.
 	trackedSessions, _ := e.store.ListTrackedSessions("")
 	hemStatusMap := make(map[string]string)
+	subSessionSet := make(map[string]bool) // hide sub-sessions from main listing
 	for _, ts := range trackedSessions {
 		hemStatusMap[ts.SessionID] = ts.HemStatus
+		if ts.ParentSessionID != "" {
+			subSessionSet[ts.SessionID] = true
+		}
 	}
 
 	result := TableResult{
@@ -1700,6 +1743,11 @@ func (e *Executor) ListSessions(args []string) *protocol.Response {
 		}
 
 		for _, s := range sessions {
+			// Hide sub-sessions from main listing.
+			if subSessionSet[s.SessionID] {
+				continue
+			}
+
 			hemStatus := hemStatusMap[s.SessionID]
 			if hemStatus == "" {
 				hemStatus = "active"
@@ -2891,6 +2939,10 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 	// Filter tracked sessions first.
 	var filteredSessions []*store.Session
 	for _, sess := range trackedSessions {
+		// Hide sub-sessions from dashboard (they appear under their parent).
+		if sess.ParentSessionID != "" {
+			continue
+		}
 		if projectIDFilter != "" && sess.ProjectID != projectIDFilter {
 			continue
 		}
@@ -3337,6 +3389,386 @@ func parseScheduleTime(s string) (time.Time, error) {
 	}
 
 	return time.Time{}, fmt.Errorf("cannot parse time %q (use RFC3339, +2h, or YYYY-MM-DD HH:MM)", s)
+}
+
+// ---------------------------------------------------------------------------
+// Subsession (subagent) commands
+// ---------------------------------------------------------------------------
+
+// CreateSubSession creates a sub-session under a parent session.
+func (e *Executor) CreateSubSession(args []string) *protocol.Response {
+	var mpName, sessionName, systemPrompt, pathArg, agentName, parentSessionID string
+	var yolo, async, gadgets bool
+
+	remaining, err := parseFlagsFromArgs("create-subsession", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&parentSessionID, "session-id", "", "parent session ID")
+		fs.StringVar(&mpName, "m", "", "moneypenny name")
+		fs.StringVar(&mpName, "moneypenny", "", "moneypenny name")
+		fs.StringVar(&agentName, "agent", "", "agent to use")
+		fs.StringVar(&sessionName, "name", "", "sub-session name")
+		fs.StringVar(&systemPrompt, "system-prompt", "", "system prompt")
+		fs.BoolVar(&yolo, "yolo", false, "enable yolo mode")
+		fs.BoolVar(&gadgets, "gadgets", false, "include James tooling in system prompt")
+		fs.StringVar(&pathArg, "path", "", "working directory path")
+		fs.BoolVar(&async, "async", false, "return immediately without waiting for response")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if parentSessionID == "" {
+		if len(remaining) == 0 {
+			return protocol.ErrResponse("parent session_id is required")
+		}
+		parentSessionID = remaining[0]
+		remaining = remaining[1:]
+	}
+
+	prompt := strings.TrimSpace(strings.Join(remaining, " "))
+	if prompt == "" {
+		return protocol.ErrResponse("prompt is required")
+	}
+
+	// Resolve parent session to get defaults.
+	parentMP, err := e.resolveSessionMoneypenny(parentSessionID)
+	if err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("parent session: %v", err))
+	}
+
+	// Default to parent's moneypenny if not specified.
+	var mp *store.Moneypenny
+	if mpName != "" {
+		mp, err = e.store.GetMoneypenny(mpName)
+		if err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		if mp == nil {
+			return protocol.ErrResponse(fmt.Sprintf("moneypenny %q not found", mpName))
+		}
+	} else {
+		mp = parentMP
+	}
+
+	// Default agent.
+	if agentName == "" {
+		if v, _ := e.store.GetDefault("agent"); v != "" {
+			agentName = v
+		} else {
+			agentName = "claude"
+		}
+	}
+
+	// Default path: use parent's path if not specified.
+	if pathArg == "" {
+		ctx := context.Background()
+		resp, err := e.sendCommand(ctx, parentMP, "get_session", map[string]interface{}{"session_id": parentSessionID})
+		if err == nil {
+			var parentData struct {
+				Path string `json:"path"`
+			}
+			if json.Unmarshal(resp.Data, &parentData) == nil && parentData.Path != "" {
+				pathArg = parentData.Path
+			}
+		}
+		if pathArg == "" {
+			if v, _ := e.store.GetDefault("path"); v != "" {
+				pathArg = v
+			} else {
+				pathArg = "."
+			}
+		}
+	}
+
+	sessionID := generateSessionID()
+
+	if sessionName == "" {
+		sessionName = prompt
+		if len(sessionName) > 40 {
+			sessionName = sessionName[:40]
+		}
+	}
+
+	if gadgets {
+		systemPrompt += gadgetsSystemPrompt(mp, sessionID)
+	}
+
+	cmdData := map[string]interface{}{
+		"agent":      agentName,
+		"session_id": sessionID,
+		"name":       sessionName,
+		"prompt":     prompt,
+		"path":       pathArg,
+	}
+	if systemPrompt != "" {
+		cmdData["system_prompt"] = systemPrompt
+	}
+	if yolo {
+		cmdData["yolo"] = true
+	}
+
+	// Get parent's project.
+	parentSess, _ := e.store.GetSession(parentSessionID)
+	projectID := ""
+	if parentSess != nil {
+		projectID = parentSess.ProjectID
+	}
+
+	// Track as sub-session.
+	if projectID != "" {
+		if err := e.store.TrackSubSession(sessionID, mp.Name, parentSessionID, projectID); err != nil {
+			return protocol.ErrResponse(fmt.Sprintf("tracking sub-session: %v", err))
+		}
+	} else {
+		if err := e.store.TrackSubSession(sessionID, mp.Name, parentSessionID); err != nil {
+			return protocol.ErrResponse(fmt.Sprintf("tracking sub-session: %v", err))
+		}
+	}
+
+	ctx := context.Background()
+	_, err = e.sendCommand(ctx, mp, "create_session", cmdData)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if async {
+		return protocol.OKResponse(SessionCreatedResult{
+			SessionID: sessionID,
+			Async:     true,
+		})
+	}
+
+	response, err := e.pollUntilIdle(ctx, mp, sessionID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	_ = e.store.SetSessionReviewed(sessionID, true)
+
+	return protocol.OKResponse(SessionCreatedResult{
+		SessionID: sessionID,
+		Response:  response,
+	})
+}
+
+// ListSubSessions lists sub-sessions for a parent.
+func (e *Executor) ListSubSessions(args []string) *protocol.Response {
+	var parentSessionID string
+
+	remaining, err := parseFlagsFromArgs("list-subsessions", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&parentSessionID, "session-id", "", "parent session ID")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if parentSessionID == "" {
+		if len(remaining) == 0 {
+			return protocol.ErrResponse("parent session_id is required")
+		}
+		parentSessionID = remaining[0]
+	}
+
+	subs, err := e.store.ListSubSessions(parentSessionID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	result := TableResult{
+		Headers: []string{"SessionID", "Name", "Status", "Moneypenny", "Created"},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	for _, sub := range subs {
+		mp, err := e.store.GetMoneypenny(sub.MoneypennyName)
+		if err != nil || mp == nil {
+			result.Rows = append(result.Rows, []string{sub.SessionID, "", "unknown", sub.MoneypennyName, sub.CreatedAt.Format("Jan 02 15:04")})
+			continue
+		}
+
+		var name, status string
+		resp, err := e.sendCommand(ctx, mp, "get_session", map[string]interface{}{"session_id": sub.SessionID})
+		if err == nil {
+			var detail struct {
+				Name   string `json:"name"`
+				Status string `json:"status"`
+			}
+			if json.Unmarshal(resp.Data, &detail) == nil {
+				name = detail.Name
+				status = detail.Status
+			}
+		} else {
+			status = "offline"
+		}
+
+		if sub.HemStatus == "completed" {
+			status = status + " (completed)"
+		}
+
+		result.Rows = append(result.Rows, []string{sub.SessionID, name, status, sub.MoneypennyName, sub.CreatedAt.Format("Jan 02 15:04")})
+	}
+
+	return protocol.OKResponse(result)
+}
+
+// ShowSubSession shows details of a sub-session (delegates to ShowSession).
+func (e *Executor) ShowSubSession(args []string) *protocol.Response {
+	return e.ShowSession(args)
+}
+
+// StopSubSession stops a sub-session (delegates to StopSession).
+func (e *Executor) StopSubSession(args []string) *protocol.Response {
+	return e.StopSession(args)
+}
+
+// DeleteSubSession deletes a sub-session.
+func (e *Executor) DeleteSubSession(args []string) *protocol.Response {
+	return e.DeleteSession(args)
+}
+
+// WatchSession watches a session's subagents and queues completed results to the parent.
+func (e *Executor) WatchSession(args []string) *protocol.Response {
+	var sessionID, timeoutStr string
+
+	remaining, err := parseFlagsFromArgs("watch-session", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&sessionID, "session-id", "", "session ID")
+		fs.StringVar(&timeoutStr, "timeout", "30m", "timeout duration")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if sessionID == "" {
+		if len(remaining) == 0 {
+			return protocol.ErrResponse("session_id is required")
+		}
+		sessionID = remaining[0]
+	}
+
+	timeout, err := time.ParseDuration(timeoutStr)
+	if err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("invalid timeout: %v", err))
+	}
+
+	subs, err := e.store.ListSubSessions(sessionID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if len(subs) == 0 {
+		return protocol.ErrResponse("no subagents found for this session")
+	}
+
+	// Poll subagents until one completes.
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	var completedResults []string
+
+	for {
+		select {
+		case <-ctx.Done():
+			if len(completedResults) > 0 {
+				return protocol.OKResponse(TextResult{
+					Message: fmt.Sprintf("%d subagent(s) completed:\n%s", len(completedResults), strings.Join(completedResults, "\n---\n")),
+				})
+			}
+			return protocol.ErrResponse("timeout waiting for subagents")
+		case <-time.After(3 * time.Second):
+		}
+
+		// Re-fetch subs in case new ones were added.
+		subs, err = e.store.ListSubSessions(sessionID)
+		if err != nil {
+			continue
+		}
+
+		allDone := true
+		for _, sub := range subs {
+			if sub.HemStatus == "completed" {
+				continue
+			}
+
+			mp, err := e.store.GetMoneypenny(sub.MoneypennyName)
+			if err != nil || mp == nil {
+				continue
+			}
+
+			resp, err := e.sendCommand(ctx, mp, "get_session", map[string]interface{}{"session_id": sub.SessionID})
+			if err != nil {
+				continue
+			}
+
+			var detail struct {
+				Status string `json:"status"`
+			}
+			if json.Unmarshal(resp.Data, &detail) != nil {
+				continue
+			}
+
+			if detail.Status == "working" {
+				allDone = false
+				continue
+			}
+
+			// Sub-session is idle — it completed. Get its last response.
+			convResp, err := e.sendCommand(ctx, mp, "get_session_conversation", map[string]interface{}{"session_id": sub.SessionID})
+			if err != nil {
+				continue
+			}
+
+			var turns []ConversationTurn
+			if len(convResp.Data) > 0 && convResp.Data[0] == '[' {
+				json.Unmarshal(convResp.Data, &turns)
+			} else {
+				var convData struct {
+					Conversation []ConversationTurn `json:"conversation"`
+				}
+				json.Unmarshal(convResp.Data, &convData)
+				turns = convData.Conversation
+			}
+
+			var lastResponse string
+			for i := len(turns) - 1; i >= 0; i-- {
+				if turns[i].Role == "assistant" {
+					lastResponse = turns[i].Content
+					break
+				}
+			}
+
+			// Mark sub as completed.
+			_ = e.store.SetSessionHemStatus(sub.SessionID, "completed")
+
+			// Queue result to parent session.
+			parentMP, err := e.resolveSessionMoneypenny(sessionID)
+			if err == nil {
+				queuePrompt := fmt.Sprintf("[Subagent %s completed]\n%s", sub.SessionID, lastResponse)
+				_, _ = e.sendCommand(ctx, parentMP, "queue_prompt", map[string]interface{}{
+					"session_id": sessionID,
+					"prompt":     queuePrompt,
+				})
+			}
+
+			completedResults = append(completedResults, fmt.Sprintf("Subagent %s: %s", sub.SessionID, truncate(lastResponse, 200)))
+		}
+
+		if allDone {
+			if len(completedResults) == 0 {
+				return protocol.OKResponse(TextResult{Message: "All subagents already completed."})
+			}
+			return protocol.OKResponse(TextResult{
+				Message: fmt.Sprintf("%d subagent(s) completed:\n%s", len(completedResults), strings.Join(completedResults, "\n---\n")),
+			})
+		}
+	}
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "..."
 }
 
 // CommitSession stages all changes and commits in a session's working directory.

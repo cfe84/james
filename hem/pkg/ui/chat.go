@@ -22,6 +22,12 @@ const chatPollInterval = 3 * time.Second
 // chatModel displays conversation history and allows sending messages.
 const chatPageSize = 10
 
+type subagentInfo struct {
+	SessionID string
+	Name      string
+	Status    string
+}
+
 type chatModel struct {
 	sessionID     string
 	sessionName   string
@@ -31,6 +37,7 @@ type chatModel struct {
 	totalTurns    int // total turns on server
 	recentCount   int // number of turns in the latest page (for comparison on refresh)
 	schedules     []scheduleInfo
+	subagents     []subagentInfo
 	input         string
 	cursorPos     int
 	width         int
@@ -86,6 +93,11 @@ type schedulesLoadedMsg struct {
 
 type scheduleCreatedMsg struct {
 	err error
+}
+
+type subagentsLoadedMsg struct {
+	subagents []subagentInfo
+	err       error
 }
 
 func (m chatModel) loadHistory() tea.Cmd {
@@ -147,6 +159,24 @@ func (m chatModel) createSchedule(at, prompt string) tea.Cmd {
 	}
 }
 
+func (m chatModel) loadSubagents() tea.Cmd {
+	return func() tea.Msg {
+		subs, err := m.client.listSubagents(m.sessionID)
+		if err != nil {
+			return subagentsLoadedMsg{err: err}
+		}
+		var result []subagentInfo
+		for _, s := range subs {
+			result = append(result, subagentInfo{
+				SessionID: s.SessionID,
+				Name:      s.Name,
+				Status:    s.Status,
+			})
+		}
+		return subagentsLoadedMsg{subagents: result}
+	}
+}
+
 func chatPollTick() tea.Cmd {
 	return tea.Tick(chatPollInterval, func(time.Time) tea.Msg {
 		return chatPollTickMsg{}
@@ -154,7 +184,7 @@ func chatPollTick() tea.Cmd {
 }
 
 func (m chatModel) Init() tea.Cmd {
-	return tea.Batch(m.loadHistory(), m.loadSchedules(), chatPollTick())
+	return tea.Batch(m.loadHistory(), m.loadSchedules(), m.loadSubagents(), chatPollTick())
 }
 
 func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
@@ -164,7 +194,7 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 		// Skip if a previous poll load is still in-flight to avoid races.
 		if !m.sending && !m.loading && !m.polling {
 			m.polling = true
-			return m, tea.Batch(m.loadHistory(), m.loadSchedules(), chatPollTick())
+			return m, tea.Batch(m.loadHistory(), m.loadSchedules(), m.loadSubagents(), chatPollTick())
 		}
 		return m, chatPollTick()
 
@@ -280,6 +310,11 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 			m.err = msg.err
 		}
 		return m, m.loadSchedules()
+
+	case subagentsLoadedMsg:
+		if msg.err == nil {
+			m.subagents = msg.subagents
+		}
 
 	case chatSessionStoppedMsg:
 		if msg.err != nil {
@@ -554,6 +589,19 @@ func (m chatModel) View() string {
 		line := lipgloss.NewStyle().Foreground(colorWarning).Render(
 			fmt.Sprintf("  ⏰ %s — %s", schedTime, truncPrompt))
 		msgLines = append(msgLines, line)
+	}
+
+	// Show subagents at the bottom.
+	if len(m.subagents) > 0 {
+		subStyle := lipgloss.NewStyle().Foreground(colorPrimary)
+		for _, sub := range m.subagents {
+			name := sub.Name
+			if name == "" {
+				name = sub.SessionID[:12] + "..."
+			}
+			line := subStyle.Render(fmt.Sprintf("  🕴️ subagent: %s [%s]", name, sub.Status))
+			msgLines = append(msgLines, line)
+		}
 	}
 
 	// Apply scroll and show only what fits.

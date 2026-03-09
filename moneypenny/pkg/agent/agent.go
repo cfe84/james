@@ -61,6 +61,7 @@ func (r *Runner) Run(ctx context.Context, params RunParams) (*Result, error) {
 	if params.Path != "" {
 		cmd.Dir = params.Path
 	}
+	cmd.Env = append(os.Environ(), "HEM_SESSION_ID="+params.SessionID)
 	cmd.Stderr = os.Stderr
 
 	r.vlog.Printf("exec: %s %s", agentPath, strings.Join(args, " "))

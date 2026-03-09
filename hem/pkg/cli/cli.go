@@ -20,6 +20,9 @@ var nounAliases = map[string]string{
 	"sessions":     "session",
 	"defaults":     "default",
 	"projects":     "project",
+	"subsessions":  "subsession",
+	"sub-session":  "subsession",
+	"sub-sessions": "subsession",
 }
 
 // Verb aliases: map synonyms.

@@ -225,6 +225,8 @@ hem/
 
 27. **Session sync**: Hem server periodically syncs sessions from all registered moneypennies (on startup + every 5 minutes). Queries `list_sessions` on each moneypenny and uses `INSERT OR IGNORE` to adopt unknown sessions without overwriting existing tracking data. This allows multiple hem instances to share moneypennies and discover each other's sessions.
 
+28. **Sub-agents**: Sessions can spawn sub-sessions for parallel task execution. Sub-sessions use the same moneypenny session model, linked by a `parent_session_id` column in hem's SQLite. Moneypenny injects the `HEM_SESSION_ID` environment variable into the agent runner, enabling agents to call `hem create subsession` and `hem watch session` from within their process. The `watch session` command uses an in-memory polling loop (not persistent watchers) that checks sub-agent status and queues completed results back to the parent via `queue_prompt`. Dashboard and session listing filter out sub-sessions (`parent_session_id != ''`). Deleting a parent cascades to all sub-sessions. Sub-agents are displayed in TUI and Qew chat views. The gadgets system prompt includes sub-agent instructions.
+
 ## Qew - Web UI for Remote Access
 
 Qew is a web-based UI that connects to a Hem server via MI6, enabling remote access from phones and other computers.

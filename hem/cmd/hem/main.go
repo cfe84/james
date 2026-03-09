@@ -725,6 +725,14 @@ Session management:
   diff session SESSION_ID
   import session FILE.jsonl|SESSION_ID [-m MONEYPENNY] [--name, --project, --path]
 
+Subagents:
+  create subsession PARENT_SESSION_ID PROMPT [--name, --moneypenny, --agent, --system-prompt, --yolo, --path, --async, --gadgets]
+  list subsessions PARENT_SESSION_ID
+  show subsession SUBSESSION_ID
+  stop subsession SUBSESSION_ID
+  delete subsession SUBSESSION_ID
+  watch session SESSION_ID [--timeout 30m]
+
 Dashboard:
   dashboard [--project NAME] [--all]
 

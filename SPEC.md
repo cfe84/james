@@ -462,6 +462,40 @@ Schedule instructions are appended to every session's system prompt automaticall
 - In the chat view, pending schedules are displayed with a ⏰ icon.
 - In command mode, `t` creates a new schedule (two-step input: first the time, then the prompt).
 
+## Sub-agents
+
+Sessions can spawn sub-sessions for parallel task execution. Sub-sessions are linked to a parent session and are managed as a group.
+
+### CLI Commands
+
+`hem create subsession SESSION_ID PROMPT [flags]` — creates a sub-session linked to the parent session. Same flags as `create session` (agent, name, system-prompt, yolo, path, gadgets). The sub-session inherits the parent's moneypenny.
+
+`hem list subsessions SESSION_ID` — lists sub-sessions for a parent session.
+
+`hem show subsession SUBSESSION_ID` — shows sub-session details.
+
+`hem stop subsession SUBSESSION_ID` — stops a working sub-session.
+
+`hem delete subsession SUBSESSION_ID` — deletes a sub-session.
+
+`hem watch session SESSION_ID` — polls sub-sessions for completion and queues their results back to the parent session via `queue_prompt`.
+
+### Data Model
+
+- Sub-sessions use the same session model, linked by a `parent_session_id` column in hem's SQLite.
+- `HEM_SESSION_ID` environment variable is set by moneypenny when launching agents, allowing agents to create sub-sessions via `hem`.
+
+### Behavior
+
+- Sub-sessions are hidden from the dashboard and `list sessions` output (filtered by `parent_session_id`).
+- Deleting a parent session cascades to all its sub-sessions.
+- `watch session` polls sub-agents and queues completed results to the parent via `queue_prompt`.
+
+### UI
+
+- Sub-agents are displayed in the TUI and Qew chat views as "subagents".
+- The gadgets system prompt includes sub-agent instructions, informing agents of the `hem create subsession` and `hem watch session` commands.
+
 ## Projects
 
 Projects provide context for organizing sessions — a project groups related sessions with shared defaults.

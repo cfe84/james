@@ -224,10 +224,11 @@
   async function loadChat() {
     if (!currentSession) return;
     try {
-      const [histResp, showResp, schedResp] = await Promise.all([
+      const [histResp, showResp, schedResp, subsResp] = await Promise.all([
         apiCall('history', 'session', [currentSession, '--count', '50']),
         apiCall('show', 'session', [currentSession]).catch(() => null),
         apiCall('list', 'schedule', ['--session-id', currentSession]).catch(() => null),
+        apiCall('list', 'subsession', [currentSession]).catch(() => null),
       ]);
       if (histResp.status === 'error') {
         document.getElementById('chat-messages').innerHTML =
@@ -250,14 +251,21 @@
           id: r[0], sessionId: r[1], prompt: r[2], scheduledAt: r[3], status: r[4],
         })).filter(s => s.status === 'pending');
       }
-      renderChat(histResp.data, schedules);
+      // Extract subagents.
+      let subagents = [];
+      if (subsResp && subsResp.status === 'ok' && subsResp.data && subsResp.data.rows) {
+        subagents = subsResp.data.rows.map(r => ({
+          sessionId: r[0], name: r[1], status: r[2],
+        }));
+      }
+      renderChat(histResp.data, schedules, subagents);
     } catch (e) {
       document.getElementById('chat-messages').innerHTML =
         `<div class="empty-state">Error: ${escapeHtml(e.message)}</div>`;
     }
   }
 
-  function renderChat(data, schedules) {
+  function renderChat(data, schedules, subagents) {
     const container = document.getElementById('chat-messages');
     if (!data) {
       container.innerHTML = '<div class="empty-state">No data received</div>';
@@ -308,6 +316,13 @@
       for (const s of schedules) {
         const prompt = s.prompt.length > 80 ? s.prompt.substring(0, 77) + '...' : s.prompt;
         html += `<div class="msg schedule-indicator">⏰ ${escapeHtml(s.scheduledAt)} — ${escapeHtml(prompt)}</div>`;
+      }
+    }
+    // Subagents.
+    if (subagents && subagents.length > 0) {
+      for (const sub of subagents) {
+        const name = sub.name || (sub.sessionId ? sub.sessionId.substring(0, 12) + '...' : '?');
+        html += `<div class="msg subagent-indicator">🕴️ subagent: ${escapeHtml(name)} [${escapeHtml(sub.status)}]</div>`;
       }
     }
     // Skip re-render if content hasn't changed (preserves selection and scroll).
