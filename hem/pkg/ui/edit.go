@@ -3,6 +3,7 @@ package ui
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -112,7 +113,10 @@ func (m editModel) Update(msg tea.Msg) (editModel, tea.Cmd) {
 		} else {
 			m.fields[6].value = "false"
 		}
-		// Store originals for diff.
+		// Place cursors at end of values and store originals for diff.
+		for i := range m.fields {
+			m.fields[i].cursorPos = len(m.fields[i].value)
+		}
 		m.original = make([]string, len(m.fields))
 		for i, f := range m.fields {
 			m.original[i] = f.value
@@ -150,20 +154,42 @@ func (m editModel) Update(msg tea.Msg) (editModel, tea.Cmd) {
 			m.saving = true
 			return m, m.save()
 		case "backspace":
-			if !field.isBool && field.options == nil && len(field.value) > 0 {
-				field.value = field.value[:len(field.value)-1]
+			if !field.isBool && field.options == nil && field.cursorPos > 0 {
+				_, size := utf8.DecodeLastRuneInString(field.value[:field.cursorPos])
+				field.value = field.value[:field.cursorPos-size] + field.value[field.cursorPos:]
+				field.cursorPos -= size
+			}
+		case "delete":
+			if !field.isBool && field.options == nil && field.cursorPos < len(field.value) {
+				_, size := utf8.DecodeRuneInString(field.value[field.cursorPos:])
+				field.value = field.value[:field.cursorPos] + field.value[field.cursorPos+size:]
 			}
 		case "ctrl+u":
 			if !field.isBool && field.options == nil {
 				field.value = ""
+				field.cursorPos = 0
 			}
 		case "left":
 			if field.options != nil {
 				cycleFieldOptionsBack(field)
+			} else if !field.isBool && field.cursorPos > 0 {
+				_, size := utf8.DecodeLastRuneInString(field.value[:field.cursorPos])
+				field.cursorPos -= size
 			}
 		case "right":
 			if field.options != nil {
 				cycleFieldOptions(field)
+			} else if !field.isBool && field.cursorPos < len(field.value) {
+				_, size := utf8.DecodeRuneInString(field.value[field.cursorPos:])
+				field.cursorPos += size
+			}
+		case "home":
+			if !field.isBool && field.options == nil {
+				field.cursorPos = 0
+			}
+		case "end":
+			if !field.isBool && field.options == nil {
+				field.cursorPos = len(field.value)
 			}
 		case " ":
 			if field.options != nil {
@@ -175,12 +201,15 @@ func (m editModel) Update(msg tea.Msg) (editModel, tea.Cmd) {
 					field.value = "true"
 				}
 			} else {
-				field.value += " "
+				field.value = field.value[:field.cursorPos] + " " + field.value[field.cursorPos:]
+				field.cursorPos++
 			}
 		default:
 			if !field.isBool && field.options == nil {
 				if msg.Type == tea.KeyRunes {
-					field.value += string(msg.Runes)
+					s := string(msg.Runes)
+					field.value = field.value[:field.cursorPos] + s + field.value[field.cursorPos:]
+					field.cursorPos += len(s)
 				}
 			}
 		}
@@ -223,7 +252,7 @@ func (m editModel) View() string {
 					value = fieldActiveStyle.Render("[ ] " + f.value)
 				}
 			} else {
-				value = fieldActiveStyle.Render(f.value + "█")
+				value = fieldActiveStyle.Render(f.value[:f.cursorPos] + "█" + f.value[f.cursorPos:])
 			}
 		} else {
 			if f.options != nil {

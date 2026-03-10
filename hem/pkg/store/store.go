@@ -23,6 +23,7 @@ type Moneypenny struct {
 	FIFOOut       string // path to output FIFO (for fifo transport)
 	MI6Addr       string // mi6 address host/session_id (for mi6 transport)
 	IsDefault     bool
+	Enabled       bool // false = disabled, hidden from dashboard/sessions
 	CreatedAt     time.Time
 }
 
@@ -96,6 +97,7 @@ CREATE TABLE IF NOT EXISTS moneypennies (
     fifo_out TEXT NOT NULL DEFAULT '',
     mi6_addr TEXT NOT NULL DEFAULT '',
     is_default INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 1,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -160,9 +162,9 @@ func (s *Store) Close() error {
 // AddMoneypenny inserts a new moneypenny. Returns an error if the name already exists.
 func (s *Store) AddMoneypenny(mp *Moneypenny) error {
 	_, err := s.db.Exec(
-		`INSERT INTO moneypennies (name, transport_type, fifo_in, fifo_out, mi6_addr, is_default)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
-		mp.Name, mp.TransportType, mp.FIFOIn, mp.FIFOOut, mp.MI6Addr, boolToInt(mp.IsDefault),
+		`INSERT INTO moneypennies (name, transport_type, fifo_in, fifo_out, mi6_addr, is_default, enabled)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		mp.Name, mp.TransportType, mp.FIFOIn, mp.FIFOOut, mp.MI6Addr, boolToInt(mp.IsDefault), boolToInt(mp.Enabled),
 	)
 	if err != nil {
 		return fmt.Errorf("add moneypenny %q: %w", mp.Name, err)
@@ -173,7 +175,7 @@ func (s *Store) AddMoneypenny(mp *Moneypenny) error {
 // GetMoneypenny retrieves a moneypenny by name. Returns nil, nil if not found.
 func (s *Store) GetMoneypenny(name string) (*Moneypenny, error) {
 	row := s.db.QueryRow(
-		`SELECT name, transport_type, fifo_in, fifo_out, mi6_addr, is_default, created_at
+		`SELECT name, transport_type, fifo_in, fifo_out, mi6_addr, is_default, enabled, created_at
 		 FROM moneypennies WHERE name = ?`, name,
 	)
 	mp, err := scanMoneypenny(row)
@@ -189,7 +191,7 @@ func (s *Store) GetMoneypenny(name string) (*Moneypenny, error) {
 // ListMoneypennies returns all registered moneypennies ordered by name.
 func (s *Store) ListMoneypennies() ([]*Moneypenny, error) {
 	rows, err := s.db.Query(
-		`SELECT name, transport_type, fifo_in, fifo_out, mi6_addr, is_default, created_at
+		`SELECT name, transport_type, fifo_in, fifo_out, mi6_addr, is_default, enabled, created_at
 		 FROM moneypennies ORDER BY name`,
 	)
 	if err != nil {
@@ -200,11 +202,12 @@ func (s *Store) ListMoneypennies() ([]*Moneypenny, error) {
 	var result []*Moneypenny
 	for rows.Next() {
 		var mp Moneypenny
-		var isDefault int
-		if err := rows.Scan(&mp.Name, &mp.TransportType, &mp.FIFOIn, &mp.FIFOOut, &mp.MI6Addr, &isDefault, &mp.CreatedAt); err != nil {
+		var isDefault, enabled int
+		if err := rows.Scan(&mp.Name, &mp.TransportType, &mp.FIFOIn, &mp.FIFOOut, &mp.MI6Addr, &isDefault, &enabled, &mp.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan moneypenny: %w", err)
 		}
 		mp.IsDefault = isDefault != 0
+		mp.Enabled = enabled != 0
 		result = append(result, &mp)
 	}
 	return result, rows.Err()
@@ -253,7 +256,7 @@ func (s *Store) SetDefaultMoneypenny(name string) error {
 // GetDefaultMoneypenny returns the current default moneypenny. Returns nil, nil if none is set.
 func (s *Store) GetDefaultMoneypenny() (*Moneypenny, error) {
 	row := s.db.QueryRow(
-		`SELECT name, transport_type, fifo_in, fifo_out, mi6_addr, is_default, created_at
+		`SELECT name, transport_type, fifo_in, fifo_out, mi6_addr, is_default, enabled, created_at
 		 FROM moneypennies WHERE is_default = 1`,
 	)
 	mp, err := scanMoneypenny(row)
@@ -421,13 +424,45 @@ func (s *Store) DeleteTrackedSession(sessionID string) error {
 // scanMoneypenny scans a single row into a Moneypenny.
 func scanMoneypenny(row *sql.Row) (*Moneypenny, error) {
 	var mp Moneypenny
-	var isDefault int
-	err := row.Scan(&mp.Name, &mp.TransportType, &mp.FIFOIn, &mp.FIFOOut, &mp.MI6Addr, &isDefault, &mp.CreatedAt)
+	var isDefault, enabled int
+	err := row.Scan(&mp.Name, &mp.TransportType, &mp.FIFOIn, &mp.FIFOOut, &mp.MI6Addr, &isDefault, &enabled, &mp.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
 	mp.IsDefault = isDefault != 0
+	mp.Enabled = enabled != 0
 	return &mp, nil
+}
+
+// SetMoneypennyEnabled sets the enabled flag on a moneypenny.
+func (s *Store) SetMoneypennyEnabled(name string, enabled bool) error {
+	res, err := s.db.Exec(`UPDATE moneypennies SET enabled = ? WHERE name = ?`, boolToInt(enabled), name)
+	if err != nil {
+		return fmt.Errorf("set moneypenny enabled %q: %w", name, err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("moneypenny %q not found", name)
+	}
+	return nil
+}
+
+// DisabledMoneypennyNames returns the set of disabled moneypenny names.
+func (s *Store) DisabledMoneypennyNames() (map[string]bool, error) {
+	rows, err := s.db.Query(`SELECT name FROM moneypennies WHERE enabled = 0`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[string]bool)
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, err
+		}
+		result[name] = true
+	}
+	return result, rows.Err()
 }
 
 // SetDefault sets a default value by key.
@@ -785,6 +820,7 @@ func (s *Store) migrateSchema() error {
 		`ALTER TABLE sessions ADD COLUMN reviewed INTEGER NOT NULL DEFAULT 1`,
 		`ALTER TABLE agent_templates ADD COLUMN yolo INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE sessions ADD COLUMN parent_session_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE moneypennies ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`,
 	}
 	for _, m := range migrations {
 		_, err := s.db.Exec(m)

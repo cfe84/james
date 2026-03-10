@@ -725,6 +725,22 @@ Session management:
   diff session SESSION_ID
   import session FILE.jsonl|SESSION_ID [-m MONEYPENNY] [--name, --project, --path]
 
+Scheduling:
+  schedule session SESSION_ID --at TIME --prompt PROMPT [--cron EXPR]
+  list schedule --session-id SESSION_ID
+  cancel schedule SCHEDULE_ID --session-id SESSION_ID
+
+  Time formats for --at:
+    +30m, +2h, +1h30m    Relative (from now)
+    15:04                 Today at time (or tomorrow if past)
+    2026-03-10 15:04      Date and time (local timezone)
+    2026-03-10T15:00:00Z  RFC3339
+
+  Cron expressions for --cron:
+    '0 9 * * 1'           Mon at 9am
+    '@every 2h'           Every 2 hours
+    '@daily'              Once a day
+
 Subagents:
   create subsession PARENT_SESSION_ID PROMPT [--name, --moneypenny, --agent, --system-prompt, --yolo, --path, --async, --gadgets]
   list subsessions PARENT_SESSION_ID

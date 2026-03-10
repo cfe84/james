@@ -362,6 +362,7 @@ type moneypennyInfo struct {
 	Type      string
 	Address   string
 	IsDefault bool
+	Enabled   bool
 }
 
 func (c *client) listMoneypennies() ([]moneypennyInfo, error) {
@@ -383,7 +384,7 @@ func (c *client) listMoneypennies() ([]moneypennyInfo, error) {
 
 	var mps []moneypennyInfo
 	for _, row := range table.Rows {
-		mp := moneypennyInfo{}
+		mp := moneypennyInfo{Enabled: true} // default enabled for backwards compat
 		if len(row) > 0 {
 			mp.Name = row[0]
 		}
@@ -395,6 +396,9 @@ func (c *client) listMoneypennies() ([]moneypennyInfo, error) {
 		}
 		if len(row) > 3 {
 			mp.IsDefault = row[3] == "*"
+		}
+		if len(row) > 4 {
+			mp.Enabled = row[4] != "false"
 		}
 		mps = append(mps, mp)
 	}
@@ -431,6 +435,21 @@ func (c *client) pingMoneypenny(name string) (string, error) {
 
 func (c *client) deleteMoneypenny(name string) error {
 	resp, err := c.send("delete", "moneypenny", "-n", name)
+	if err != nil {
+		return err
+	}
+	if resp.Status == protocol.StatusError {
+		return fmt.Errorf("%s", resp.Message)
+	}
+	return nil
+}
+
+func (c *client) enableMoneypenny(name string, enabled bool) error {
+	verb := "enable"
+	if !enabled {
+		verb = "disable"
+	}
+	resp, err := c.send(verb, "moneypenny", "-n", name)
 	if err != nil {
 		return err
 	}

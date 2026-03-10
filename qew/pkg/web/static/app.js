@@ -1010,13 +1010,16 @@
       let html = '';
       for (const r of rows) {
         const name = r[0], type = r[1], addr = r[2], isDef = r[3] === '*';
+        const enabled = r.length > 4 ? r[4] !== 'false' : true;
         html += `
-          <div class="mgmt-row">
+          <div class="mgmt-row${!enabled ? ' disabled' : ''}">
             <span class="mgmt-name">${escapeHtml(name)}</span>
             <span class="mgmt-detail">${escapeHtml(type)}${addr ? ' — ' + escapeHtml(addr) : ''}</span>
             ${isDef ? '<span class="mgmt-badge default">default</span>' : ''}
+            ${!enabled ? '<span class="mgmt-badge danger">disabled</span>' : ''}
             <span class="mgmt-actions">
               <button data-mp="${escapeAttr(name)}" data-action="ping">Ping</button>
+              <button data-mp="${escapeAttr(name)}" data-action="toggle-enabled">${enabled ? 'Disable' : 'Enable'}</button>
               ${!isDef ? `<button data-mp="${escapeAttr(name)}" data-action="set-default">Set Default</button>` : ''}
               <button data-mp="${escapeAttr(name)}" data-action="delete" class="danger">Delete</button>
             </span>
@@ -1029,6 +1032,7 @@
           const mp = btn.dataset.mp;
           const action = btn.dataset.action;
           if (action === 'ping') pingMoneypenny(mp);
+          else if (action === 'toggle-enabled') toggleMoneypennyEnabled(mp);
           else if (action === 'set-default') setDefaultMoneypenny(mp);
           else if (action === 'delete') deleteMoneypenny(mp);
         });
@@ -1043,6 +1047,17 @@
       const resp = await apiCall('ping', 'moneypenny', ['-n', name]);
       if (resp.status === 'error') alert('Ping failed: ' + resp.message);
       else alert('Ping OK: ' + (resp.data && resp.data.message ? resp.data.message : 'success'));
+    } catch (e) { alert('Error: ' + e.message); }
+  }
+
+  async function toggleMoneypennyEnabled(name) {
+    try {
+      // Check current state by looking at the button text.
+      const btn = document.querySelector(`button[data-mp="${name}"][data-action="toggle-enabled"]`);
+      const verb = btn && btn.textContent.trim() === 'Disable' ? 'disable' : 'enable';
+      const resp = await apiCall(verb, 'moneypenny', ['-n', name]);
+      if (resp.status === 'error') alert('Error: ' + resp.message);
+      else loadMoneypennies();
     } catch (e) { alert('Error: ' + e.message); }
   }
 

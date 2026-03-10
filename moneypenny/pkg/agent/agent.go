@@ -272,9 +272,9 @@ func buildClaudeArgs(params RunParams) []string {
 			"--verbose",
 			"--session-id", params.SessionID,
 		}
-		if params.SystemPrompt != "" {
-			args = append(args, "--system-prompt", params.SystemPrompt)
-		}
+	}
+	if params.SystemPrompt != "" {
+		args = append(args, "--system-prompt", params.SystemPrompt)
 	}
 	if params.Model != "" {
 		args = append(args, "--model", params.Model)

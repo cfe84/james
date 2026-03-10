@@ -39,7 +39,6 @@ type chatModel struct {
 	schedules     []scheduleInfo
 	subagents     []subagentInfo
 	activity      []activityEvent // recent agent activity (thinking, tool calls)
-	activityErr   string          // debug: last activity load result
 	input         string
 	cursorPos     int
 	width         int
@@ -198,7 +197,7 @@ func chatPollTick() tea.Cmd {
 }
 
 func (m chatModel) Init() tea.Cmd {
-	return tea.Batch(m.loadHistory(), m.loadSchedules(), m.loadSubagents(), chatPollTick())
+	return tea.Batch(m.loadHistory(), m.loadSchedules(), m.loadSubagents(), m.loadActivity(), chatPollTick())
 }
 
 func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
@@ -222,7 +221,6 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 				m.workingVerb = pickSpyVerb()
 			} else if msg.status != "working" {
 				m.workingVerb = ""
-				m.activity = nil
 			}
 
 			// Don't replace existing conversation with empty data (race during working state).
@@ -333,11 +331,11 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 		}
 
 	case activityLoadedMsg:
-		if msg.err != nil {
-			m.activityErr = fmt.Sprintf("activity err: %v", msg.err)
-		} else {
-			m.activityErr = fmt.Sprintf("activity ok: %d events", len(msg.activity))
-			m.activity = msg.activity
+		if msg.err == nil {
+			// Don't replace existing activity with empty while working — avoids flicker.
+			if len(msg.activity) > 0 || m.sessionStatus != "working" {
+				m.activity = msg.activity
+			}
 		}
 
 	case chatSessionStoppedMsg:
@@ -451,6 +449,9 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 			m.cursorPos = wordLeft(m.input, m.cursorPos)
 		case "alt+right":
 			m.cursorPos = wordRight(m.input, m.cursorPos)
+		case "ctrl+r":
+			m.input = ""
+			m.cursorPos = 0
 		case "home":
 			m.cursorPos = 0
 		case "end":
@@ -584,11 +585,6 @@ func (m chatModel) View() string {
 			}
 		}
 		msgLines = append(msgLines, "")
-	}
-
-	// Debug: show activity status.
-	if m.activityErr != "" {
-		msgLines = append(msgLines, lipgloss.NewStyle().Foreground(colorWarning).Render("  [dbg] "+m.activityErr))
 	}
 
 	if m.sending || m.sessionStatus == "working" {

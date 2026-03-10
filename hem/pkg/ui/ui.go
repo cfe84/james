@@ -226,7 +226,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dashboard, cmd = m.dashboard.Update(msg)
 		return m, cmd
 
-	case moneypenniesLoadedMsg, moneypennyDeletedMsg, moneypennyPingedMsg, moneypennyDefaultSetMsg:
+	case moneypenniesLoadedMsg, moneypennyDeletedMsg, moneypennyPingedMsg, moneypennyDefaultSetMsg, moneypennyEnabledMsg:
 		var cmd tea.Cmd
 		m.moneypennies, cmd = m.moneypennies.Update(msg)
 		return m, cmd
@@ -398,7 +398,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Discard tick if not in chat view.
 		return m, nil
 
-	case historyLoadedMsg, messageSentMsg, olderHistoryLoadedMsg:
+	case historyLoadedMsg, messageSentMsg, olderHistoryLoadedMsg,
+		activityLoadedMsg, schedulesLoadedMsg, subagentsLoadedMsg, scheduleCreatedMsg:
 		var cmd tea.Cmd
 		m.chat, cmd = m.chat.Update(msg)
 		return m, cmd
@@ -462,7 +463,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusMsg = "Session updated"
 		if m.previousView == viewChat {
 			m.currentView = viewChat
-			return m, tea.Batch(m.chat.loadHistory(), chatPollTick())
+			return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), chatPollTick())
 		}
 		m.currentView = viewSessions
 		m.sessions.loading = true
@@ -556,7 +557,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.currentView = viewChat
 		m.previousView = viewDashboard
 		if cm.response == "" {
-			return m, tea.Batch(m.chat.loadHistory(), chatPollTick())
+			return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), chatPollTick())
 		}
 		return m, chatPollTick()
 	}
@@ -721,7 +722,7 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m = m.withChatDraftRestored()
 			m.currentView = viewChat
 			m.previousView = viewDashboard
-			return m, tea.Batch(m.chat.loadHistory(), chatPollTick())
+			return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), chatPollTick())
 		}
 	case "c":
 		e := m.dashboard.selectedEntry()
@@ -856,7 +857,7 @@ func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m = m.withChatDraftRestored()
 			m.currentView = viewChat
 			m.previousView = viewProjectDetail
-			return m, tea.Batch(m.chat.loadHistory(), chatPollTick())
+			return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), chatPollTick())
 		}
 	case "c":
 		e := m.projectDetail.selectedEntry()
@@ -966,7 +967,7 @@ func (m Model) updateSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m = m.withChatDraftRestored()
 			m.currentView = viewChat
 			m.previousView = viewSessions
-			return m, tea.Batch(m.chat.loadHistory(), chatPollTick())
+			return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), chatPollTick())
 		}
 	case "n":
 		m.wizard = newWizardModel(m.client)
@@ -1144,6 +1145,11 @@ func (m Model) updateMoneypennies(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.addMoneypenny.height = m.height - 3
 		m.currentView = viewAddMoneypenny
 		return m, nil
+	case "e":
+		mp := m.moneypennies.selectedMoneypenny()
+		if mp != nil {
+			return m, m.moneypennies.toggleEnabled(mp)
+		}
 	case "x":
 		mp := m.moneypennies.selectedMoneypenny()
 		if mp != nil {
@@ -1365,6 +1371,7 @@ func (m Model) renderStatusBar() string {
 			keys = []string{
 				statusKeyStyle.Render("↵") + statusDescStyle.Render(" send"),
 				statusKeyStyle.Render("^J") + statusDescStyle.Render(" newline"),
+				statusKeyStyle.Render("^R") + statusDescStyle.Render(" clear"),
 				statusKeyStyle.Render("esc") + statusDescStyle.Render(" commands"),
 				statusKeyStyle.Render("^U/^D") + statusDescStyle.Render(" scroll"),
 			}
@@ -1393,6 +1400,7 @@ func (m Model) renderStatusBar() string {
 			statusKeyStyle.Render("↵") + statusDescStyle.Render(" ping"),
 			statusKeyStyle.Render("n") + statusDescStyle.Render(" new"),
 			statusKeyStyle.Render("s") + statusDescStyle.Render(" set default"),
+			statusKeyStyle.Render("e") + statusDescStyle.Render(" enable/disable"),
 			statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
 			statusKeyStyle.Render("x") + statusDescStyle.Render(" shell"),
 			statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),

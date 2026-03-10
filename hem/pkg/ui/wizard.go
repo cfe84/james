@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -121,9 +122,11 @@ func newWizardModelForProject(c *client, projectName string) wizardModel {
 	for i := range m.fields {
 		if m.fields[i].flag == "--project" {
 			m.fields[i].value = projectName
+			m.fields[i].cursorPos = len(projectName)
 		}
 		if m.fields[i].flag == "--name" {
 			m.fields[i].value = projectName
+			m.fields[i].cursorPos = len(projectName)
 		}
 	}
 	return m
@@ -264,9 +267,11 @@ func (m wizardModel) Update(msg tea.Msg) (wizardModel, tea.Cmd) {
 		for i := range m.fields {
 			if m.fields[i].flag == "--agent" && p.DefaultAgent != "" && m.fields[i].value == "" {
 				m.fields[i].value = p.DefaultAgent
+				m.fields[i].cursorPos = len(p.DefaultAgent)
 			}
 			if m.fields[i].flag == "--system-prompt" && p.DefaultSystemPrompt != "" && m.fields[i].value == "" {
 				m.fields[i].value = p.DefaultSystemPrompt
+				m.fields[i].cursorPos = len(p.DefaultSystemPrompt)
 			}
 		}
 		m.step = wizardStepForm
@@ -405,20 +410,42 @@ func (m wizardModel) updateFormStep(msg tea.KeyMsg) (wizardModel, tea.Cmd) {
 			return m, m.createSession()
 		}
 	case "backspace":
-		if !field.isBool && field.options == nil && len(field.value) > 0 {
-			field.value = field.value[:len(field.value)-1]
+		if !field.isBool && field.options == nil && field.cursorPos > 0 {
+			_, size := utf8.DecodeLastRuneInString(field.value[:field.cursorPos])
+			field.value = field.value[:field.cursorPos-size] + field.value[field.cursorPos:]
+			field.cursorPos -= size
+		}
+	case "delete":
+		if !field.isBool && field.options == nil && field.cursorPos < len(field.value) {
+			_, size := utf8.DecodeRuneInString(field.value[field.cursorPos:])
+			field.value = field.value[:field.cursorPos] + field.value[field.cursorPos+size:]
 		}
 	case "ctrl+u":
 		if !field.isBool && field.options == nil {
 			field.value = ""
+			field.cursorPos = 0
 		}
 	case "left":
 		if field.options != nil {
 			cycleFieldOptionsBack(field)
+		} else if !field.isBool && field.cursorPos > 0 {
+			_, size := utf8.DecodeLastRuneInString(field.value[:field.cursorPos])
+			field.cursorPos -= size
 		}
 	case "right":
 		if field.options != nil {
 			cycleFieldOptions(field)
+		} else if !field.isBool && field.cursorPos < len(field.value) {
+			_, size := utf8.DecodeRuneInString(field.value[field.cursorPos:])
+			field.cursorPos += size
+		}
+	case "home":
+		if !field.isBool && field.options == nil {
+			field.cursorPos = 0
+		}
+	case "end":
+		if !field.isBool && field.options == nil {
+			field.cursorPos = len(field.value)
 		}
 	case " ":
 		if field.options != nil {
@@ -430,12 +457,15 @@ func (m wizardModel) updateFormStep(msg tea.KeyMsg) (wizardModel, tea.Cmd) {
 				field.value = "true"
 			}
 		} else {
-			field.value += " "
+			field.value = field.value[:field.cursorPos] + " " + field.value[field.cursorPos:]
+			field.cursorPos++
 		}
 	default:
 		if !field.isBool && field.options == nil {
 			if msg.Type == tea.KeyRunes {
-				field.value += string(msg.Runes)
+				s := string(msg.Runes)
+				field.value = field.value[:field.cursorPos] + s + field.value[field.cursorPos:]
+				field.cursorPos += len(s)
 			}
 		}
 	}
@@ -653,7 +683,7 @@ func (m wizardModel) viewFormStep() string {
 					value = fieldActiveStyle.Render("[ ] " + f.value)
 				}
 			} else {
-				text := f.value + "\u2588"
+				text := f.value[:f.cursorPos] + "\u2588" + f.value[f.cursorPos:]
 				lines := wrapText(text, maxValueWidth)
 				var parts []string
 				for j, line := range lines {

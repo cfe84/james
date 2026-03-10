@@ -31,6 +31,7 @@ type moneypennyPingedMsg struct {
 	err     error
 }
 type moneypennyDefaultSetMsg struct{ err error }
+type moneypennyEnabledMsg struct{ err error }
 
 func newMoneypenniesModel(c *client) moneypenniesModel {
 	return moneypenniesModel{
@@ -64,6 +65,15 @@ func (m moneypenniesModel) setDefault(name string) tea.Cmd {
 	return func() tea.Msg {
 		err := m.client.setDefaultMoneypenny(name)
 		return moneypennyDefaultSetMsg{err: err}
+	}
+}
+
+func (m moneypenniesModel) toggleEnabled(mp *moneypennyInfo) tea.Cmd {
+	name := mp.Name
+	enable := !mp.Enabled
+	return func() tea.Msg {
+		err := m.client.enableMoneypenny(name, enable)
+		return moneypennyEnabledMsg{err: err}
 	}
 }
 
@@ -106,6 +116,14 @@ func (m moneypenniesModel) Update(msg tea.Msg) (moneypenniesModel, tea.Cmd) {
 			m.err = msg.err
 		} else {
 			m.statusMsg = "Default updated"
+		}
+		return m, m.loadMoneypennies()
+
+	case moneypennyEnabledMsg:
+		if msg.err != nil {
+			m.err = msg.err
+		} else {
+			m.statusMsg = "Enabled status updated"
 		}
 		return m, m.loadMoneypennies()
 
@@ -172,13 +190,20 @@ func (m moneypenniesModel) View() string {
 		name := truncate(mp.Name, 18)
 		addr := truncate(mp.Address, 38)
 
-		line := fmt.Sprintf("  %-20s %-8s %-40s %s", name, mp.Type, addr, def)
+		status := ""
+		if !mp.Enabled {
+			status = lipgloss.NewStyle().Foreground(colorDanger).Render(" disabled")
+		}
+
+		line := fmt.Sprintf("  %-20s %-8s %-40s %s%s", name, mp.Type, addr, def, status)
 
 		if i == m.cursor {
 			if m.width > 0 && lipgloss.Width(line) < m.width {
 				line += strings.Repeat(" ", m.width-lipgloss.Width(line))
 			}
 			b.WriteString(sessionSelectedStyle.Render(line))
+		} else if !mp.Enabled {
+			b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render(line))
 		} else {
 			b.WriteString(sessionNormalStyle.Render(line))
 		}

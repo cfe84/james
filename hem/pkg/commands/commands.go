@@ -68,7 +68,12 @@ type Executor struct {
 	clientsMu         sync.Mutex
 	watchers          map[string][]string // parentSessionID → []childSessionIDs being watched
 	watchersMu        sync.Mutex
+	mpCooldowns       map[string]time.Time // mpName → earliest time to retry after failure
+	mpCooldownsMu     sync.Mutex
 }
+
+// mpCooldownDuration is how long to skip querying a moneypenny after it fails.
+const mpCooldownDuration = 30 * time.Second
 
 func New(s *store.Store, mi6KeyPath string) *Executor {
 	return &Executor{
@@ -77,7 +82,30 @@ func New(s *store.Store, mi6KeyPath string) *Executor {
 		lastSessionStates: make(map[string]string),
 		clients:           make(map[string]*transport.Client),
 		watchers:          make(map[string][]string),
+		mpCooldowns:       make(map[string]time.Time),
 	}
+}
+
+// isMPOnCooldown returns true if a moneypenny recently failed and should be skipped.
+func (e *Executor) isMPOnCooldown(name string) bool {
+	e.mpCooldownsMu.Lock()
+	defer e.mpCooldownsMu.Unlock()
+	t, ok := e.mpCooldowns[name]
+	return ok && time.Now().Before(t)
+}
+
+// setMPCooldown marks a moneypenny as unreachable for a cooldown period.
+func (e *Executor) setMPCooldown(name string) {
+	e.mpCooldownsMu.Lock()
+	defer e.mpCooldownsMu.Unlock()
+	e.mpCooldowns[name] = time.Now().Add(mpCooldownDuration)
+}
+
+// clearMPCooldown clears a moneypenny's cooldown after a successful contact.
+func (e *Executor) clearMPCooldown(name string) {
+	e.mpCooldownsMu.Lock()
+	defer e.mpCooldownsMu.Unlock()
+	delete(e.mpCooldowns, name)
 }
 
 // CheckConnectivity pings all registered moneypennies and logs warnings for
@@ -259,6 +287,10 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.PingMoneypenny(args)
 	case "delete moneypenny":
 		return e.DeleteMoneypenny(args)
+	case "enable moneypenny":
+		return e.EnableMoneypenny(args, true)
+	case "disable moneypenny":
+		return e.EnableMoneypenny(args, false)
 	case "set-default moneypenny":
 		return e.SetDefaultMoneypenny(args)
 	case "set-default agent":
@@ -424,6 +456,15 @@ func (e *Executor) sendCommand(ctx context.Context, mp *store.Moneypenny, method
 		return resp, fmt.Errorf("moneypenny %q returned error: %s (code: %s)", mp.Name, string(resp.Data), resp.ErrorCode)
 	}
 	return resp, nil
+}
+
+// disabledMPs returns the set of disabled moneypenny names. Cached per call.
+func (e *Executor) disabledMPs() map[string]bool {
+	disabled, err := e.store.DisabledMoneypennyNames()
+	if err != nil {
+		return nil
+	}
+	return disabled
 }
 
 // pollUntilIdle polls a moneypenny session until it transitions from working to idle.
@@ -748,6 +789,7 @@ func (e *Executor) AddMoneypenny(args []string) *protocol.Response {
 
 	mp := &store.Moneypenny{
 		Name:      name,
+		Enabled:   true,
 		CreatedAt: time.Now(),
 	}
 
@@ -812,18 +854,23 @@ func (e *Executor) ListMoneypennies(args []string) *protocol.Response {
 	}
 
 	result := TableResult{
-		Headers: []string{"Name", "Type", "Address", "Default"},
+		Headers: []string{"Name", "Type", "Address", "Default", "Enabled"},
 	}
 	for _, mp := range mps {
 		def := ""
 		if mp.IsDefault {
 			def = "*"
 		}
+		enabled := "true"
+		if !mp.Enabled {
+			enabled = "false"
+		}
 		result.Rows = append(result.Rows, []string{
 			mp.Name,
 			mp.TransportType,
 			moneypennyAddress(mp),
 			def,
+			enabled,
 		})
 	}
 
@@ -856,8 +903,12 @@ func (e *Executor) PingMoneypenny(args []string) *protocol.Response {
 
 	resp, err := e.sendCommand(ctx, mp, "get_version", nil)
 	if err != nil {
+		e.setMPCooldown(name)
 		return protocol.ErrResponse(fmt.Sprintf("ping failed: %v", err))
 	}
+
+	// Successful ping clears any cooldown.
+	e.clearMPCooldown(name)
 
 	var versionData struct {
 		Version string `json:"version"`
@@ -898,6 +949,41 @@ func (e *Executor) DeleteMoneypenny(args []string) *protocol.Response {
 
 	return protocol.OKResponse(TextResult{
 		Message: fmt.Sprintf("Deleted moneypenny %q (and its tracked sessions).", name),
+	})
+}
+
+func (e *Executor) EnableMoneypenny(args []string, enabled bool) *protocol.Response {
+	var name string
+	verb := "enable"
+	if !enabled {
+		verb = "disable"
+	}
+	_, err := parseFlagsFromArgs(verb+"-moneypenny", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&name, "n", "", "moneypenny name")
+		fs.StringVar(&name, "name", "", "moneypenny name")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if name == "" {
+		return protocol.ErrResponse("--name / -n is required")
+	}
+
+	if err := e.store.SetMoneypennyEnabled(name, enabled); err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	// Clear cooldown when re-enabling so the MP is queried immediately.
+	if enabled {
+		e.clearMPCooldown(name)
+	}
+
+	action := "enabled"
+	if !enabled {
+		action = "disabled"
+	}
+	return protocol.OKResponse(TextResult{
+		Message: fmt.Sprintf("Moneypenny %q %s.", name, action),
 	})
 }
 
@@ -1763,9 +1849,15 @@ func (e *Executor) ListSessions(args []string) *protocol.Response {
 		}
 		mps = []*store.Moneypenny{mp}
 	} else {
-		mps, err = e.store.ListMoneypennies()
+		allMPs, err := e.store.ListMoneypennies()
 		if err != nil {
 			return protocol.ErrResponse(err.Error())
+		}
+		// Filter out disabled moneypennies.
+		for _, mp := range allMPs {
+			if mp.Enabled {
+				mps = append(mps, mp)
+			}
 		}
 	}
 
@@ -1784,27 +1876,51 @@ func (e *Executor) ListSessions(args []string) *protocol.Response {
 		Headers: []string{"SessionID", "Name", "Status", "Moneypenny", "Created", "Last Active"},
 	}
 
-	ctx := context.Background()
-	var warnings []string
-	for _, mp := range mps {
-		resp, err := e.sendCommand(ctx, mp, "list_sessions", nil)
-		if err != nil {
-			warnings = append(warnings, fmt.Sprintf("moneypenny %q is offline", mp.Name))
-			continue
-		}
-
-		var sessions []struct {
+	// Query all moneypennies concurrently to avoid one slow MP blocking the rest.
+	type mpResult struct {
+		mpName   string
+		sessions []struct {
 			SessionID    string `json:"session_id"`
 			Name         string `json:"name"`
 			Status       string `json:"status"`
 			CreatedAt    string `json:"created_at"`
 			LastAccessed string `json:"last_accessed"`
 		}
-		if err := json.Unmarshal(resp.Data, &sessions); err != nil {
+		warning string
+	}
+
+	ch := make(chan mpResult, len(mps))
+	for _, mp := range mps {
+		mp := mp
+		if e.isMPOnCooldown(mp.Name) {
+			ch <- mpResult{mpName: mp.Name, warning: fmt.Sprintf("moneypenny %q is unreachable (cooldown)", mp.Name)}
 			continue
 		}
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			resp, err := e.sendCommand(ctx, mp, "list_sessions", nil)
+			if err != nil {
+				e.setMPCooldown(mp.Name)
+				ch <- mpResult{mpName: mp.Name, warning: fmt.Sprintf("moneypenny %q is offline", mp.Name)}
+				return
+			}
+			e.clearMPCooldown(mp.Name)
+			var r mpResult
+			r.mpName = mp.Name
+			json.Unmarshal(resp.Data, &r.sessions)
+			ch <- r
+		}()
+	}
 
-		for _, s := range sessions {
+	var warnings []string
+	for range mps {
+		r := <-ch
+		if r.warning != "" {
+			warnings = append(warnings, r.warning)
+			continue
+		}
+		for _, s := range r.sessions {
 			// Hide sub-sessions from main listing.
 			if subSessionSet[s.SessionID] {
 				continue
@@ -1829,7 +1945,7 @@ func (e *Executor) ListSessions(args []string) *protocol.Response {
 
 			created := formatTimestamp(s.CreatedAt)
 			lastActive := formatTimestamp(s.LastAccessed)
-			result.Rows = append(result.Rows, []string{s.SessionID, s.Name, s.Status, mp.Name, created, lastActive})
+			result.Rows = append(result.Rows, []string{s.SessionID, s.Name, s.Status, r.mpName, created, lastActive})
 		}
 	}
 
@@ -3000,10 +3116,15 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 	}
 
 	// Filter tracked sessions first.
+	disabled := e.disabledMPs()
 	var filteredSessions []*store.Session
 	for _, sess := range trackedSessions {
 		// Hide sub-sessions from dashboard (they appear under their parent).
 		if sess.ParentSessionID != "" {
+			continue
+		}
+		// Hide sessions on disabled moneypennies.
+		if disabled[sess.MoneypennyName] {
 			continue
 		}
 		if projectIDFilter != "" && sess.ProjectID != projectIDFilter {
@@ -3036,13 +3157,18 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 		err      error
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
 	resultCh := make(chan mpResult, len(sessionsByMP))
 	var wg sync.WaitGroup
 
 	for mpName := range sessionsByMP {
+		// Skip moneypennies on cooldown (recently failed) to avoid blocking the dashboard.
+		if e.isMPOnCooldown(mpName) {
+			resultCh <- mpResult{mpName: mpName, err: fmt.Errorf("moneypenny is unreachable (cooldown)")}
+			continue
+		}
 		mp, err := e.store.GetMoneypenny(mpName)
 		if err != nil || mp == nil {
 			resultCh <- mpResult{mpName: mpName, err: fmt.Errorf("moneypenny not found")}
@@ -3053,9 +3179,11 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 			defer wg.Done()
 			resp, err := e.sendCommand(ctx, mp, "list_sessions", nil)
 			if err != nil {
+				e.setMPCooldown(mp.Name)
 				resultCh <- mpResult{mpName: mp.Name, err: err}
 				return
 			}
+			e.clearMPCooldown(mp.Name)
 			var sessions []mpSessionInfo
 			if err := json.Unmarshal(resp.Data, &sessions); err != nil {
 				resultCh <- mpResult{mpName: mp.Name, err: err}
