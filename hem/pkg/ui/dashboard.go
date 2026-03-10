@@ -29,6 +29,7 @@ type dashboardEntry struct {
 	MPStatus   string // ready/idle/working/offline
 	HemStatus  string // active/completed
 	Moneypenny string
+	CreatedAt  string
 	LastActive string
 	Category   int // 0=READY, 1=WORKING, 2=IDLE, 3=COMPLETED
 }
@@ -120,7 +121,10 @@ func (m dashboardModel) loadDashboard() tea.Cmd {
 				e.Moneypenny = row[4]
 			}
 			if len(row) > 5 {
-				e.LastActive = row[5]
+				e.CreatedAt = row[5]
+			}
+			if len(row) > 6 {
+				e.LastActive = row[6]
 			}
 
 			// Determine category from parsed status.
@@ -324,13 +328,13 @@ func (m dashboardModel) View() string {
 	}
 
 	// Calculate column widths based on terminal width.
-	// Fixed columns: indent(2) + status(10) + lastActive(14) + spacing(~8)
+	// Fixed columns: indent(2) + status(10) + created(14) + lastActive(14) + spacing(~10)
 	// Flexible: name, moneypenny, project
 	w := m.width
 	if w < 80 {
 		w = 80
 	}
-	fixedWidth := 2 + 10 + 14 + 8 // indent + status + lastActive + gaps
+	fixedWidth := 2 + 10 + 14 + 14 + 10 // indent + status + created + lastActive + gaps
 	if showProject {
 		fixedWidth += 14 // project column + gap
 	}
@@ -370,6 +374,7 @@ func (m dashboardModel) View() string {
 		}
 		mp := truncate(e.Moneypenny, mpWidth)
 		status := statusBadge(e.MPStatus)
+		created := truncate(e.CreatedAt, 14)
 		lastActive := truncate(e.LastActive, 14)
 
 		nameFmt := fmt.Sprintf("%%-%ds", nameWidth+2)
@@ -382,9 +387,9 @@ func (m dashboardModel) View() string {
 				project = "-"
 			}
 			projFmt := fmt.Sprintf("%%-%ds", projWidth+2)
-			line = fmt.Sprintf("  "+nameFmt+projFmt+"%-10s "+mpFmt+"%s", name, project, status, mp, lastActive)
+			line = fmt.Sprintf("  "+nameFmt+projFmt+"%-10s "+mpFmt+"%-14s %s", name, project, status, mp, created, lastActive)
 		} else {
-			line = fmt.Sprintf("  "+nameFmt+"%-10s "+mpFmt+"%s", name, status, mp, lastActive)
+			line = fmt.Sprintf("  "+nameFmt+"%-10s "+mpFmt+"%-14s %s", name, status, mp, created, lastActive)
 		}
 
 		if i == m.cursor {

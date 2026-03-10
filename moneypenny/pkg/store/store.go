@@ -20,6 +20,7 @@ type Session struct {
 	Name         string
 	Agent        string
 	SystemPrompt string
+	Model        string
 	Yolo         bool
 	Path         string
 	Status       string
@@ -139,6 +140,9 @@ CREATE INDEX IF NOT EXISTS idx_schedules_pending ON schedules(status, scheduled_
 	// Migration: add cron_expr column to schedules if missing (for existing DBs).
 	db.Exec(`ALTER TABLE schedules ADD COLUMN cron_expr TEXT NOT NULL DEFAULT ''`)
 
+	// Migration: add model column to sessions if missing.
+	db.Exec(`ALTER TABLE sessions ADD COLUMN model TEXT NOT NULL DEFAULT ''`)
+
 	return nil
 }
 
@@ -160,9 +164,9 @@ func (s *Store) CreateSession(sess *Session) error {
 	}
 
 	_, err := s.db.Exec(
-		`INSERT INTO sessions (session_id, name, agent, system_prompt, yolo, path, status, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sess.SessionID, sess.Name, sess.Agent, sess.SystemPrompt, yolo, sess.Path, sess.Status, now, now,
+		`INSERT INTO sessions (session_id, name, agent, system_prompt, model, yolo, path, status, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sess.SessionID, sess.Name, sess.Agent, sess.SystemPrompt, sess.Model, yolo, sess.Path, sess.Status, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("create session: %w", err)
@@ -173,14 +177,14 @@ func (s *Store) CreateSession(sess *Session) error {
 // GetSession retrieves a session by ID. Returns nil, nil if not found.
 func (s *Store) GetSession(sessionID string) (*Session, error) {
 	row := s.db.QueryRow(
-		`SELECT session_id, name, agent, system_prompt, yolo, path, status, created_at, updated_at
+		`SELECT session_id, name, agent, system_prompt, model, yolo, path, status, created_at, updated_at
 		 FROM sessions WHERE session_id = ?`, sessionID,
 	)
 
 	sess := &Session{}
 	var yolo int
 	err := row.Scan(
-		&sess.SessionID, &sess.Name, &sess.Agent, &sess.SystemPrompt,
+		&sess.SessionID, &sess.Name, &sess.Agent, &sess.SystemPrompt, &sess.Model,
 		&yolo, &sess.Path, &sess.Status, &sess.CreatedAt, &sess.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -196,7 +200,7 @@ func (s *Store) GetSession(sessionID string) (*Session, error) {
 // ListSessions returns all sessions.
 func (s *Store) ListSessions() ([]*Session, error) {
 	rows, err := s.db.Query(
-		`SELECT session_id, name, agent, system_prompt, yolo, path, status, created_at, updated_at
+		`SELECT session_id, name, agent, system_prompt, model, yolo, path, status, created_at, updated_at
 		 FROM sessions ORDER BY created_at`,
 	)
 	if err != nil {
@@ -209,7 +213,7 @@ func (s *Store) ListSessions() ([]*Session, error) {
 		sess := &Session{}
 		var yolo int
 		if err := rows.Scan(
-			&sess.SessionID, &sess.Name, &sess.Agent, &sess.SystemPrompt,
+			&sess.SessionID, &sess.Name, &sess.Agent, &sess.SystemPrompt, &sess.Model,
 			&yolo, &sess.Path, &sess.Status, &sess.CreatedAt, &sess.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
@@ -221,7 +225,7 @@ func (s *Store) ListSessions() ([]*Session, error) {
 }
 
 // UpdateSessionFields updates specific fields of a session.
-func (s *Store) UpdateSessionFields(sessionID string, name, systemPrompt, path *string, yolo *bool) error {
+func (s *Store) UpdateSessionFields(sessionID string, name, systemPrompt, model, path *string, yolo *bool) error {
 	sess, err := s.GetSession(sessionID)
 	if err != nil {
 		return err
@@ -236,6 +240,9 @@ func (s *Store) UpdateSessionFields(sessionID string, name, systemPrompt, path *
 	if systemPrompt != nil {
 		sess.SystemPrompt = *systemPrompt
 	}
+	if model != nil {
+		sess.Model = *model
+	}
 	if path != nil {
 		sess.Path = *path
 	}
@@ -249,8 +256,8 @@ func (s *Store) UpdateSessionFields(sessionID string, name, systemPrompt, path *
 		yoloInt = 1
 	}
 	res, err := s.db.Exec(
-		`UPDATE sessions SET name = ?, system_prompt = ?, yolo = ?, path = ?, updated_at = ? WHERE session_id = ?`,
-		sess.Name, sess.SystemPrompt, yoloInt, sess.Path, now, sessionID,
+		`UPDATE sessions SET name = ?, system_prompt = ?, model = ?, yolo = ?, path = ?, updated_at = ? WHERE session_id = ?`,
+		sess.Name, sess.SystemPrompt, sess.Model, yoloInt, sess.Path, now, sessionID,
 	)
 	if err != nil {
 		return fmt.Errorf("update session: %w", err)

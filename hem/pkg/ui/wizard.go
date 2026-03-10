@@ -86,6 +86,7 @@ func newWizardModel(c *client) wizardModel {
 			{label: "Name", flag: "--name", value: ""},
 			{label: "Project", flag: "--project", value: ""},
 			{label: "Agent", flag: "--agent", value: ""},
+			{label: "Model", flag: "--model", value: ""},
 			{label: "System Prompt", flag: "--system-prompt", value: ""},
 			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
 			{label: "Gadgets (James tooling)", flag: "--gadgets", isBool: true, value: "false"},

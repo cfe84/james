@@ -44,6 +44,7 @@ type sessionDetail struct {
 	Name         string             `json:"name"`
 	Agent        string             `json:"agent"`
 	SystemPrompt string             `json:"system_prompt"`
+	Model        string             `json:"model"`
 	Yolo         bool               `json:"yolo"`
 	Path         string             `json:"path"`
 	Status       string             `json:"status"`

@@ -104,37 +104,27 @@ func (c *Client) sendFIFO(ctx context.Context, cmd *Command) (*Response, error) 
 		return nil, fmt.Errorf("opening fifo-in: %w", err)
 	}
 
-	// Open out (for reading) in a goroutine — uses blocking mode since we know
-	// moneypenny is running (the write open succeeded).
-	type openResult struct {
-		file *os.File
-		err  error
+	// Open the output FIFO with O_NONBLOCK to avoid hanging forever if
+	// moneypenny dies between the write-open and the read-open. On macOS/Linux,
+	// O_RDONLY|O_NONBLOCK on a FIFO succeeds immediately without waiting for a
+	// writer. We then clear nonblock so reads block normally. If moneypenny is
+	// gone, the scanner will get EOF instead of hanging forever.
+	outFile, err := os.OpenFile(c.fifoOut, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		inFile.Close()
+		return nil, fmt.Errorf("opening fifo-out: %w", err)
 	}
-	outCh := make(chan openResult, 1)
-	go func() {
-		f, err := os.OpenFile(c.fifoOut, os.O_RDONLY, 0)
-		outCh <- openResult{f, err}
-	}()
+	defer outFile.Close()
+	// Clear O_NONBLOCK so reads block normally waiting for data.
+	clearNonBlock(int(outFile.Fd()))
 
 	// Write command.
 	if _, err := inFile.Write(data); err != nil {
 		inFile.Close()
+		outFile.Close()
 		return nil, fmt.Errorf("writing to fifo-in: %w", err)
 	}
 	inFile.Close()
-
-	// Wait for the output FIFO to open.
-	var outFile *os.File
-	select {
-	case res := <-outCh:
-		if res.err != nil {
-			return nil, fmt.Errorf("opening fifo-out: %w", res.err)
-		}
-		outFile = res.file
-	case <-ctx.Done():
-		return nil, fmt.Errorf("timed out waiting for moneypenny response")
-	}
-	defer outFile.Close()
 
 	// Read response with context deadline.
 	scanCh := make(chan *Response, 1)
@@ -160,6 +150,8 @@ func (c *Client) sendFIFO(ctx context.Context, cmd *Command) (*Response, error) 
 	case err := <-errCh:
 		return nil, err
 	case <-ctx.Done():
+		// Close outFile to unblock the scanner goroutine.
+		outFile.Close()
 		return nil, fmt.Errorf("timed out waiting for moneypenny response")
 	}
 }

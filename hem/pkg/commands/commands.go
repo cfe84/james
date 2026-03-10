@@ -397,10 +397,18 @@ func (e *Executor) clientForMoneypenny(mp *store.Moneypenny) *transport.Client {
 }
 
 // sendCommand sends a command to a moneypenny and returns the response.
+// If ctx has no deadline, a default 60-second timeout is applied to prevent
+// indefinite hangs when a moneypenny disconnects abruptly.
 func (e *Executor) sendCommand(ctx context.Context, mp *store.Moneypenny, method string, data interface{}) (*transport.Response, error) {
 	client := e.clientForMoneypenny(mp)
 	if client == nil {
 		return nil, fmt.Errorf("unsupported transport type %q for moneypenny %q", mp.TransportType, mp.Name)
+	}
+	// Apply a default timeout if the caller didn't set a deadline.
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 60*time.Second)
+		defer cancel()
 	}
 	cmd := &transport.Command{
 		Type:      "request",
@@ -628,6 +636,7 @@ type SessionShowResult struct {
 	Name         string `json:"name"`
 	Agent        string `json:"agent"`
 	SystemPrompt string `json:"system_prompt"`
+	Model        string `json:"model,omitempty"`
 	Yolo         bool   `json:"yolo"`
 	Path         string `json:"path"`
 	Status       string `json:"status"`
@@ -1013,13 +1022,14 @@ func (e *Executor) DisableSetting(name string) *protocol.Response {
 // ---------------------------------------------------------------------------
 
 func (e *Executor) CreateSession(args []string) *protocol.Response {
-	var mpName, sessionName, systemPrompt, pathArg, agentName, projectNameOrID string
+	var mpName, sessionName, systemPrompt, pathArg, agentName, projectNameOrID, modelName string
 	var yolo, async, gadgets bool
 
 	remaining, err := parseFlagsFromArgs("create-session", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&mpName, "m", "", "moneypenny name")
 		fs.StringVar(&mpName, "moneypenny", "", "moneypenny name")
 		fs.StringVar(&agentName, "agent", "", "agent to use")
+		fs.StringVar(&modelName, "model", "", "model to use (e.g. sonnet, opus)")
 		fs.StringVar(&sessionName, "name", "", "session name")
 		fs.StringVar(&systemPrompt, "system-prompt", "", "system prompt")
 		fs.BoolVar(&yolo, "yolo", false, "enable yolo mode")
@@ -1125,6 +1135,9 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 	}
 	if systemPrompt != "" {
 		cmdData["system_prompt"] = systemPrompt
+	}
+	if modelName != "" {
+		cmdData["model"] = modelName
 	}
 	if yolo {
 		cmdData["yolo"] = true
@@ -1508,21 +1521,26 @@ func (e *Executor) ShowSession(args []string) *protocol.Response {
 	if v, ok := raw["status"].(string); ok {
 		result.Status = v
 	}
+	if v, ok := raw["model"].(string); ok {
+		result.Model = v
+	}
 
 	return protocol.OKResponse(result)
 }
 
 func (e *Executor) UpdateSession(args []string) *protocol.Response {
-	var sessionID, name, systemPrompt, pathArg string
-	var yoloStr, projectNameOrID string
+	var sessionID, name, systemPrompt, pathArg, modelStr string
+	var yoloStr, projectNameOrID, gadgetsStr string
 
 	remaining, err := parseFlagsFromArgs("update-session", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&sessionID, "session-id", "", "session ID")
 		fs.StringVar(&name, "name", "", "session name")
 		fs.StringVar(&systemPrompt, "system-prompt", "", "system prompt")
+		fs.StringVar(&modelStr, "model", "", "model (e.g. sonnet, opus)")
 		fs.StringVar(&yoloStr, "yolo", "", "yolo mode (true/false)")
 		fs.StringVar(&pathArg, "path", "", "working directory path")
 		fs.StringVar(&projectNameOrID, "project", "", "move to project (name or ID)")
+		fs.StringVar(&gadgetsStr, "gadgets", "", "enable/disable gadgets (true/false)")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -1554,6 +1572,10 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 		cmdData["system_prompt"] = systemPrompt
 		hasUpdate = true
 	}
+	if modelStr != "" {
+		cmdData["model"] = modelStr
+		hasUpdate = true
+	}
 	if pathArg != "" {
 		cmdData["path"] = pathArg
 		hasUpdate = true
@@ -1561,6 +1583,43 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 	if yoloStr != "" {
 		cmdData["yolo"] = yoloStr == "true"
 		hasUpdate = true
+	}
+
+	// Handle gadgets toggle — append or strip the gadgets system prompt.
+	if gadgetsStr != "" {
+		// Fetch current session to get system prompt.
+		ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel2()
+		sessResp, err := e.sendCommand(ctx2, mp, "get_session", map[string]interface{}{"session_id": sessionID})
+		if err != nil {
+			return protocol.ErrResponse(fmt.Sprintf("failed to get session for gadgets toggle: %v", err))
+		}
+		var sessData struct {
+			SystemPrompt string `json:"system_prompt"`
+		}
+		if err := json.Unmarshal(sessResp.Data, &sessData); err != nil {
+			return protocol.ErrResponse(fmt.Sprintf("parsing session for gadgets: %v", err))
+		}
+
+		currentSP := sessData.SystemPrompt
+		hasGadgets := strings.Contains(currentSP, "You have access to agent orchestration using the")
+
+		if gadgetsStr == "true" && !hasGadgets {
+			// Append gadgets.
+			systemPrompt = currentSP + gadgetsSystemPrompt(mp, sessionID)
+			cmdData["system_prompt"] = systemPrompt
+			hasUpdate = true
+		} else if gadgetsStr == "false" && hasGadgets {
+			// Strip gadgets — find the marker and remove everything from it.
+			idx := strings.Index(currentSP, "\nYou have access to agent orchestration using the")
+			if idx >= 0 {
+				systemPrompt = currentSP[:idx]
+			} else {
+				systemPrompt = currentSP
+			}
+			cmdData["system_prompt"] = systemPrompt
+			hasUpdate = true
+		}
 	}
 
 	// Handle project assignment (local to hem, not sent to moneypenny).
@@ -1579,11 +1638,11 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 	}
 
 	if !hasUpdate {
-		return protocol.ErrResponse("no fields to update (use --name, --system-prompt, --yolo, --path, --project)")
+		return protocol.ErrResponse("no fields to update (use --name, --system-prompt, --yolo, --path, --project, --gadgets)")
 	}
 
 	// Only send to moneypenny if there are moneypenny-level fields to update.
-	if name != "" || systemPrompt != "" || pathArg != "" || yoloStr != "" {
+	if name != "" || systemPrompt != "" || modelStr != "" || pathArg != "" || yoloStr != "" {
 		ctx := context.Background()
 		if _, err := e.sendCommand(ctx, mp, "update_session", cmdData); err != nil {
 			return protocol.ErrResponse(err.Error())
@@ -2935,6 +2994,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 		MPStatus   string // moneypenny status (idle/working)
 		HemStatus  string // active/completed
 		Moneypenny string
+		CreatedAt  string
 		LastActive string
 		SortKey    int // 0=REVIEW, 1=WORKING, 2=COMPLETED
 	}
@@ -2966,6 +3026,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 		Status       string `json:"status"`
 		Name         string `json:"name"`
 		SessionID    string `json:"session_id"`
+		CreatedAt    string `json:"created_at"`
 		LastAccessed string `json:"last_accessed"`
 	}
 
@@ -3028,12 +3089,13 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 	var entries []dashboardEntry
 
 	for _, sess := range filteredSessions {
-		var mpStatus, sessionName, lastAccessed string
+		var mpStatus, sessionName, createdAt, lastAccessed string
 
 		if mpSessions, ok := mpData[sess.MoneypennyName]; ok {
 			if info, found := mpSessions[sess.SessionID]; found {
 				mpStatus = info.Status
 				sessionName = info.Name
+				createdAt = info.CreatedAt
 				lastAccessed = info.LastAccessed
 			} else {
 				mpStatus = "unknown"
@@ -3078,6 +3140,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 			}
 		}
 
+		createdAtFormatted := formatTimestamp(createdAt)
 		lastActiveFormatted := formatTimestamp(lastAccessed)
 
 		entries = append(entries, dashboardEntry{
@@ -3087,6 +3150,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 			MPStatus:   displayStatus,
 			HemStatus:  sess.HemStatus,
 			Moneypenny: sess.MoneypennyName,
+			CreatedAt:  createdAtFormatted,
 			LastActive: lastActiveFormatted,
 			SortKey:    sortKey,
 		})
@@ -3107,11 +3171,11 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 	}
 
 	result := TableResult{
-		Headers: []string{"SessionID", "Name", "Project", "Status", "Moneypenny", "Last Activity"},
+		Headers: []string{"SessionID", "Name", "Project", "Status", "Moneypenny", "Created", "Last Activity"},
 	}
 	for _, entry := range entries {
 		result.Rows = append(result.Rows, []string{
-			entry.SessionID, entry.Name, entry.Project, entry.MPStatus + " (" + entry.HemStatus + ")", entry.Moneypenny, entry.LastActive,
+			entry.SessionID, entry.Name, entry.Project, entry.MPStatus + " (" + entry.HemStatus + ")", entry.Moneypenny, entry.CreatedAt, entry.LastActive,
 		})
 	}
 
@@ -3447,7 +3511,7 @@ func (e *Executor) ActivitySession(args []string) *protocol.Response {
 
 // CreateSubSession creates a sub-session under a parent session.
 func (e *Executor) CreateSubSession(args []string) *protocol.Response {
-	var mpName, sessionName, systemPrompt, pathArg, agentName, parentSessionID string
+	var mpName, sessionName, systemPrompt, pathArg, agentName, parentSessionID, modelName string
 	var yolo, async, gadgets bool
 
 	remaining, err := parseFlagsFromArgs("create-subsession", args, func(fs *flag.FlagSet) {
@@ -3455,6 +3519,7 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 		fs.StringVar(&mpName, "m", "", "moneypenny name")
 		fs.StringVar(&mpName, "moneypenny", "", "moneypenny name")
 		fs.StringVar(&agentName, "agent", "", "agent to use")
+		fs.StringVar(&modelName, "model", "", "model to use (e.g. sonnet, opus)")
 		fs.StringVar(&sessionName, "name", "", "sub-session name")
 		fs.StringVar(&systemPrompt, "system-prompt", "", "system prompt")
 		fs.BoolVar(&yolo, "yolo", false, "enable yolo mode")
@@ -3551,6 +3616,9 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 	}
 	if systemPrompt != "" {
 		cmdData["system_prompt"] = systemPrompt
+	}
+	if modelName != "" {
+		cmdData["model"] = modelName
 	}
 	if yolo {
 		cmdData["yolo"] = true

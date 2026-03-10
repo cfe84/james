@@ -35,6 +35,7 @@ func newCreateModel(c *client) createModel {
 			{label: "Name", flag: "--name", value: ""},
 			{label: "Project", flag: "--project", value: ""},
 			{label: "Agent", flag: "--agent", value: ""},
+			{label: "Model", flag: "--model", value: ""},
 			{label: "System Prompt", flag: "--system-prompt", value: ""},
 			{label: "Path", flag: "--path", value: ""},
 			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},

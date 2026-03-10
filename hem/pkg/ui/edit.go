@@ -43,9 +43,11 @@ func newEditModel(c *client, sessionID string) editModel {
 		fields: []formField{
 			{label: "Name", flag: "--name", value: ""},
 			{label: "Project", flag: "--project", value: "", options: []string{""}},
+			{label: "Model", flag: "--model", value: ""},
 			{label: "System Prompt", flag: "--system-prompt", value: ""},
 			{label: "Path", flag: "--path", value: ""},
 			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
+			{label: "Gadgets (James tooling)", flag: "--gadgets", isBool: true, value: "false"},
 		},
 	}
 }
@@ -72,6 +74,10 @@ func (m editModel) save() tea.Cmd {
 				fields[f.flag] = f.value
 			}
 		}
+		// If gadgets changed, don't also send system-prompt (the server handles it).
+		if _, ok := fields["--gadgets"]; ok {
+			delete(fields, "--system-prompt")
+		}
 		if len(fields) == 0 {
 			return sessionUpdatedMsg{err: nil}
 		}
@@ -92,12 +98,19 @@ func (m editModel) Update(msg tea.Msg) (editModel, tea.Cmd) {
 		m.fields[0].value = d.Name
 		// Project field (index 1) is left empty — it's a local hem concept,
 		// not available from moneypenny's session detail.
-		m.fields[2].value = d.SystemPrompt
-		m.fields[3].value = d.Path
+		m.fields[2].value = d.Model
+		m.fields[3].value = d.SystemPrompt
+		m.fields[4].value = d.Path
 		if d.Yolo {
-			m.fields[4].value = "true"
+			m.fields[5].value = "true"
 		} else {
-			m.fields[4].value = "false"
+			m.fields[5].value = "false"
+		}
+		// Detect gadgets from system prompt content.
+		if strings.Contains(d.SystemPrompt, "You have access to agent orchestration using the") {
+			m.fields[6].value = "true"
+		} else {
+			m.fields[6].value = "false"
 		}
 		// Store originals for diff.
 		m.original = make([]string, len(m.fields))

@@ -230,12 +230,8 @@
         apiCall('list', 'schedule', ['--session-id', currentSession]).catch(() => null),
         apiCall('list', 'subsession', [currentSession]).catch(() => null),
       ];
-      // Only fetch activity if session is working.
-      if (currentSessionStatus === 'working') {
-        calls.push(apiCall('activity', 'session', [currentSession]).catch(() => null));
-      } else {
-        calls.push(Promise.resolve(null));
-      }
+      // Always fetch activity — avoids race where status isn't yet "working" on current poll.
+      calls.push(apiCall('activity', 'session', [currentSession]).catch(() => null));
       const [histResp, showResp, schedResp, subsResp, actResp] = await Promise.all(calls);
       if (histResp.status === 'error') {
         document.getElementById('chat-messages').innerHTML =

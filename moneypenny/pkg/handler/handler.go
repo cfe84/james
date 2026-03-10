@@ -130,6 +130,7 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 		Name:         data.Name,
 		Agent:        data.Agent,
 		SystemPrompt: systemPrompt,
+		Model:        data.Model,
 		Yolo:         data.Yolo,
 		Path:         data.Path,
 	}
@@ -153,6 +154,7 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 		Agent:        data.Agent,
 		Prompt:       data.Prompt,
 		SystemPrompt: systemPrompt,
+		Model:        data.Model,
 		Yolo:         data.Yolo,
 		Path:         data.Path,
 		Resume:       false,
@@ -204,6 +206,7 @@ func (h *Handler) continueSession(ctx context.Context, cmd *envelope.Command) *e
 		Agent:        sess.Agent,
 		Prompt:       data.Prompt,
 		SystemPrompt: sess.SystemPrompt,
+		Model:        sess.Model,
 		Yolo:         sess.Yolo,
 		Path:         sess.Path,
 		Resume:       true,
@@ -352,6 +355,7 @@ func (h *Handler) getSession(_ context.Context, cmd *envelope.Command) *envelope
 		Status:       sess.Status,
 		Agent:        sess.Agent,
 		SystemPrompt: sess.SystemPrompt,
+		Model:        sess.Model,
 		Yolo:         sess.Yolo,
 		Path:         sess.Path,
 	}
@@ -478,7 +482,7 @@ func (h *Handler) updateSession(_ context.Context, cmd *envelope.Command) *envel
 		}
 	}
 
-	if err := h.store.UpdateSessionFields(data.SessionID, data.Name, data.SystemPrompt, data.Path, data.Yolo); err != nil {
+	if err := h.store.UpdateSessionFields(data.SessionID, data.Name, data.SystemPrompt, data.Model, data.Path, data.Yolo); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to update session: %v", err))
 	}
 

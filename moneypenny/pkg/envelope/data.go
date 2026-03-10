@@ -4,6 +4,7 @@ package envelope
 type CreateSessionData struct {
 	Agent        string `json:"agent"`
 	SystemPrompt string `json:"system_prompt"`
+	Model        string `json:"model,omitempty"`
 	Yolo         bool   `json:"yolo"`
 	Prompt       string `json:"prompt"`
 	SessionID    string `json:"session_id"`
@@ -23,6 +24,7 @@ type UpdateSessionData struct {
 	SessionID    string  `json:"session_id"`
 	Name         *string `json:"name,omitempty"`
 	SystemPrompt *string `json:"system_prompt,omitempty"`
+	Model        *string `json:"model,omitempty"`
 	Yolo         *bool   `json:"yolo,omitempty"`
 	Path         *string `json:"path,omitempty"`
 }
@@ -68,6 +70,7 @@ type SessionDetail struct {
 	Status       string `json:"status"`
 	Agent        string `json:"agent"`
 	SystemPrompt string `json:"system_prompt"`
+	Model        string `json:"model,omitempty"`
 	Yolo         bool   `json:"yolo"`
 	Path         string `json:"path"`
 	LastAccessed string `json:"last_accessed,omitempty"`

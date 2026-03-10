@@ -39,6 +39,7 @@ type chatModel struct {
 	schedules     []scheduleInfo
 	subagents     []subagentInfo
 	activity      []activityEvent // recent agent activity (thinking, tool calls)
+	activityErr   string          // debug: last activity load result
 	input         string
 	cursorPos     int
 	width         int
@@ -207,10 +208,7 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 		// Skip if a previous poll load is still in-flight to avoid races.
 		if !m.sending && !m.loading && !m.polling {
 			m.polling = true
-			cmds := []tea.Cmd{m.loadHistory(), m.loadSchedules(), m.loadSubagents(), chatPollTick()}
-			if m.sessionStatus == "working" {
-				cmds = append(cmds, m.loadActivity())
-			}
+			cmds := []tea.Cmd{m.loadHistory(), m.loadSchedules(), m.loadSubagents(), m.loadActivity(), chatPollTick()}
 			return m, tea.Batch(cmds...)
 		}
 		return m, chatPollTick()
@@ -335,7 +333,10 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 		}
 
 	case activityLoadedMsg:
-		if msg.err == nil {
+		if msg.err != nil {
+			m.activityErr = fmt.Sprintf("activity err: %v", msg.err)
+		} else {
+			m.activityErr = fmt.Sprintf("activity ok: %d events", len(msg.activity))
 			m.activity = msg.activity
 		}
 
@@ -583,6 +584,11 @@ func (m chatModel) View() string {
 			}
 		}
 		msgLines = append(msgLines, "")
+	}
+
+	// Debug: show activity status.
+	if m.activityErr != "" {
+		msgLines = append(msgLines, lipgloss.NewStyle().Foreground(colorWarning).Render("  [dbg] "+m.activityErr))
 	}
 
 	if m.sending || m.sessionStatus == "working" {
