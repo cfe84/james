@@ -38,6 +38,7 @@ type chatModel struct {
 	recentCount   int // number of turns in the latest page (for comparison on refresh)
 	schedules     []scheduleInfo
 	subagents     []subagentInfo
+	activity      []activityEvent // recent agent activity (thinking, tool calls)
 	input         string
 	cursorPos     int
 	width         int
@@ -89,6 +90,11 @@ type messageSentMsg struct {
 type schedulesLoadedMsg struct {
 	schedules []scheduleInfo
 	err       error
+}
+
+type activityLoadedMsg struct {
+	activity []activityEvent
+	err      error
 }
 
 type scheduleCreatedMsg struct {
@@ -177,6 +183,13 @@ func (m chatModel) loadSubagents() tea.Cmd {
 	}
 }
 
+func (m chatModel) loadActivity() tea.Cmd {
+	return func() tea.Msg {
+		events, err := m.client.getSessionActivity(m.sessionID)
+		return activityLoadedMsg{activity: events, err: err}
+	}
+}
+
 func chatPollTick() tea.Cmd {
 	return tea.Tick(chatPollInterval, func(time.Time) tea.Msg {
 		return chatPollTickMsg{}
@@ -194,7 +207,11 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 		// Skip if a previous poll load is still in-flight to avoid races.
 		if !m.sending && !m.loading && !m.polling {
 			m.polling = true
-			return m, tea.Batch(m.loadHistory(), m.loadSchedules(), m.loadSubagents(), chatPollTick())
+			cmds := []tea.Cmd{m.loadHistory(), m.loadSchedules(), m.loadSubagents(), chatPollTick()}
+			if m.sessionStatus == "working" {
+				cmds = append(cmds, m.loadActivity())
+			}
+			return m, tea.Batch(cmds...)
 		}
 		return m, chatPollTick()
 
@@ -207,6 +224,7 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 				m.workingVerb = pickSpyVerb()
 			} else if msg.status != "working" {
 				m.workingVerb = ""
+				m.activity = nil
 			}
 
 			// Don't replace existing conversation with empty data (race during working state).
@@ -314,6 +332,11 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 	case subagentsLoadedMsg:
 		if msg.err == nil {
 			m.subagents = msg.subagents
+		}
+
+	case activityLoadedMsg:
+		if msg.err == nil {
+			m.activity = msg.activity
 		}
 
 	case chatSessionStoppedMsg:
@@ -563,13 +586,33 @@ func (m chatModel) View() string {
 	}
 
 	if m.sending || m.sessionStatus == "working" {
-		verb := m.workingVerb
-		if verb == "" {
-			verb = pickSpyVerb()
-			m.workingVerb = verb
+		if len(m.activity) > 0 {
+			// Show recent activity events.
+			activityStyle := lipgloss.NewStyle().Foreground(colorMuted).Italic(true)
+			// Show last few activity events.
+			start := 0
+			if len(m.activity) > 5 {
+				start = len(m.activity) - 5
+			}
+			for _, ev := range m.activity[start:] {
+				icon := "💭"
+				if ev.Type == "tool_use" {
+					icon = "🔧"
+				} else if ev.Type == "text" {
+					icon = "📝"
+				}
+				msgLines = append(msgLines, activityStyle.Render(fmt.Sprintf("  %s %s", icon, ev.Summary)))
+			}
+			msgLines = append(msgLines, "")
+		} else {
+			verb := m.workingVerb
+			if verb == "" {
+				verb = pickSpyVerb()
+				m.workingVerb = verb
+			}
+			msgLines = append(msgLines, assistantMsgStyle.Render("🕴️ "+verb))
+			msgLines = append(msgLines, "")
 		}
-		msgLines = append(msgLines, assistantMsgStyle.Render("🕴️ "+verb))
-		msgLines = append(msgLines, "")
 	}
 
 	// Show pending schedules at the bottom.

@@ -496,6 +496,38 @@ Sessions can spawn sub-sessions for parallel task execution. Sub-sessions are li
 - Sub-agents are displayed in the TUI and Qew chat views as "subagents".
 - The gadgets system prompt includes sub-agent instructions, informing agents of the `hem create subsession` and `hem watch session` commands.
 
+## Real-Time Agent Activity Streaming
+
+When a Claude agent session is working, moneypenny streams its output in real time to provide visibility into what the agent is doing.
+
+### How It Works
+
+- Moneypenny launches the agent with `--output-format stream-json` and parses the streaming events.
+- Three event types are captured: `thinking`, `tool_use`, and `text`.
+- Events are stored in an in-memory ring buffer (30 events max per session). Older events are evicted as new ones arrive.
+- Activity is ephemeral — it is not persisted to SQLite, only held in memory while the agent is working.
+- When the agent finishes, the activity buffer is cleared and the actual response is shown.
+
+### Moneypenny Protocol
+
+Method: **get_session_activity**: returns the current activity buffer for a session. Data: `{ "session_id": "id" }`. Returns `{ "events": [{ "type": "thinking|tool_use|text", "content": "..." }, ...] }`. Returns an empty list if the session is idle or has no buffered events.
+
+### Hem CLI
+
+`hem activity session SESSION_ID` — displays the current activity buffer for a working session.
+
+### TUI
+
+- The chat view polls activity when the session status is "working".
+- The last 5 events are displayed with icons: 💭 thinking, 🔧 tool_use, 📝 text.
+- This replaces the random spy verb animation shown while waiting for the agent.
+- When the agent finishes, activity is cleared and the full response is rendered as usual.
+
+### Qew Web UI
+
+- The web chat view similarly shows activity events when available.
+- Falls back to the spy verb animation when no activity data is present (e.g., non-Claude agents or connectivity issues).
+
 ## Projects
 
 Projects provide context for organizing sessions — a project groups related sessions with shared defaults.

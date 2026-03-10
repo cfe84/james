@@ -192,6 +192,7 @@ var CommandHelp = map[string]string{
 	"list template":       "Usage: hem list templates --project PROJECT\n\nLists agent templates for a project.\n\nFlags:\n  --project          Project name or ID (required)",
 	"delete template":     "Usage: hem delete template NAME_OR_ID --project PROJECT\n\nDeletes an agent template.\n\nFlags:\n  --project          Project name or ID (required for name lookup)",
 	"use template":        "Usage: hem use template NAME_OR_ID --project PROJECT [--async]\n\nCreates a new session from a template.\n\nFlags:\n  --project          Project name or ID (required for name lookup)\n  --async            Return immediately without waiting",
+	"activity session":    "Usage: hem activity session SESSION_ID\n\nShows recent agent activity (thinking, tool calls) for a working session.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)",
 	"complete session":    "Usage: hem complete session SESSION_ID\n\nMarks a session as completed in hem's local tracking.",
 	"diff session":        "Usage: hem diff session SESSION_ID\n\nShows git diff for a session's working directory.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)",
 	"run ":                "Usage: hem run [-m MONEYPENNY] [--path PATH] [--session-id ID] COMMAND\n\nExecutes a shell command on a remote moneypenny.\n\nFlags:\n  -m, --moneypenny   Moneypenny name (uses default if not set)\n  --path             Working directory on the remote host\n  --session-id       Use the moneypenny and path from this session",
@@ -333,6 +334,8 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.PushSession(args)
 	case "import session":
 		return e.ImportSession(args)
+	case "activity session":
+		return e.ActivitySession(args)
 	case "schedule session":
 		return e.ScheduleSession(args)
 	case "list schedule":
@@ -3389,6 +3392,53 @@ func parseScheduleTime(s string) (time.Time, error) {
 	}
 
 	return time.Time{}, fmt.Errorf("cannot parse time %q (use RFC3339, +2h, or YYYY-MM-DD HH:MM)", s)
+}
+
+// ActivitySession returns recent agent activity (thinking, tool calls) for a session.
+func (e *Executor) ActivitySession(args []string) *protocol.Response {
+	var sessionID string
+
+	remaining, err := parseFlagsFromArgs("activity-session", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&sessionID, "session-id", "", "session ID")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if sessionID == "" {
+		if len(remaining) == 0 {
+			return protocol.ErrResponse("session_id is required")
+		}
+		sessionID = remaining[0]
+	}
+
+	mp, err := e.resolveSessionMoneypenny(sessionID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	resp, err := e.sendCommand(ctx, mp, "get_session_activity", map[string]interface{}{"session_id": sessionID})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	// Pass through the activity response.
+	var result struct {
+		SessionID string `json:"session_id"`
+		Activity  []struct {
+			Type      string `json:"type"`
+			Summary   string `json:"summary"`
+			Timestamp string `json:"timestamp"`
+		} `json:"activity"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("parsing activity: %v", err))
+	}
+
+	return protocol.OKResponse(result)
 }
 
 // ---------------------------------------------------------------------------

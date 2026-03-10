@@ -508,6 +508,29 @@ func (c *client) listDirectory(moneypenny, path string) ([]dirEntry, error) {
 	return result.Entries, nil
 }
 
+type activityEvent struct {
+	Type      string `json:"type"`
+	Summary   string `json:"summary"`
+	Timestamp string `json:"timestamp"`
+}
+
+func (c *client) getSessionActivity(sessionID string) ([]activityEvent, error) {
+	resp, err := c.send("activity", "session", sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Status == protocol.StatusError {
+		return nil, fmt.Errorf("%s", resp.Message)
+	}
+	var result struct {
+		Activity []activityEvent `json:"activity"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return nil, fmt.Errorf("parsing activity: %w", err)
+	}
+	return result.Activity, nil
+}
+
 type scheduleInfo struct {
 	ID          int64  `json:"id"`
 	SessionID   string `json:"session_id"`

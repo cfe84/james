@@ -190,3 +190,16 @@ type ExecuteCommandResponse struct {
 	Output   string `json:"output"`
 	ExitCode int    `json:"exit_code"`
 }
+
+// ActivityEvent represents a single agent activity step (thinking, tool use, etc.).
+type ActivityEvent struct {
+	Type      string `json:"type"`      // "thinking", "tool_use", "text"
+	Summary   string `json:"summary"`   // short description
+	Timestamp string `json:"timestamp"` // RFC3339
+}
+
+// SessionActivityResponse is returned by get_session_activity.
+type SessionActivityResponse struct {
+	SessionID string          `json:"session_id"`
+	Activity  []ActivityEvent `json:"activity"`
+}

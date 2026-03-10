@@ -92,6 +92,8 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.listSchedules(ctx, cmd)
 	case "cancel_schedule":
 		return h.cancelSchedule(ctx, cmd)
+	case "get_session_activity":
+		return h.getSessionActivity(ctx, cmd)
 	case "get_version":
 		return h.getVersion(cmd)
 	default:
@@ -407,6 +409,29 @@ func (h *Handler) getSessionConversation(_ context.Context, cmd *envelope.Comman
 		SessionID:    data.SessionID,
 		Conversation: conversation,
 		Total:        total,
+	})
+}
+
+func (h *Handler) getSessionActivity(_ context.Context, cmd *envelope.Command) *envelope.Response {
+	var data envelope.SessionIDData
+	if err := json.Unmarshal(cmd.Data, &data); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
+	}
+
+	events := h.runner.GetActivity(data.SessionID)
+	// Convert agent.ActivityEvent to envelope.ActivityEvent.
+	activity := make([]envelope.ActivityEvent, len(events))
+	for i, ev := range events {
+		activity[i] = envelope.ActivityEvent{
+			Type:      ev.Type,
+			Summary:   ev.Summary,
+			Timestamp: ev.Timestamp,
+		}
+	}
+
+	return envelope.SuccessResponse(cmd.RequestID, envelope.SessionActivityResponse{
+		SessionID: data.SessionID,
+		Activity:  activity,
 	})
 }
 

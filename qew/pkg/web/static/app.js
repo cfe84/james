@@ -224,12 +224,19 @@
   async function loadChat() {
     if (!currentSession) return;
     try {
-      const [histResp, showResp, schedResp, subsResp] = await Promise.all([
+      const calls = [
         apiCall('history', 'session', [currentSession, '--count', '50']),
         apiCall('show', 'session', [currentSession]).catch(() => null),
         apiCall('list', 'schedule', ['--session-id', currentSession]).catch(() => null),
         apiCall('list', 'subsession', [currentSession]).catch(() => null),
-      ]);
+      ];
+      // Only fetch activity if session is working.
+      if (currentSessionStatus === 'working') {
+        calls.push(apiCall('activity', 'session', [currentSession]).catch(() => null));
+      } else {
+        calls.push(Promise.resolve(null));
+      }
+      const [histResp, showResp, schedResp, subsResp, actResp] = await Promise.all(calls);
       if (histResp.status === 'error') {
         document.getElementById('chat-messages').innerHTML =
           `<div class="empty-state">Error: ${escapeHtml(histResp.message)}</div>`;
@@ -258,14 +265,19 @@
           sessionId: r[0], name: r[1], status: r[2],
         }));
       }
-      renderChat(histResp.data, schedules, subagents);
+      // Extract activity.
+      let activity = [];
+      if (actResp && actResp.status === 'ok' && actResp.data && actResp.data.activity) {
+        activity = actResp.data.activity;
+      }
+      renderChat(histResp.data, schedules, subagents, activity);
     } catch (e) {
       document.getElementById('chat-messages').innerHTML =
         `<div class="empty-state">Error: ${escapeHtml(e.message)}</div>`;
     }
   }
 
-  function renderChat(data, schedules, subagents) {
+  function renderChat(data, schedules, subagents, activity) {
     const container = document.getElementById('chat-messages');
     if (!data) {
       container.innerHTML = '<div class="empty-state">No data received</div>';
@@ -305,11 +317,19 @@
           <div class="msg-content">${formatContent(qm.content)}</div>
         </div>`;
     }
-    // Working indicator.
+    // Working indicator with activity events.
     if (currentSessionStatus === 'working') {
-      const spyVerbs = ['Infiltrating...', 'Surveilling...', 'Decrypting...', 'On a mission...', 'Going undercover...', 'Acquiring intel...', 'Intercepting...', 'Extracting...'];
-      const spyVerb = spyVerbs[Math.floor(Math.random() * spyVerbs.length)];
-      html += `<div class="msg working-indicator">🕴️ ${spyVerb}</div>`;
+      if (activity && activity.length > 0) {
+        const recent = activity.slice(-5);
+        for (const ev of recent) {
+          const icon = ev.type === 'tool_use' ? '🔧' : ev.type === 'text' ? '📝' : '💭';
+          html += `<div class="msg activity-indicator">${icon} ${escapeHtml(ev.summary)}</div>`;
+        }
+      } else {
+        const spyVerbs = ['Infiltrating...', 'Surveilling...', 'Decrypting...', 'On a mission...', 'Going undercover...', 'Acquiring intel...', 'Intercepting...', 'Extracting...'];
+        const spyVerb = spyVerbs[Math.floor(Math.random() * spyVerbs.length)];
+        html += `<div class="msg working-indicator">🕴️ ${spyVerb}</div>`;
+      }
     }
     // Pending schedules.
     if (schedules && schedules.length > 0) {
