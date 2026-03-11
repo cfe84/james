@@ -27,7 +27,7 @@ func gadgetsSystemPrompt(mp *store.Moneypenny, sessionID string) string {
 		if idx := strings.Index(host, "/"); idx >= 0 {
 			host = host[:idx]
 		}
-		hemCmd = fmt.Sprintf("hem --mi6 %s", host)
+		hemCmd = fmt.Sprintf("hem --hem %s", host)
 	} else {
 		hemCmd = "hem"
 	}
@@ -679,9 +679,12 @@ type SessionShowResult struct {
 	SystemPrompt string `json:"system_prompt"`
 	Model        string `json:"model,omitempty"`
 	Yolo         bool   `json:"yolo"`
+	Gadgets      bool   `json:"gadgets"`
 	Path         string `json:"path"`
 	Status       string `json:"status"`
 }
+
+const gadgetsMarker = "\nYou have access to agent orchestration using the"
 
 type ConversationTurn struct {
 	Role      string `json:"role"`
@@ -1596,7 +1599,12 @@ func (e *Executor) ShowSession(args []string) *protocol.Response {
 		result.Agent = v
 	}
 	if v, ok := raw["system_prompt"].(string); ok {
-		result.SystemPrompt = v
+		if idx := strings.Index(v, gadgetsMarker); idx >= 0 {
+			result.SystemPrompt = v[:idx]
+			result.Gadgets = true
+		} else {
+			result.SystemPrompt = v
+		}
 	}
 	if v, ok := raw["yolo"].(bool); ok {
 		result.Yolo = v
@@ -1688,7 +1696,7 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 		}
 
 		currentSP := sessData.SystemPrompt
-		hasGadgets := strings.Contains(currentSP, "You have access to agent orchestration using the")
+		hasGadgets := strings.Contains(currentSP, gadgetsMarker[1:]) // skip leading newline
 
 		if gadgetsStr == "true" && !hasGadgets {
 			// Append gadgets.
@@ -1697,7 +1705,7 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 			hasUpdate = true
 		} else if gadgetsStr == "false" && hasGadgets {
 			// Strip gadgets — find the marker and remove everything from it.
-			idx := strings.Index(currentSP, "\nYou have access to agent orchestration using the")
+			idx := strings.Index(currentSP, gadgetsMarker)
 			if idx >= 0 {
 				systemPrompt = currentSP[:idx]
 			} else {

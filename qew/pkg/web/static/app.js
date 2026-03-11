@@ -826,6 +826,30 @@
     `);
   }
 
+  async function createNewSubagent() {
+    if (!currentSession) return;
+    const prompt = window.prompt('Subagent prompt:');
+    if (!prompt) return;
+    try {
+      const resp = await apiCall('create', 'subsession', [currentSession, '--async', '--yolo', prompt]);
+      if (resp.status === 'error') {
+        alert('Error: ' + resp.message);
+        return;
+      }
+      // Open the new subagent chat.
+      const sid = resp.data && resp.data.session_id;
+      const name = resp.data && resp.data.name;
+      if (sid) {
+        window._openSubagent(sid, name || sid.substring(0, 12));
+      } else {
+        lastChatHTML = '';
+        await loadChat();
+      }
+    } catch (e) {
+      alert('Error: ' + e.message);
+    }
+  }
+
   async function stopSession() {
     if (!currentSession) return;
     try {
@@ -1647,6 +1671,7 @@
     else if (action === 'commit-push') showCommitModal(true);
     else if (action === 'branch') showBranchModal();
     else if (action === 'push') gitPush();
+    else if (action === 'new-subagent') createNewSubagent();
     else if (action === 'edit') showEditSessionModal();
     else if (action === 'move-project') showMoveToProjectModal();
     else if (action === 'stop') stopSession();

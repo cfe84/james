@@ -46,6 +46,7 @@ type sessionDetail struct {
 	SystemPrompt string             `json:"system_prompt"`
 	Model        string             `json:"model"`
 	Yolo         bool               `json:"yolo"`
+	Gadgets      bool               `json:"gadgets"`
 	Path         string             `json:"path"`
 	Status       string             `json:"status"`
 	Conversation []conversationTurn `json:"conversation"`
@@ -672,6 +673,24 @@ func (c *client) listSubagents(parentSessionID string) ([]struct {
 		result = append(result, entry)
 	}
 	return result, nil
+}
+
+func (c *client) createSubagent(parentSessionID, prompt string) (string, string, error) {
+	resp, err := c.send("create", "subsession", parentSessionID, "--async", "--yolo", prompt)
+	if err != nil {
+		return "", "", err
+	}
+	if resp.Status == protocol.StatusError {
+		return "", "", fmt.Errorf("%s", resp.Message)
+	}
+	var result struct {
+		SessionID string `json:"session_id"`
+		Name      string `json:"name"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return "", "", fmt.Errorf("parsing subsession: %w", err)
+	}
+	return result.SessionID, result.Name, nil
 }
 
 func (c *client) moveSessionToProject(sessionID, projectNameOrID string) error {

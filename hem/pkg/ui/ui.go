@@ -147,6 +147,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "esc":
 			if m.currentView == viewChat {
+				if m.chat.creatingSubagent {
+					m.chat.creatingSubagent = false
+					m.chat.subagentPrompt = ""
+					m.chat.subagentPromptPos = 0
+					return m, nil
+				}
 				if m.chat.pickingSubagent {
 					m.chat.pickingSubagent = false
 					return m, nil
@@ -420,7 +426,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), chatPollTick())
 
 	case historyLoadedMsg, messageSentMsg, olderHistoryLoadedMsg,
-		activityLoadedMsg, schedulesLoadedMsg, subagentsLoadedMsg, scheduleCreatedMsg:
+		activityLoadedMsg, schedulesLoadedMsg, subagentsLoadedMsg, scheduleCreatedMsg,
+		chatSubagentCreatedMsg:
 		var cmd tea.Cmd
 		m.chat, cmd = m.chat.Update(msg)
 		return m, cmd
@@ -1051,7 +1058,7 @@ func (m Model) updateSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.chat.commandMode {
+	if m.chat.commandMode && !m.chat.pickingSubagent && !m.chat.creatingSubagent {
 		switch msg.String() {
 		case "s":
 			m.chat.confirmDelete = false
@@ -1116,10 +1123,8 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "a":
 			m.chat.confirmDelete = false
-			if len(m.chat.subagents) > 0 {
-				m.chat.pickingSubagent = true
-				m.chat.subagentCursor = 0
-			}
+			m.chat.pickingSubagent = true
+			m.chat.subagentCursor = 0
 			return m, nil
 		default:
 			m.chat.confirmDelete = false
@@ -1382,9 +1387,14 @@ func (m Model) renderStatusBar() string {
 					statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
 				}
 			}
+		} else if m.chat.creatingSubagent {
+			keys = []string{
+				statusKeyStyle.Render("↵") + statusDescStyle.Render(" create"),
+				statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
+			}
 		} else if m.chat.pickingSubagent {
 			keys = []string{
-				statusKeyStyle.Render("↵") + statusDescStyle.Render(" open"),
+				statusKeyStyle.Render("↵") + statusDescStyle.Render(" open/create"),
 				statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
 			}
 		} else if m.chat.commandMode {

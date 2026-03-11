@@ -19,6 +19,11 @@ type chatOpenSubagentMsg struct {
 	sessionID string
 	name      string
 }
+type chatSubagentCreatedMsg struct {
+	sessionID string
+	name      string
+	err       error
+}
 type chatPollTickMsg struct{}
 
 const chatPollInterval = 3 * time.Second
@@ -58,6 +63,9 @@ type chatModel struct {
 	pickingSubagent  bool // subagent picker overlay
 	subagentCursor   int
 	isSubagent       bool // true when viewing a subagent chat
+	creatingSubagent bool   // entering prompt for new subagent
+	subagentPrompt   string // prompt input for new subagent
+	subagentPromptPos int   // cursor position in subagent prompt
 	scheduling    bool   // in schedule prompt entry mode
 	scheduleAt    string // time for the scheduled prompt
 	workingVerb   string // random spy verb chosen once per working session
@@ -353,8 +361,71 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 			m.commandMode = false
 		}
 
+	case chatSubagentCreatedMsg:
+		m.creatingSubagent = false
+		m.subagentPrompt = ""
+		m.subagentPromptPos = 0
+		if msg.err != nil {
+			m.err = msg.err
+		} else {
+			// Open the newly created subagent.
+			return m, func() tea.Msg {
+				return chatOpenSubagentMsg{sessionID: msg.sessionID, name: msg.name}
+			}
+		}
+
 	case tea.KeyMsg:
+		if m.creatingSubagent {
+			switch msg.String() {
+			case "esc":
+				m.creatingSubagent = false
+				m.subagentPrompt = ""
+				m.subagentPromptPos = 0
+				return m, nil
+			case "enter":
+				prompt := strings.TrimSpace(m.subagentPrompt)
+				if prompt != "" {
+					sid := m.sessionID
+					return m, func() tea.Msg {
+						id, name, err := m.client.createSubagent(sid, prompt)
+						return chatSubagentCreatedMsg{sessionID: id, name: name, err: err}
+					}
+				}
+			case "backspace":
+				if m.subagentPromptPos > 0 {
+					_, size := utf8.DecodeLastRuneInString(m.subagentPrompt[:m.subagentPromptPos])
+					m.subagentPrompt = m.subagentPrompt[:m.subagentPromptPos-size] + m.subagentPrompt[m.subagentPromptPos:]
+					m.subagentPromptPos -= size
+				}
+			case "left":
+				if m.subagentPromptPos > 0 {
+					_, size := utf8.DecodeLastRuneInString(m.subagentPrompt[:m.subagentPromptPos])
+					m.subagentPromptPos -= size
+				}
+			case "right":
+				if m.subagentPromptPos < len(m.subagentPrompt) {
+					_, size := utf8.DecodeRuneInString(m.subagentPrompt[m.subagentPromptPos:])
+					m.subagentPromptPos += size
+				}
+			case "ctrl+r":
+				m.subagentPrompt = ""
+				m.subagentPromptPos = 0
+			default:
+				if msg.Type == tea.KeyRunes {
+					s := string(msg.Runes)
+					m.subagentPrompt = m.subagentPrompt[:m.subagentPromptPos] + s + m.subagentPrompt[m.subagentPromptPos:]
+					m.subagentPromptPos += len(s)
+				} else if msg.Type == tea.KeySpace {
+					m.subagentPrompt = m.subagentPrompt[:m.subagentPromptPos] + " " + m.subagentPrompt[m.subagentPromptPos:]
+					m.subagentPromptPos++
+				}
+			}
+			return m, nil
+		}
+
 		if m.pickingSubagent {
+			// Total items = subagents + 1 "New subagent..." entry
+			totalItems := len(m.subagents) + 1
 			switch msg.String() {
 			case "esc":
 				m.pickingSubagent = false
@@ -364,7 +435,7 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 					m.subagentCursor--
 				}
 			case "down", "j":
-				if m.subagentCursor < len(m.subagents)-1 {
+				if m.subagentCursor < totalItems-1 {
 					m.subagentCursor++
 				}
 			case "enter":
@@ -376,6 +447,12 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 						return chatOpenSubagentMsg{sessionID: sub.SessionID, name: sub.Name}
 					}
 				}
+				// Last entry: "New subagent..."
+				m.pickingSubagent = false
+				m.creatingSubagent = true
+				m.subagentPrompt = ""
+				m.subagentPromptPos = 0
+				return m, nil
 			}
 			return m, nil
 		}
@@ -724,7 +801,7 @@ func (m chatModel) View() string {
 
 	// Subagent picker overlay
 	if m.pickingSubagent {
-		pickerLabel := lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render(" Select subagent: ")
+		pickerLabel := lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render(" Subagents: ")
 		b.WriteString(pickerLabel)
 		b.WriteString("\n")
 		for i, sub := range m.subagents {
@@ -732,7 +809,11 @@ func (m chatModel) View() string {
 			if name == "" {
 				name = sub.SessionID[:12] + "..."
 			}
-			line := fmt.Sprintf("  %s [%s]", name, sub.Status)
+			statusStyle := lipgloss.NewStyle().Foreground(colorMuted)
+			if sub.Status == "working" {
+				statusStyle = lipgloss.NewStyle().Foreground(colorWarning)
+			}
+			line := fmt.Sprintf("  %s %s", name, statusStyle.Render("["+sub.Status+"]"))
 			if i == m.subagentCursor {
 				b.WriteString(sessionSelectedStyle.Render(line))
 			} else {
@@ -740,6 +821,23 @@ func (m chatModel) View() string {
 			}
 			b.WriteString("\n")
 		}
+		// "New subagent..." entry
+		newLine := "  + New subagent..."
+		if m.subagentCursor == len(m.subagents) {
+			b.WriteString(sessionSelectedStyle.Render(newLine))
+		} else {
+			b.WriteString(sessionNormalStyle.Render(newLine))
+		}
+		b.WriteString("\n")
+		return b.String()
+	}
+
+	// Create subagent prompt
+	if m.creatingSubagent {
+		label := lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render(" New subagent prompt: ")
+		cursor := "█"
+		displayInput := m.subagentPrompt[:m.subagentPromptPos] + cursor + m.subagentPrompt[m.subagentPromptPos:]
+		b.WriteString(label + displayInput)
 		return b.String()
 	}
 

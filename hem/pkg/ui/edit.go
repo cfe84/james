@@ -107,8 +107,7 @@ func (m editModel) Update(msg tea.Msg) (editModel, tea.Cmd) {
 		} else {
 			m.fields[5].value = "false"
 		}
-		// Detect gadgets from system prompt content.
-		if strings.Contains(d.SystemPrompt, "You have access to agent orchestration using the") {
+		if d.Gadgets {
 			m.fields[6].value = "true"
 		} else {
 			m.fields[6].value = "false"
