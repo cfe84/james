@@ -15,6 +15,10 @@ import (
 type chatSessionStoppedMsg struct{ err error }
 type chatSessionCompletedMsg struct{ err error }
 type chatSessionDeletedMsg struct{ err error }
+type chatOpenSubagentMsg struct {
+	sessionID string
+	name      string
+}
 type chatPollTickMsg struct{}
 
 const chatPollInterval = 3 * time.Second
@@ -49,8 +53,11 @@ type chatModel struct {
 	loadingMore   bool // loading older messages
 	polling       bool // a poll loadHistory is in-flight
 	sending       bool
-	commandMode   bool
-	confirmDelete bool
+	commandMode      bool
+	confirmDelete    bool
+	pickingSubagent  bool // subagent picker overlay
+	subagentCursor   int
+	isSubagent       bool // true when viewing a subagent chat
 	scheduling    bool   // in schedule prompt entry mode
 	scheduleAt    string // time for the scheduled prompt
 	workingVerb   string // random spy verb chosen once per working session
@@ -347,6 +354,32 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
+		if m.pickingSubagent {
+			switch msg.String() {
+			case "esc":
+				m.pickingSubagent = false
+				return m, nil
+			case "up", "k":
+				if m.subagentCursor > 0 {
+					m.subagentCursor--
+				}
+			case "down", "j":
+				if m.subagentCursor < len(m.subagents)-1 {
+					m.subagentCursor++
+				}
+			case "enter":
+				if m.subagentCursor < len(m.subagents) {
+					sub := m.subagents[m.subagentCursor]
+					m.pickingSubagent = false
+					m.commandMode = false
+					return m, func() tea.Msg {
+						return chatOpenSubagentMsg{sessionID: sub.SessionID, name: sub.Name}
+					}
+				}
+			}
+			return m, nil
+		}
+
 		if m.scheduling {
 			switch msg.String() {
 			case "esc":
@@ -489,9 +522,14 @@ func (m chatModel) View() string {
 	if name == "" {
 		name = truncate(m.sessionID, 20)
 	}
-	title := fmt.Sprintf(" Chat: %s ", name)
+	var title string
+	if m.isSubagent {
+		title = fmt.Sprintf(" Subagent: %s ", name)
+	} else {
+		title = fmt.Sprintf(" Chat: %s ", name)
+	}
 	if m.moneypennyName != "" {
-		title = fmt.Sprintf(" Chat: %s (%s) ", name, m.moneypennyName)
+		title = fmt.Sprintf("%s(%s) ", title, m.moneypennyName)
 	}
 	b.WriteString(titleStyle.Render(title))
 	b.WriteString("\n")
@@ -682,6 +720,27 @@ func (m chatModel) View() string {
 		errLine := lipgloss.NewStyle().Foreground(colorDanger).Render(fmt.Sprintf("  Error: %v", m.err))
 		b.WriteString(errLine)
 		b.WriteString("\n")
+	}
+
+	// Subagent picker overlay
+	if m.pickingSubagent {
+		pickerLabel := lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render(" Select subagent: ")
+		b.WriteString(pickerLabel)
+		b.WriteString("\n")
+		for i, sub := range m.subagents {
+			name := sub.Name
+			if name == "" {
+				name = sub.SessionID[:12] + "..."
+			}
+			line := fmt.Sprintf("  %s [%s]", name, sub.Status)
+			if i == m.subagentCursor {
+				b.WriteString(sessionSelectedStyle.Render(line))
+			} else {
+				b.WriteString(sessionNormalStyle.Render(line))
+			}
+			b.WriteString("\n")
+		}
+		return b.String()
 	}
 
 	// Input line

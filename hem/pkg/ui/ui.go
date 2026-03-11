@@ -52,6 +52,7 @@ type Model struct {
 	wizard         wizardModel
 	templatePicker templatePickerModel
 	createTemplate createTemplateModel
+	parentChats       []chatModel       // stack for subagent navigation
 	chatDrafts        map[string]string // sessionID → unsent input text
 	width             int
 	height            int
@@ -146,14 +147,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case "esc":
 			if m.currentView == viewChat {
+				if m.chat.pickingSubagent {
+					m.chat.pickingSubagent = false
+					return m, nil
+				}
 				if !m.chat.commandMode {
 					m.chat.commandMode = true
 					return m, nil
 				}
-				// Second Esc: leave chat. Save draft.
-				m = m.withChatDraftSaved()
+				// Second Esc: leave chat.
 				m.chat.commandMode = false
 				m.chat.confirmDelete = false
+				// If viewing a subagent, pop back to parent chat.
+				if len(m.parentChats) > 0 {
+					m.chat = m.parentChats[len(m.parentChats)-1]
+					m.parentChats = m.parentChats[:len(m.parentChats)-1]
+					return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), chatPollTick())
+				}
+				// Save draft and leave to previous view.
+				m = m.withChatDraftSaved()
 				prev := m.previousView
 				m.currentView = prev
 				m.statusMsg = ""
@@ -397,6 +409,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Discard tick if not in chat view.
 		return m, nil
+
+	case chatOpenSubagentMsg:
+		// Push current chat onto parent stack, open subagent chat.
+		m.parentChats = append(m.parentChats, m.chat)
+		m.chat = newChatModel(m.client, msg.sessionID, msg.name, m.chat.moneypennyName)
+		m.chat.width = m.width
+		m.chat.height = m.height - 3
+		m.chat.isSubagent = true
+		return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), chatPollTick())
 
 	case historyLoadedMsg, messageSentMsg, olderHistoryLoadedMsg,
 		activityLoadedMsg, schedulesLoadedMsg, subagentsLoadedMsg, scheduleCreatedMsg:
@@ -1093,6 +1114,13 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.chat.input = ""
 			m.chat.cursorPos = 0
 			return m, nil
+		case "a":
+			m.chat.confirmDelete = false
+			if len(m.chat.subagents) > 0 {
+				m.chat.pickingSubagent = true
+				m.chat.subagentCursor = 0
+			}
+			return m, nil
 		default:
 			m.chat.confirmDelete = false
 		}
@@ -1354,8 +1382,14 @@ func (m Model) renderStatusBar() string {
 					statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
 				}
 			}
+		} else if m.chat.pickingSubagent {
+			keys = []string{
+				statusKeyStyle.Render("↵") + statusDescStyle.Render(" open"),
+				statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
+			}
 		} else if m.chat.commandMode {
 			keys = []string{
+				statusKeyStyle.Render("a") + statusDescStyle.Render(" subagents"),
 				statusKeyStyle.Render("c") + statusDescStyle.Render(" complete"),
 				statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
 				statusKeyStyle.Render("e") + statusDescStyle.Render(" edit"),
@@ -1364,7 +1398,12 @@ func (m Model) renderStatusBar() string {
 				statusKeyStyle.Render("t") + statusDescStyle.Render(" schedule"),
 				statusKeyStyle.Render("x") + statusDescStyle.Render(" shell"),
 				statusKeyStyle.Render("↵") + statusDescStyle.Render(" resume"),
-				statusKeyStyle.Render("esc") + statusDescStyle.Render(" leave"),
+				statusKeyStyle.Render("esc") + func() string {
+					if len(m.parentChats) > 0 {
+						return statusDescStyle.Render(" parent")
+					}
+					return statusDescStyle.Render(" leave")
+				}(),
 				statusKeyStyle.Render("^U/^D") + statusDescStyle.Render(" scroll"),
 			}
 		} else {

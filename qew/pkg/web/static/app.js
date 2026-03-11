@@ -13,6 +13,7 @@
   let currentSessionMP = '';
   let queuedMessages = []; // optimistic messages not yet confirmed by server
   let lastSessionStates = {}; // track WORKING→READY transitions for notifications
+  let parentSessionStack = []; // stack for subagent navigation
   let soundEnabled = true;
   let projectFilter = ''; // current project filter
   let projectsCache = []; // cached project list
@@ -186,7 +187,7 @@
     document.getElementById('moneypennies-view').style.display = 'none';
     document.getElementById('projects-view').style.display = 'none';
     document.getElementById('chat-view').style.display = 'flex';
-    document.getElementById('chat-title').textContent = currentSessionName;
+    document.getElementById('chat-title').textContent = (parentSessionStack.length > 0 ? 'Subagent: ' : '') + currentSessionName;
     document.getElementById('chat-mp').textContent = currentSessionMP ? '@ ' + currentSessionMP : '';
     document.getElementById('chat-messages').innerHTML = '<div class="loading">Loading...</div>';
     const chatInput = document.getElementById('chat-input');
@@ -203,12 +204,24 @@
     startChatPoll();
   }
 
+  window._openSubagent = function(sessionId, name) {
+    // Push current session onto parent stack.
+    parentSessionStack.push({ id: currentSession, name: currentSessionName, mp: currentSessionMP });
+    openChat(sessionId, name, currentSessionMP);
+  };
+
   function closeChat() {
     // Cache any draft text.
     if (currentSession) {
       const draft = document.getElementById('chat-input').value;
       if (draft) chatInputCache[currentSession] = draft;
       else delete chatInputCache[currentSession];
+    }
+    // If viewing a subagent, pop back to parent.
+    if (parentSessionStack.length > 0) {
+      const parent = parentSessionStack.pop();
+      openChat(parent.id, parent.name, parent.mp);
+      return;
     }
     currentSession = null;
     currentSessionName = '';
@@ -338,7 +351,7 @@
     if (subagents && subagents.length > 0) {
       for (const sub of subagents) {
         const name = sub.name || (sub.sessionId ? sub.sessionId.substring(0, 12) + '...' : '?');
-        html += `<div class="msg subagent-indicator">🕴️ subagent: ${escapeHtml(name)} [${escapeHtml(sub.status)}]</div>`;
+        html += `<div class="msg subagent-indicator" style="cursor:pointer" onclick="window._openSubagent('${sub.sessionId}','${escapeHtml(name)}')">🕴️ subagent: ${escapeHtml(name)} [${escapeHtml(sub.status)}]</div>`;
       }
     }
     // Skip re-render if content hasn't changed (preserves selection and scroll).
