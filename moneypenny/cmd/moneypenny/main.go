@@ -16,6 +16,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -230,19 +231,19 @@ func runMI6(ctx context.Context, h *handler.Handler, vlog *log.Logger, addr stri
 			return
 		}
 
-		vlog.Printf("connecting to MI6 at %s", addr)
+		log.Printf("connecting to MI6 at %s", addr)
 		err := runMI6Once(ctx, h, vlog, mi6Client, keyPath, addr)
 		if ctx.Err() != nil {
 			return
 		}
 
 		if err != nil {
-			vlog.Printf("MI6 connection lost: %v", err)
+			log.Printf("MI6 connection lost: %v", err)
 		} else {
-			vlog.Printf("MI6 connection closed")
+			log.Printf("MI6 connection closed")
 		}
 
-		vlog.Printf("reconnecting in %v...", retryDelay)
+		log.Printf("reconnecting in %v...", retryDelay)
 		select {
 		case <-time.After(retryDelay):
 		case <-ctx.Done():
@@ -256,7 +257,10 @@ func runMI6(ctx context.Context, h *handler.Handler, vlog *log.Logger, addr stri
 }
 
 func runMI6Once(ctx context.Context, h *handler.Handler, vlog *log.Logger, mi6Client, keyPath, addr string) error {
-	cmd := exec.CommandContext(ctx, mi6Client, "--key", keyPath, addr)
+	childCtx, childCancel := context.WithCancel(ctx)
+	defer childCancel()
+
+	cmd := exec.CommandContext(childCtx, mi6Client, "--key", keyPath, addr)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("failed to get mi6-client stdin: %w", err)
@@ -271,13 +275,60 @@ func runMI6Once(ctx context.Context, h *handler.Handler, vlog *log.Logger, mi6Cl
 		return fmt.Errorf("failed to start mi6-client: %w", err)
 	}
 
-	vlog.Printf("MI6 connected")
+	vlog.Printf("MI6 connected (pid %d)", cmd.Process.Pid)
+
+	// Watchdog: if no data flows for 2 minutes, kill mi6-client to force reconnect.
+	// The MI6 server pings every 60s, so a 2-minute silence means the connection is dead.
+	const watchdogTimeout = 2 * time.Minute
+	lastActivity := time.Now()
+	var activityMu sync.Mutex
+
+	touchActivity := func() {
+		activityMu.Lock()
+		lastActivity = time.Now()
+		activityMu.Unlock()
+	}
+
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				activityMu.Lock()
+				idle := time.Since(lastActivity)
+				activityMu.Unlock()
+				if idle > watchdogTimeout {
+					vlog.Printf("MI6 watchdog: no activity for %v, killing mi6-client", idle.Round(time.Second))
+					childCancel()
+					return
+				}
+			case <-childCtx.Done():
+				return
+			}
+		}
+	}()
 
 	// Process commands from MI6 (via mi6-client stdout) and write responses (via mi6-client stdin).
-	runStdio(ctx, h, vlog, stdout, stdin)
+	// Wrap stdout to track activity.
+	runStdio(childCtx, h, vlog, &activityReader{r: stdout, touch: touchActivity}, stdin)
 
 	stdin.Close()
 	return cmd.Wait()
+}
+
+// activityReader wraps a reader and calls touch() on every successful read.
+type activityReader struct {
+	r     io.Reader
+	touch func()
+}
+
+func (a *activityReader) Read(p []byte) (int, error) {
+	n, err := a.r.Read(p)
+	if n > 0 {
+		a.touch()
+	}
+	return n, err
 }
 
 func parseMI6Addr(addr string) (host, sessionID string, err error) {
