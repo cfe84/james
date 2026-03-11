@@ -19,15 +19,10 @@ import (
 	"james/hem/pkg/transport"
 )
 
-func gadgetsSystemPrompt(mp *store.Moneypenny, sessionID string) string {
+func gadgetsSystemPrompt(mi6Control, sessionID string) string {
 	var hemCmd string
-	if mp != nil && mp.TransportType == "mi6" && mp.MI6Addr != "" {
-		// Extract the MI6 server host (before the /session_id part).
-		host := mp.MI6Addr
-		if idx := strings.Index(host, "/"); idx >= 0 {
-			host = host[:idx]
-		}
-		hemCmd = fmt.Sprintf("hem --hem %s", host)
+	if mi6Control != "" {
+		hemCmd = fmt.Sprintf("hem --hem %s", mi6Control)
 	} else {
 		hemCmd = "hem"
 	}
@@ -63,6 +58,7 @@ type Executor struct {
 	store             *store.Store
 	mi6KeyPath        string
 	Version           string
+	MI6Control        string // MI6 control address (host/session_id) for hem server
 	lastSessionStates map[string]string // sessionID → last known mpStatus ("working", "ready", etc.)
 	clients           map[string]*transport.Client // cached per moneypenny name
 	clientsMu         sync.Mutex
@@ -1212,7 +1208,7 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 
 	// Append gadgets (James tooling instructions) to system prompt when enabled.
 	if gadgets {
-		systemPrompt += gadgetsSystemPrompt(mp, sessionID)
+		systemPrompt += gadgetsSystemPrompt(e.MI6Control, sessionID)
 	}
 
 	cmdData := map[string]interface{}{
@@ -1700,7 +1696,7 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 
 		if gadgetsStr == "true" && !hasGadgets {
 			// Append gadgets.
-			systemPrompt = currentSP + gadgetsSystemPrompt(mp, sessionID)
+			systemPrompt = currentSP + gadgetsSystemPrompt(e.MI6Control, sessionID)
 			cmdData["system_prompt"] = systemPrompt
 			hasUpdate = true
 		} else if gadgetsStr == "false" && hasGadgets {
@@ -2456,7 +2452,7 @@ func (e *Executor) UseTemplate(args []string) *protocol.Response {
 	sessionName := t.Name
 
 	// Templates always include gadgets (James tooling).
-	systemPrompt += gadgetsSystemPrompt(mp, sessionID)
+	systemPrompt += gadgetsSystemPrompt(e.MI6Control, sessionID)
 
 	cmdData := map[string]interface{}{
 		"agent":      agent,
@@ -3740,7 +3736,7 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 	}
 
 	if gadgets {
-		systemPrompt += gadgetsSystemPrompt(mp, sessionID)
+		systemPrompt += gadgetsSystemPrompt(e.MI6Control, sessionID)
 	}
 
 	cmdData := map[string]interface{}{

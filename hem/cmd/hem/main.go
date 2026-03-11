@@ -659,6 +659,7 @@ func runServer() {
 
 	exec := commands.New(st, keyPath)
 	exec.Version = Version
+	exec.MI6Control = mi6Control
 
 	// Check connectivity and sync sessions from moneypennies at startup.
 	exec.CheckConnectivity(log.Default())
