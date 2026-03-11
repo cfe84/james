@@ -271,7 +271,7 @@
       let subagents = [];
       if (subsResp && subsResp.status === 'ok' && subsResp.data && subsResp.data.rows) {
         subagents = subsResp.data.rows.map(r => ({
-          sessionId: r[0], name: r[1], status: r[2],
+          sessionId: r[0], name: r[1], status: r[2], yolo: r[3] === 'true',
         }));
       }
       // Extract activity.
@@ -349,9 +349,11 @@
     }
     // Subagents.
     if (subagents && subagents.length > 0) {
-      for (const sub of subagents) {
+      for (let si = 0; si < subagents.length; si++) {
+        const sub = subagents[si];
         const name = sub.name || (sub.sessionId ? sub.sessionId.substring(0, 12) + '...' : '?');
-        html += `<div class="msg subagent-indicator" style="cursor:pointer" onclick="window._openSubagent('${sub.sessionId}','${escapeHtml(name)}')">🕴️ subagent: ${escapeHtml(name)} [${escapeHtml(sub.status)}]</div>`;
+        const num = sub.yolo ? '00' + (si + 1) : String(si + 1);
+        html += `<div class="msg subagent-indicator" style="cursor:pointer" onclick="window._openSubagent('${sub.sessionId}','${escapeHtml(name)}')">🕴️ ${num} ${escapeHtml(name)} [${escapeHtml(sub.status)}]</div>`;
       }
     }
     // Skip re-render if content hasn't changed (preserves selection and scroll).

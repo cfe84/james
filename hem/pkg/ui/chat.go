@@ -35,6 +35,7 @@ type subagentInfo struct {
 	SessionID string
 	Name      string
 	Status    string
+	Yolo      bool
 }
 
 type chatModel struct {
@@ -192,6 +193,7 @@ func (m chatModel) loadSubagents() tea.Cmd {
 				SessionID: s.SessionID,
 				Name:      s.Name,
 				Status:    s.Status,
+				Yolo:      s.Yolo,
 			})
 		}
 		return subagentsLoadedMsg{subagents: result}
@@ -754,12 +756,16 @@ func (m chatModel) View() string {
 	// Show subagents at the bottom.
 	if len(m.subagents) > 0 {
 		subStyle := lipgloss.NewStyle().Foreground(colorPrimary)
-		for _, sub := range m.subagents {
+		for i, sub := range m.subagents {
 			name := sub.Name
 			if name == "" {
 				name = sub.SessionID[:12] + "..."
 			}
-			line := subStyle.Render(fmt.Sprintf("  🕴️ subagent: %s [%s]", name, sub.Status))
+			num := fmt.Sprintf("%d", i+1)
+			if sub.Yolo {
+				num = fmt.Sprintf("00%d", i+1)
+			}
+			line := subStyle.Render(fmt.Sprintf("  🕴️ %s %s [%s]", num, name, sub.Status))
 			msgLines = append(msgLines, line)
 		}
 	}
@@ -809,11 +815,15 @@ func (m chatModel) View() string {
 			if name == "" {
 				name = sub.SessionID[:12] + "..."
 			}
+			num := fmt.Sprintf("%d", i+1)
+			if sub.Yolo {
+				num = fmt.Sprintf("00%d", i+1)
+			}
 			statusStyle := lipgloss.NewStyle().Foreground(colorMuted)
 			if sub.Status == "working" {
 				statusStyle = lipgloss.NewStyle().Foreground(colorWarning)
 			}
-			line := fmt.Sprintf("  %s %s", name, statusStyle.Render("["+sub.Status+"]"))
+			line := fmt.Sprintf("  %s %s %s", num, name, statusStyle.Render("["+sub.Status+"]"))
 			if i == m.subagentCursor {
 				b.WriteString(sessionSelectedStyle.Render(line))
 			} else {

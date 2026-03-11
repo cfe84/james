@@ -3824,7 +3824,7 @@ func (e *Executor) ListSubSessions(args []string) *protocol.Response {
 	}
 
 	result := TableResult{
-		Headers: []string{"SessionID", "Name", "Status", "Moneypenny", "Created"},
+		Headers: []string{"SessionID", "Name", "Status", "Yolo", "Moneypenny", "Created"},
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -3833,20 +3833,24 @@ func (e *Executor) ListSubSessions(args []string) *protocol.Response {
 	for _, sub := range subs {
 		mp, err := e.store.GetMoneypenny(sub.MoneypennyName)
 		if err != nil || mp == nil {
-			result.Rows = append(result.Rows, []string{sub.SessionID, "", "unknown", sub.MoneypennyName, sub.CreatedAt.Format("Jan 02 15:04")})
+			result.Rows = append(result.Rows, []string{sub.SessionID, "", "unknown", "", sub.MoneypennyName, sub.CreatedAt.Format("Jan 02 15:04")})
 			continue
 		}
 
-		var name, status string
+		var name, status, yolo string
 		resp, err := e.sendCommand(ctx, mp, "get_session", map[string]interface{}{"session_id": sub.SessionID})
 		if err == nil {
 			var detail struct {
 				Name   string `json:"name"`
 				Status string `json:"status"`
+				Yolo   bool   `json:"yolo"`
 			}
 			if json.Unmarshal(resp.Data, &detail) == nil {
 				name = detail.Name
 				status = detail.Status
+				if detail.Yolo {
+					yolo = "true"
+				}
 			}
 		} else {
 			status = "offline"
@@ -3856,7 +3860,7 @@ func (e *Executor) ListSubSessions(args []string) *protocol.Response {
 			status = status + " (completed)"
 		}
 
-		result.Rows = append(result.Rows, []string{sub.SessionID, name, status, sub.MoneypennyName, sub.CreatedAt.Format("Jan 02 15:04")})
+		result.Rows = append(result.Rows, []string{sub.SessionID, name, status, yolo, sub.MoneypennyName, sub.CreatedAt.Format("Jan 02 15:04")})
 	}
 
 	return protocol.OKResponse(result)

@@ -633,6 +633,7 @@ func (c *client) listSubagents(parentSessionID string) ([]struct {
 	SessionID string
 	Name      string
 	Status    string
+	Yolo      bool
 }, error) {
 	resp, err := c.send("list", "subsession", parentSessionID)
 	if err != nil {
@@ -654,12 +655,14 @@ func (c *client) listSubagents(parentSessionID string) ([]struct {
 		SessionID string
 		Name      string
 		Status    string
+		Yolo      bool
 	}
 	for _, row := range table.Rows {
 		entry := struct {
 			SessionID string
 			Name      string
 			Status    string
+			Yolo      bool
 		}{}
 		if len(row) > 0 {
 			entry.SessionID = row[0]
@@ -669,6 +672,9 @@ func (c *client) listSubagents(parentSessionID string) ([]struct {
 		}
 		if len(row) > 2 {
 			entry.Status = row[2]
+		}
+		if len(row) > 3 {
+			entry.Yolo = row[3] == "true"
 		}
 		result = append(result, entry)
 	}
