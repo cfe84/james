@@ -161,32 +161,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.chat.commandMode = true
 					return m, nil
 				}
-				// Second Esc: leave chat.
+				// Second Esc: exit command mode back to input.
 				m.chat.commandMode = false
 				m.chat.confirmDelete = false
-				// If viewing a subagent, pop back to parent chat.
-				if len(m.parentChats) > 0 {
-					m.chat = m.parentChats[len(m.parentChats)-1]
-					m.parentChats = m.parentChats[:len(m.parentChats)-1]
-					return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), chatPollTick())
-				}
-				// Save draft and leave to previous view.
-				m = m.withChatDraftSaved()
-				prev := m.previousView
-				m.currentView = prev
-				m.statusMsg = ""
-				switch prev {
-				case viewProjectDetail:
-					m.projectDetail.loading = true
-					return m, m.projectDetail.loadDashboard()
-				case viewSessions:
-					m.sessions.loading = true
-					return m, m.sessions.loadSessions()
-				default:
-					m.currentView = viewDashboard
-					m.dashboard.loading = true
-					return m, m.dashboard.loadDashboard()
-				}
+				return m, nil
 			}
 			if m.currentView == viewDiff && m.diff.mode == diffModeCommitMsg {
 				m.diff.mode = diffModeView
@@ -1136,6 +1114,32 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
+		case "q":
+			m.chat.confirmDelete = false
+			m.chat.commandMode = false
+			// If viewing a subagent, pop back to parent chat.
+			if len(m.parentChats) > 0 {
+				m.chat = m.parentChats[len(m.parentChats)-1]
+				m.parentChats = m.parentChats[:len(m.parentChats)-1]
+				return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), chatPollTick())
+			}
+			// Save draft and leave to previous view.
+			m = m.withChatDraftSaved()
+			prev := m.previousView
+			m.currentView = prev
+			m.statusMsg = ""
+			switch prev {
+			case viewProjectDetail:
+				m.projectDetail.loading = true
+				return m, m.projectDetail.loadDashboard()
+			case viewSessions:
+				m.sessions.loading = true
+				return m, m.sessions.loadSessions()
+			default:
+				m.currentView = viewDashboard
+				m.dashboard.loading = true
+				return m, m.dashboard.loadDashboard()
+			}
 		default:
 			m.chat.confirmDelete = false
 		}
@@ -1417,13 +1421,15 @@ func (m Model) renderStatusBar() string {
 				statusKeyStyle.Render("s") + statusDescStyle.Render(" stop"),
 				statusKeyStyle.Render("t") + statusDescStyle.Render(" schedule"),
 				statusKeyStyle.Render("x") + statusDescStyle.Render(" shell"),
+				statusKeyStyle.Render("1-9") + statusDescStyle.Render(" sub#"),
 				statusKeyStyle.Render("↵") + statusDescStyle.Render(" resume"),
-				statusKeyStyle.Render("esc") + func() string {
+				statusKeyStyle.Render("q") + func() string {
 					if len(m.parentChats) > 0 {
 						return statusDescStyle.Render(" parent")
 					}
 					return statusDescStyle.Render(" leave")
 				}(),
+				statusKeyStyle.Render("esc") + statusDescStyle.Render(" input"),
 				statusKeyStyle.Render("^U/^D") + statusDescStyle.Render(" scroll"),
 			}
 		} else {
