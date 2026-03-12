@@ -1358,9 +1358,14 @@ func (m Model) renderStatusBar() string {
 		if m.dashboard.showAll {
 			completedLabel = " hide done"
 		}
+		subsLabel := " show subs"
+		if m.dashboard.showSubs {
+			subsLabel = " hide subs"
+		}
 		keys = []string{
 			statusKeyStyle.Render("↵") + statusDescStyle.Render(" chat"),
 			statusKeyStyle.Render("a") + statusDescStyle.Render(completedLabel),
+			statusKeyStyle.Render("s") + statusDescStyle.Render(subsLabel),
 			statusKeyStyle.Render("c") + statusDescStyle.Render(" complete"),
 			statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
 			statusKeyStyle.Render("e") + statusDescStyle.Render(" edit"),
@@ -1395,9 +1400,14 @@ func (m Model) renderStatusBar() string {
 		if m.projectDetail.showAll {
 			completedLabel = " hide done"
 		}
+		subsLabel := " show subs"
+		if m.projectDetail.showSubs {
+			subsLabel = " hide subs"
+		}
 		keys = []string{
 			statusKeyStyle.Render("↵") + statusDescStyle.Render(" chat"),
 			statusKeyStyle.Render("a") + statusDescStyle.Render(completedLabel),
+			statusKeyStyle.Render("s") + statusDescStyle.Render(subsLabel),
 			statusKeyStyle.Render("c") + statusDescStyle.Render(" complete"),
 			statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
 			statusKeyStyle.Render("e") + statusDescStyle.Render(" edit"),

@@ -3122,11 +3122,12 @@ func (e *Executor) ImportSession(args []string) *protocol.Response {
 
 func (e *Executor) Dashboard(args []string) *protocol.Response {
 	var projectFilter string
-	var showAll bool
+	var showAll, showSubs bool
 
 	_, err := parseFlagsFromArgs("dashboard", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&projectFilter, "project", "", "filter by project name")
 		fs.BoolVar(&showAll, "all", false, "include completed sessions")
+		fs.BoolVar(&showSubs, "show-subs", false, "show all subagents")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -3367,9 +3368,9 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 			SortKey:    sortKey,
 		})
 
-		// Add working/ready subagent entries right after parent.
+		// Add subagent entries right after parent.
 		for _, sub := range subsByParent[sess.SessionID] {
-			if sub.HemStatus == "completed" {
+			if sub.HemStatus == "completed" && !showSubs {
 				continue
 			}
 			var subMPStatus, subName, subCreated, subLastAccessed string
@@ -3381,12 +3382,12 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 					subLastAccessed = info.LastAccessed
 				}
 			}
-			// Only show working or ready (idle + unreviewed) subs.
 			subDisplayStatus := subMPStatus
 			if subMPStatus == "idle" && !sub.Reviewed {
 				subDisplayStatus = "ready"
 			}
-			if subDisplayStatus != "working" && subDisplayStatus != "ready" {
+			// Without --show-subs, only show working or ready subs.
+			if !showSubs && subDisplayStatus != "working" && subDisplayStatus != "ready" {
 				continue
 			}
 			if subName == "" {

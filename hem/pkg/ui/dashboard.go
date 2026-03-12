@@ -45,6 +45,7 @@ type dashboardModel struct {
 	err           error
 	loading       bool
 	showAll       bool
+	showSubs      bool
 	client        *client
 	projectFilter string // project name to filter by (empty = all)
 	title         string // custom title (e.g. project name)
@@ -69,6 +70,7 @@ func newDashboardModel(c *client) dashboardModel {
 func (m dashboardModel) loadDashboard() tea.Cmd {
 	projectFilter := m.projectFilter
 	showAll := m.showAll
+	showSubs := m.showSubs
 	return func() tea.Msg {
 		// Use the dashboard command which handles grouping and project filtering.
 		args := []string{}
@@ -77,6 +79,9 @@ func (m dashboardModel) loadDashboard() tea.Cmd {
 		}
 		if showAll {
 			args = append(args, "--all")
+		}
+		if showSubs {
+			args = append(args, "--show-subs")
 		}
 		resp, err := m.client.send("dashboard", "", args...)
 		if err != nil {
@@ -233,6 +238,10 @@ func (m dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 			}
 		case "a":
 			m.showAll = !m.showAll
+			m.loading = true
+			return m, m.loadDashboard()
+		case "s":
+			m.showSubs = !m.showSubs
 			m.loading = true
 			return m, m.loadDashboard()
 		case "r":
