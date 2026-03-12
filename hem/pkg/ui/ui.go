@@ -1126,6 +1126,16 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.chat.pickingSubagent = true
 			m.chat.subagentCursor = 0
 			return m, nil
+		case "1", "2", "3", "4", "5", "6", "7", "8", "9":
+			m.chat.confirmDelete = false
+			idx := int(msg.String()[0]-'0') - 1
+			if idx < len(m.chat.subagents) {
+				sub := m.chat.subagents[idx]
+				return m, func() tea.Msg {
+					return chatOpenSubagentMsg{sessionID: sub.SessionID, name: sub.Name}
+				}
+			}
+			return m, nil
 		default:
 			m.chat.confirmDelete = false
 		}
