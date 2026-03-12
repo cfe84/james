@@ -118,7 +118,10 @@
       };
       e.mpStatus = e.statusRaw;
       e.hemStatus = 'active';
+      e.subInfo = '';
       if (e.statusRaw.includes('(completed)')) e.hemStatus = 'completed';
+      const bracketIdx = e.statusRaw.indexOf(' [');
+      if (bracketIdx >= 0) e.subInfo = e.statusRaw.substring(bracketIdx + 1);
       const idx = e.statusRaw.indexOf(' (');
       if (idx >= 0) e.mpStatus = e.statusRaw.substring(0, idx);
 
@@ -159,7 +162,7 @@
         <div class="session-row" data-session-id="${escapeAttr(e.sessionId)}" data-session-name="${escapeAttr(e.name || e.sessionId.substring(0, 12))}" data-mp="${escapeAttr(e.moneypenny)}">
           <span class="session-name">${escapeHtml(displayName)}</span>
           ${e.project ? `<span class="session-project">${escapeHtml(e.project)}</span>` : ''}
-          <span class="session-status ${statusCls}">${escapeHtml(e.mpStatus)}</span>
+          <span class="session-status ${statusCls}">${escapeHtml(e.mpStatus)}${e.subInfo ? ' <span style="opacity:0.7">' + escapeHtml(e.subInfo) + '</span>' : ''}</span>
           <span class="session-mp">${escapeHtml(e.moneypenny)}</span>
         </div>`;
     }

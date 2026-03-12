@@ -28,6 +28,7 @@ type dashboardEntry struct {
 	Project    string
 	MPStatus   string // ready/idle/working/offline
 	HemStatus  string // active/completed
+	SubInfo    string // e.g. "[3 subs, 1 ready]"
 	Moneypenny string
 	CreatedAt  string
 	LastActive string
@@ -107,11 +108,14 @@ func (m dashboardModel) loadDashboard() tea.Cmd {
 				e.Project = row[2]
 			}
 			if len(row) > 3 {
-				// Status format: "idle (active)" or "working (active)"
+				// Status format: "working (active) [3 subs, 1 ready]"
 				e.MPStatus = row[3]
 				e.HemStatus = "active"
 				if strings.Contains(row[3], "(completed)") {
 					e.HemStatus = "completed"
+				}
+				if bracketIdx := strings.Index(row[3], " ["); bracketIdx >= 0 {
+					e.SubInfo = row[3][bracketIdx+1:]
 				}
 				if idx := strings.Index(row[3], " ("); idx >= 0 {
 					e.MPStatus = row[3][:idx]
@@ -374,6 +378,9 @@ func (m dashboardModel) View() string {
 		}
 		mp := truncate(e.Moneypenny, mpWidth)
 		status := statusBadge(e.MPStatus)
+		if e.SubInfo != "" {
+			status += " " + lipgloss.NewStyle().Foreground(colorMuted).Render(e.SubInfo)
+		}
 		created := truncate(e.CreatedAt, 14)
 		lastActive := truncate(e.LastActive, 14)
 

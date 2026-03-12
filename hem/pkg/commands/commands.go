@@ -3219,6 +3219,15 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 		}
 	}
 
+	// Build subagent index: parent session ID → list of child sessions.
+	// Use all tracked sessions (not filtered) so we count subs even for filtered parents.
+	subsByParent := make(map[string][]*store.Session)
+	for _, sess := range trackedSessions {
+		if sess.ParentSessionID != "" {
+			subsByParent[sess.ParentSessionID] = append(subsByParent[sess.ParentSessionID], sess)
+		}
+	}
+
 	// Build dashboard entries.
 	var entries []dashboardEntry
 
@@ -3259,9 +3268,28 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 			}
 		}
 
-		// Display "ready" instead of "idle" for unreviewed sessions.
+		// Promote to READY if any subagent is ready (idle + unreviewed).
+		subReady := false
+		if sortKey != 0 && sess.HemStatus != "completed" {
+			for _, sub := range subsByParent[sess.SessionID] {
+				if sub.HemStatus == "completed" || sub.Reviewed {
+					continue
+				}
+				if mpSessions, ok := mpData[sub.MoneypennyName]; ok {
+					if info, found := mpSessions[sub.SessionID]; found && info.Status == "idle" {
+						sortKey = 0
+						subReady = true
+						break
+					}
+				}
+			}
+		}
+
+		// Display "ready" instead of "idle" for unreviewed sessions or when sub is ready.
 		displayStatus := mpStatus
-		if (mpStatus == "idle" || mpStatus == "offline") && !sess.Reviewed {
+		if subReady {
+			displayStatus = "ready"
+		} else if (mpStatus == "idle" || mpStatus == "offline") && !sess.Reviewed {
 			displayStatus = "ready"
 		}
 
@@ -3308,8 +3336,38 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 		Headers: []string{"SessionID", "Name", "Project", "Status", "Moneypenny", "Created", "Last Activity"},
 	}
 	for _, entry := range entries {
+		status := entry.MPStatus + " (" + entry.HemStatus + ")"
+
+		// Enrich status with subagent info.
+		if subs := subsByParent[entry.SessionID]; len(subs) > 0 {
+			subTotal := len(subs)
+			subReady := 0
+			subWorking := 0
+			for _, sub := range subs {
+				if mpSessions, ok := mpData[sub.MoneypennyName]; ok {
+					if info, found := mpSessions[sub.SessionID]; found {
+						switch info.Status {
+						case "idle":
+							if sub.HemStatus != "completed" && !sub.Reviewed {
+								subReady++
+							}
+						case "working":
+							subWorking++
+						}
+					}
+				}
+			}
+			if subReady > 0 {
+				status += fmt.Sprintf(" [%d subs, %d ready]", subTotal, subReady)
+			} else if subWorking > 0 {
+				status += fmt.Sprintf(" [%d subs, %d working]", subTotal, subWorking)
+			} else {
+				status += fmt.Sprintf(" [%d subs]", subTotal)
+			}
+		}
+
 		result.Rows = append(result.Rows, []string{
-			entry.SessionID, entry.Name, entry.Project, entry.MPStatus + " (" + entry.HemStatus + ")", entry.Moneypenny, entry.CreatedAt, entry.LastActive,
+			entry.SessionID, entry.Name, entry.Project, status, entry.Moneypenny, entry.CreatedAt, entry.LastActive,
 		})
 	}
 
