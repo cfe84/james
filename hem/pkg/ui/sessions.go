@@ -144,7 +144,16 @@ func (m sessionsModel) View() string {
 
 	for i := start; i < end; i++ {
 		s := m.sessions[i]
-		status := statusBadge(s.Status)
+		baseStatus := s.Status
+		subInfo := ""
+		if idx := strings.Index(s.Status, " ["); idx >= 0 {
+			baseStatus = s.Status[:idx]
+			subInfo = s.Status[idx+1:]
+		}
+		status := statusBadge(baseStatus)
+		if subInfo != "" {
+			status += " " + lipgloss.NewStyle().Foreground(colorMuted).Render(subInfo)
+		}
 		id := truncate(s.SessionID, 12)
 		name := truncate(s.Name, 18)
 		mp := truncate(s.Moneypenny, 10)

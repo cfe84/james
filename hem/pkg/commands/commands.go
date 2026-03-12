@@ -1871,10 +1871,12 @@ func (e *Executor) ListSessions(args []string) *protocol.Response {
 	trackedSessions, _ := e.store.ListTrackedSessions("")
 	hemStatusMap := make(map[string]string)
 	subSessionSet := make(map[string]bool) // hide sub-sessions from main listing
+	subsByParent := make(map[string][]*store.Session)
 	for _, ts := range trackedSessions {
 		hemStatusMap[ts.SessionID] = ts.HemStatus
 		if ts.ParentSessionID != "" {
 			subSessionSet[ts.SessionID] = true
+			subsByParent[ts.ParentSessionID] = append(subsByParent[ts.ParentSessionID], ts)
 		}
 	}
 
@@ -1919,6 +1921,18 @@ func (e *Executor) ListSessions(args []string) *protocol.Response {
 		}()
 	}
 
+	// Collect all MP session data for sub-status lookups.
+	type sessionInfo struct {
+		SessionID string
+		Name      string
+		Status    string
+		MPName    string
+		Created   string
+		LastActive string
+	}
+	mpSessionStatus := make(map[string]string) // sessionID → status from moneypenny
+
+	var allSessions []sessionInfo
 	var warnings []string
 	for range mps {
 		r := <-ch
@@ -1927,6 +1941,7 @@ func (e *Executor) ListSessions(args []string) *protocol.Response {
 			continue
 		}
 		for _, s := range r.sessions {
+			mpSessionStatus[s.SessionID] = s.Status
 			// Hide sub-sessions from main listing.
 			if subSessionSet[s.SessionID] {
 				continue
@@ -1949,10 +1964,43 @@ func (e *Executor) ListSessions(args []string) *protocol.Response {
 				}
 			}
 
-			created := formatTimestamp(s.CreatedAt)
-			lastActive := formatTimestamp(s.LastAccessed)
-			result.Rows = append(result.Rows, []string{s.SessionID, s.Name, s.Status, r.mpName, created, lastActive})
+			allSessions = append(allSessions, sessionInfo{
+				SessionID:  s.SessionID,
+				Name:       s.Name,
+				Status:     s.Status,
+				MPName:     r.mpName,
+				Created:    formatTimestamp(s.CreatedAt),
+				LastActive: formatTimestamp(s.LastAccessed),
+			})
 		}
+	}
+
+	for _, s := range allSessions {
+		status := s.Status
+		if subs := subsByParent[s.SessionID]; len(subs) > 0 {
+			subTotal := len(subs)
+			subReady := 0
+			subWorking := 0
+			for _, sub := range subs {
+				st := mpSessionStatus[sub.SessionID]
+				switch st {
+				case "idle":
+					if sub.HemStatus != "completed" && !sub.Reviewed {
+						subReady++
+					}
+				case "working":
+					subWorking++
+				}
+			}
+			if subReady > 0 {
+				status += fmt.Sprintf(" [%d subs, %d ready]", subTotal, subReady)
+			} else if subWorking > 0 {
+				status += fmt.Sprintf(" [%d subs, %d working]", subTotal, subWorking)
+			} else {
+				status += fmt.Sprintf(" [%d subs]", subTotal)
+			}
+		}
+		result.Rows = append(result.Rows, []string{s.SessionID, s.Name, status, s.MPName, s.Created, s.LastActive})
 	}
 
 	if len(warnings) > 0 {
