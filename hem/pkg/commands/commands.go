@@ -46,7 +46,9 @@ Subagents (parallel tasks):
   completed subagent responses back to your session.
   Show subagent details: %s show subsession SUBSESSION_ID
   Stop a subagent: %s stop subsession SUBSESSION_ID
-  Delete a subagent: %s delete subsession SUBSESSION_ID`,
+  Delete a subagent: %s delete subsession SUBSESSION_ID
+
+IMPORTANT: NEVER start hem server if you are not directly instructed to do it.`,
 		hemCmd, hemCmd, sessionID,
 		hemCmd, sessionID, hemCmd, sessionID, hemCmd,
 		hemCmd, sessionID, hemCmd, sessionID, hemCmd, sessionID,
