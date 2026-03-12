@@ -263,7 +263,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.previousView == viewDashboard {
 			m.currentView = viewDashboard
 			m.dashboard.loading = true
-			return m, m.dashboard.loadDashboard()
+			return m, tea.Batch(m.dashboard.loadDashboard(), dashboardPollTick())
 		}
 		m.currentView = viewProjectDetail
 		m.projectDetail.loading = true
@@ -336,7 +336,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			m.currentView = viewDashboard
 			m.dashboard.loading = true
-			return m, m.dashboard.loadDashboard()
+			return m, tea.Batch(m.dashboard.loadDashboard(), dashboardPollTick())
 		}
 
 	case dashboardPollTickMsg:
@@ -536,7 +536,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			default:
 				m.currentView = viewDashboard
 				m.dashboard.loading = true
-				return m, m.dashboard.loadDashboard()
+				return m, tea.Batch(m.dashboard.loadDashboard(), dashboardPollTick())
 			}
 		}
 
@@ -599,7 +599,7 @@ func (m Model) handleEsc() (tea.Model, tea.Cmd) {
 		m.currentView = viewDashboard
 		m.statusMsg = ""
 		m.dashboard.loading = true
-		return m, m.dashboard.loadDashboard()
+		return m, tea.Batch(m.dashboard.loadDashboard(), dashboardPollTick())
 	case viewProjectDetail:
 		m.currentView = viewProjects
 		m.statusMsg = ""
@@ -609,7 +609,7 @@ func (m Model) handleEsc() (tea.Model, tea.Cmd) {
 		m.currentView = viewDashboard
 		m.statusMsg = ""
 		m.dashboard.loading = true
-		return m, m.dashboard.loadDashboard()
+		return m, tea.Batch(m.dashboard.loadDashboard(), dashboardPollTick())
 	case viewCreate:
 		prev := m.previousView
 		m.currentView = prev
@@ -623,7 +623,7 @@ func (m Model) handleEsc() (tea.Model, tea.Cmd) {
 			return m, m.sessions.loadSessions()
 		default:
 			m.dashboard.loading = true
-			return m, m.dashboard.loadDashboard()
+			return m, tea.Batch(m.dashboard.loadDashboard(), dashboardPollTick())
 		}
 	case viewEdit:
 		prev := m.previousView
@@ -654,7 +654,7 @@ func (m Model) handleEsc() (tea.Model, tea.Cmd) {
 		m.currentView = viewDashboard
 		m.statusMsg = ""
 		m.dashboard.loading = true
-		return m, m.dashboard.loadDashboard()
+		return m, tea.Batch(m.dashboard.loadDashboard(), dashboardPollTick())
 	case viewImport:
 		m.currentView = viewSessions
 		m.statusMsg = ""
@@ -673,14 +673,14 @@ func (m Model) handleEsc() (tea.Model, tea.Cmd) {
 			return m, m.sessions.loadSessions()
 		default:
 			m.dashboard.loading = true
-			return m, m.dashboard.loadDashboard()
+			return m, tea.Batch(m.dashboard.loadDashboard(), dashboardPollTick())
 		}
 	case viewTemplatePicker:
 		m.statusMsg = ""
 		if m.previousView == viewDashboard {
 			m.currentView = viewDashboard
 			m.dashboard.loading = true
-			return m, m.dashboard.loadDashboard()
+			return m, tea.Batch(m.dashboard.loadDashboard(), dashboardPollTick())
 		}
 		m.currentView = viewProjectDetail
 		m.projectDetail.loading = true
@@ -711,7 +711,7 @@ func (m Model) handleEsc() (tea.Model, tea.Cmd) {
 			return m, nil
 		default:
 			m.dashboard.loading = true
-			return m, m.dashboard.loadDashboard()
+			return m, tea.Batch(m.dashboard.loadDashboard(), dashboardPollTick())
 		}
 	}
 	return m, nil
@@ -1171,7 +1171,7 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			default:
 				m.currentView = viewDashboard
 				m.dashboard.loading = true
-				return m, m.dashboard.loadDashboard()
+				return m, tea.Batch(m.dashboard.loadDashboard(), dashboardPollTick())
 			}
 		default:
 			m.chat.confirmDelete = false
@@ -1281,7 +1281,7 @@ func (m Model) updateWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			switch m.previousView {
 			case viewDashboard:
 				m.dashboard.loading = true
-				return m, m.dashboard.loadDashboard()
+				return m, tea.Batch(m.dashboard.loadDashboard(), dashboardPollTick())
 			case viewProjectDetail:
 				m.projectDetail.loading = true
 				return m, m.projectDetail.loadDashboard()
@@ -1291,7 +1291,7 @@ func (m Model) updateWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			default:
 				m.currentView = viewDashboard
 				m.dashboard.loading = true
-				return m, m.dashboard.loadDashboard()
+				return m, tea.Batch(m.dashboard.loadDashboard(), dashboardPollTick())
 			}
 		case wizardStepPath:
 			m.wizard.step = wizardStepMoneypenny
