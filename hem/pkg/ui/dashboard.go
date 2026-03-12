@@ -3,7 +3,6 @@ package ui
 import (
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -23,16 +22,17 @@ func dashboardPollTick() tea.Cmd {
 
 // dashboardEntry represents a session in the dashboard.
 type dashboardEntry struct {
-	SessionID  string
-	Name       string
-	Project    string
-	MPStatus   string // ready/idle/working/offline
-	HemStatus  string // active/completed
-	SubInfo    string // e.g. "[3 subs, 1 ready]"
-	Moneypenny string
-	CreatedAt  string
-	LastActive string
-	Category   int // 0=READY, 1=WORKING, 2=IDLE, 3=COMPLETED
+	SessionID       string
+	Name            string
+	Project         string
+	MPStatus        string // ready/idle/working/offline
+	HemStatus       string // active/completed
+	SubInfo         string // e.g. "[3 subs, 1 ready]"
+	Moneypenny      string
+	CreatedAt       string
+	LastActive      string
+	Category        int // 0=READY, 1=WORKING, 2=IDLE, 3=COMPLETED
+	ParentSessionID string // non-empty for subagent entries
 }
 
 // dashboardModel displays the attention-based dashboard.
@@ -130,6 +130,9 @@ func (m dashboardModel) loadDashboard() tea.Cmd {
 			if len(row) > 6 {
 				e.LastActive = row[6]
 			}
+			if len(row) > 7 {
+				e.ParentSessionID = row[7]
+			}
 
 			// Determine category from parsed status.
 			// 0=READY, 1=WORKING, 2=IDLE, 3=COMPLETED
@@ -145,16 +148,8 @@ func (m dashboardModel) loadDashboard() tea.Cmd {
 			entries = append(entries, e)
 		}
 
-		// Sort within each category by project, then name.
-		sort.SliceStable(entries, func(i, j int) bool {
-			if entries[i].Category != entries[j].Category {
-				return entries[i].Category < entries[j].Category
-			}
-			if entries[i].Project != entries[j].Project {
-				return entries[i].Project < entries[j].Project
-			}
-			return entries[i].Name < entries[j].Name
-		})
+		// Server sends entries pre-sorted with subagents after their parents.
+		// No additional sorting needed.
 
 		return dashboardLoadedMsg{entries: entries, projectFilter: projectFilter}
 	}

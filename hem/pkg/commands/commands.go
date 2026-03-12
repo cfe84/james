@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -3158,15 +3159,16 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 	}
 
 	type dashboardEntry struct {
-		SessionID  string
-		Name       string
-		Project    string
-		MPStatus   string // moneypenny status (idle/working)
-		HemStatus  string // active/completed
-		Moneypenny string
-		CreatedAt  string
-		LastActive string
-		SortKey    int // 0=REVIEW, 1=WORKING, 2=COMPLETED
+		SessionID       string
+		Name            string
+		Project         string
+		MPStatus        string // moneypenny status (idle/working)
+		HemStatus       string // active/completed
+		Moneypenny      string
+		CreatedAt       string
+		LastActive      string
+		SortKey         int // 0=REVIEW, 1=WORKING, 2=COMPLETED
+		ParentSessionID string // non-empty for subagent entries
 	}
 
 	// Filter tracked sessions first.
@@ -3364,15 +3366,76 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 			LastActive: lastActiveFormatted,
 			SortKey:    sortKey,
 		})
+
+		// Add working/ready subagent entries right after parent.
+		for _, sub := range subsByParent[sess.SessionID] {
+			if sub.HemStatus == "completed" {
+				continue
+			}
+			var subMPStatus, subName, subCreated, subLastAccessed string
+			if mpSessions, ok := mpData[sub.MoneypennyName]; ok {
+				if info, found := mpSessions[sub.SessionID]; found {
+					subMPStatus = info.Status
+					subName = info.Name
+					subCreated = info.CreatedAt
+					subLastAccessed = info.LastAccessed
+				}
+			}
+			// Only show working or ready (idle + unreviewed) subs.
+			subDisplayStatus := subMPStatus
+			if subMPStatus == "idle" && !sub.Reviewed {
+				subDisplayStatus = "ready"
+			}
+			if subDisplayStatus != "working" && subDisplayStatus != "ready" {
+				continue
+			}
+			if subName == "" {
+				if len(sub.SessionID) > 12 {
+					subName = sub.SessionID[:12] + "..."
+				} else {
+					subName = sub.SessionID
+				}
+			}
+			entries = append(entries, dashboardEntry{
+				SessionID:       sub.SessionID,
+				Name:            "↳ " + subName,
+				Project:         projectName,
+				MPStatus:        subDisplayStatus,
+				HemStatus:       sub.HemStatus,
+				Moneypenny:      sub.MoneypennyName,
+				CreatedAt:       formatTimestamp(subCreated),
+				LastActive:      formatTimestamp(subLastAccessed),
+				SortKey:         sortKey, // same category as parent
+				ParentSessionID: sess.SessionID,
+			})
+		}
 	}
 
-	// Sort by attention level (REVIEW first, then WORKING, then COMPLETED).
-	for i := 0; i < len(entries); i++ {
-		for j := i + 1; j < len(entries); j++ {
-			if entries[j].SortKey < entries[i].SortKey {
-				entries[i], entries[j] = entries[j], entries[i]
+	// Sort: parents by attention level, subagents stay right after their parent.
+	// First, separate parents and their subs.
+	type parentWithSubs struct {
+		parent dashboardEntry
+		subs   []dashboardEntry
+	}
+	var groups []parentWithSubs
+	for _, e := range entries {
+		if e.ParentSessionID == "" {
+			groups = append(groups, parentWithSubs{parent: e})
+		} else {
+			if len(groups) > 0 {
+				groups[len(groups)-1].subs = append(groups[len(groups)-1].subs, e)
 			}
 		}
+	}
+	// Sort groups by parent sort key.
+	sort.SliceStable(groups, func(i, j int) bool {
+		return groups[i].parent.SortKey < groups[j].parent.SortKey
+	})
+	// Flatten back.
+	entries = entries[:0]
+	for _, g := range groups {
+		entries = append(entries, g.parent)
+		entries = append(entries, g.subs...)
 	}
 
 	// Update state cache (clients detect working→ready transitions).
@@ -3381,41 +3444,43 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 	}
 
 	result := TableResult{
-		Headers: []string{"SessionID", "Name", "Project", "Status", "Moneypenny", "Created", "Last Activity"},
+		Headers: []string{"SessionID", "Name", "Project", "Status", "Moneypenny", "Created", "Last Activity", "ParentSessionID"},
 	}
 	for _, entry := range entries {
 		status := entry.MPStatus + " (" + entry.HemStatus + ")"
 
-		// Enrich status with subagent info.
-		if subs := subsByParent[entry.SessionID]; len(subs) > 0 {
-			subTotal := len(subs)
-			subReady := 0
-			subWorking := 0
-			for _, sub := range subs {
-				if mpSessions, ok := mpData[sub.MoneypennyName]; ok {
-					if info, found := mpSessions[sub.SessionID]; found {
-						switch info.Status {
-						case "idle":
-							if sub.HemStatus != "completed" && !sub.Reviewed {
-								subReady++
+		// Enrich parent status with subagent summary (only for parents).
+		if entry.ParentSessionID == "" {
+			if subs := subsByParent[entry.SessionID]; len(subs) > 0 {
+				subTotal := len(subs)
+				subReady := 0
+				subWorking := 0
+				for _, sub := range subs {
+					if mpSessions, ok := mpData[sub.MoneypennyName]; ok {
+						if info, found := mpSessions[sub.SessionID]; found {
+							switch info.Status {
+							case "idle":
+								if sub.HemStatus != "completed" && !sub.Reviewed {
+									subReady++
+								}
+							case "working":
+								subWorking++
 							}
-						case "working":
-							subWorking++
 						}
 					}
 				}
-			}
-			if subReady > 0 {
-				status += fmt.Sprintf(" [%d subs, %d ready]", subTotal, subReady)
-			} else if subWorking > 0 {
-				status += fmt.Sprintf(" [%d subs, %d working]", subTotal, subWorking)
-			} else {
-				status += fmt.Sprintf(" [%d subs]", subTotal)
+				if subReady > 0 {
+					status += fmt.Sprintf(" [%d subs, %d ready]", subTotal, subReady)
+				} else if subWorking > 0 {
+					status += fmt.Sprintf(" [%d subs, %d working]", subTotal, subWorking)
+				} else {
+					status += fmt.Sprintf(" [%d subs]", subTotal)
+				}
 			}
 		}
 
 		result.Rows = append(result.Rows, []string{
-			entry.SessionID, entry.Name, entry.Project, status, entry.Moneypenny, entry.CreatedAt, entry.LastActive,
+			entry.SessionID, entry.Name, entry.Project, status, entry.Moneypenny, entry.CreatedAt, entry.LastActive, entry.ParentSessionID,
 		})
 	}
 

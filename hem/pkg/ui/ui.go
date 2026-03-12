@@ -722,10 +722,27 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		e := m.dashboard.selectedEntry()
 		if e != nil {
-			m.chat = newChatModel(m.client, e.SessionID, e.Name, e.Moneypenny)
+			if e.ParentSessionID != "" {
+				// Opening a subagent: push parent chat onto stack, then open sub.
+				parentName := ""
+				for _, pe := range m.dashboard.entries {
+					if pe.SessionID == e.ParentSessionID {
+						parentName = pe.Name
+						break
+					}
+				}
+				parentChat := newChatModel(m.client, e.ParentSessionID, parentName, e.Moneypenny)
+				parentChat.width = m.width
+				parentChat.height = m.height - 3
+				m.parentChats = append(m.parentChats, parentChat)
+				m.chat = newChatModel(m.client, e.SessionID, e.Name, e.Moneypenny)
+				m.chat.isSubagent = true
+			} else {
+				m.chat = newChatModel(m.client, e.SessionID, e.Name, e.Moneypenny)
+				m = m.withChatDraftRestored()
+			}
 			m.chat.width = m.width
 			m.chat.height = m.height - 3
-			m = m.withChatDraftRestored()
 			m.currentView = viewChat
 			m.previousView = viewDashboard
 			return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), chatPollTick())
@@ -857,10 +874,26 @@ func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		e := m.projectDetail.selectedEntry()
 		if e != nil {
-			m.chat = newChatModel(m.client, e.SessionID, e.Name, e.Moneypenny)
+			if e.ParentSessionID != "" {
+				parentName := ""
+				for _, pe := range m.projectDetail.entries {
+					if pe.SessionID == e.ParentSessionID {
+						parentName = pe.Name
+						break
+					}
+				}
+				parentChat := newChatModel(m.client, e.ParentSessionID, parentName, e.Moneypenny)
+				parentChat.width = m.width
+				parentChat.height = m.height - 3
+				m.parentChats = append(m.parentChats, parentChat)
+				m.chat = newChatModel(m.client, e.SessionID, e.Name, e.Moneypenny)
+				m.chat.isSubagent = true
+			} else {
+				m.chat = newChatModel(m.client, e.SessionID, e.Name, e.Moneypenny)
+				m = m.withChatDraftRestored()
+			}
 			m.chat.width = m.width
 			m.chat.height = m.height - 3
-			m = m.withChatDraftRestored()
 			m.currentView = viewChat
 			m.previousView = viewProjectDetail
 			return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), chatPollTick())

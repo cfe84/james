@@ -115,6 +115,7 @@
         statusRaw: row[3] || '',
         moneypenny: row[4] || '',
         lastActive: row[5] || '',
+        parentSessionId: row[7] || '',
       };
       e.mpStatus = e.statusRaw;
       e.hemStatus = 'active';
@@ -133,12 +134,7 @@
       return e;
     });
 
-    // Sort by category, then project, then name.
-    entries.sort((a, b) => {
-      if (a.category !== b.category) return a.category - b.category;
-      if (a.project !== b.project) return a.project.localeCompare(b.project);
-      return a.name.localeCompare(b.name);
-    });
+    // Server sends entries pre-sorted with subagents after their parents.
 
     const catLabels = [
       { cls: 'cat-ready', label: 'Ready' },
@@ -159,7 +155,7 @@
       const displayName = e.name || e.sessionId.substring(0, 12);
       const statusCls = e.mpStatus === 'working' ? 'working' : (e.mpStatus === 'ready' ? 'ready' : 'idle');
       html += `
-        <div class="session-row" data-session-id="${escapeAttr(e.sessionId)}" data-session-name="${escapeAttr(e.name || e.sessionId.substring(0, 12))}" data-mp="${escapeAttr(e.moneypenny)}">
+        <div class="session-row" data-session-id="${escapeAttr(e.sessionId)}" data-session-name="${escapeAttr(e.name || e.sessionId.substring(0, 12))}" data-mp="${escapeAttr(e.moneypenny)}" data-parent="${escapeAttr(e.parentSessionId)}">
           <span class="session-name">${escapeHtml(displayName)}</span>
           ${e.project ? `<span class="session-project">${escapeHtml(e.project)}</span>` : ''}
           <span class="session-status ${statusCls}">${escapeHtml(e.mpStatus)}${e.subInfo ? ' <span style="opacity:0.7">' + escapeHtml(e.subInfo) + '</span>' : ''}</span>
@@ -173,7 +169,16 @@
     // Click handlers.
     container.querySelectorAll('.session-row').forEach(row => {
       row.addEventListener('click', () => {
-        openChat(row.dataset.sessionId, row.dataset.sessionName, row.dataset.mp);
+        if (row.dataset.parent) {
+          // Subagent: open parent first, then navigate to sub.
+          openChat(row.dataset.parent, '', row.dataset.mp);
+          // Use setTimeout to let parent chat initialize, then open subagent.
+          setTimeout(() => {
+            window._openSubagent(row.dataset.sessionId, row.dataset.sessionName);
+          }, 100);
+        } else {
+          openChat(row.dataset.sessionId, row.dataset.sessionName, row.dataset.mp);
+        }
       });
     });
   }
