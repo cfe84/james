@@ -873,7 +873,7 @@ func (m chatModel) View() string {
 	if len(m.subagents) > 0 {
 		subStyle := lipgloss.NewStyle().Foreground(colorPrimary)
 		for i, sub := range m.subagents {
-			if sub.Status == "idle" || strings.Contains(sub.Status, "completed") {
+			if strings.Contains(sub.Status, "completed") {
 				continue
 			}
 			name := sub.Name
