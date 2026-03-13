@@ -829,6 +829,10 @@ func (m chatModel) View() string {
 			if len(m.activity) > 5 {
 				start = len(m.activity) - 5
 			}
+			activityWidth := m.width - 8 // account for "  {icon} " prefix
+			if activityWidth < 20 {
+				activityWidth = 60
+			}
 			for _, ev := range m.activity[start:] {
 				icon := "💭"
 				if ev.Type == "tool_use" {
@@ -836,7 +840,14 @@ func (m chatModel) View() string {
 				} else if ev.Type == "text" {
 					icon = "📝"
 				}
-				msgLines = append(msgLines, activityStyle.Render(fmt.Sprintf("  %s %s", icon, ev.Summary)))
+				wrapped := wordWrap(ev.Summary, activityWidth)
+				for i, line := range strings.Split(wrapped, "\n") {
+					if i == 0 {
+						msgLines = append(msgLines, activityStyle.Render(fmt.Sprintf("  %s %s", icon, line)))
+					} else {
+						msgLines = append(msgLines, activityStyle.Render("    "+line))
+					}
+				}
 			}
 			msgLines = append(msgLines, "")
 		} else {
@@ -860,13 +871,20 @@ func (m chatModel) View() string {
 		if t, err := time.Parse(time.RFC3339, sch.ScheduledAt); err == nil {
 			schedTime = t.Local().Format("Jan 2, 3:04 PM")
 		}
-		truncPrompt := sch.Prompt
-		if len(truncPrompt) > 80 {
-			truncPrompt = truncPrompt[:77] + "..."
+		schedWidth := m.width - 8
+		if schedWidth < 20 {
+			schedWidth = 60
 		}
-		line := lipgloss.NewStyle().Foreground(colorWarning).Render(
-			fmt.Sprintf("  ⏰ %s — %s", schedTime, truncPrompt))
-		msgLines = append(msgLines, line)
+		schedStyle := lipgloss.NewStyle().Foreground(colorWarning)
+		prefix := fmt.Sprintf("  ⏰ %s — ", schedTime)
+		wrapped := wordWrap(sch.Prompt, schedWidth)
+		for i, line := range strings.Split(wrapped, "\n") {
+			if i == 0 {
+				msgLines = append(msgLines, schedStyle.Render(prefix+line))
+			} else {
+				msgLines = append(msgLines, schedStyle.Render("    "+line))
+			}
+		}
 	}
 
 	// Show active subagents at the bottom (hide idle/completed; use esc-a to see all).
