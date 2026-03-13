@@ -666,7 +666,11 @@ func (m chatModel) View() string {
 		case "system":
 			prefix = systemMsgStyle.Render("⚙ system")
 		default:
-			prefix = assistantMsgStyle.Render("🕴️ agent")
+			agentLabel := m.sessionName
+			if agentLabel == "" {
+				agentLabel = "agent"
+			}
+			prefix = assistantMsgStyle.Render("🕴️ " + agentLabel)
 		}
 		if turn.CreatedAt != "" {
 			prefix += " " + lipgloss.NewStyle().Foreground(colorMuted).Render(localTime(turn.CreatedAt))
@@ -753,10 +757,13 @@ func (m chatModel) View() string {
 		msgLines = append(msgLines, line)
 	}
 
-	// Show subagents at the bottom.
+	// Show active subagents at the bottom (hide idle/completed; use esc-a to see all).
 	if len(m.subagents) > 0 {
 		subStyle := lipgloss.NewStyle().Foreground(colorPrimary)
 		for i, sub := range m.subagents {
+			if sub.Status == "idle" || strings.Contains(sub.Status, "completed") {
+				continue
+			}
 			name := sub.Name
 			if name == "" {
 				name = sub.SessionID[:12] + "..."

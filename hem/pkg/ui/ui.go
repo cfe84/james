@@ -811,6 +811,19 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.projects.height = m.height - 3
 		m.currentView = viewProjects
 		return m, m.projects.loadProjects()
+	case "s":
+		m.dashboard.showSubs = !m.dashboard.showSubs
+		m.dashboard.loading = true
+		if m.dashboard.showSubs {
+			m.statusMsg = "Showing all subagents"
+		} else {
+			m.statusMsg = "Showing only active subagents"
+		}
+		return m, m.dashboard.loadDashboard()
+	case "a":
+		m.dashboard.showAll = !m.dashboard.showAll
+		m.dashboard.loading = true
+		return m, m.dashboard.loadDashboard()
 	case "t":
 		m.templatePicker = newTemplatePickerModel(m.client, "")
 		m.templatePicker.width = m.width
@@ -941,6 +954,19 @@ func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.currentView = viewTemplatePicker
 		m.previousView = viewProjectDetail
 		return m, m.templatePicker.loadTemplates()
+	case "s":
+		m.projectDetail.showSubs = !m.projectDetail.showSubs
+		m.projectDetail.loading = true
+		if m.projectDetail.showSubs {
+			m.statusMsg = "Showing all subagents"
+		} else {
+			m.statusMsg = "Showing only active subagents"
+		}
+		return m, m.projectDetail.loadDashboard()
+	case "a":
+		m.projectDetail.showAll = !m.projectDetail.showAll
+		m.projectDetail.loading = true
+		return m, m.projectDetail.loadDashboard()
 	case "x":
 		e := m.projectDetail.selectedEntry()
 		if e != nil {

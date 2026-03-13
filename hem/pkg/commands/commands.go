@@ -41,10 +41,13 @@ Scheduling:
 
 Subagents (parallel tasks):
   Create a subagent: %s create subsession %s --async --name "task name" PROMPT
+  Create with callback: %s create subsession %s --async --callback "instructions for when result arrives" --name "task name" PROMPT
   List subagents: %s list subsessions %s
   Watch for completion: %s watch session %s
   The --async flag returns immediately. Use watch to wait for results, which queues
   completed subagent responses back to your session.
+  The --callback flag attaches instructions that are included when the result is queued
+  back, so you know what to do with it when it arrives.
   Show subagent details: %s show subsession SUBSESSION_ID
   Stop a subagent: %s stop subsession SUBSESSION_ID
   Delete a subagent: %s delete subsession SUBSESSION_ID
@@ -52,7 +55,8 @@ Subagents (parallel tasks):
 IMPORTANT: NEVER start hem server if you are not directly instructed to do it.`,
 		hemCmd, hemCmd, sessionID,
 		hemCmd, sessionID, hemCmd, sessionID, hemCmd,
-		hemCmd, sessionID, hemCmd, sessionID, hemCmd, sessionID,
+		hemCmd, sessionID, hemCmd, sessionID,
+		hemCmd, sessionID, hemCmd, sessionID,
 		hemCmd, hemCmd, hemCmd)
 }
 
@@ -231,7 +235,7 @@ var CommandHelp = map[string]string{
 	"cancel schedule":     "Usage: hem cancel schedule SCHEDULE_ID\n\nCancels a pending schedule.",
 	"enable":              "Usage: hem enable SETTING\n\nEnables a boolean setting.\n\nAvailable settings:\n  schedule-system-prompt   Include schedule instructions in agent system prompts",
 	"disable":             "Usage: hem disable SETTING\n\nDisables a boolean setting.\n\nAvailable settings:\n  schedule-system-prompt   Include schedule instructions in agent system prompts",
-	"create subsession":   "Usage: hem create subsession PARENT_SESSION_ID PROMPT [flags]\n\nCreates a sub-session (subagent) under a parent session.\n\nFlags:\n  -m, --moneypenny   Moneypenny name (defaults to parent's moneypenny)\n  --agent            Agent to use (uses default, fallback: claude)\n  --name             Sub-session name\n  --system-prompt    System prompt for the subagent\n  --yolo             Skip permissions\n  --path             Working directory (defaults to parent's path)\n  --async            Return immediately without waiting for response\n  --gadgets          Include James tooling in system prompt",
+	"create subsession":   "Usage: hem create subsession PARENT_SESSION_ID PROMPT [flags]\n\nCreates a sub-session (subagent) under a parent session.\n\nFlags:\n  -m, --moneypenny   Moneypenny name (defaults to parent's moneypenny)\n  --agent            Agent to use (uses default, fallback: claude)\n  --name             Sub-session name\n  --system-prompt    System prompt for the subagent\n  --yolo             Skip permissions (inherited from parent if set)\n  --path             Working directory (defaults to parent's path)\n  --async            Return immediately without waiting for response\n  --callback         Prompt to queue to parent when subagent completes (use with --async)\n  --gadgets          Include James tooling in system prompt",
 	"list subsession":     "Usage: hem list subsessions PARENT_SESSION_ID\n\nLists all subagents for a parent session.\n\nFlags:\n  --session-id       Parent session ID (alternative to positional arg)",
 	"show subsession":     "Usage: hem show subsession SUBSESSION_ID\n\nShows subagent session parameters.\n\nFlags:\n  --session-id       Sub-session ID (alternative to positional arg)",
 	"stop subsession":     "Usage: hem stop subsession SUBSESSION_ID\n\nStops a working subagent.\n\nFlags:\n  --session-id       Sub-session ID (alternative to positional arg)",
@@ -1270,12 +1274,13 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 }
 
 func (e *Executor) ContinueSession(args []string) *protocol.Response {
-	var sessionID string
+	var sessionID, callbackPrompt string
 	var async bool
 
 	remaining, err := parseFlagsFromArgs("continue-session", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&sessionID, "session-id", "", "session ID")
 		fs.BoolVar(&async, "async", false, "return immediately without waiting for response")
+		fs.StringVar(&callbackPrompt, "callback", "", "prompt to queue to parent when session completes (use with --async on sub-sessions)")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -1327,6 +1332,11 @@ func (e *Executor) ContinueSession(args []string) *protocol.Response {
 			})
 		}
 		return protocol.ErrResponse(err.Error())
+	}
+
+	// Store callback prompt if provided (for sub-sessions with async).
+	if callbackPrompt != "" {
+		_ = e.store.SetSessionCallback(sessionID, callbackPrompt)
 	}
 
 	if async {
@@ -1943,9 +1953,11 @@ func (e *Executor) ListSessions(args []string) *protocol.Response {
 		}
 		for _, s := range r.sessions {
 			mpSessionStatus[s.SessionID] = s.Status
-			// Hide sub-sessions from main listing.
+			// Hide sub-sessions from main listing, unless showing all and the sub is completed.
 			if subSessionSet[s.SessionID] {
-				continue
+				if !showAll || hemStatusMap[s.SessionID] != "completed" {
+					continue
+				}
 			}
 
 			hemStatus := hemStatusMap[s.SessionID]
@@ -3817,7 +3829,7 @@ func (e *Executor) ActivitySession(args []string) *protocol.Response {
 
 // CreateSubSession creates a sub-session under a parent session.
 func (e *Executor) CreateSubSession(args []string) *protocol.Response {
-	var mpName, sessionName, systemPrompt, pathArg, agentName, parentSessionID, modelName string
+	var mpName, sessionName, systemPrompt, pathArg, agentName, parentSessionID, modelName, callbackPrompt string
 	var yolo, async, gadgets bool
 
 	remaining, err := parseFlagsFromArgs("create-subsession", args, func(fs *flag.FlagSet) {
@@ -3829,6 +3841,7 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 		fs.StringVar(&sessionName, "name", "", "sub-session name")
 		fs.StringVar(&systemPrompt, "system-prompt", "", "system prompt")
 		fs.BoolVar(&yolo, "yolo", false, "enable yolo mode")
+		fs.StringVar(&callbackPrompt, "callback", "", "prompt to queue to parent when subagent completes")
 		fs.BoolVar(&gadgets, "gadgets", false, "include James tooling in system prompt")
 		fs.StringVar(&pathArg, "path", "", "working directory path")
 		fs.BoolVar(&async, "async", false, "return immediately without waiting for response")
@@ -3879,25 +3892,35 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 		}
 	}
 
-	// Default path: use parent's path if not specified.
-	if pathArg == "" {
+	// Fetch parent session details for inheriting defaults.
+	var parentYolo bool
+	{
 		ctx := context.Background()
 		resp, err := e.sendCommand(ctx, parentMP, "get_session", map[string]interface{}{"session_id": parentSessionID})
 		if err == nil {
 			var parentData struct {
 				Path string `json:"path"`
+				Yolo bool   `json:"yolo"`
 			}
-			if json.Unmarshal(resp.Data, &parentData) == nil && parentData.Path != "" {
-				pathArg = parentData.Path
-			}
-		}
-		if pathArg == "" {
-			if v, _ := e.store.GetDefault("path"); v != "" {
-				pathArg = v
-			} else {
-				pathArg = "."
+			if json.Unmarshal(resp.Data, &parentData) == nil {
+				if pathArg == "" && parentData.Path != "" {
+					pathArg = parentData.Path
+				}
+				parentYolo = parentData.Yolo
 			}
 		}
+	}
+	if pathArg == "" {
+		if v, _ := e.store.GetDefault("path"); v != "" {
+			pathArg = v
+		} else {
+			pathArg = "."
+		}
+	}
+
+	// Inherit yolo from parent if not explicitly set.
+	if !yolo && parentYolo {
+		yolo = true
 	}
 
 	sessionID := generateSessionID()
@@ -3945,6 +3968,13 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 	} else {
 		if err := e.store.TrackSubSession(sessionID, mp.Name, parentSessionID); err != nil {
 			return protocol.ErrResponse(fmt.Sprintf("tracking sub-session: %v", err))
+		}
+	}
+
+	// Store callback prompt if provided.
+	if callbackPrompt != "" {
+		if err := e.store.SetSessionCallback(sessionID, callbackPrompt); err != nil {
+			return protocol.ErrResponse(fmt.Sprintf("setting callback: %v", err))
 		}
 	}
 
@@ -4130,6 +4160,7 @@ func (e *Executor) WatchSession(args []string) *protocol.Response {
 
 			var detail struct {
 				Status string `json:"status"`
+				Name   string `json:"name"`
 			}
 			if json.Unmarshal(resp.Data, &detail) != nil {
 				continue
@@ -4165,20 +4196,31 @@ func (e *Executor) WatchSession(args []string) *protocol.Response {
 				}
 			}
 
+			// Use agent name if available, fall back to session ID.
+			subLabel := detail.Name
+			if subLabel == "" {
+				subLabel = sub.SessionID
+			}
+
 			// Mark sub as completed.
 			_ = e.store.SetSessionHemStatus(sub.SessionID, "completed")
 
 			// Queue result to parent session.
 			parentMP, err := e.resolveSessionMoneypenny(sessionID)
 			if err == nil {
-				queuePrompt := fmt.Sprintf("[Subagent %s completed]\n%s", sub.SessionID, lastResponse)
+				var queuePrompt string
+				if sub.CallbackPrompt != "" {
+					queuePrompt = fmt.Sprintf("[%s completed]\n<callback>%s</callback>\n<response>\n%s\n</response>", subLabel, sub.CallbackPrompt, lastResponse)
+				} else {
+					queuePrompt = fmt.Sprintf("[%s completed]\n%s", subLabel, lastResponse)
+				}
 				_, _ = e.sendCommand(ctx, parentMP, "queue_prompt", map[string]interface{}{
 					"session_id": sessionID,
 					"prompt":     queuePrompt,
 				})
 			}
 
-			completedResults = append(completedResults, fmt.Sprintf("Subagent %s: %s", sub.SessionID, truncate(lastResponse, 200)))
+			completedResults = append(completedResults, fmt.Sprintf("%s: %s", subLabel, truncate(lastResponse, 200)))
 		}
 
 		if allDone {

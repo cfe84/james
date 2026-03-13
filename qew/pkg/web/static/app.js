@@ -317,7 +317,7 @@
     });
 
     for (const turn of serverTurns) {
-      const roleLabel = turn.role === 'user' ? '🧑‍💻 you' : (turn.role === 'assistant' ? '🕴️ agent' : '⚙ system');
+      const roleLabel = turn.role === 'user' ? '🧑‍💻 you' : (turn.role === 'assistant' ? '🕴️ ' + (currentSessionName || 'agent') : '⚙ system');
       const roleClass = turn.role;
       const content = turn.content || '(empty)';
       html += `
