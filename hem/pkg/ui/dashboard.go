@@ -419,13 +419,13 @@ func (m dashboardModel) View() string {
 	}
 
 	// Calculate column widths based on terminal width.
-	// Fixed columns: indent(2) + status(10) + created(14) + lastActive(14) + spacing(~10)
+	// Fixed columns: indent(2) + status(10) + lastActive(14) + spacing(~8)
 	// Flexible: name, moneypenny, project
 	w := m.width
 	if w < 80 {
 		w = 80
 	}
-	fixedWidth := 2 + 10 + 14 + 14 + 10 // indent + status + created + lastActive + gaps
+	fixedWidth := 2 + 10 + 14 + 8 // indent + status + lastActive + gaps
 	if showProject {
 		fixedWidth += 14 // project column + gap
 	}
@@ -468,8 +468,10 @@ func (m dashboardModel) View() string {
 		if e.SubInfo != "" {
 			status += " " + lipgloss.NewStyle().Foreground(colorMuted).Render(e.SubInfo)
 		}
-		created := truncate(e.CreatedAt, 14)
-		lastActive := truncate(e.LastActive, 14)
+		lastActive := relativeTime(e.LastActive)
+		if lastActive == "" {
+			lastActive = relativeTime(e.CreatedAt)
+		}
 
 		nameFmt := fmt.Sprintf("%%-%ds", nameWidth+2)
 		mpFmt := fmt.Sprintf("%%-%ds", mpWidth+2)
@@ -481,9 +483,9 @@ func (m dashboardModel) View() string {
 				project = "-"
 			}
 			projFmt := fmt.Sprintf("%%-%ds", projWidth+2)
-			line = fmt.Sprintf("  "+nameFmt+projFmt+"%-10s "+mpFmt+"%-14s %s", name, project, status, mp, created, lastActive)
+			line = fmt.Sprintf("  "+nameFmt+projFmt+"%-10s "+mpFmt+"%s", name, project, status, mp, lastActive)
 		} else {
-			line = fmt.Sprintf("  "+nameFmt+"%-10s "+mpFmt+"%-14s %s", name, status, mp, created, lastActive)
+			line = fmt.Sprintf("  "+nameFmt+"%-10s "+mpFmt+"%s", name, status, mp, lastActive)
 		}
 
 		if i == m.cursor {
@@ -504,4 +506,58 @@ func (m dashboardModel) View() string {
 	}
 
 	return b.String()
+}
+
+// relativeTime converts an absolute timestamp like "Jan 02 15:04" or
+// "2006-01-02T15:04:05Z" into a human-friendly relative string like "2m ago".
+func relativeTime(ts string) string {
+	if ts == "" {
+		return ""
+	}
+	var t time.Time
+	var err error
+	// Try formats the server might send.
+	for _, layout := range []string{
+		"Jan 02 15:04",
+		"2006-01-02T15:04:05Z",
+		time.RFC3339,
+	} {
+		t, err = time.Parse(layout, ts)
+		if err == nil {
+			break
+		}
+	}
+	if err != nil {
+		return ts // fallback to raw string
+	}
+
+	// "Jan 02 15:04" has no year — assume current year (or last year if in the future).
+	if t.Year() == 0 {
+		now := time.Now()
+		t = time.Date(now.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), 0, time.UTC)
+		if t.After(now.Add(24 * time.Hour)) {
+			t = t.AddDate(-1, 0, 0)
+		}
+	}
+
+	d := time.Since(t.Local())
+	if d < 0 {
+		return "just now"
+	}
+
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		m := int(d.Minutes())
+		return fmt.Sprintf("%dm ago", m)
+	case d < 24*time.Hour:
+		h := int(d.Hours())
+		return fmt.Sprintf("%dh ago", h)
+	case d < 7*24*time.Hour:
+		days := int(d.Hours() / 24)
+		return fmt.Sprintf("%dd ago", days)
+	default:
+		return t.Local().Format("Jan 02")
+	}
 }
