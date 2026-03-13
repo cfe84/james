@@ -21,7 +21,14 @@ type diffTab int
 const (
 	diffTabDiff diffTab = iota
 	diffTabLog
+	diffTabCommit // viewing a specific commit
 )
+
+// logEntry represents a parsed git log line with its commit hash.
+type logEntry struct {
+	line string // original line
+	hash string // commit hash (empty for non-commit lines like graph connectors)
+}
 
 // diffModel displays a git diff for a session.
 type diffModel struct {
@@ -30,6 +37,7 @@ type diffModel struct {
 	gitLog    string
 	branch    string
 	tab       diffTab
+	prevTab   diffTab // tab to return to when leaving commit view
 	scroll    int
 	logScroll int
 	width     int
@@ -44,6 +52,17 @@ type diffModel struct {
 	pushAfter  bool // if true, push after commit
 	committing bool
 	commitErr  error
+
+	// Log selection.
+	logEntries  []logEntry
+	logCursor   int
+
+	// Commit detail view.
+	commitDetail  string
+	commitHash    string
+	commitScroll  int
+	commitLoading bool
+	commitErr2    error
 }
 
 type diffLoadedMsg struct {
@@ -68,6 +87,12 @@ type diffCommitDoneMsg struct {
 
 type diffPushDoneMsg struct {
 	err error
+}
+
+type gitShowLoadedMsg struct {
+	show string
+	hash string
+	err  error
 }
 
 func newDiffModel(c *client, sessionID string) diffModel {
@@ -115,6 +140,14 @@ func (m diffModel) loadGitInfo() tea.Cmd {
 	}
 }
 
+func (m diffModel) loadGitShow(hash string) tea.Cmd {
+	sessionID := m.sessionID
+	return func() tea.Msg {
+		show, err := m.client.gitShow(sessionID, hash)
+		return gitShowLoadedMsg{show: show, hash: hash, err: err}
+	}
+}
+
 func (m diffModel) doCommit() tea.Cmd {
 	sessionID := m.sessionID
 	msg := m.commitMsg
@@ -140,6 +173,58 @@ func (m diffModel) doPush() tea.Cmd {
 	}
 }
 
+// parseLogEntries extracts commit hashes from git log --oneline --graph output.
+func parseLogEntries(gitLog string) []logEntry {
+	lines := strings.Split(gitLog, "\n")
+	entries := make([]logEntry, 0, len(lines))
+	for _, line := range lines {
+		if line == "" {
+			continue
+		}
+		hash := extractHash(line)
+		entries = append(entries, logEntry{line: line, hash: hash})
+	}
+	return entries
+}
+
+// extractHash finds the commit hash in a git log --oneline --graph line.
+// Lines look like: "* abc1234 msg", "| * abc1234 msg", "* abc1234 (HEAD -> main) msg"
+func extractHash(line string) string {
+	// Skip graph characters (*, |, /, \, space, _) to find the hash.
+	i := 0
+	for i < len(line) {
+		c := line[i]
+		if c == '*' || c == '|' || c == '/' || c == '\\' || c == ' ' || c == '_' {
+			i++
+		} else {
+			break
+		}
+	}
+	if i >= len(line) {
+		return ""
+	}
+	// The hash is the next word.
+	end := i
+	for end < len(line) && line[end] != ' ' {
+		end++
+	}
+	hash := line[i:end]
+	// Validate it looks like a hex hash (at least 7 chars).
+	if len(hash) >= 7 && isHex(hash) {
+		return hash
+	}
+	return ""
+}
+
+func isHex(s string) bool {
+	for _, c := range s {
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
+}
+
 func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case diffLoadedMsg:
@@ -151,11 +236,25 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 		m.logLoading = false
 		if msg.err == nil {
 			m.gitLog = msg.log
+			m.logEntries = parseLogEntries(msg.log)
+			if m.logCursor >= len(m.logEntries) {
+				m.logCursor = 0
+			}
 		}
 
 	case gitInfoLoadedMsg:
 		if msg.err == nil {
 			m.branch = msg.branch
+		}
+
+	case gitShowLoadedMsg:
+		m.commitLoading = false
+		if msg.err != nil {
+			m.commitErr2 = msg.err
+		} else {
+			m.commitDetail = msg.show
+			m.commitHash = msg.hash
+			m.commitScroll = 0
 		}
 
 	case diffCommitDoneMsg:
@@ -184,6 +283,32 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 		if m.mode == diffModeCommitMsg {
 			return m.updateCommitInput(msg)
 		}
+
+		// Commit detail view.
+		if m.tab == diffTabCommit {
+			switch msg.String() {
+			case "esc":
+				m.tab = m.prevTab
+				m.commitDetail = ""
+				m.commitHash = ""
+				m.commitErr2 = nil
+			case "up", "k":
+				if m.commitScroll > 0 {
+					m.commitScroll--
+				}
+			case "down", "j":
+				m.commitScroll++
+			case "pgup":
+				m.commitScroll -= 10
+				if m.commitScroll < 0 {
+					m.commitScroll = 0
+				}
+			case "pgdown":
+				m.commitScroll += 10
+			}
+			return m, nil
+		}
+
 		switch msg.String() {
 		case "tab":
 			if m.tab == diffTabDiff {
@@ -193,8 +318,8 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 			}
 		case "up", "k":
 			if m.tab == diffTabLog {
-				if m.logScroll > 0 {
-					m.logScroll--
+				if m.logCursor > 0 {
+					m.logCursor--
 				}
 			} else {
 				if m.scroll > 0 {
@@ -203,15 +328,17 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 			}
 		case "down", "j":
 			if m.tab == diffTabLog {
-				m.logScroll++
+				if m.logCursor < len(m.logEntries)-1 {
+					m.logCursor++
+				}
 			} else {
 				m.scroll++
 			}
 		case "pgup":
 			if m.tab == diffTabLog {
-				m.logScroll -= 10
-				if m.logScroll < 0 {
-					m.logScroll = 0
+				m.logCursor -= 10
+				if m.logCursor < 0 {
+					m.logCursor = 0
 				}
 			} else {
 				m.scroll -= 10
@@ -221,9 +348,29 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 			}
 		case "pgdown":
 			if m.tab == diffTabLog {
-				m.logScroll += 10
+				m.logCursor += 10
+				if m.logCursor >= len(m.logEntries) {
+					m.logCursor = len(m.logEntries) - 1
+				}
+				if m.logCursor < 0 {
+					m.logCursor = 0
+				}
 			} else {
 				m.scroll += 10
+			}
+		case "enter":
+			if m.tab == diffTabLog && len(m.logEntries) > 0 && m.logCursor < len(m.logEntries) {
+				entry := m.logEntries[m.logCursor]
+				if entry.hash != "" {
+					m.prevTab = m.tab
+					m.tab = diffTabCommit
+					m.commitLoading = true
+					m.commitErr2 = nil
+					m.commitDetail = ""
+					m.commitHash = entry.hash
+					m.commitScroll = 0
+					return m, m.loadGitShow(entry.hash)
+				}
 			}
 		case "c":
 			if m.tab == diffTabDiff && m.diff != "" {
@@ -294,20 +441,31 @@ func (m diffModel) View() string {
 	// Tab bar.
 	diffLabel := " Diff "
 	logLabel := " Log "
-	if m.tab == diffTabDiff {
+	if m.tab == diffTabCommit {
+		// In commit detail view, show commit hash as active tab.
+		diffLabel = lipgloss.NewStyle().Foreground(colorMuted).Render(diffLabel)
+		logLabel = lipgloss.NewStyle().Foreground(colorMuted).Render(logLabel)
+		commitLabel := fmt.Sprintf(" %s ", truncate(m.commitHash, 10))
+		commitLabel = lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render(commitLabel)
+		b.WriteString("  " + diffLabel + " " + logLabel + " " + commitLabel)
+	} else if m.tab == diffTabDiff {
 		diffLabel = lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render(diffLabel)
 		logLabel = lipgloss.NewStyle().Foreground(colorMuted).Render(logLabel)
+		b.WriteString("  " + diffLabel + " " + logLabel)
 	} else {
 		diffLabel = lipgloss.NewStyle().Foreground(colorMuted).Render(diffLabel)
 		logLabel = lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render(logLabel)
+		b.WriteString("  " + diffLabel + " " + logLabel)
 	}
-	b.WriteString("  " + diffLabel + " " + logLabel)
 	b.WriteString("\n")
 
-	if m.tab == diffTabDiff {
+	switch m.tab {
+	case diffTabDiff:
 		b.WriteString(m.viewDiff())
-	} else {
+	case diffTabLog:
 		b.WriteString(m.viewLog())
+	case diffTabCommit:
+		b.WriteString(m.viewCommit())
 	}
 
 	return b.String()
@@ -403,12 +561,82 @@ func (m diffModel) viewLog() string {
 		b.WriteString("\n  Loading git log...")
 		return b.String()
 	}
-	if m.gitLog == "" {
+	if len(m.logEntries) == 0 {
 		b.WriteString("\n  No commits")
 		return b.String()
 	}
 
-	lines := strings.Split(m.gitLog, "\n")
+	viewHeight := m.height - 5
+	if viewHeight < 1 {
+		viewHeight = 20
+	}
+
+	// Auto-scroll to keep cursor visible.
+	if m.logCursor < m.logScroll {
+		m.logScroll = m.logCursor
+	}
+	if m.logCursor >= m.logScroll+viewHeight {
+		m.logScroll = m.logCursor - viewHeight + 1
+	}
+
+	maxScroll := len(m.logEntries) - viewHeight
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if m.logScroll > maxScroll {
+		m.logScroll = maxScroll
+	}
+
+	end := m.logScroll + viewHeight
+	if end > len(m.logEntries) {
+		end = len(m.logEntries)
+	}
+
+	selectedStyle := lipgloss.NewStyle().Background(lipgloss.Color("#333333"))
+
+	for i := m.logScroll; i < end; i++ {
+		entry := m.logEntries[i]
+		styled := colorLogLine(entry.line)
+		if i == m.logCursor {
+			// Render selected line with highlight background.
+			styled = selectedStyle.Render(colorLogLineRaw(entry.line))
+		}
+		b.WriteString(styled)
+		b.WriteString("\n")
+	}
+
+	if len(m.logEntries) > viewHeight {
+		b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render(
+			fmt.Sprintf("  %d/%d  Enter=view commit", m.logCursor+1, len(m.logEntries))))
+		b.WriteString("\n")
+	} else {
+		b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render(
+			"  Enter=view commit"))
+		b.WriteString("\n")
+	}
+
+	return b.String()
+}
+
+func (m diffModel) viewCommit() string {
+	var b strings.Builder
+
+	if m.commitLoading {
+		b.WriteString("\n  Loading commit " + m.commitHash + "...")
+		return b.String()
+	}
+	if m.commitErr2 != nil {
+		b.WriteString(fmt.Sprintf("\n  Error: %v", m.commitErr2))
+		b.WriteString("\n\n  Press Esc to go back")
+		return b.String()
+	}
+	if m.commitDetail == "" {
+		b.WriteString("\n  No commit data")
+		b.WriteString("\n\n  Press Esc to go back")
+		return b.String()
+	}
+
+	lines := strings.Split(m.commitDetail, "\n")
 	viewHeight := m.height - 5
 	if viewHeight < 1 {
 		viewHeight = 20
@@ -418,24 +646,29 @@ func (m diffModel) viewLog() string {
 	if maxScroll < 0 {
 		maxScroll = 0
 	}
-	if m.logScroll > maxScroll {
-		m.logScroll = maxScroll
+	if m.commitScroll > maxScroll {
+		m.commitScroll = maxScroll
 	}
 
-	end := m.logScroll + viewHeight
+	end := m.commitScroll + viewHeight
 	if end > len(lines) {
 		end = len(lines)
 	}
 
-	for i := m.logScroll; i < end; i++ {
+	for i := m.commitScroll; i < end; i++ {
 		line := lines[i]
-		b.WriteString(colorLogLine(line))
+		styled := colorDiffLine(line)
+		b.WriteString(styled)
 		b.WriteString("\n")
 	}
 
 	if len(lines) > viewHeight {
 		b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render(
-			fmt.Sprintf("  line %d-%d of %d", m.logScroll+1, end, len(lines))))
+			fmt.Sprintf("  line %d-%d of %d  Esc=back", m.commitScroll+1, end, len(lines))))
+		b.WriteString("\n")
+	} else {
+		b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render(
+			"  Esc=back"))
 		b.WriteString("\n")
 	}
 
@@ -512,5 +745,13 @@ func colorLogLine(line string) string {
 	if len(trimmed) > 0 && trimmed[0] == '*' {
 		return logGraphStyle.Render(line)
 	}
+	return line
+}
+
+// colorLogLineRaw colors a log line for the selected (highlighted) row.
+// Uses plain text so the background highlight can show through.
+func colorLogLineRaw(line string) string {
+	// For the selected line, just return the raw text without ANSI colors
+	// so the background highlight works cleanly.
 	return line
 }

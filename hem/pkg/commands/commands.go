@@ -365,6 +365,8 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.GitLogSession(args)
 	case "git-info session":
 		return e.GitInfoSession(args)
+	case "git-show session":
+		return e.GitShowSession(args)
 	case "commit session":
 		return e.CommitSession(args)
 	case "branch session":
@@ -2701,6 +2703,61 @@ func (e *Executor) GitLogSession(args []string) *protocol.Response {
 	}
 
 	return protocol.OKResponse(TextResult{Message: result.Log})
+}
+
+func (e *Executor) GitShowSession(args []string) *protocol.Response {
+	var sessionID string
+	var hash string
+
+	remaining, err := parseFlagsFromArgs("show-session", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&sessionID, "session-id", "", "session ID")
+		fs.StringVar(&hash, "hash", "", "commit hash")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if sessionID == "" {
+		if len(remaining) == 0 {
+			return protocol.ErrResponse("session_id is required")
+		}
+		sessionID = remaining[0]
+	}
+	if hash == "" {
+		return protocol.ErrResponse("hash is required")
+	}
+
+	mpName, err := e.store.GetSessionMoneypenny(sessionID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if mpName == "" {
+		return protocol.ErrResponse(fmt.Sprintf("session %q not tracked", sessionID))
+	}
+	mp, err := e.store.GetMoneypenny(mpName)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if mp == nil {
+		return protocol.ErrResponse(fmt.Sprintf("moneypenny %q not found", mpName))
+	}
+
+	ctx := context.Background()
+	resp, err := e.sendCommand(ctx, mp, "git_show", map[string]interface{}{
+		"session_id": sessionID,
+		"hash":       hash,
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	var result struct {
+		Show string `json:"show"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("parsing show: %v", err))
+	}
+
+	return protocol.OKResponse(TextResult{Message: result.Show})
 }
 
 func (e *Executor) GitInfoSession(args []string) *protocol.Response {

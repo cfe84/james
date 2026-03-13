@@ -172,6 +172,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.chat.confirmDelete = false
 				return m, nil
 			}
+			if m.currentView == viewDiff && m.diff.tab == diffTabCommit {
+				m.diff.tab = m.diff.prevTab
+				m.diff.commitDetail = ""
+				m.diff.commitHash = ""
+				m.diff.commitErr2 = nil
+				return m, nil
+			}
 			if m.currentView == viewDiff && m.diff.mode == diffModeCommitMsg {
 				m.diff.mode = diffModeView
 				m.diff.commitMsg = ""
@@ -455,7 +462,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.shell, cmd = m.shell.Update(msg)
 		return m, cmd
 
-	case diffLoadedMsg, gitLogLoadedMsg, gitInfoLoadedMsg:
+	case diffLoadedMsg, gitLogLoadedMsg, gitInfoLoadedMsg, gitShowLoadedMsg:
 		var cmd tea.Cmd
 		m.diff, cmd = m.diff.Update(msg)
 		return m, cmd
@@ -1589,6 +1596,11 @@ func (m Model) renderStatusBar() string {
 				statusKeyStyle.Render("↵") + statusDescStyle.Render(" "+action),
 				statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
 			}
+		} else if m.diff.tab == diffTabCommit {
+			keys = []string{
+				statusKeyStyle.Render("↑↓") + statusDescStyle.Render(" scroll"),
+				statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
+			}
 		} else if m.diff.tab == diffTabDiff {
 			keys = []string{
 				statusKeyStyle.Render("tab") + statusDescStyle.Render(" log"),
@@ -1601,7 +1613,8 @@ func (m Model) renderStatusBar() string {
 		} else {
 			keys = []string{
 				statusKeyStyle.Render("tab") + statusDescStyle.Render(" diff"),
-				statusKeyStyle.Render("↑↓") + statusDescStyle.Render(" scroll"),
+				statusKeyStyle.Render("↑↓") + statusDescStyle.Render(" select"),
+				statusKeyStyle.Render("↵") + statusDescStyle.Render(" view"),
 				statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
 			}
 		}

@@ -78,6 +78,8 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.gitLog(ctx, cmd)
 	case "git_info":
 		return h.gitInfo(ctx, cmd)
+	case "git_show":
+		return h.gitShow(ctx, cmd)
 	case "git_commit":
 		return h.gitCommit(ctx, cmd)
 	case "git_branch":
@@ -670,6 +672,39 @@ func (h *Handler) gitLog(_ context.Context, cmd *envelope.Command) *envelope.Res
 	}
 
 	return envelope.SuccessResponse(cmd.RequestID, map[string]string{"log": string(out)})
+}
+
+func (h *Handler) gitShow(_ context.Context, cmd *envelope.Command) *envelope.Response {
+	var data struct {
+		SessionID string `json:"session_id"`
+		Hash      string `json:"hash"`
+	}
+	if err := json.Unmarshal(cmd.Data, &data); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
+	}
+	if data.SessionID == "" {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id is required")
+	}
+	if data.Hash == "" {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "hash is required")
+	}
+
+	sess, err := h.store.GetSession(data.SessionID)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to get session: %v", err))
+	}
+	if sess == nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, fmt.Sprintf("session not found: %s", data.SessionID))
+	}
+
+	showCmd := exec.Command("git", "show", "--stat", "--patch", data.Hash)
+	showCmd.Dir = sess.Path
+	out, err := showCmd.CombinedOutput()
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to run git show: %v", err))
+	}
+
+	return envelope.SuccessResponse(cmd.RequestID, map[string]string{"show": string(out)})
 }
 
 func (h *Handler) gitInfo(_ context.Context, cmd *envelope.Command) *envelope.Response {

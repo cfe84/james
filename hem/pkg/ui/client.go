@@ -889,6 +889,23 @@ func (c *client) gitLog(sessionID string) (string, error) {
 	return result.Message, nil
 }
 
+func (c *client) gitShow(sessionID, hash string) (string, error) {
+	resp, err := c.send("git-show", "session", sessionID, "--hash", hash)
+	if err != nil {
+		return "", err
+	}
+	if resp.Status == protocol.StatusError {
+		return "", fmt.Errorf("%s", resp.Message)
+	}
+	var result struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return "", err
+	}
+	return result.Message, nil
+}
+
 func (c *client) gitInfo(sessionID string) (string, error) {
 	resp, err := c.send("git-info", "session", sessionID)
 	if err != nil {
