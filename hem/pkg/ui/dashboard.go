@@ -154,7 +154,13 @@ func (m dashboardModel) loadDashboard() tea.Cmd {
 		}
 
 		// Server sends entries pre-sorted with subagents after their parents.
-		// No additional sorting needed.
+		// When showing subagents, unify the category for each parent+children group:
+		// - If any subagent is Ready → whole group is Ready
+		// - Else if any subagent is Working → whole group is Working
+		// - Else use the parent's own category
+		if showSubs {
+			entries = unifySubagentCategories(entries)
+		}
 
 		return dashboardLoadedMsg{entries: entries, projectFilter: projectFilter}
 	}
@@ -267,6 +273,84 @@ var (
 
 	statusCompleted = lipgloss.NewStyle().Foreground(colorMuted).Render("✓ done")
 )
+
+// unifySubagentCategories ensures a parent and all its subagents share the same
+// dashboard category. Priority: Ready > Working > parent's own category.
+func unifySubagentCategories(entries []dashboardEntry) []dashboardEntry {
+	// Identify groups: a parent followed by its subagents.
+	i := 0
+	for i < len(entries) {
+		e := entries[i]
+		if e.ParentSessionID != "" {
+			// Orphan subagent — skip.
+			i++
+			continue
+		}
+		// Find all subagents that follow this parent.
+		groupStart := i
+		i++
+		for i < len(entries) && entries[i].ParentSessionID == e.SessionID {
+			i++
+		}
+		groupEnd := i
+		if groupEnd-groupStart <= 1 {
+			// No subagents in this group.
+			continue
+		}
+		// Determine the unified category from subagent statuses.
+		hasReady := false
+		hasWorking := false
+		for j := groupStart + 1; j < groupEnd; j++ {
+			switch entries[j].Category {
+			case 0: // READY
+				hasReady = true
+			case 1: // WORKING
+				hasWorking = true
+			}
+		}
+		var groupCat int
+		if hasReady {
+			groupCat = 0 // READY
+		} else if hasWorking {
+			groupCat = 1 // WORKING
+		} else {
+			groupCat = entries[groupStart].Category // parent's own
+		}
+		// Apply to entire group.
+		for j := groupStart; j < groupEnd; j++ {
+			entries[j].Category = groupCat
+		}
+	}
+
+	// Re-sort by category while keeping group order stable.
+	// Bucket by category, preserving order within each bucket.
+	buckets := make([][]dashboardEntry, 4)
+	i = 0
+	for i < len(entries) {
+		e := entries[i]
+		cat := e.Category
+		if e.ParentSessionID != "" {
+			// Orphan — just add it.
+			buckets[cat] = append(buckets[cat], e)
+			i++
+			continue
+		}
+		// Collect parent + its subagents.
+		group := []dashboardEntry{e}
+		i++
+		for i < len(entries) && entries[i].ParentSessionID == e.SessionID {
+			group = append(group, entries[i])
+			i++
+		}
+		buckets[cat] = append(buckets[cat], group...)
+	}
+
+	result := make([]dashboardEntry, 0, len(entries))
+	for _, bucket := range buckets {
+		result = append(result, bucket...)
+	}
+	return result
+}
 
 func categoryLabel(cat int) string {
 	switch cat {
