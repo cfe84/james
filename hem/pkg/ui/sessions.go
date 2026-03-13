@@ -121,8 +121,8 @@ func (m sessionsModel) View() string {
 	var b strings.Builder
 
 	// Header
-	header := fmt.Sprintf("  %-14s %-20s %-10s %-12s %-14s %-14s",
-		"ID", "Name", "Status", "Moneypenny", "Created", "Last Active")
+	header := fmt.Sprintf("  %-14s %-20s %-10s %-12s %s",
+		"ID", "Name", "Status", "Moneypenny", "Last Active")
 	b.WriteString(sessionHeaderStyle.Render(header))
 	b.WriteString("\n")
 
