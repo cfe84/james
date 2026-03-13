@@ -3595,9 +3595,29 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 			}
 		}
 	}
-	// Sort groups by parent sort key.
+	// groupLastActive returns the most recent LastActive from a parent+subs group.
+	groupLastActive := func(g parentWithSubs) string {
+		best := g.parent.LastActive
+		if best == "" {
+			best = g.parent.CreatedAt
+		}
+		for _, s := range g.subs {
+			la := s.LastActive
+			if la == "" {
+				la = s.CreatedAt
+			}
+			if la > best {
+				best = la
+			}
+		}
+		return best
+	}
+	// Sort groups by sort key, then by most recent activity (max of parent + subs) descending.
 	sort.SliceStable(groups, func(i, j int) bool {
-		return groups[i].parent.SortKey < groups[j].parent.SortKey
+		if groups[i].parent.SortKey != groups[j].parent.SortKey {
+			return groups[i].parent.SortKey < groups[j].parent.SortKey
+		}
+		return groupLastActive(groups[i]) > groupLastActive(groups[j])
 	})
 	// Flatten back.
 	entries = entries[:0]

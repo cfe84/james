@@ -157,11 +157,13 @@ func (m sessionsModel) View() string {
 		id := truncate(s.SessionID, 12)
 		name := truncate(s.Name, 18)
 		mp := truncate(s.Moneypenny, 10)
-		created := truncate(s.CreatedAt, 12)
-		lastActive := truncate(s.LastAccessed, 12)
+		lastActive := relativeTime(s.LastAccessed)
+		if lastActive == "" {
+			lastActive = relativeTime(s.CreatedAt)
+		}
 
-		line := fmt.Sprintf("  %-14s %-20s %-10s %-12s %-14s %-14s",
-			id, name, status, mp, created, lastActive)
+		line := fmt.Sprintf("  %-14s %-20s %-10s %-12s %s",
+			id, name, status, mp, lastActive)
 
 		if i == m.cursor {
 			// Pad to full width for highlight

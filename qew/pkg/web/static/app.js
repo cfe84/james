@@ -160,6 +160,7 @@
           ${e.project ? `<span class="session-project">${escapeHtml(e.project)}</span>` : ''}
           <span class="session-status ${statusCls}">${escapeHtml(e.mpStatus)}${e.subInfo ? ' <span style="opacity:0.7">' + escapeHtml(e.subInfo) + '</span>' : ''}</span>
           <span class="session-mp">${escapeHtml(e.moneypenny)}</span>
+          ${e.lastActive ? `<span class="session-time">${escapeHtml(relativeTime(e.lastActive))}</span>` : ''}
         </div>`;
     }
     if (lastCat !== -1) html += '</div>';
@@ -1555,6 +1556,31 @@
   }
 
   // --- Helpers ---
+
+  function relativeTime(ts) {
+    if (!ts) return '';
+    // Try parsing "Jan 02 15:04" (add current year) or ISO format.
+    let d;
+    const isoMatch = ts.match(/^\d{4}-\d{2}-\d{2}/);
+    if (isoMatch) {
+      d = new Date(ts);
+    } else {
+      // "Jan 02 15:04" format — add current year.
+      d = new Date(ts + ' ' + new Date().getFullYear());
+      if (isNaN(d.getTime())) return ts;
+      // If parsed date is more than 1 day in the future, it's probably last year.
+      if (d > new Date(Date.now() + 86400000)) {
+        d = new Date(ts + ' ' + (new Date().getFullYear() - 1));
+      }
+    }
+    if (isNaN(d.getTime())) return ts;
+    const secs = (Date.now() - d.getTime()) / 1000;
+    if (secs < 60) return 'just now';
+    if (secs < 3600) return Math.floor(secs / 60) + 'm ago';
+    if (secs < 86400) return Math.floor(secs / 3600) + 'h ago';
+    if (secs < 604800) return Math.floor(secs / 86400) + 'd ago';
+    return d.toLocaleDateString('en-US', { month: 'short', day: '2-digit' });
+  }
 
   function escapeHtml(s) {
     const div = document.createElement('div');
