@@ -1887,10 +1887,12 @@ func (e *Executor) ListSessions(args []string) *protocol.Response {
 	// Build a set of tracked sessions with their hem_status for filtering.
 	trackedSessions, _ := e.store.ListTrackedSessions("")
 	hemStatusMap := make(map[string]string)
+	hemCreatedAt := make(map[string]time.Time)
 	subSessionSet := make(map[string]bool) // hide sub-sessions from main listing
 	subsByParent := make(map[string][]*store.Session)
 	for _, ts := range trackedSessions {
 		hemStatusMap[ts.SessionID] = ts.HemStatus
+		hemCreatedAt[ts.SessionID] = ts.CreatedAt
 		if ts.ParentSessionID != "" {
 			subSessionSet[ts.SessionID] = true
 			subsByParent[ts.ParentSessionID] = append(subsByParent[ts.ParentSessionID], ts)
@@ -1983,13 +1985,25 @@ func (e *Executor) ListSessions(args []string) *protocol.Response {
 				}
 			}
 
+			created := formatTimestamp(s.CreatedAt)
+			lastActive := formatTimestamp(s.LastAccessed)
+			// Fallback to hem's tracked creation time if moneypenny didn't send timestamps.
+			if created == "" {
+				if t, ok := hemCreatedAt[s.SessionID]; ok && !t.IsZero() {
+					created = t.UTC().Format("2006-01-02T15:04:05Z")
+					created = formatTimestamp(created)
+				}
+			}
+			if lastActive == "" {
+				lastActive = created
+			}
 			allSessions = append(allSessions, sessionInfo{
 				SessionID:  s.SessionID,
 				Name:       s.Name,
 				Status:     s.Status,
 				MPName:     r.mpName,
-				Created:    formatTimestamp(s.CreatedAt),
-				LastActive: formatTimestamp(s.LastAccessed),
+				Created:    created,
+				LastActive: lastActive,
 			})
 		}
 	}
@@ -3466,6 +3480,14 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 		} else {
 			mpStatus = "offline"
 			log.Printf("dashboard: moneypenny %q unreachable for session %s", sess.MoneypennyName, sess.SessionID)
+		}
+
+		// Fallback to hem's tracked creation time if moneypenny didn't send timestamps.
+		if createdAt == "" && !sess.CreatedAt.IsZero() {
+			createdAt = sess.CreatedAt.UTC().Format("2006-01-02T15:04:05Z")
+		}
+		if lastAccessed == "" {
+			lastAccessed = createdAt
 		}
 
 		projectName := projectNames[sess.ProjectID]
