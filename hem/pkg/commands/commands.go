@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -278,6 +279,9 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 	}
 	if verb == "list-directory" {
 		return e.ListDirectory(noun, args)
+	}
+	if verb == "transfer-file" {
+		return e.TransferFile(noun, args)
 	}
 
 	switch verb + " " + noun {
@@ -2895,6 +2899,100 @@ func (e *Executor) ListDirectory(noun string, args []string) *protocol.Response 
 	}
 
 	return protocol.OKResponse(result)
+}
+
+// TransferFileResult is returned by TransferFile.
+type TransferFileResult struct {
+	LocalPath string `json:"local_path"`
+	Name      string `json:"name"`
+	Size      int64  `json:"size"`
+}
+
+func (e *Executor) TransferFile(noun string, args []string) *protocol.Response {
+	var mpName, pathArg, sessionID string
+
+	remaining, err := parseFlagsFromArgs("transfer-file", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&mpName, "m", "", "moneypenny name")
+		fs.StringVar(&mpName, "moneypenny", "", "moneypenny name")
+		fs.StringVar(&pathArg, "path", "", "remote file path")
+		fs.StringVar(&sessionID, "session-id", "", "session ID (to resolve moneypenny)")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if pathArg == "" && noun != "" {
+		pathArg = noun
+	}
+	if pathArg == "" && len(remaining) > 0 {
+		pathArg = remaining[0]
+	}
+	if pathArg == "" {
+		return protocol.ErrResponse("file path is required")
+	}
+
+	// Resolve moneypenny from session or flag.
+	if mpName == "" && sessionID != "" {
+		mp, err := e.resolveSessionMoneypenny(sessionID)
+		if err == nil {
+			mpName = mp.Name
+		}
+	}
+	if mpName == "" {
+		mpName, _ = e.store.GetDefault("moneypenny")
+	}
+	if mpName == "" {
+		return protocol.ErrResponse("moneypenny is required (use -m or --session-id)")
+	}
+
+	mp, err := e.store.GetMoneypenny(mpName)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if mp == nil {
+		return protocol.ErrResponse(fmt.Sprintf("moneypenny %q not found", mpName))
+	}
+
+	ctx := context.Background()
+	resp, err := e.sendCommand(ctx, mp, "transfer_file", map[string]interface{}{
+		"path": pathArg,
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	var transferResp struct {
+		Path    string `json:"path"`
+		Name    string `json:"name"`
+		Size    int64  `json:"size"`
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal(resp.Data, &transferResp); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("parsing transfer response: %v", err))
+	}
+
+	// Decode base64 content.
+	decoded, err := base64.StdEncoding.DecodeString(transferResp.Content)
+	if err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("decoding file content: %v", err))
+	}
+
+	// Save to temporary directory.
+	tmpDir, err := os.MkdirTemp("", "hem-transfer-*")
+	if err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("creating temp dir: %v", err))
+	}
+
+	localPath := filepath.Join(tmpDir, transferResp.Name)
+	if err := os.WriteFile(localPath, decoded, 0644); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("writing file: %v", err))
+	}
+
+	return protocol.OKResponse(TransferFileResult{
+		LocalPath: localPath,
+		Name:      transferResp.Name,
+		Size:      transferResp.Size,
+	})
 }
 
 func (e *Executor) ImportSession(args []string) *protocol.Response {

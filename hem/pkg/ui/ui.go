@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -155,6 +156,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				if m.chat.pickingSubagent {
 					m.chat.pickingSubagent = false
+					return m, nil
+				}
+				if m.chat.browsingFiles {
+					m.chat.browsingFiles = false
+					m.chat.browserErr = nil
 					return m, nil
 				}
 				if !m.chat.commandMode {
@@ -405,7 +411,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case historyLoadedMsg, messageSentMsg, olderHistoryLoadedMsg,
 		activityLoadedMsg, schedulesLoadedMsg, subagentsLoadedMsg, scheduleCreatedMsg,
-		chatSubagentCreatedMsg:
+		chatSubagentCreatedMsg, browserLoadedMsg, fileTransferredMsg:
 		var cmd tea.Cmd
 		m.chat, cmd = m.chat.Update(msg)
 		return m, cmd
@@ -1173,6 +1179,32 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
+		case "f":
+			m.chat.confirmDelete = false
+			m.chat.browsingFiles = true
+			m.chat.browserLoading = true
+			m.chat.browserErr = nil
+			// Start browsing from session's working directory (fetch from moneypenny).
+			startPath := ""
+			return m, func() tea.Msg {
+				// Get session path from moneypenny.
+				resp, err := m.client.send("show", "session", m.chat.sessionID)
+				if err == nil && resp.Status == "ok" {
+					var detail struct {
+						Path string `json:"path"`
+					}
+					json.Unmarshal(resp.Data, &detail)
+					startPath = detail.Path
+				}
+				if startPath == "" {
+					startPath = "/"
+				}
+				entries, err := m.client.listDirectory(m.chat.moneypennyName, startPath)
+				if err != nil {
+					return browserLoadedMsg{path: startPath, err: err}
+				}
+				return browserLoadedMsg{path: startPath, entries: entries}
+			}
 		case "q":
 			m.chat.confirmDelete = false
 			m.chat.commandMode = false
@@ -1489,6 +1521,7 @@ func (m Model) renderStatusBar() string {
 				statusKeyStyle.Render("g") + statusDescStyle.Render(" git diff"),
 				statusKeyStyle.Render("s") + statusDescStyle.Render(" stop"),
 				statusKeyStyle.Render("t") + statusDescStyle.Render(" schedule"),
+				statusKeyStyle.Render("f") + statusDescStyle.Render(" files"),
 				statusKeyStyle.Render("x") + statusDescStyle.Render(" shell"),
 				statusKeyStyle.Render("1-9") + statusDescStyle.Render(" sub#"),
 				statusKeyStyle.Render("↵") + statusDescStyle.Render(" resume"),

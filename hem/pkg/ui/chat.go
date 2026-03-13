@@ -3,6 +3,8 @@ package ui
 import (
 	"fmt"
 	"math/rand"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -70,6 +72,12 @@ type chatModel struct {
 	scheduling    bool   // in schedule prompt entry mode
 	scheduleAt    string // time for the scheduled prompt
 	workingVerb   string // random spy verb chosen once per working session
+	browsingFiles    bool       // file browser overlay
+	browserPath      string     // current directory in browser
+	browserEntries   []dirEntry // directory listing
+	browserCursor    int
+	browserLoading   bool
+	browserErr       error
 	client        *client
 }
 
@@ -119,6 +127,17 @@ type scheduleCreatedMsg struct {
 
 type subagentsLoadedMsg struct {
 	subagents []subagentInfo
+	err       error
+}
+
+type browserLoadedMsg struct {
+	path    string
+	entries []dirEntry
+	err     error
+}
+
+type fileTransferredMsg struct {
+	localPath string
 	err       error
 }
 
@@ -204,6 +223,30 @@ func (m chatModel) loadActivity() tea.Cmd {
 	return func() tea.Msg {
 		events, err := m.client.getSessionActivity(m.sessionID)
 		return activityLoadedMsg{activity: events, err: err}
+	}
+}
+
+func (m chatModel) loadBrowser(path string) tea.Cmd {
+	mp := m.moneypennyName
+	return func() tea.Msg {
+		entries, err := m.client.listDirectory(mp, path)
+		if err != nil {
+			return browserLoadedMsg{path: path, err: err}
+		}
+		return browserLoadedMsg{path: path, entries: entries}
+	}
+}
+
+func (m chatModel) transferAndOpen(remotePath string) tea.Cmd {
+	mp := m.moneypennyName
+	return func() tea.Msg {
+		localPath, err := m.client.transferFile(mp, remotePath)
+		if err != nil {
+			return fileTransferredMsg{err: err}
+		}
+		// Open the file with the system default application.
+		exec.Command("open", localPath).Start()
+		return fileTransferredMsg{localPath: localPath}
 	}
 }
 
@@ -363,6 +406,24 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 			m.commandMode = false
 		}
 
+	case browserLoadedMsg:
+		m.browserLoading = false
+		if msg.err != nil {
+			m.browserErr = msg.err
+		} else {
+			m.browserPath = msg.path
+			m.browserEntries = msg.entries
+			m.browserCursor = 0
+			m.browserErr = nil
+		}
+
+	case fileTransferredMsg:
+		m.browsingFiles = false
+		m.browserLoading = false
+		if msg.err != nil {
+			m.err = msg.err
+		}
+
 	case chatSubagentCreatedMsg:
 		m.creatingSubagent = false
 		m.subagentPrompt = ""
@@ -455,6 +516,57 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 				m.subagentPrompt = ""
 				m.subagentPromptPos = 0
 				return m, nil
+			}
+			return m, nil
+		}
+
+		if m.browsingFiles {
+			// Total items = ".." (if not root) + entries
+			hasParent := m.browserPath != "/" && m.browserPath != ""
+			totalItems := len(m.browserEntries)
+			if hasParent {
+				totalItems++
+			}
+			switch msg.String() {
+			case "esc":
+				m.browsingFiles = false
+				m.browserErr = nil
+				return m, nil
+			case "up", "k":
+				if m.browserCursor > 0 {
+					m.browserCursor--
+				}
+			case "down", "j":
+				if m.browserCursor < totalItems-1 {
+					m.browserCursor++
+				}
+			case "enter":
+				if m.browserLoading {
+					return m, nil
+				}
+				// Determine which entry was selected.
+				idx := m.browserCursor
+				if hasParent {
+					if idx == 0 {
+						// Go up to parent directory.
+						m.browserLoading = true
+						return m, m.loadBrowser(filepath.Dir(m.browserPath))
+					}
+					idx-- // adjust for ".." entry
+				}
+				if idx < len(m.browserEntries) {
+					entry := m.browserEntries[idx]
+					if entry.IsDir {
+						// Navigate into directory.
+						newPath := m.browserPath + "/" + entry.Name
+						m.browserLoading = true
+						return m, m.loadBrowser(newPath)
+					}
+					// File selected — transfer and open.
+					remotePath := m.browserPath + "/" + entry.Name
+					m.browserLoading = true
+					return m, m.transferAndOpen(remotePath)
+				}
 			}
 			return m, nil
 		}
@@ -846,6 +958,52 @@ func (m chatModel) View() string {
 			b.WriteString(sessionNormalStyle.Render(newLine))
 		}
 		b.WriteString("\n")
+		return b.String()
+	}
+
+	// File browser overlay
+	if m.browsingFiles {
+		label := lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render(" 📂 " + m.browserPath)
+		b.WriteString(label)
+		b.WriteString("\n")
+		if m.browserLoading {
+			b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render("  Loading..."))
+			b.WriteString("\n")
+		} else if m.browserErr != nil {
+			b.WriteString(lipgloss.NewStyle().Foreground(colorDanger).Render(fmt.Sprintf("  Error: %v", m.browserErr)))
+			b.WriteString("\n")
+		} else {
+			idx := 0
+			hasParent := m.browserPath != "/" && m.browserPath != ""
+			if hasParent {
+				line := "  📁 .."
+				if idx == m.browserCursor {
+					b.WriteString(sessionSelectedStyle.Render(line))
+				} else {
+					b.WriteString(sessionNormalStyle.Render(line))
+				}
+				b.WriteString("\n")
+				idx++
+			}
+			for _, entry := range m.browserEntries {
+				icon := "📄"
+				if entry.IsDir {
+					icon = "📁"
+				}
+				line := fmt.Sprintf("  %s %s", icon, entry.Name)
+				if idx == m.browserCursor {
+					b.WriteString(sessionSelectedStyle.Render(line))
+				} else {
+					b.WriteString(sessionNormalStyle.Render(line))
+				}
+				b.WriteString("\n")
+				idx++
+			}
+			if len(m.browserEntries) == 0 {
+				b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render("  (empty directory)"))
+				b.WriteString("\n")
+			}
+		}
 		return b.String()
 	}
 

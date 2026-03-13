@@ -119,6 +119,19 @@ type ListDirectoryResponse struct {
 	Entries []DirEntry `json:"entries"`
 }
 
+// TransferFileData is the data payload for transfer_file.
+type TransferFileData struct {
+	Path string `json:"path"`
+}
+
+// TransferFileResponse is returned by transfer_file.
+type TransferFileResponse struct {
+	Path    string `json:"path"`
+	Name    string `json:"name"`
+	Size    int64  `json:"size"`
+	Content string `json:"content"` // base64-encoded file content
+}
+
 // ScheduleData is the data payload for schedule.
 type ScheduleData struct {
 	SessionID   string `json:"session_id"`

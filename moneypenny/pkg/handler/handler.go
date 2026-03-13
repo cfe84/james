@@ -2,10 +2,12 @@ package handler
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -86,6 +88,8 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.executeCommand(ctx, cmd)
 	case "list_directory":
 		return h.listDirectory(ctx, cmd)
+	case "transfer_file":
+		return h.transferFile(ctx, cmd)
 	case "schedule":
 		return h.schedule(ctx, cmd)
 	case "list_schedules":
@@ -734,6 +738,53 @@ func (h *Handler) listDirectory(_ context.Context, cmd *envelope.Command) *envel
 	return envelope.SuccessResponse(cmd.RequestID, envelope.ListDirectoryResponse{
 		Path:    path,
 		Entries: entries,
+	})
+}
+
+func (h *Handler) transferFile(_ context.Context, cmd *envelope.Command) *envelope.Response {
+	var data envelope.TransferFileData
+	if err := json.Unmarshal(cmd.Data, &data); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
+	}
+
+	if data.Path == "" {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "path is required")
+	}
+
+	// Expand ~ prefix.
+	path := data.Path
+	if len(path) > 1 && path[0] == '~' && path[1] == '/' {
+		if home, err := os.UserHomeDir(); err == nil {
+			path = home + path[1:]
+		}
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidPath, fmt.Sprintf("cannot stat file: %v", err))
+	}
+	if info.IsDir() {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidPath, "path is a directory, not a file")
+	}
+
+	// Limit file size to 50MB.
+	const maxSize = 50 * 1024 * 1024
+	if info.Size() > maxSize {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("file too large: %d bytes (max %d)", info.Size(), maxSize))
+	}
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("cannot read file: %v", err))
+	}
+
+	encoded := base64.StdEncoding.EncodeToString(content)
+
+	return envelope.SuccessResponse(cmd.RequestID, envelope.TransferFileResponse{
+		Path:    path,
+		Name:    filepath.Base(path),
+		Size:    info.Size(),
+		Content: encoded,
 	})
 }
 

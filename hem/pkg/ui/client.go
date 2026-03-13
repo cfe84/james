@@ -529,6 +529,30 @@ func (c *client) listDirectory(moneypenny, path string) ([]dirEntry, error) {
 	return result.Entries, nil
 }
 
+func (c *client) transferFile(moneypenny, path string) (string, error) {
+	args := []string{}
+	if moneypenny != "" {
+		args = append(args, "-m", moneypenny)
+	}
+	args = append(args, "--path", path)
+	resp, err := c.send("transfer-file", "", args...)
+	if err != nil {
+		return "", err
+	}
+	if resp.Status == protocol.StatusError {
+		return "", fmt.Errorf("%s", resp.Message)
+	}
+	var result struct {
+		LocalPath string `json:"local_path"`
+		Name      string `json:"name"`
+		Size      int64  `json:"size"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return "", fmt.Errorf("parsing transfer result: %w", err)
+	}
+	return result.LocalPath, nil
+}
+
 type activityEvent struct {
 	Type      string `json:"type"`
 	Summary   string `json:"summary"`
