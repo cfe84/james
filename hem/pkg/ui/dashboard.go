@@ -153,14 +153,13 @@ func (m dashboardModel) loadDashboard() tea.Cmd {
 			entries = append(entries, e)
 		}
 
-		// Server sends entries pre-sorted with subagents after their parents.
-		// When showing subagents, unify the category for each parent+children group:
+		// Unify the category for each parent+children group so they appear
+		// in the same dashboard section. This runs always because the server
+		// sends working/ready subagents even without --show-subs.
 		// - If any subagent is Ready → whole group is Ready
 		// - Else if any subagent is Working → whole group is Working
 		// - Else use the parent's own category
-		if showSubs {
-			entries = unifySubagentCategories(entries)
-		}
+		entries = unifySubagentCategories(entries)
 
 		return dashboardLoadedMsg{entries: entries, projectFilter: projectFilter}
 	}
