@@ -1212,8 +1212,14 @@ func (h *Handler) gitCommit(_ context.Context, cmd *envelope.Command) *envelope.
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("git add failed: %s", string(out)))
 	}
 
-	// Commit.
-	commitCmd := exec.Command("git", "commit", "-m", data.Message)
+	// Commit (or amend).
+	var commitArgs []string
+	if data.Amend {
+		commitArgs = []string{"commit", "--amend", "-m", data.Message}
+	} else {
+		commitArgs = []string{"commit", "-m", data.Message}
+	}
+	commitCmd := exec.Command("git", commitArgs...)
 	commitCmd.Dir = sess.Path
 	out, err := commitCmd.CombinedOutput()
 	if err != nil {
@@ -1278,7 +1284,11 @@ func (h *Handler) gitPush(_ context.Context, cmd *envelope.Command) *envelope.Re
 	branch := strings.TrimSpace(string(branchOut))
 
 	// Push with -u to set upstream.
-	pushCmd := exec.Command("git", "push", "-u", "origin", branch)
+	pushArgs := []string{"push", "-u", "origin", branch}
+	if data.Force {
+		pushArgs = []string{"push", "--force-with-lease", "-u", "origin", branch}
+	}
+	pushCmd := exec.Command("git", pushArgs...)
 	pushCmd.Dir = sess.Path
 	out, err := pushCmd.CombinedOutput()
 	if err != nil {

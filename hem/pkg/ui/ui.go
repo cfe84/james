@@ -143,10 +143,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "ctrl+c":
 			return m, tea.Quit
 		case "q":
-			if m.currentView == viewDashboard {
+			if m.currentView == viewDashboard && !m.dashboard.filtering {
 				return m, tea.Quit
 			}
 		case "esc":
+			// When filtering, let the view model handle esc.
+			if m.currentView == viewDashboard && m.dashboard.filtering {
+				var cmd tea.Cmd
+				m.dashboard, cmd = m.dashboard.Update(msg)
+				return m, cmd
+			}
+			if m.currentView == viewProjectDetail && m.projectDetail.filtering {
+				var cmd tea.Cmd
+				m.projectDetail, cmd = m.projectDetail.Update(msg)
+				return m, cmd
+			}
+			if m.currentView == viewSessions && m.sessions.filtering {
+				var cmd tea.Cmd
+				m.sessions, cmd = m.sessions.Update(msg)
+				return m, cmd
+			}
 			if m.currentView == viewChat {
 				if m.chat.creatingSubagent {
 					m.chat.creatingSubagent = false
@@ -183,6 +199,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.diff.mode = diffModeView
 				m.diff.commitMsg = ""
 				m.diff.commitErr = nil
+				return m, nil
+			}
+			// Clear dashboard/projectDetail filter on esc.
+			if m.currentView == viewDashboard && m.dashboard.filterText != "" {
+				m.dashboard.filterText = ""
+				m.dashboard.filtering = false
+				m.dashboard.cursor = 0
+				return m, nil
+			}
+			if m.currentView == viewProjectDetail && m.projectDetail.filterText != "" {
+				m.projectDetail.filterText = ""
+				m.projectDetail.filtering = false
+				m.projectDetail.cursor = 0
+				return m, nil
+			}
+			// Clear sessions filter on esc.
+			if m.currentView == viewSessions && m.sessions.filterText != "" {
+				m.sessions.filterText = ""
+				m.sessions.filtering = false
+				m.sessions.cursor = 0
 				return m, nil
 			}
 			return m.handleEsc()
@@ -731,6 +767,12 @@ func (m Model) handleEsc() (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// When filtering, route all keys to dashboard model for input handling.
+	if m.dashboard.filtering {
+		var cmd tea.Cmd
+		m.dashboard, cmd = m.dashboard.Update(msg)
+		return m, cmd
+	}
 	switch msg.String() {
 	case "enter":
 		e := m.dashboard.selectedEntry()
@@ -896,6 +938,12 @@ func (m Model) updateProjects(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// When filtering, route all keys to projectDetail model for input handling.
+	if m.projectDetail.filtering {
+		var cmd tea.Cmd
+		m.projectDetail, cmd = m.projectDetail.Update(msg)
+		return m, cmd
+	}
 	switch msg.String() {
 	case "enter":
 		e := m.projectDetail.selectedEntry()
@@ -1035,6 +1083,12 @@ func (m Model) updateCreateTemplate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// When filtering, route all keys to sessions model for input handling.
+	if m.sessions.filtering {
+		var cmd tea.Cmd
+		m.sessions, cmd = m.sessions.Update(msg)
+		return m, cmd
+	}
 	switch msg.String() {
 	case "enter":
 		s := m.sessions.selectedSession()
@@ -1419,30 +1473,38 @@ func (m Model) renderStatusBar() string {
 	var keys []string
 	switch m.currentView {
 	case viewDashboard:
-		completedLabel := " show done"
-		if m.dashboard.showAll {
-			completedLabel = " hide done"
-		}
-		subsLabel := " show subs"
-		if m.dashboard.showSubs {
-			subsLabel = " hide subs"
-		}
-		keys = []string{
-			statusKeyStyle.Render("↵") + statusDescStyle.Render(" chat"),
-			statusKeyStyle.Render("a") + statusDescStyle.Render(completedLabel),
-			statusKeyStyle.Render("s") + statusDescStyle.Render(subsLabel),
-			statusKeyStyle.Render("c") + statusDescStyle.Render(" complete"),
-			statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
-			statusKeyStyle.Render("e") + statusDescStyle.Render(" edit"),
-			statusKeyStyle.Render("g") + statusDescStyle.Render(" git diff"),
-			statusKeyStyle.Render("n") + statusDescStyle.Render(" new"),
-			statusKeyStyle.Render("t") + statusDescStyle.Render(" templates"),
-			statusKeyStyle.Render("x") + statusDescStyle.Render(" shell"),
-			statusKeyStyle.Render("m") + statusDescStyle.Render(" moneypennies"),
-			statusKeyStyle.Render("p") + statusDescStyle.Render(" projects"),
-			statusKeyStyle.Render("l") + statusDescStyle.Render(" all sessions"),
-			statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
-			statusKeyStyle.Render("q") + statusDescStyle.Render(" quit"),
+		if m.dashboard.filtering {
+			keys = []string{
+				statusKeyStyle.Render("↵") + statusDescStyle.Render(" apply"),
+				statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
+			}
+		} else {
+			completedLabel := " show done"
+			if m.dashboard.showAll {
+				completedLabel = " hide done"
+			}
+			subsLabel := " show subs"
+			if m.dashboard.showSubs {
+				subsLabel = " hide subs"
+			}
+			keys = []string{
+				statusKeyStyle.Render("↵") + statusDescStyle.Render(" chat"),
+				statusKeyStyle.Render("/") + statusDescStyle.Render(" filter"),
+				statusKeyStyle.Render("a") + statusDescStyle.Render(completedLabel),
+				statusKeyStyle.Render("s") + statusDescStyle.Render(subsLabel),
+				statusKeyStyle.Render("c") + statusDescStyle.Render(" complete"),
+				statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
+				statusKeyStyle.Render("e") + statusDescStyle.Render(" edit"),
+				statusKeyStyle.Render("g") + statusDescStyle.Render(" git diff"),
+				statusKeyStyle.Render("n") + statusDescStyle.Render(" new"),
+				statusKeyStyle.Render("t") + statusDescStyle.Render(" templates"),
+				statusKeyStyle.Render("x") + statusDescStyle.Render(" shell"),
+				statusKeyStyle.Render("m") + statusDescStyle.Render(" moneypennies"),
+				statusKeyStyle.Render("p") + statusDescStyle.Render(" projects"),
+				statusKeyStyle.Render("l") + statusDescStyle.Render(" all sessions"),
+				statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
+				statusKeyStyle.Render("q") + statusDescStyle.Render(" quit"),
+			}
 		}
 	case viewProjects:
 		keys = []string{
@@ -1461,40 +1523,56 @@ func (m Model) renderStatusBar() string {
 			statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
 		}
 	case viewProjectDetail:
-		completedLabel := " show done"
-		if m.projectDetail.showAll {
-			completedLabel = " hide done"
-		}
-		subsLabel := " show subs"
-		if m.projectDetail.showSubs {
-			subsLabel = " hide subs"
-		}
-		keys = []string{
-			statusKeyStyle.Render("↵") + statusDescStyle.Render(" chat"),
-			statusKeyStyle.Render("a") + statusDescStyle.Render(completedLabel),
-			statusKeyStyle.Render("s") + statusDescStyle.Render(subsLabel),
-			statusKeyStyle.Render("c") + statusDescStyle.Render(" complete"),
-			statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
-			statusKeyStyle.Render("e") + statusDescStyle.Render(" edit"),
-			statusKeyStyle.Render("g") + statusDescStyle.Render(" git diff"),
-			statusKeyStyle.Render("n") + statusDescStyle.Render(" new"),
-			statusKeyStyle.Render("t") + statusDescStyle.Render(" template"),
-			statusKeyStyle.Render("x") + statusDescStyle.Render(" shell"),
-			statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
-			statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
+		if m.projectDetail.filtering {
+			keys = []string{
+				statusKeyStyle.Render("↵") + statusDescStyle.Render(" apply"),
+				statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
+			}
+		} else {
+			completedLabel := " show done"
+			if m.projectDetail.showAll {
+				completedLabel = " hide done"
+			}
+			subsLabel := " show subs"
+			if m.projectDetail.showSubs {
+				subsLabel = " hide subs"
+			}
+			keys = []string{
+				statusKeyStyle.Render("↵") + statusDescStyle.Render(" chat"),
+				statusKeyStyle.Render("/") + statusDescStyle.Render(" filter"),
+				statusKeyStyle.Render("a") + statusDescStyle.Render(completedLabel),
+				statusKeyStyle.Render("s") + statusDescStyle.Render(subsLabel),
+				statusKeyStyle.Render("c") + statusDescStyle.Render(" complete"),
+				statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
+				statusKeyStyle.Render("e") + statusDescStyle.Render(" edit"),
+				statusKeyStyle.Render("g") + statusDescStyle.Render(" git diff"),
+				statusKeyStyle.Render("n") + statusDescStyle.Render(" new"),
+				statusKeyStyle.Render("t") + statusDescStyle.Render(" template"),
+				statusKeyStyle.Render("x") + statusDescStyle.Render(" shell"),
+				statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
+				statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
+			}
 		}
 	case viewSessions:
-		keys = []string{
-			statusKeyStyle.Render("↵") + statusDescStyle.Render(" chat"),
-			statusKeyStyle.Render("n") + statusDescStyle.Render(" new"),
-			statusKeyStyle.Render("e") + statusDescStyle.Render(" edit"),
-			statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
-			statusKeyStyle.Render("g") + statusDescStyle.Render(" git diff"),
-			statusKeyStyle.Render("i") + statusDescStyle.Render(" import"),
-			statusKeyStyle.Render("s") + statusDescStyle.Render(" stop"),
-			statusKeyStyle.Render("x") + statusDescStyle.Render(" shell"),
-			statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
-			statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
+		if m.sessions.filtering {
+			keys = []string{
+				statusKeyStyle.Render("↵") + statusDescStyle.Render(" apply"),
+				statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
+			}
+		} else {
+			keys = []string{
+				statusKeyStyle.Render("↵") + statusDescStyle.Render(" chat"),
+				statusKeyStyle.Render("/") + statusDescStyle.Render(" filter"),
+				statusKeyStyle.Render("n") + statusDescStyle.Render(" new"),
+				statusKeyStyle.Render("e") + statusDescStyle.Render(" edit"),
+				statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
+				statusKeyStyle.Render("g") + statusDescStyle.Render(" git diff"),
+				statusKeyStyle.Render("i") + statusDescStyle.Render(" import"),
+				statusKeyStyle.Render("s") + statusDescStyle.Render(" stop"),
+				statusKeyStyle.Render("x") + statusDescStyle.Render(" shell"),
+				statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
+				statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
+			}
 		}
 	case viewChat:
 		if m.chat.scheduling {
@@ -1589,7 +1667,11 @@ func (m Model) renderStatusBar() string {
 	case viewDiff:
 		if m.diff.mode == diffModeCommitMsg {
 			action := "commit"
-			if m.diff.pushAfter {
+			if m.diff.amendMode && m.diff.pushAfter {
+				action = "amend+force-push"
+			} else if m.diff.amendMode {
+				action = "amend"
+			} else if m.diff.pushAfter {
 				action = "commit+push"
 			}
 			keys = []string{
@@ -1607,6 +1689,8 @@ func (m Model) renderStatusBar() string {
 				statusKeyStyle.Render("↑↓") + statusDescStyle.Render(" scroll"),
 				statusKeyStyle.Render("c") + statusDescStyle.Render(" commit"),
 				statusKeyStyle.Render("C") + statusDescStyle.Render(" commit+push"),
+				statusKeyStyle.Render("a") + statusDescStyle.Render(" amend"),
+				statusKeyStyle.Render("A") + statusDescStyle.Render(" amend+push"),
 				statusKeyStyle.Render("p") + statusDescStyle.Render(" push"),
 				statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
 			}

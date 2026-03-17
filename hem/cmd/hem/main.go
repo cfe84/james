@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -26,6 +27,7 @@ import (
 	"james/hem/pkg/protocol"
 	"james/hem/pkg/server"
 	"james/hem/pkg/store"
+	"james/hem/pkg/transport"
 	"james/hem/pkg/ui"
 )
 
@@ -38,20 +40,24 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Check if this is `set-default server` — if so, don't consume --hem/--local
+	// as global flags since they're arguments to the command itself.
+	isSetDefaultServer := len(os.Args) >= 3 && os.Args[1] == "set-default" && os.Args[2] == "server"
+
 	// Extract global flags from args before cli.Parse.
 	var mi6Addr string
 	var silent, verbose, forceLocal bool
 	filteredArgs := make([]string, 0, len(os.Args))
 	filteredArgs = append(filteredArgs, os.Args[0])
 	for i := 1; i < len(os.Args); i++ {
-		if os.Args[i] == "--hem" && i+1 < len(os.Args) {
+		if !isSetDefaultServer && os.Args[i] == "--hem" && i+1 < len(os.Args) {
 			i++
 			mi6Addr = os.Args[i]
 		} else if os.Args[i] == "--silent" {
 			silent = true
 		} else if os.Args[i] == "--verbose" {
 			verbose = true
-		} else if os.Args[i] == "--local" {
+		} else if !isSetDefaultServer && os.Args[i] == "--local" {
 			forceLocal = true
 		} else {
 			filteredArgs = append(filteredArgs, os.Args[i])
@@ -114,6 +120,11 @@ func main() {
 		return
 	case "get-default server":
 		handleGetDefaultServer()
+		return
+	case "list mi6-key", "add mi6-key", "delete mi6-key":
+		// MI6 admin commands run client-side using the local hem key,
+		// not through the hem server (which has a different key).
+		handleMI6Admin(cmd.Verb, cmd.Args)
 		return
 	}
 	switch cmd.Verb {
@@ -279,6 +290,112 @@ func getStoredDefaultServer() string {
 	defer st.Close()
 	v, _ := st.GetDefault("server")
 	return v
+}
+
+// handleMI6Admin handles MI6 admin key commands client-side using the local hem key.
+func handleMI6Admin(verb string, args []string) {
+	var mi6Addr string
+	var remaining []string
+
+	// Extract --mi6 flag from args.
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--mi6" && i+1 < len(args) {
+			mi6Addr = args[i+1]
+			i++
+		} else {
+			remaining = append(remaining, args[i])
+		}
+	}
+
+	// Fall back to stored default.
+	if mi6Addr == "" {
+		dataDir := defaultDataDir()
+		dbPath := filepath.Join(dataDir, "hem.db")
+		if st, err := store.New(dbPath); err == nil {
+			v, _ := st.GetDefault("mi6")
+			mi6Addr = v
+			st.Close()
+		}
+	}
+	if mi6Addr == "" {
+		fmt.Fprintf(os.Stderr, "%sError: --mi6 is required (or set a default with 'hem set-default mi6 HOST')%s\n", colorRed, colorReset)
+		os.Exit(1)
+	}
+
+	// Use local hem key.
+	dataDir := defaultDataDir()
+	os.MkdirAll(dataDir, 0700)
+	keyPath := filepath.Join(dataDir, "hem_ecdsa")
+	// Ensure key exists.
+	if _, err := loadOrCreatePublicKey(keyPath); err != nil {
+		log.Fatalf("failed to load/create key: %v", err)
+	}
+
+	// Build admin command JSON.
+	var cmdJSON string
+	switch verb {
+	case "list":
+		cmdJSON = `{"command":"list_keys"}`
+	case "add":
+		keyLine := strings.Join(remaining, " ")
+		if keyLine == "" {
+			fmt.Fprintf(os.Stderr, "%sError: key is required (e.g. hem add mi6-key \"ecdsa-sha2-nistp256 AAAA... comment\")%s\n", colorRed, colorReset)
+			os.Exit(1)
+		}
+		j, _ := json.Marshal(map[string]string{"command": "add_key", "key": keyLine})
+		cmdJSON = string(j)
+	case "delete":
+		fp := ""
+		if len(remaining) > 0 {
+			fp = remaining[0]
+		}
+		if fp == "" {
+			fmt.Fprintf(os.Stderr, "%sError: fingerprint is required (e.g. hem delete mi6-key SHA256:...)%s\n", colorRed, colorReset)
+			os.Exit(1)
+		}
+		j, _ := json.Marshal(map[string]string{"command": "delete_key", "fingerprint": fp})
+		cmdJSON = string(j)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	respData, err := transport.MI6AdminCommand(ctx, mi6Addr, keyPath, cmdJSON)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%sError: %v%s\n", colorRed, err, colorReset)
+		os.Exit(1)
+	}
+
+	var adminResp struct {
+		Status  string `json:"status"`
+		Message string `json:"message"`
+		Keys    []struct {
+			Fingerprint string `json:"fingerprint"`
+			Type        string `json:"type"`
+			Comment     string `json:"comment"`
+		} `json:"keys"`
+	}
+	if err := json.Unmarshal(respData, &adminResp); err != nil {
+		fmt.Fprintf(os.Stderr, "%sError parsing response: %v%s\n", colorRed, err, colorReset)
+		os.Exit(1)
+	}
+	if adminResp.Status == "error" {
+		fmt.Fprintf(os.Stderr, "%sError: %s%s\n", colorRed, adminResp.Message, colorReset)
+		os.Exit(1)
+	}
+
+	if verb == "list" {
+		if len(adminResp.Keys) == 0 {
+			fmt.Println("No authorized keys.")
+			return
+		}
+		fmt.Printf("%-50s %-28s %s\n", "Fingerprint", "Type", "Comment")
+		for _, k := range adminResp.Keys {
+			fmt.Printf("%-50s %-28s %s\n", k.Fingerprint, k.Type, k.Comment)
+		}
+	} else {
+		fmt.Println(adminResp.Message)
+	}
 }
 
 // buildSender creates a Sender based on whether --hem was specified.
@@ -761,6 +878,9 @@ Remote execution:
 
 MI6:
   test mi6 --mi6 ADDRESS --session SESSION_ID
+  list mi6-keys [--mi6 ADDRESS]
+  add mi6-key KEY_LINE [--mi6 ADDRESS]
+  delete mi6-key FINGERPRINT [--mi6 ADDRESS]
 
 UI:
   ui [--silent]          Open the interactive terminal UI

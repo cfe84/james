@@ -10,13 +10,15 @@ import (
 
 // sessionsModel displays and manages the session list.
 type sessionsModel struct {
-	sessions []sessionInfo
-	cursor   int
-	width    int
-	height   int
-	err      error
-	loading  bool
-	client   *client
+	sessions   []sessionInfo
+	cursor     int
+	width      int
+	height     int
+	err        error
+	loading    bool
+	client     *client
+	filtering  bool   // true when filter input is active
+	filterText string // current filter text (case insensitive match on name)
 }
 
 func newSessionsModel(c *client) sessionsModel {
@@ -83,15 +85,50 @@ func (m sessionsModel) Update(msg tea.Msg) (sessionsModel, tea.Cmd) {
 		return m, m.loadSessions()
 
 	case tea.KeyMsg:
+		// Filter input mode.
+		if m.filtering {
+			switch msg.String() {
+			case "esc":
+				m.filtering = false
+				m.filterText = ""
+				m.cursor = 0
+			case "enter":
+				m.filtering = false
+				m.cursor = 0
+			case "backspace":
+				if len(m.filterText) > 0 {
+					m.filterText = m.filterText[:len(m.filterText)-1]
+					m.cursor = 0
+				}
+			case "ctrl+u":
+				m.filterText = ""
+				m.cursor = 0
+			default:
+				if msg.Type == tea.KeyRunes {
+					m.filterText += string(msg.Runes)
+					m.cursor = 0
+				} else if msg.String() == " " {
+					m.filterText += " "
+					m.cursor = 0
+				}
+			}
+			return m, nil
+		}
+
 		switch msg.String() {
 		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
 			}
 		case "down", "j":
-			if m.cursor < len(m.sessions)-1 {
+			filtered := m.filteredSessions()
+			if m.cursor < len(filtered)-1 {
 				m.cursor++
 			}
+		case "/":
+			m.filtering = true
+			m.filterText = ""
+			m.cursor = 0
 		case "r":
 			m.loading = true
 			return m, m.loadSessions()
@@ -100,11 +137,27 @@ func (m sessionsModel) Update(msg tea.Msg) (sessionsModel, tea.Cmd) {
 	return m, nil
 }
 
+// filteredSessions returns sessions matching the current filter text.
+func (m sessionsModel) filteredSessions() []sessionInfo {
+	if m.filterText == "" {
+		return m.sessions
+	}
+	ft := strings.ToLower(m.filterText)
+	var result []sessionInfo
+	for _, s := range m.sessions {
+		if strings.Contains(strings.ToLower(s.Name), ft) {
+			result = append(result, s)
+		}
+	}
+	return result
+}
+
 func (m sessionsModel) selectedSession() *sessionInfo {
-	if len(m.sessions) == 0 || m.cursor >= len(m.sessions) {
+	filtered := m.filteredSessions()
+	if len(filtered) == 0 || m.cursor >= len(filtered) {
 		return nil
 	}
-	return &m.sessions[m.cursor]
+	return &filtered[m.cursor]
 }
 
 func (m sessionsModel) View() string {
@@ -118,7 +171,23 @@ func (m sessionsModel) View() string {
 		return "\n  No sessions. Press [n] to create one."
 	}
 
+	sessions := m.filteredSessions()
+
 	var b strings.Builder
+
+	// Filter bar.
+	if m.filtering {
+		b.WriteString("  " + labelStyle.Render("Filter:") + " " + fieldActiveStyle.Render(m.filterText+"█"))
+		b.WriteString("\n")
+	} else if m.filterText != "" {
+		b.WriteString("  " + lipgloss.NewStyle().Foreground(colorMuted).Render(fmt.Sprintf("filter: %q (%d matches, / to edit, esc to clear)", m.filterText, len(sessions))))
+		b.WriteString("\n")
+	}
+
+	if len(sessions) == 0 {
+		b.WriteString("\n  No matching sessions.")
+		return b.String()
+	}
 
 	// Header
 	header := fmt.Sprintf("  %-14s %-20s %-10s %-12s %s",
@@ -128,6 +197,9 @@ func (m sessionsModel) View() string {
 
 	// Available height for rows.
 	maxRows := m.height - 4 // header + borders + status
+	if m.filtering || m.filterText != "" {
+		maxRows -= 1
+	}
 	if maxRows < 1 {
 		maxRows = 10
 	}
@@ -138,12 +210,12 @@ func (m sessionsModel) View() string {
 		start = m.cursor - maxRows + 1
 	}
 	end := start + maxRows
-	if end > len(m.sessions) {
-		end = len(m.sessions)
+	if end > len(sessions) {
+		end = len(sessions)
 	}
 
 	for i := start; i < end; i++ {
-		s := m.sessions[i]
+		s := sessions[i]
 		baseStatus := s.Status
 		subInfo := ""
 		if idx := strings.Index(s.Status, " ["); idx >= 0 {
@@ -177,9 +249,9 @@ func (m sessionsModel) View() string {
 		b.WriteString("\n")
 	}
 
-	if len(m.sessions) > maxRows {
+	if len(sessions) > maxRows {
 		b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render(
-			fmt.Sprintf("  showing %d-%d of %d", start+1, end, len(m.sessions))))
+			fmt.Sprintf("  showing %d-%d of %d", start+1, end, len(sessions))))
 		b.WriteString("\n")
 	}
 

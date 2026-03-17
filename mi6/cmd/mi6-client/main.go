@@ -29,6 +29,7 @@ func main() {
 	sessionID := flag.String("session-id", "", "session ID to join")
 	keyPath := flag.String("key", "", "path to SSH private key file")
 	keyValue := flag.String("key-value", "", "ECDSA private key PEM content (or set MI6_KEY env var)")
+	adminCommand := flag.String("admin-command", "", "send an admin command (JSON) to MI6 server and exit")
 	generateKey := flag.Bool("generate-key", false, "generate a new ECDSA key pair and exit")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	batchTimeout := flag.Duration("batch-timeout", 100*time.Millisecond, "idle timeout for stdin batching")
@@ -75,9 +76,15 @@ func main() {
 		}
 	}
 
+	// --admin-command overrides session ID to __admin__.
+	if *adminCommand != "" {
+		*sessionID = "__admin__"
+	}
+
 	hasKey := *keyPath != "" || *keyValue != ""
 	if *server == "" || *sessionID == "" || !hasKey {
 		fmt.Fprintf(os.Stderr, "Usage: mi6-client [--server HOST:PORT --session-id ID | HOST/SESSION_ID] [--key PATH | --key-value PEM]\n")
+		fmt.Fprintf(os.Stderr, "       mi6-client --admin-command JSON --key PATH HOST:PORT\n")
 		fmt.Fprintf(os.Stderr, "       mi6-client --generate-key\n")
 		flag.PrintDefaults()
 		os.Exit(1)
@@ -139,10 +146,42 @@ func main() {
 	// Wait for MsgJoinSessionOK.
 	joinResp, err := secureConn.Receive()
 	if err != nil {
+		if joinResp != nil && joinResp.Type == protocol.MsgAuthFail {
+			log.Fatalf("server rejected join: %s", string(joinResp.Payload))
+		}
 		log.Fatalf("failed to receive join session response: %v", err)
+	}
+	if joinResp.Type == protocol.MsgAuthFail {
+		log.Fatalf("server rejected join: %s", string(joinResp.Payload))
 	}
 	if joinResp.Type != protocol.MsgJoinSessionOK {
 		log.Fatalf("expected MsgJoinSessionOK, got message type %d", joinResp.Type)
+	}
+
+	// Admin command mode: send command, receive one response, exit.
+	if *adminCommand != "" {
+		// Send command.
+		if err := secureConn.Send(&protocol.Message{
+			Type:    protocol.MsgData,
+			Payload: []byte(*adminCommand),
+		}); err != nil {
+			log.Fatalf("failed to send admin command: %v", err)
+		}
+
+		// Read response.
+		resp, err := secureConn.Receive()
+		if err != nil {
+			log.Fatalf("failed to receive admin response: %v", err)
+		}
+		if resp.Type == protocol.MsgData {
+			os.Stdout.Write(resp.Payload)
+		} else {
+			log.Fatalf("unexpected response type %d", resp.Type)
+		}
+
+		// Leave.
+		_ = secureConn.Send(&protocol.Message{Type: protocol.MsgLeaveSession})
+		os.Exit(0)
 	}
 
 	// Set up context for coordinated shutdown.

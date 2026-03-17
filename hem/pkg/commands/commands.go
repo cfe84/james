@@ -214,6 +214,9 @@ var CommandHelp = map[string]string{
 	"history session":     "Usage: hem history session SESSION_ID [-n N] [--count C] [--from F]\n\nShows conversation history for a session.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)\n  -n                 Number of turns to show (default: all)\n  --count            Page size (default: all; TUI uses 10)\n  --from             Offset from end for pagination",
 	"list session":        "Usage: hem list sessions [-m MONEYPENNY]\n\nLists all sessions across all moneypennies.\n\nFlags:\n  -m, --moneypenny   Filter by moneypenny name",
 	"test mi6":            "Usage: hem test mi6 --mi6 ADDRESS --session SESSION_ID\n\nTests connectivity to an MI6 server.\n\nFlags:\n  --mi6              MI6 server address (uses default if not set)\n  --session          Session ID to join (required)",
+	"list mi6-key":        "Usage: hem list mi6-keys [--mi6 ADDRESS]\n\nLists authorized keys on the MI6 server.\nRequires your key to be in the server's admin_keys file.\n\nFlags:\n  --mi6              MI6 server address (uses default if not set)",
+	"add mi6-key":         "Usage: hem add mi6-key KEY_LINE [--mi6 ADDRESS]\n\nAdds a public key to the MI6 server's authorized_keys.\nRequires your key to be in the server's admin_keys file.\n\nFlags:\n  --mi6              MI6 server address (uses default if not set)",
+	"delete mi6-key":      "Usage: hem delete mi6-key FINGERPRINT [--mi6 ADDRESS]\n\nRemoves a public key from the MI6 server by fingerprint.\nRequires your key to be in the server's admin_keys file.\n\nFlags:\n  --mi6              MI6 server address (uses default if not set)",
 	"chat":                "Usage: hem chat [-m MONEYPENNY] [--session-id ID] [flags]\n\nInteractive chat with an agent. Creates a new session by default.\n\nFlags:\n  -m, --moneypenny   Moneypenny name (uses default if not set)\n  --session-id       Continue an existing session\n  --agent            Agent to use (uses default, fallback: claude)\n  --name             Session name\n  --system-prompt    System prompt for the agent\n  --yolo             Skip permissions\n  --path             Working directory",
 	"create project":      "Usage: hem create project --name NAME [-m MONEYPENNY] [--path PATH] [--agent AGENT] [--system-prompt TEXT]\n\nCreates a new project.\n\nFlags:\n  --name             Project name (required)\n  -m, --moneypenny   Default moneypenny\n  --path             Working directory path\n  --agent            Default agent\n  --system-prompt    Default system prompt",
 	"list project":        "Usage: hem list projects [--status STATUS]\n\nLists all projects.\n\nFlags:\n  --status           Filter by status (active, paused, done)",
@@ -334,6 +337,12 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.ListSessions(args)
 	case "test mi6":
 		return e.TestMI6(args)
+	case "list mi6-key":
+		return e.MI6ListKeys(args)
+	case "add mi6-key":
+		return e.MI6AddKey(args)
+	case "delete mi6-key":
+		return e.MI6DeleteKey(args)
 
 	// Project commands
 	case "create project":
@@ -3740,6 +3749,164 @@ func (e *Executor) TestMI6(args []string) *protocol.Response {
 	})
 }
 
+// MI6ListKeys lists authorized keys on the MI6 server.
+func (e *Executor) MI6ListKeys(args []string) *protocol.Response {
+	var mi6Addr string
+
+	_, err := parseFlagsFromArgs("mi6-list-keys", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&mi6Addr, "mi6", "", "MI6 server address")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if mi6Addr == "" {
+		if v, _ := e.store.GetDefault("mi6"); v != "" {
+			mi6Addr = v
+		}
+	}
+	if mi6Addr == "" {
+		return protocol.ErrResponse("--mi6 is required (or set a default with 'hem set-default mi6 HOST')")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	cmdJSON := `{"command":"list_keys"}`
+	respData, err := transport.MI6AdminCommand(ctx, mi6Addr, e.mi6KeyPath, cmdJSON)
+	if err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("MI6 admin command failed: %v", err))
+	}
+
+	var adminResp struct {
+		Status  string `json:"status"`
+		Message string `json:"message"`
+		Keys    []struct {
+			Fingerprint string `json:"fingerprint"`
+			Type        string `json:"type"`
+			Comment     string `json:"comment"`
+		} `json:"keys"`
+	}
+	if err := json.Unmarshal(respData, &adminResp); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("parsing admin response: %v", err))
+	}
+	if adminResp.Status == "error" {
+		return protocol.ErrResponse(adminResp.Message)
+	}
+
+	headers := []string{"Fingerprint", "Type", "Comment"}
+	var rows [][]string
+	for _, k := range adminResp.Keys {
+		rows = append(rows, []string{k.Fingerprint, k.Type, k.Comment})
+	}
+	return protocol.OKResponse(TableResult{Headers: headers, Rows: rows})
+}
+
+// MI6AddKey adds a public key to the MI6 server's authorized_keys.
+func (e *Executor) MI6AddKey(args []string) *protocol.Response {
+	var mi6Addr string
+
+	remaining, err := parseFlagsFromArgs("mi6-add-key", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&mi6Addr, "mi6", "", "MI6 server address")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if mi6Addr == "" {
+		if v, _ := e.store.GetDefault("mi6"); v != "" {
+			mi6Addr = v
+		}
+	}
+	if mi6Addr == "" {
+		return protocol.ErrResponse("--mi6 is required (or set a default with 'hem set-default mi6 HOST')")
+	}
+
+	keyLine := strings.Join(remaining, " ")
+	if keyLine == "" {
+		return protocol.ErrResponse("key is required (e.g. 'hem add mi6-key \"ecdsa-sha2-nistp256 AAAA... comment\"')")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	cmdJSON, _ := json.Marshal(map[string]string{
+		"command": "add_key",
+		"key":     keyLine,
+	})
+	respData, err := transport.MI6AdminCommand(ctx, mi6Addr, e.mi6KeyPath, string(cmdJSON))
+	if err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("MI6 admin command failed: %v", err))
+	}
+
+	var adminResp struct {
+		Status  string `json:"status"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(respData, &adminResp); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("parsing admin response: %v", err))
+	}
+	if adminResp.Status == "error" {
+		return protocol.ErrResponse(adminResp.Message)
+	}
+
+	return protocol.OKResponse(TextResult{Message: adminResp.Message})
+}
+
+// MI6DeleteKey removes a public key from the MI6 server's authorized_keys by fingerprint.
+func (e *Executor) MI6DeleteKey(args []string) *protocol.Response {
+	var mi6Addr string
+
+	remaining, err := parseFlagsFromArgs("mi6-delete-key", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&mi6Addr, "mi6", "", "MI6 server address")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if mi6Addr == "" {
+		if v, _ := e.store.GetDefault("mi6"); v != "" {
+			mi6Addr = v
+		}
+	}
+	if mi6Addr == "" {
+		return protocol.ErrResponse("--mi6 is required (or set a default with 'hem set-default mi6 HOST')")
+	}
+
+	fingerprint := ""
+	if len(remaining) > 0 {
+		fingerprint = remaining[0]
+	}
+	if fingerprint == "" {
+		return protocol.ErrResponse("fingerprint is required (e.g. 'hem delete mi6-key SHA256:...')")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	cmdJSON, _ := json.Marshal(map[string]string{
+		"command":     "delete_key",
+		"fingerprint": fingerprint,
+	})
+	respData, err := transport.MI6AdminCommand(ctx, mi6Addr, e.mi6KeyPath, string(cmdJSON))
+	if err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("MI6 admin command failed: %v", err))
+	}
+
+	var adminResp struct {
+		Status  string `json:"status"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(respData, &adminResp); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("parsing admin response: %v", err))
+	}
+	if adminResp.Status == "error" {
+		return protocol.ErrResponse(adminResp.Message)
+	}
+
+	return protocol.OKResponse(TextResult{Message: adminResp.Message})
+}
+
 // ScheduleSession schedules a prompt for a session at a future time.
 func (e *Executor) ScheduleSession(args []string) *protocol.Response {
 	var sessionID, atStr, prompt, cronExpr string
@@ -4441,10 +4608,12 @@ func truncate(s string, n int) string {
 // CommitSession stages all changes and commits in a session's working directory.
 func (e *Executor) CommitSession(args []string) *protocol.Response {
 	var sessionID, message string
+	var amend bool
 
 	remaining, err := parseFlagsFromArgs("commit-session", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&sessionID, "session-id", "", "session ID")
 		fs.StringVar(&message, "m", "", "commit message")
+		fs.BoolVar(&amend, "amend", false, "amend last commit")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -4473,6 +4642,7 @@ func (e *Executor) CommitSession(args []string) *protocol.Response {
 	resp, err := e.sendCommand(ctx, mp, "git_commit", map[string]interface{}{
 		"session_id": sessionID,
 		"message":    message,
+		"amend":      amend,
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -4541,9 +4711,11 @@ func (e *Executor) BranchSession(args []string) *protocol.Response {
 // PushSession pushes the current branch to origin in a session's working directory.
 func (e *Executor) PushSession(args []string) *protocol.Response {
 	var sessionID string
+	var force bool
 
 	remaining, err := parseFlagsFromArgs("push-session", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&sessionID, "session-id", "", "session ID")
+		fs.BoolVar(&force, "force", false, "force push")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -4564,6 +4736,7 @@ func (e *Executor) PushSession(args []string) *protocol.Response {
 	ctx := context.Background()
 	resp, err := e.sendCommand(ctx, mp, "git_push", map[string]interface{}{
 		"session_id": sessionID,
+		"force":      force,
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())

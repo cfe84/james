@@ -177,6 +177,7 @@ type CancelScheduleData struct {
 type GitCommitData struct {
 	SessionID string `json:"session_id"`
 	Message   string `json:"message"`
+	Amend     bool   `json:"amend,omitempty"`
 }
 
 // GitBranchData is the data payload for git_branch.
@@ -188,6 +189,7 @@ type GitBranchData struct {
 // GitPushData is the data payload for git_push.
 type GitPushData struct {
 	SessionID string `json:"session_id"`
+	Force     bool   `json:"force,omitempty"`
 }
 
 // GitResponse is returned by git operations on success.

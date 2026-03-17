@@ -268,6 +268,39 @@ func TestMI6(ctx context.Context, mi6Addr, keyPath string) error {
 	return nil
 }
 
+// MI6AdminCommand sends a single admin command to an MI6 server and returns the raw response.
+// It connects via mi6-client with --admin-command (joining the __admin__ session).
+func MI6AdminCommand(ctx context.Context, mi6Addr, keyPath, commandJSON string) ([]byte, error) {
+	mi6Client, err := findMI6Client()
+	if err != nil {
+		return nil, err
+	}
+
+	// mi6-client HOST:PORT --key KEY --admin-command JSON
+	// The server address needs to be passed as a positional arg with a dummy session
+	// or via flags. Since --admin-command sets session to __admin__ internally,
+	// we pass the host directly with a dummy session in the positional arg.
+	addr := mi6Addr
+	if !strings.Contains(addr, ":") {
+		addr = addr + ":7007"
+	}
+
+	proc := exec.CommandContext(ctx, mi6Client, "--server", addr, "--session-id", "__admin__", "--key", keyPath, "--admin-command", commandJSON)
+	var stdoutBuf, stderrBuf bytes.Buffer
+	proc.Stdout = &stdoutBuf
+	proc.Stderr = &stderrBuf
+
+	if err := proc.Run(); err != nil {
+		stderr := strings.TrimSpace(stderrBuf.String())
+		if stderr != "" {
+			return nil, fmt.Errorf("mi6 admin command failed: %s", stderr)
+		}
+		return nil, fmt.Errorf("mi6 admin command failed: %w", err)
+	}
+
+	return stdoutBuf.Bytes(), nil
+}
+
 func findMI6Client() (string, error) {
 	if path, err := exec.LookPath("mi6-client"); err == nil {
 		return path, nil

@@ -135,6 +135,23 @@ MI6 is a transport abstraction that allows, by creating a central place that all
 - We should be able to pass the ECDSA key as environment variable to mi6-client, or directly in a `--key-value` path.
 - Add a `--generate-key` that generates a key.
 
+## MI6 Admin Key Management
+
+MI6 supports remote management of `authorized_keys` through an admin channel:
+
+- An `admin_keys` file (same OpenSSH format) is placed alongside `authorized_keys` on the server. Keys in this file have admin access.
+- Admin clients connect to MI6 and join the special `__admin__` session. The server verifies the client's key is in `admin_keys` before allowing admin commands.
+- Admin commands use JSON over MsgData:
+  - `list_keys`: Lists all authorized keys with fingerprints, types, and comments
+  - `add_key`: Adds a new key to `authorized_keys` (atomic write + automatic reload)
+  - `delete_key`: Removes a key by SHA256 fingerprint (atomic write + automatic reload)
+- The mi6-client supports `--admin-command JSON` flag for single-shot admin requests.
+- Hem exposes admin commands:
+  - `hem list mi6-keys [--mi6 ADDRESS]` — list authorized keys
+  - `hem add mi6-key KEY_LINE [--mi6 ADDRESS]` — add a key
+  - `hem delete mi6-key FINGERPRINT [--mi6 ADDRESS]` — remove a key
+- Both `authorized_keys` and `admin_keys` are hot-reloaded on SIGHUP.
+
 # Moneypenny
 
 Moneypenny is a client deployed on each host, which handles agent sessions. It is built using Go.

@@ -50,6 +50,7 @@ type diffModel struct {
 	mode       diffMode
 	commitMsg  string
 	pushAfter  bool // if true, push after commit
+	amendMode  bool // if true, amend last commit instead of new commit
 	committing bool
 	commitErr  error
 
@@ -152,13 +153,23 @@ func (m diffModel) doCommit() tea.Cmd {
 	sessionID := m.sessionID
 	msg := m.commitMsg
 	push := m.pushAfter
+	amend := m.amendMode
 	return func() tea.Msg {
-		err := m.client.commitSession(sessionID, msg)
+		var err error
+		if amend {
+			err = m.client.amendSession(sessionID, msg)
+		} else {
+			err = m.client.commitSession(sessionID, msg)
+		}
 		if err != nil {
 			return diffCommitDoneMsg{err: err}
 		}
 		if push {
-			err = m.client.pushSession(sessionID)
+			if amend {
+				err = m.client.forcePushSession(sessionID)
+			} else {
+				err = m.client.pushSession(sessionID)
+			}
 			return diffCommitDoneMsg{pushed: true, err: err}
 		}
 		return diffCommitDoneMsg{}
@@ -376,6 +387,7 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 			if m.tab == diffTabDiff && m.diff != "" {
 				m.mode = diffModeCommitMsg
 				m.pushAfter = false
+				m.amendMode = false
 				m.commitMsg = ""
 				m.commitErr = nil
 			}
@@ -383,6 +395,23 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 			if m.tab == diffTabDiff && m.diff != "" {
 				m.mode = diffModeCommitMsg
 				m.pushAfter = true
+				m.amendMode = false
+				m.commitMsg = ""
+				m.commitErr = nil
+			}
+		case "a":
+			if m.tab == diffTabDiff {
+				m.mode = diffModeCommitMsg
+				m.pushAfter = false
+				m.amendMode = true
+				m.commitMsg = ""
+				m.commitErr = nil
+			}
+		case "A":
+			if m.tab == diffTabDiff {
+				m.mode = diffModeCommitMsg
+				m.pushAfter = true
+				m.amendMode = true
 				m.commitMsg = ""
 				m.commitErr = nil
 			}
@@ -534,11 +563,19 @@ func (m diffModel) viewDiff() string {
 	if m.mode == diffModeCommitMsg {
 		b.WriteString("\n")
 		action := "Commit message"
-		if m.pushAfter {
+		if m.amendMode && m.pushAfter {
+			action = "Amend+force-push message"
+		} else if m.amendMode {
+			action = "Amend message"
+		} else if m.pushAfter {
 			action = "Commit+push message"
 		}
 		if m.committing {
-			if m.pushAfter {
+			if m.amendMode && m.pushAfter {
+				b.WriteString("  Amending and force-pushing...")
+			} else if m.amendMode {
+				b.WriteString("  Amending...")
+			} else if m.pushAfter {
 				b.WriteString("  Committing and pushing...")
 			} else {
 				b.WriteString("  Committing...")

@@ -49,6 +49,8 @@ type dashboardModel struct {
 	client        *client
 	projectFilter string // project name to filter by (empty = all)
 	title         string // custom title (e.g. project name)
+	filtering     bool   // true when filter input is active
+	filterText    string // current filter text (case insensitive match on name)
 }
 
 type dashboardLoadedMsg struct {
@@ -232,15 +234,50 @@ func (m dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 		return m, m.loadDashboard()
 
 	case tea.KeyMsg:
+		// Filter input mode.
+		if m.filtering {
+			switch msg.String() {
+			case "esc":
+				m.filtering = false
+				m.filterText = ""
+				m.cursor = 0
+			case "enter":
+				m.filtering = false
+				m.cursor = 0
+			case "backspace":
+				if len(m.filterText) > 0 {
+					m.filterText = m.filterText[:len(m.filterText)-1]
+					m.cursor = 0
+				}
+			case "ctrl+u":
+				m.filterText = ""
+				m.cursor = 0
+			default:
+				if msg.Type == tea.KeyRunes {
+					m.filterText += string(msg.Runes)
+					m.cursor = 0
+				} else if msg.String() == " " {
+					m.filterText += " "
+					m.cursor = 0
+				}
+			}
+			return m, nil
+		}
+
 		switch msg.String() {
 		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
 			}
 		case "down", "j":
-			if m.cursor < len(m.entries)-1 {
+			filtered := m.filteredEntries()
+			if m.cursor < len(filtered)-1 {
 				m.cursor++
 			}
+		case "/":
+			m.filtering = true
+			m.filterText = ""
+			m.cursor = 0
 		case "a":
 			m.showAll = !m.showAll
 			m.loading = true
@@ -257,11 +294,27 @@ func (m dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 	return m, nil
 }
 
+// filteredEntries returns entries matching the current filter text.
+func (m dashboardModel) filteredEntries() []dashboardEntry {
+	if m.filterText == "" {
+		return m.entries
+	}
+	ft := strings.ToLower(m.filterText)
+	var result []dashboardEntry
+	for _, e := range m.entries {
+		if strings.Contains(strings.ToLower(e.Name), ft) {
+			result = append(result, e)
+		}
+	}
+	return result
+}
+
 func (m dashboardModel) selectedEntry() *dashboardEntry {
-	if len(m.entries) == 0 || m.cursor >= len(m.entries) {
+	filtered := m.filteredEntries()
+	if len(filtered) == 0 || m.cursor >= len(filtered) {
 		return nil
 	}
-	return &m.entries[m.cursor]
+	return &filtered[m.cursor]
 }
 
 var (
@@ -379,6 +432,8 @@ func (m dashboardModel) View() string {
 		return "\n  No sessions. Press [n] to create one, or [l] to view all sessions."
 	}
 
+	entries := m.filteredEntries()
+
 	var b strings.Builder
 
 	if m.title != "" {
@@ -386,9 +441,26 @@ func (m dashboardModel) View() string {
 		b.WriteString("\n")
 	}
 
+	// Filter bar.
+	if m.filtering {
+		b.WriteString("  " + labelStyle.Render("Filter:") + " " + fieldActiveStyle.Render(m.filterText+"█"))
+		b.WriteString("\n")
+	} else if m.filterText != "" {
+		b.WriteString("  " + lipgloss.NewStyle().Foreground(colorMuted).Render(fmt.Sprintf("filter: %q (%d matches, / to edit, esc to clear)", m.filterText, len(entries))))
+		b.WriteString("\n")
+	}
+
+	if len(entries) == 0 {
+		b.WriteString("\n  No matching sessions.")
+		return b.String()
+	}
+
 	// Available height for rows.
 	maxRows := m.height - 4
 	if m.title != "" {
+		maxRows -= 1
+	}
+	if m.filtering || m.filterText != "" {
 		maxRows -= 1
 	}
 	if maxRows < 1 {
@@ -401,15 +473,15 @@ func (m dashboardModel) View() string {
 		start = m.cursor - maxRows + 1
 	}
 	end := start + maxRows
-	if end > len(m.entries) {
-		end = len(m.entries)
+	if end > len(entries) {
+		end = len(entries)
 	}
 
 	// Show project column if not already filtered by project and any entry has a project.
 	showProject := m.projectFilter == ""
 	if showProject {
 		hasAnyProject := false
-		for _, e := range m.entries {
+		for _, e := range entries {
 			if e.Project != "" {
 				hasAnyProject = true
 				break
@@ -446,7 +518,7 @@ func (m dashboardModel) View() string {
 	lastCat := -1
 
 	for i := start; i < end; i++ {
-		e := m.entries[i]
+		e := entries[i]
 
 		// Category header.
 		if e.Category != lastCat {
@@ -499,9 +571,9 @@ func (m dashboardModel) View() string {
 		b.WriteString("\n")
 	}
 
-	if len(m.entries) > maxRows {
+	if len(entries) > maxRows {
 		b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render(
-			fmt.Sprintf("  showing %d-%d of %d", start+1, end, len(m.entries))))
+			fmt.Sprintf("  showing %d-%d of %d", start+1, end, len(entries))))
 		b.WriteString("\n")
 	}
 

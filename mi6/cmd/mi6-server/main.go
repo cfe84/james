@@ -34,6 +34,7 @@ func main() {
 	port := flag.String("port", "", "port to listen on (overrides PORT env, default 7007)")
 	listenAddr := flag.String("listen", "", "TCP address to listen on (overrides --port)")
 	authorizedKeysPath := flag.String("authorized-keys", "", "path to OpenSSH authorized_keys file (required)")
+	adminKeysPath := flag.String("admin-keys", "", "path to admin_keys file (defaults to admin_keys in same dir as authorized-keys)")
 	serverKeyPath := flag.String("server-key", "", "path to server SSH private key (auto-generated if missing)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
@@ -90,20 +91,55 @@ func main() {
 		return authorizedKeys
 	}
 
-	// SIGHUP handler: reload authorized keys.
+	reloadAuthorizedKeys := func() {
+		newKeys, err := auth.LoadAuthorizedKeys(*authorizedKeysPath)
+		if err != nil {
+			log.Printf("Failed to reload authorized keys: %v", err)
+			return
+		}
+		authKeysMu.Lock()
+		authorizedKeys = newKeys
+		authKeysMu.Unlock()
+		log.Printf("Reloaded %d authorized key(s) from %s", len(newKeys), *authorizedKeysPath)
+	}
+
+	// Load admin keys (optional).
+	if *adminKeysPath == "" {
+		*adminKeysPath = filepath.Join(filepath.Dir(*authorizedKeysPath), "admin_keys")
+	}
+	var (
+		adminKeysMu sync.RWMutex
+		adminKeys   []ssh.PublicKey
+	)
+	if akeys, err := auth.LoadAuthorizedKeys(*adminKeysPath); err == nil {
+		adminKeys = akeys
+		log.Printf("Loaded %d admin key(s) from %s", len(adminKeys), *adminKeysPath)
+	} else if !os.IsNotExist(err) {
+		log.Printf("Warning: failed to load admin keys from %s: %v", *adminKeysPath, err)
+	} else {
+		log.Printf("No admin_keys file at %s (admin commands disabled)", *adminKeysPath)
+	}
+
+	getAdminKeys := func() []ssh.PublicKey {
+		adminKeysMu.RLock()
+		defer adminKeysMu.RUnlock()
+		return adminKeys
+	}
+
+	// SIGHUP handler: reload authorized keys and admin keys.
 	sighup := make(chan os.Signal, 1)
 	signal.Notify(sighup, syscall.SIGHUP)
 	go func() {
 		for range sighup {
-			newKeys, err := auth.LoadAuthorizedKeys(*authorizedKeysPath)
-			if err != nil {
-				log.Printf("Failed to reload authorized keys: %v", err)
-				continue
+			reloadAuthorizedKeys()
+			if newAdminKeys, err := auth.LoadAuthorizedKeys(*adminKeysPath); err == nil {
+				adminKeysMu.Lock()
+				adminKeys = newAdminKeys
+				adminKeysMu.Unlock()
+				log.Printf("Reloaded %d admin key(s) from %s", len(newAdminKeys), *adminKeysPath)
+			} else if !os.IsNotExist(err) {
+				log.Printf("Failed to reload admin keys from %s: %v", *adminKeysPath, err)
 			}
-			authKeysMu.Lock()
-			authorizedKeys = newKeys
-			authKeysMu.Unlock()
-			log.Printf("Reloaded %d authorized key(s) from %s", len(newKeys), *authorizedKeysPath)
 		}
 	}()
 
@@ -166,7 +202,7 @@ func main() {
 		go func(conn net.Conn) {
 			defer wg.Done()
 			defer func() { <-connSem }()
-			handleConnection(ctx, conn, serverSigner, serverPubKey, getAuthorizedKeys, manager)
+			handleConnection(ctx, conn, serverSigner, serverPubKey, getAuthorizedKeys, getAdminKeys, *authorizedKeysPath, reloadAuthorizedKeys, manager)
 		}(conn)
 	}
 
@@ -180,6 +216,9 @@ func handleConnection(
 	serverSigner crypto.Signer,
 	serverPubKey ssh.PublicKey,
 	getAuthorizedKeys func() []ssh.PublicKey,
+	getAdminKeys func() []ssh.PublicKey,
+	authorizedKeysPath string,
+	reloadAuthorizedKeys func(),
 	manager *session.Manager,
 ) {
 	remoteAddr := conn.RemoteAddr().String()
@@ -220,6 +259,13 @@ func handleConnection(
 	}
 
 	sessionID := string(joinMsg.Payload)
+
+	// Intercept admin session.
+	if sessionID == "__admin__" {
+		handleAdminSession(secureConn, pubKey, getAdminKeys(), authorizedKeysPath, reloadAuthorizedKeys, remoteAddr)
+		return
+	}
+
 	if err := session.ValidateSessionID(sessionID); err != nil {
 		log.Printf("Invalid session ID from %s: %v", remoteAddr, err)
 		_ = secureConn.Send(&protocol.Message{Type: protocol.MsgAuthFail, Payload: []byte("invalid session ID")})

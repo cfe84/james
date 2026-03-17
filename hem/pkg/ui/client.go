@@ -861,6 +861,28 @@ func (c *client) commitSession(sessionID, message string) error {
 	return nil
 }
 
+func (c *client) amendSession(sessionID, message string) error {
+	resp, err := c.send("commit", "session", sessionID, "-m", message, "--amend")
+	if err != nil {
+		return err
+	}
+	if resp.Status == protocol.StatusError {
+		return fmt.Errorf("%s", resp.Message)
+	}
+	return nil
+}
+
+func (c *client) forcePushSession(sessionID string) error {
+	resp, err := c.send("push", "session", sessionID, "--force")
+	if err != nil {
+		return err
+	}
+	if resp.Status == protocol.StatusError {
+		return fmt.Errorf("%s", resp.Message)
+	}
+	return nil
+}
+
 func (c *client) pushSession(sessionID string) error {
 	resp, err := c.send("push", "session", sessionID)
 	if err != nil {

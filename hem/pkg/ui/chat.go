@@ -1164,6 +1164,9 @@ func wordWrap(s string, width int) string {
 	if width <= 0 {
 		return s
 	}
+	// Expand tabs to spaces (4-space tab stops) for consistent rendering.
+	s = expandTabs(s, 4)
+
 	var result strings.Builder
 	for _, line := range strings.Split(s, "\n") {
 		if lipgloss.Width(line) <= width {
@@ -1173,11 +1176,17 @@ func wordWrap(s string, width int) string {
 			result.WriteString(line)
 			continue
 		}
-		words := strings.Fields(line)
-		currentLine := ""
+		// Preserve leading whitespace.
+		trimmed := strings.TrimLeft(line, " ")
+		indent := line[:len(line)-len(trimmed)]
+
+		// Split the trimmed part into words, preserving inter-word spacing.
+		words := strings.Fields(trimmed)
+		currentLine := indent
 		for _, word := range words {
-			if currentLine == "" {
-				currentLine = word
+			if currentLine == indent {
+				// First word on this line (after indent).
+				currentLine += word
 			} else if lipgloss.Width(currentLine+" "+word) <= width {
 				currentLine += " " + word
 			} else {
@@ -1185,7 +1194,7 @@ func wordWrap(s string, width int) string {
 					result.WriteString("\n")
 				}
 				result.WriteString(currentLine)
-				currentLine = word
+				currentLine = indent + word
 			}
 		}
 		if currentLine != "" {
@@ -1193,6 +1202,32 @@ func wordWrap(s string, width int) string {
 				result.WriteString("\n")
 			}
 			result.WriteString(currentLine)
+		}
+	}
+	return result.String()
+}
+
+// expandTabs replaces tab characters with spaces aligned to tabSize-column boundaries.
+func expandTabs(s string, tabSize int) string {
+	if !strings.Contains(s, "\t") {
+		return s
+	}
+	var result strings.Builder
+	col := 0
+	for _, r := range s {
+		if r == '\t' {
+			spaces := tabSize - (col % tabSize)
+			if spaces == 0 {
+				spaces = tabSize
+			}
+			result.WriteString(strings.Repeat(" ", spaces))
+			col += spaces
+		} else if r == '\n' {
+			result.WriteRune(r)
+			col = 0
+		} else {
+			result.WriteRune(r)
+			col++
 		}
 	}
 	return result.String()

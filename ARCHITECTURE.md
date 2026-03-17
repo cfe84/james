@@ -11,7 +11,9 @@ mi6/
 ├── go.mod
 ├── cmd/
 │   ├── mi6-client/main.go
-│   └── mi6-server/main.go
+│   └── mi6-server/
+│       ├── main.go        # Server entry point, connection handling
+│       └── admin.go       # Admin session handler, key management
 ├── pkg/
 │   ├── protocol/     # Wire protocol messages and codec
 │   ├── auth/          # SSH key auth, challenge-response, ECDH key exchange
@@ -40,6 +42,8 @@ mi6/
 7. **Batching**: Client batches stdin with triple trigger: newline, buffer size (4KB), or idle timeout (100ms).
 
 8. **authorized_keys**: Standard OpenSSH format, reloaded on SIGHUP.
+
+9. **Admin key management**: A separate `admin_keys` file (same OpenSSH format, same directory) grants admin access. Admin clients join the reserved `__admin__` session, which the server intercepts before the normal session join flow. Admin commands (list/add/delete authorized keys) are JSON over MsgData. File writes use atomic temp-file-rename to prevent corruption. After modifications, authorized_keys are reloaded in-process (same as SIGHUP). The mi6-client `--admin-command` flag provides single-shot admin request/response mode. Hem wraps this as `list/add/delete mi6-key` commands.
 
 ### Auth Flow
 
