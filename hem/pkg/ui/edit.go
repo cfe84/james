@@ -11,16 +11,18 @@ import (
 
 // editModel is a form for editing an existing session's parameters.
 type editModel struct {
-	sessionID string
-	fields    []formField
-	original  []string // original values to detect changes
-	cursor    int
-	width     int
-	height    int
-	err       error
-	saving    bool
-	loading   bool
-	client    *client
+	sessionID  string
+	moneypenny string // set when session detail loads
+	agent      string // set when session detail loads
+	fields     []formField
+	original   []string // original values to detect changes
+	cursor     int
+	width      int
+	height     int
+	err        error
+	saving     bool
+	loading    bool
+	client     *client
 }
 
 type sessionUpdatedMsg struct {
@@ -36,6 +38,10 @@ type editProjectsLoadedMsg struct {
 	projects []projectInfo
 }
 
+type editModelsLoadedMsg struct {
+	models []string
+}
+
 func newEditModel(c *client, sessionID string) editModel {
 	return editModel{
 		client:    c,
@@ -44,7 +50,7 @@ func newEditModel(c *client, sessionID string) editModel {
 		fields: []formField{
 			{label: "Name", flag: "--name", value: ""},
 			{label: "Project", flag: "--project", value: "", options: []string{""}},
-			{label: "Model", flag: "--model", value: ""},
+			{label: "Model", flag: "--model", value: "", options: []string{""}},
 			{label: "System Prompt", flag: "--system-prompt", value: ""},
 			{label: "Path", flag: "--path", value: ""},
 			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
@@ -57,6 +63,18 @@ func (m editModel) loadProjects() tea.Cmd {
 	return func() tea.Msg {
 		projects, _ := m.client.listProjects("")
 		return editProjectsLoadedMsg{projects: projects}
+	}
+}
+
+func (m editModel) loadModels() tea.Cmd {
+	mp := m.moneypenny
+	agent := m.agent
+	return func() tea.Msg {
+		models, _ := m.client.listModels(mp, agent)
+		if models == nil {
+			models = []string{""}
+		}
+		return editModelsLoadedMsg{models: models}
 	}
 }
 
@@ -96,6 +114,8 @@ func (m editModel) Update(msg tea.Msg) (editModel, tea.Cmd) {
 			return m, nil
 		}
 		d := msg.detail
+		m.moneypenny = d.Moneypenny
+		m.agent = d.Agent
 		m.fields[0].value = d.Name
 		// Project field (index 1) is left empty — it's a local hem concept,
 		// not available from moneypenny's session detail.
@@ -120,6 +140,31 @@ func (m editModel) Update(msg tea.Msg) (editModel, tea.Cmd) {
 		for i, f := range m.fields {
 			m.original[i] = f.value
 		}
+		// Load available models for this agent type.
+		if m.moneypenny != "" {
+			return m, m.loadModels()
+		}
+
+	case editModelsLoadedMsg:
+		for i := range m.fields {
+			if m.fields[i].flag == "--model" {
+				m.fields[i].options = msg.models
+				// Ensure current value is in options; if not, keep it (custom value).
+				found := false
+				for _, opt := range msg.models {
+					if opt == m.fields[i].value {
+						found = true
+						break
+					}
+				}
+				if !found && m.fields[i].value != "" {
+					// Add the current value as an option so it's selectable.
+					m.fields[i].options = append(m.fields[i].options, m.fields[i].value)
+				}
+				break
+			}
+		}
+		return m, nil
 
 	case editProjectsLoadedMsg:
 		options := []string{""}

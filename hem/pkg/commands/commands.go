@@ -406,6 +406,9 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 	if verb == "list-directory" {
 		return e.ListDirectory(noun, args)
 	}
+	if verb == "list-models" {
+		return e.ListModels(args)
+	}
 	if verb == "transfer-file" {
 		return e.TransferFile(noun, args)
 	}
@@ -3091,6 +3094,64 @@ func (e *Executor) ListDirectory(noun string, args []string) *protocol.Response 
 	}
 
 	var result ListDirectoryResult
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("parsing result: %v", err))
+	}
+
+	return protocol.OKResponse(result)
+}
+
+// ListModelsResult is returned by ListModels.
+type ListModelsResult struct {
+	Agent  string          `json:"agent"`
+	Models []ModelOption   `json:"models"`
+}
+
+type ModelOption struct {
+	Name  string `json:"name"`
+	Value string `json:"value,omitempty"`
+}
+
+func (e *Executor) ListModels(args []string) *protocol.Response {
+	var mpName, agentName string
+
+	_, err := parseFlagsFromArgs("list-models", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&mpName, "m", "", "moneypenny name")
+		fs.StringVar(&mpName, "moneypenny", "", "moneypenny name")
+		fs.StringVar(&agentName, "agent", "", "agent type (claude, copilot)")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if agentName == "" {
+		agentName = "claude"
+	}
+
+	if mpName == "" {
+		mpName, _ = e.store.GetDefault("moneypenny")
+	}
+	if mpName == "" {
+		return protocol.ErrResponse("moneypenny is required (use -m or set a default)")
+	}
+
+	mp, err := e.store.GetMoneypenny(mpName)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if mp == nil {
+		return protocol.ErrResponse(fmt.Sprintf("moneypenny %q not found", mpName))
+	}
+
+	ctx := context.Background()
+	resp, err := e.sendCommand(ctx, mp, "list_models", map[string]interface{}{
+		"agent": agentName,
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	var result ListModelsResult
 	if err := json.Unmarshal(resp.Data, &result); err != nil {
 		return protocol.ErrResponse(fmt.Sprintf("parsing result: %v", err))
 	}

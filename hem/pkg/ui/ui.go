@@ -503,7 +503,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.diff, cmd = m.diff.Update(msg)
 		return m, cmd
 
-	case sessionDetailLoadedMsg, editProjectsLoadedMsg:
+	case sessionDetailLoadedMsg, editProjectsLoadedMsg, editModelsLoadedMsg:
 		var cmd tea.Cmd
 		m.edit, cmd = m.edit.Update(msg)
 		return m, cmd

@@ -209,6 +209,23 @@ type ExecuteCommandResponse struct {
 	ExitCode int    `json:"exit_code"`
 }
 
+// ListModelsData is the data payload for list_models.
+type ListModelsData struct {
+	Agent string `json:"agent"`
+}
+
+// ModelInfo describes an available model.
+type ModelInfo struct {
+	Name  string `json:"name"`            // display name or alias (e.g. "sonnet")
+	Value string `json:"value,omitempty"` // full model ID if different from name
+}
+
+// ListModelsResponse is returned by list_models.
+type ListModelsResponse struct {
+	Agent  string      `json:"agent"`
+	Models []ModelInfo `json:"models"`
+}
+
 // ActivityEvent represents a single agent activity step (thinking, tool use, etc.).
 type ActivityEvent struct {
 	Type      string `json:"type"`      // "thinking", "tool_use", "text"

@@ -60,6 +60,10 @@ type wizardModel struct {
 	// Selections
 	selectedMP   string
 	selectedPath string
+
+	// Model cache: agent name → []string options
+	modelCache map[string][]string
+	lastAgent  string // tracks agent value to detect changes
 }
 
 type wizardMPLoadedMsg struct {
@@ -76,6 +80,11 @@ type wizardDirLoadedMsg struct {
 	err     error
 }
 
+type wizardModelsLoadedMsg struct {
+	models []string // option names including "" for default
+	agent  string
+}
+
 func newWizardModel(c *client) wizardModel {
 	return wizardModel{
 		step:        wizardStepMoneypenny,
@@ -86,8 +95,8 @@ func newWizardModel(c *client) wizardModel {
 			{label: "Prompt", flag: "", value: ""},
 			{label: "Name", flag: "--name", value: ""},
 			{label: "Project", flag: "--project", value: ""},
-			{label: "Agent", flag: "--agent", value: ""},
-			{label: "Model", flag: "--model", value: ""},
+			{label: "Agent", flag: "--agent", value: "", options: []string{"", "claude", "copilot"}},
+			{label: "Model", flag: "--model", value: "", options: []string{""}},
 			{label: "System Prompt", flag: "--system-prompt", value: ""},
 			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
 			{label: "Gadgets (James tooling)", flag: "--gadgets", isBool: true, value: "false"},
@@ -104,7 +113,7 @@ func newProjectWizardModel(c *client) wizardModel {
 		forProject:  true,
 		fields: []formField{
 			{label: "Name", flag: "--name", value: ""},
-			{label: "Agent", flag: "--agent", value: ""},
+			{label: "Agent", flag: "--agent", value: "", options: []string{"", "claude", "copilot"}},
 			{label: "System Prompt", flag: "--system-prompt", value: ""},
 		},
 	}
@@ -160,6 +169,17 @@ func (m wizardModel) loadDirectory() tea.Cmd {
 	return func() tea.Msg {
 		entries, err := m.client.listDirectory(mp, path)
 		return wizardDirLoadedMsg{entries: entries, err: err}
+	}
+}
+
+func (m wizardModel) loadModels(agent string) tea.Cmd {
+	mp := m.selectedMP
+	return func() tea.Msg {
+		models, _ := m.client.listModels(mp, agent)
+		if models == nil {
+			models = []string{""}
+		}
+		return wizardModelsLoadedMsg{models: models, agent: agent}
 	}
 }
 
@@ -275,7 +295,7 @@ func (m wizardModel) Update(msg tea.Msg) (wizardModel, tea.Cmd) {
 			}
 		}
 		m.step = wizardStepForm
-		return m, nil
+		return m, m.loadModelsIfNeeded()
 
 	case wizardDirLoadedMsg:
 		m.pathLoading = false
@@ -293,6 +313,37 @@ func (m wizardModel) Update(msg tea.Msg) (wizardModel, tea.Cmd) {
 		})
 		m.dirEntries = entries
 		m.pathCursor = 0
+
+	case wizardModelsLoadedMsg:
+		if m.modelCache == nil {
+			m.modelCache = make(map[string][]string)
+		}
+		m.modelCache[msg.agent] = msg.models
+		// Update the Model field options if agent still matches.
+		for i := range m.fields {
+			if m.fields[i].flag == "--model" {
+				agentVal := m.currentAgent()
+				if agentVal == "" {
+					agentVal = "claude"
+				}
+				if agentVal == msg.agent {
+					m.fields[i].options = msg.models
+					// Reset model value if it's not in the new options.
+					found := false
+					for _, opt := range msg.models {
+						if opt == m.fields[i].value {
+							found = true
+							break
+						}
+					}
+					if !found {
+						m.fields[i].value = ""
+					}
+				}
+				break
+			}
+		}
+		return m, nil
 
 	case tea.KeyMsg:
 		m.err = nil
@@ -371,7 +422,7 @@ func (m wizardModel) updatePathStep(msg tea.KeyMsg) (wizardModel, tea.Cmd) {
 		// Confirm current path.
 		m.selectedPath = m.currentPath
 		m.step = wizardStepForm
-		return m, nil
+		return m, m.loadModelsIfNeeded()
 	case "backspace":
 		// Go up one level.
 		parent := filepath.Dir(m.currentPath)
@@ -469,7 +520,50 @@ func (m wizardModel) updateFormStep(msg tea.KeyMsg) (wizardModel, tea.Cmd) {
 			}
 		}
 	}
+
+	// Detect agent change and reload models.
+	agent := m.currentAgent()
+	if agent == "" {
+		agent = "claude"
+	}
+	if agent != m.lastAgent {
+		return m, m.loadModelsIfNeeded()
+	}
 	return m, nil
+}
+
+// currentAgent returns the current value of the Agent field.
+func (m wizardModel) currentAgent() string {
+	for _, f := range m.fields {
+		if f.flag == "--agent" {
+			return f.value
+		}
+	}
+	return ""
+}
+
+// loadModelsIfNeeded returns a tea.Cmd to load models for the current agent,
+// using the cache if available.
+func (m *wizardModel) loadModelsIfNeeded() tea.Cmd {
+	agent := m.currentAgent()
+	if agent == "" {
+		agent = "claude"
+	}
+	m.lastAgent = agent
+
+	if m.modelCache != nil {
+		if cached, ok := m.modelCache[agent]; ok {
+			// Already cached — set models directly.
+			for i := range m.fields {
+				if m.fields[i].flag == "--model" {
+					m.fields[i].options = cached
+					break
+				}
+			}
+			return nil
+		}
+	}
+	return m.loadModels(agent)
 }
 
 // wrapText breaks text into lines of at most maxWidth characters.

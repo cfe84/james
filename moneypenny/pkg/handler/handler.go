@@ -100,6 +100,8 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.cancelSchedule(ctx, cmd)
 	case "get_session_activity":
 		return h.getSessionActivity(ctx, cmd)
+	case "list_models":
+		return h.listModels(ctx, cmd)
 	case "get_version":
 		return h.getVersion(cmd)
 	default:
@@ -538,6 +540,72 @@ func (h *Handler) executeCommand(_ context.Context, cmd *envelope.Command) *enve
 
 func (h *Handler) getVersion(cmd *envelope.Command) *envelope.Response {
 	return envelope.SuccessResponse(cmd.RequestID, map[string]string{"version": h.version})
+}
+
+func (h *Handler) listModels(_ context.Context, cmd *envelope.Command) *envelope.Response {
+	var data envelope.ListModelsData
+	if err := json.Unmarshal(cmd.Data, &data); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
+	}
+
+	agentName := data.Agent
+	if agentName == "" {
+		agentName = "claude"
+	}
+
+	var models []envelope.ModelInfo
+	switch agentName {
+	case "claude":
+		models = claudeModels()
+	case "copilot":
+		models = copilotModels()
+	default:
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("unknown agent: %s", agentName))
+	}
+
+	return envelope.SuccessResponse(cmd.RequestID, envelope.ListModelsResponse{
+		Agent:  agentName,
+		Models: models,
+	})
+}
+
+// claudeModels returns known Claude model aliases.
+// Claude CLI doesn't have a model listing command, so we use known aliases.
+func claudeModels() []envelope.ModelInfo {
+	return []envelope.ModelInfo{
+		{Name: "sonnet", Value: "sonnet"},
+		{Name: "opus", Value: "opus"},
+		{Name: "haiku", Value: "haiku"},
+	}
+}
+
+// copilotModels parses available models from `copilot --help` output.
+func copilotModels() []envelope.ModelInfo {
+	path, err := exec.LookPath("copilot")
+	if err != nil {
+		return nil
+	}
+	out, err := exec.Command(path, "--help").CombinedOutput()
+	if err != nil {
+		return nil
+	}
+
+	// Parse --model choices from help output: --model {model1,model2,...}
+	re := regexp.MustCompile(`--model\s+\{([^}]+)\}`)
+	matches := re.FindSubmatch(out)
+	if len(matches) < 2 {
+		return nil
+	}
+
+	parts := strings.Split(string(matches[1]), ",")
+	models := make([]envelope.ModelInfo, 0, len(parts))
+	for _, p := range parts {
+		name := strings.TrimSpace(p)
+		if name != "" {
+			models = append(models, envelope.ModelInfo{Name: name})
+		}
+	}
+	return models
 }
 
 func (h *Handler) stopSession(_ context.Context, cmd *envelope.Command) *envelope.Response {

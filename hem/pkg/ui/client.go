@@ -529,6 +529,42 @@ func (c *client) listDirectory(moneypenny, path string) ([]dirEntry, error) {
 	return result.Entries, nil
 }
 
+func (c *client) listModels(moneypenny, agent string) ([]string, error) {
+	args := []string{}
+	if moneypenny != "" {
+		args = append(args, "-m", moneypenny)
+	}
+	if agent != "" {
+		args = append(args, "--agent", agent)
+	}
+	resp, err := c.send("list-models", "", args...)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Status == protocol.StatusError {
+		return nil, fmt.Errorf("%s", resp.Message)
+	}
+	var result struct {
+		Models []struct {
+			Name  string `json:"name"`
+			Value string `json:"value"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return nil, fmt.Errorf("parsing models: %w", err)
+	}
+	names := make([]string, 0, len(result.Models)+1)
+	names = append(names, "") // empty = default/no override
+	for _, m := range result.Models {
+		v := m.Value
+		if v == "" {
+			v = m.Name
+		}
+		names = append(names, v)
+	}
+	return names, nil
+}
+
 func (c *client) transferFile(moneypenny, path string) (string, error) {
 	args := []string{}
 	if moneypenny != "" {

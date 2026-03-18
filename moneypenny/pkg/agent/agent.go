@@ -291,6 +291,9 @@ func buildCopilotArgs(params RunParams) []string {
 		"--resume", params.SessionID,
 		"-s",
 	}
+	if params.Model != "" {
+		args = append(args, "--model", params.Model)
+	}
 	if params.Yolo {
 		args = append(args, "--yolo")
 	}

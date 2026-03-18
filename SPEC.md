@@ -228,6 +228,8 @@ Method: **list_schedules**: lists pending schedules for a session. Data: `{ "ses
 
 Method: **cancel_schedule**: cancels a pending schedule. Data: `{ "session_id": "id", "schedule_id": "id" }`. Returns success if the schedule existed and was removed. Returns `INVALID_REQUEST` if the schedule_id is not found.
 
+Method: **list_models**: returns available models for a given agent type. Data: `{ "agent": "claude" }`. Returns `{ "agent": "claude", "models": [{ "name": "sonnet", "value": "sonnet" }, ...] }`. For Claude, returns hardcoded known aliases (sonnet, opus, haiku). For Copilot, parses `copilot --help` to extract model choices. The `value` field is the CLI parameter to pass to `--model`; if empty, `name` is used.
+
 Method: **list_directory**: lists entries in a directory. Data: `{ "path": "/some/path" }`. Returns `{ "path": "/some/path", "entries": [{ "name": "foo", "is_dir": true }, ...] }`. Hidden files (starting with `.`) are excluded. Defaults to `/` if path is empty.
 
 Method: **get_version**: returns the version of moneypenny
@@ -659,8 +661,8 @@ The dashboard auto-refreshes every 5 seconds by polling moneypennies. When a ses
   - `Ctrl+U` — clear input
   - `PgUp/PgDn` — scroll output
   - `esc` — back
-- **Create wizard** (3-step): Step 1 — select moneypenny from a list (arrow keys, Enter). Step 2 — browse remote filesystem to pick a working directory via `list_directory` (Enter to descend, Backspace to go up, Tab to confirm). Step 3 — fill in prompt, name, project, agent, system prompt, yolo (Tab between fields, Enter to submit). Esc navigates back through steps. When created from project detail, runs async and returns to project view.
-- **Edit form**: modify session parameters (name, project, system prompt, path, yolo). Shows change indicators (*) for modified fields. Enter to save, Esc to cancel.
+- **Create wizard** (3-step): Step 1 — select moneypenny from a list (arrow keys, Enter). Step 2 — browse remote filesystem to pick a working directory via `list_directory` (Enter to descend, Backspace to go up, Tab to confirm). Step 3 — fill in prompt, name, project, agent, model, system prompt, yolo (Tab between fields, Enter to submit). Agent and Model fields are cycling selectors (Space/Left/Right). Model options are loaded from the selected moneypenny via `list_models` and cached per agent type. Esc navigates back through steps. When created from project detail, runs async and returns to project view.
+- **Edit form**: modify session parameters (name, project, model, system prompt, path, yolo). Model is a cycling selector populated from `list_models` when the session detail loads. Shows change indicators (*) for modified fields. Enter to save, Esc to cancel.
 - **Create project form**: fill in name, moneypenny, agent, path, system prompt.
 - **Edit project form**: modify project parameters. Enter to save, Esc to cancel.
 - **Import form**: import session by JSONL file path or session ID. Optional name, project, path.
