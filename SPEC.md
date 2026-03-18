@@ -609,7 +609,7 @@ The dashboard auto-refreshes every 5 seconds by polling moneypennies. When a ses
 
 `hem ui` — launches an interactive terminal UI (TUI) built with bubbletea + lipgloss.
 
-- **Dashboard** (default view): attention-based grouped view of sessions (READY, WORKING, IDLE, COMPLETED). Shows project name alongside sessions when any have a project assigned. Moneypenny queries run in parallel with a 5-second timeout.
+- **Dashboard** (default view): attention-based grouped view of sessions (READY, WORKING, IDLE, COMPLETED). Shows project name alongside sessions when any have a project assigned. Uses a shared moneypenny session cache for instant rendering — moneypenny data refreshes in the background (10s timeout) so the dashboard never blocks.
   - `Enter` — open chat for selected session
   - `a` — toggle show/hide completed sessions
   - `c` — mark session as completed

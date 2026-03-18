@@ -207,7 +207,7 @@ hem/
 
 16. **Prompt queuing**: When `continue_session` is sent to a working session, hem automatically falls back to `queue_prompt`. Moneypenny stores queued prompts and drains them after agent completion. Each queued prompt is stored as its own conversation turn, but they're joined for the agent. TUI shows queued messages optimistically with ⏳ and `[Queued]` labels.
 
-17. **Dashboard parallelism**: Dashboard queries moneypennies in parallel (one `list_sessions` per moneypenny, not per session) with a 5-second timeout. If a moneypenny is offline, its sessions show as "offline" without blocking other results.
+17. **Dashboard async cache**: Dashboard and ListSessions use a shared moneypenny session cache on the Executor. On each call, cached data is returned instantly while a background goroutine refreshes the cache by querying all moneypennies in parallel (10s timeout). The first-ever call blocks synchronously to populate the cache. Mutations (create, continue, stop, delete) invalidate the relevant moneypenny's cache entry and trigger an immediate background refresh. This eliminates dashboard hangs caused by slow MI6 transport.
 
 18. **Reviewed/Ready state**: Hem tracks a `reviewed` flag per session. Sessions become unreviewed on `continue_session`, and reviewed when the user views conversation history AND the last turn is from the assistant. This ensures chat polling doesn't prematurely mark sessions as reviewed while agents are still working.
 

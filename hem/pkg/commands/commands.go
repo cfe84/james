@@ -61,6 +61,15 @@ IMPORTANT: NEVER start hem server if you are not directly instructed to do it.`,
 		hemCmd, hemCmd, hemCmd)
 }
 
+// mpSessionInfo holds cached session data from a moneypenny's list_sessions response.
+type mpSessionInfo struct {
+	Status       string `json:"status"`
+	Name         string `json:"name"`
+	SessionID    string `json:"session_id"`
+	CreatedAt    string `json:"created_at"`
+	LastAccessed string `json:"last_accessed"`
+}
+
 // Executor runs commands using the store and transport layer.
 type Executor struct {
 	store             *store.Store
@@ -74,6 +83,12 @@ type Executor struct {
 	watchersMu        sync.Mutex
 	mpCooldowns       map[string]time.Time // mpName → earliest time to retry after failure
 	mpCooldownsMu     sync.Mutex
+	// mpCache holds per-moneypenny session data from the most recent list_sessions call.
+	// Dashboard/ListSessions return instantly from this cache while a background refresh runs.
+	mpCache       map[string]map[string]mpSessionInfo // mpName → sessionID → info
+	mpCacheTime   time.Time                           // when the cache was last fully refreshed
+	mpCacheMu     sync.RWMutex
+	mpRefreshing  bool // true while a background refresh is in progress
 }
 
 // mpCooldownDuration is how long to skip querying a moneypenny after it fails.
@@ -87,7 +102,115 @@ func New(s *store.Store, mi6KeyPath string) *Executor {
 		clients:           make(map[string]*transport.Client),
 		watchers:          make(map[string][]string),
 		mpCooldowns:       make(map[string]time.Time),
+		mpCache:           make(map[string]map[string]mpSessionInfo),
 	}
+}
+
+// getMPData returns a snapshot of cached moneypenny session data.
+func (e *Executor) getMPData() map[string]map[string]mpSessionInfo {
+	e.mpCacheMu.RLock()
+	defer e.mpCacheMu.RUnlock()
+	snapshot := make(map[string]map[string]mpSessionInfo, len(e.mpCache))
+	for mpName, sessions := range e.mpCache {
+		m := make(map[string]mpSessionInfo, len(sessions))
+		for k, v := range sessions {
+			m[k] = v
+		}
+		snapshot[mpName] = m
+	}
+	return snapshot
+}
+
+// refreshMPSessions queries the given moneypennies for their session lists and
+// updates the cache. Meant to be called in a goroutine.
+func (e *Executor) refreshMPSessions(mpNames []string) {
+	e.mpCacheMu.Lock()
+	e.mpRefreshing = true
+	e.mpCacheMu.Unlock()
+	defer func() {
+		e.mpCacheMu.Lock()
+		e.mpRefreshing = false
+		e.mpCacheMu.Unlock()
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	type result struct {
+		mpName   string
+		sessions map[string]mpSessionInfo
+	}
+
+	ch := make(chan result, len(mpNames))
+	var wg sync.WaitGroup
+
+	for _, mpName := range mpNames {
+		if e.isMPOnCooldown(mpName) {
+			continue
+		}
+		mp, err := e.store.GetMoneypenny(mpName)
+		if err != nil || mp == nil {
+			continue
+		}
+		wg.Add(1)
+		go func(mp *store.Moneypenny) {
+			defer wg.Done()
+			resp, err := e.sendCommand(ctx, mp, "list_sessions", nil)
+			if err != nil {
+				e.setMPCooldown(mp.Name)
+				return
+			}
+			e.clearMPCooldown(mp.Name)
+			var sessions []mpSessionInfo
+			if err := json.Unmarshal(resp.Data, &sessions); err != nil {
+				return
+			}
+			m := make(map[string]mpSessionInfo, len(sessions))
+			for _, s := range sessions {
+				m[s.SessionID] = s
+			}
+			ch <- result{mpName: mp.Name, sessions: m}
+		}(mp)
+	}
+
+	go func() {
+		wg.Wait()
+		close(ch)
+	}()
+
+	// Collect all results first (blocks until all goroutines finish).
+	var results []result
+	for res := range ch {
+		results = append(results, res)
+	}
+
+	// Merge into cache under a brief write lock.
+	e.mpCacheMu.Lock()
+	for _, res := range results {
+		e.mpCache[res.mpName] = res.sessions
+	}
+	e.mpCacheTime = time.Now()
+	e.mpCacheMu.Unlock()
+}
+
+// ensureMPRefresh kicks off a background cache refresh if one isn't already running.
+func (e *Executor) ensureMPRefresh(mpNames []string) {
+	e.mpCacheMu.Lock()
+	if e.mpRefreshing {
+		e.mpCacheMu.Unlock()
+		return
+	}
+	e.mpRefreshing = true
+	e.mpCacheMu.Unlock()
+	go e.refreshMPSessions(mpNames)
+}
+
+// invalidateMPCache removes cached data for a moneypenny and triggers a refresh.
+func (e *Executor) invalidateMPCache(mpName string) {
+	e.mpCacheMu.Lock()
+	delete(e.mpCache, mpName)
+	e.mpCacheMu.Unlock()
+	e.ensureMPRefresh([]string{mpName})
 }
 
 // isMPOnCooldown returns true if a moneypenny recently failed and should be skipped.
@@ -1265,6 +1388,7 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
+	e.invalidateMPCache(mp.Name)
 
 	if async {
 		return protocol.OKResponse(SessionCreatedResult{
@@ -1278,6 +1402,7 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
+	e.invalidateMPCache(mp.Name)
 
 	// Sync mode: the caller will see the response, mark as reviewed.
 	_ = e.store.SetSessionReviewed(sessionID, true)
@@ -1348,6 +1473,7 @@ func (e *Executor) ContinueSession(args []string) *protocol.Response {
 		}
 		return protocol.ErrResponse(err.Error())
 	}
+	e.invalidateMPCache(mp.Name)
 
 	// Store callback prompt if provided (for sub-sessions with async).
 	if callbackPrompt != "" {
@@ -1366,6 +1492,7 @@ func (e *Executor) ContinueSession(args []string) *protocol.Response {
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
+	e.invalidateMPCache(mp.Name)
 
 	// Sync mode: the caller will see the response, mark as reviewed.
 	_ = e.store.SetSessionReviewed(sessionID, true)
@@ -1411,6 +1538,7 @@ func (e *Executor) StopSession(args []string) *protocol.Response {
 	if _, err := e.sendCommand(ctx, mp, "stop_session", cmdData); err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
+	e.invalidateMPCache(mp.Name)
 
 	return protocol.OKResponse(TextResult{
 		Message: fmt.Sprintf("Session %s stopped.", sessionID),
@@ -1450,6 +1578,7 @@ func (e *Executor) DeleteSession(args []string) *protocol.Response {
 		// Still clean up local tracking.
 		warnings = append(warnings, fmt.Sprintf("remote delete failed: %v", err))
 	}
+	e.invalidateMPCache(mp.Name)
 
 	if err := e.store.DeleteTrackedSession(sessionID); err != nil {
 		return protocol.ErrResponse(fmt.Sprintf("removing local session tracking: %v", err))
@@ -1912,63 +2041,49 @@ func (e *Executor) ListSessions(args []string) *protocol.Response {
 		Headers: []string{"SessionID", "Name", "Status", "Moneypenny", "Created", "Last Active"},
 	}
 
-	// Query all moneypennies concurrently to avoid one slow MP blocking the rest.
-	type mpResult struct {
-		mpName   string
-		sessions []struct {
-			SessionID    string `json:"session_id"`
-			Name         string `json:"name"`
-			Status       string `json:"status"`
-			CreatedAt    string `json:"created_at"`
-			LastAccessed string `json:"last_accessed"`
-		}
-		warning string
+	// Use cached moneypenny data for instant response; refresh in background.
+	mpNames := make([]string, 0, len(mps))
+	for _, mp := range mps {
+		mpNames = append(mpNames, mp.Name)
 	}
 
-	ch := make(chan mpResult, len(mps))
-	for _, mp := range mps {
-		mp := mp
-		if e.isMPOnCooldown(mp.Name) {
-			ch <- mpResult{mpName: mp.Name, warning: fmt.Sprintf("moneypenny %q is unreachable (cooldown)", mp.Name)}
-			continue
+	mpData := e.getMPData()
+
+	// First-ever call: no cache yet — do a synchronous fetch.
+	hasData := false
+	for _, name := range mpNames {
+		if _, ok := mpData[name]; ok {
+			hasData = true
+			break
 		}
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			resp, err := e.sendCommand(ctx, mp, "list_sessions", nil)
-			if err != nil {
-				e.setMPCooldown(mp.Name)
-				ch <- mpResult{mpName: mp.Name, warning: fmt.Sprintf("moneypenny %q is offline", mp.Name)}
-				return
-			}
-			e.clearMPCooldown(mp.Name)
-			var r mpResult
-			r.mpName = mp.Name
-			json.Unmarshal(resp.Data, &r.sessions)
-			ch <- r
-		}()
+	}
+	if !hasData && len(mpNames) > 0 {
+		e.refreshMPSessions(mpNames)
+		mpData = e.getMPData()
+	} else {
+		e.ensureMPRefresh(mpNames)
 	}
 
 	// Collect all MP session data for sub-status lookups.
 	type sessionInfo struct {
-		SessionID string
-		Name      string
-		Status    string
-		MPName    string
-		Created   string
+		SessionID  string
+		Name       string
+		Status     string
+		MPName     string
+		Created    string
 		LastActive string
 	}
 	mpSessionStatus := make(map[string]string) // sessionID → status from moneypenny
 
 	var allSessions []sessionInfo
 	var warnings []string
-	for range mps {
-		r := <-ch
-		if r.warning != "" {
-			warnings = append(warnings, r.warning)
+	for _, mp := range mps {
+		sessions, ok := mpData[mp.Name]
+		if !ok {
+			warnings = append(warnings, fmt.Sprintf("moneypenny %q: no cached data", mp.Name))
 			continue
 		}
-		for _, s := range r.sessions {
+		for _, s := range sessions {
 			mpSessionStatus[s.SessionID] = s.Status
 			// Hide sub-sessions from main listing, unless showing all and the sub is completed.
 			if subSessionSet[s.SessionID] {
@@ -2010,7 +2125,7 @@ func (e *Executor) ListSessions(args []string) *protocol.Response {
 				SessionID:  s.SessionID,
 				Name:       s.Name,
 				Status:     s.Status,
-				MPName:     r.mpName,
+				MPName:     mp.Name,
 				Created:    created,
 				LastActive: lastActive,
 			})
@@ -2571,6 +2686,7 @@ func (e *Executor) UseTemplate(args []string) *protocol.Response {
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
+	e.invalidateMPCache(mp.Name)
 
 	if async {
 		return protocol.OKResponse(SessionCreatedResult{
@@ -2583,6 +2699,7 @@ func (e *Executor) UseTemplate(args []string) *protocol.Response {
 	if pollErr != nil {
 		return protocol.ErrResponse(pollErr.Error())
 	}
+	e.invalidateMPCache(mp.Name)
 	_ = e.store.SetSessionReviewed(sessionID, true)
 
 	return protocol.OKResponse(SessionCreatedResult{
@@ -3389,75 +3506,27 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 		sessionsByMP[sess.MoneypennyName] = append(sessionsByMP[sess.MoneypennyName], sess)
 	}
 
-	// Query each moneypenny in parallel with list_sessions (one call per moneypenny).
-	type mpSessionInfo struct {
-		Status       string `json:"status"`
-		Name         string `json:"name"`
-		SessionID    string `json:"session_id"`
-		CreatedAt    string `json:"created_at"`
-		LastAccessed string `json:"last_accessed"`
-	}
-
-	type mpResult struct {
-		mpName   string
-		sessions map[string]mpSessionInfo // keyed by session_id
-		err      error
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	resultCh := make(chan mpResult, len(sessionsByMP))
-	var wg sync.WaitGroup
-
+	// Use cached moneypenny data for instant response; refresh in background.
+	mpNames := make([]string, 0, len(sessionsByMP))
 	for mpName := range sessionsByMP {
-		// Skip moneypennies on cooldown (recently failed) to avoid blocking the dashboard.
-		if e.isMPOnCooldown(mpName) {
-			resultCh <- mpResult{mpName: mpName, err: fmt.Errorf("moneypenny is unreachable (cooldown)")}
-			continue
-		}
-		mp, err := e.store.GetMoneypenny(mpName)
-		if err != nil || mp == nil {
-			resultCh <- mpResult{mpName: mpName, err: fmt.Errorf("moneypenny not found")}
-			continue
-		}
-		wg.Add(1)
-		go func(mp *store.Moneypenny) {
-			defer wg.Done()
-			resp, err := e.sendCommand(ctx, mp, "list_sessions", nil)
-			if err != nil {
-				e.setMPCooldown(mp.Name)
-				resultCh <- mpResult{mpName: mp.Name, err: err}
-				return
-			}
-			e.clearMPCooldown(mp.Name)
-			var sessions []mpSessionInfo
-			if err := json.Unmarshal(resp.Data, &sessions); err != nil {
-				resultCh <- mpResult{mpName: mp.Name, err: err}
-				return
-			}
-			m := make(map[string]mpSessionInfo, len(sessions))
-			for _, s := range sessions {
-				m[s.SessionID] = s
-			}
-			resultCh <- mpResult{mpName: mp.Name, sessions: m}
-		}(mp)
+		mpNames = append(mpNames, mpName)
 	}
 
-	// Close channel after all goroutines complete.
-	go func() {
-		wg.Wait()
-		close(resultCh)
-	}()
+	mpData := e.getMPData()
 
-	// Collect results into a map by moneypenny name.
-	mpData := make(map[string]map[string]mpSessionInfo)
-	for res := range resultCh {
-		if res.err != nil {
-			log.Printf("dashboard: moneypenny %q query failed: %v", res.mpName, res.err)
-		} else {
-			mpData[res.mpName] = res.sessions
+	// First-ever call: no cache yet — do a synchronous fetch so the first dashboard isn't empty.
+	hasData := false
+	for _, name := range mpNames {
+		if _, ok := mpData[name]; ok {
+			hasData = true
+			break
 		}
+	}
+	if !hasData && len(mpNames) > 0 {
+		e.refreshMPSessions(mpNames)
+		mpData = e.getMPData()
+	} else {
+		e.ensureMPRefresh(mpNames)
 	}
 
 	// Build subagent index: parent session ID → list of child sessions.
@@ -4347,6 +4416,7 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
+	e.invalidateMPCache(mp.Name)
 
 	if async {
 		return protocol.OKResponse(SessionCreatedResult{
