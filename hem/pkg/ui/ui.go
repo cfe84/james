@@ -289,7 +289,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.moneypennies.height = m.height - 3
 		return m, m.moneypennies.loadMoneypennies()
 
-	case wizardMPLoadedMsg, wizardDirLoadedMsg, wizardProjectLoadedMsg, wizardProjectsLoadedMsg:
+	case wizardMPLoadedMsg, wizardDirLoadedMsg, wizardProjectLoadedMsg, wizardProjectsLoadedMsg, wizardModelsLoadedMsg:
 		var cmd tea.Cmd
 		m.wizard, cmd = m.wizard.Update(msg)
 		return m, cmd

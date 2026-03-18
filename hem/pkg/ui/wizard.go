@@ -490,6 +490,14 @@ func (m wizardModel) updateFormStep(msg tea.KeyMsg) (wizardModel, tea.Cmd) {
 			_, size := utf8.DecodeRuneInString(field.value[field.cursorPos:])
 			field.cursorPos += size
 		}
+	case "alt+left", "ctrl+b":
+		if !field.isBool && field.options == nil {
+			field.cursorPos = wordLeft(field.value, field.cursorPos)
+		}
+	case "alt+right", "ctrl+f":
+		if !field.isBool && field.options == nil {
+			field.cursorPos = wordRight(field.value, field.cursorPos)
+		}
 	case "home":
 		if !field.isBool && field.options == nil {
 			field.cursorPos = 0

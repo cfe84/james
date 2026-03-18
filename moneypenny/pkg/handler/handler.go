@@ -580,6 +580,10 @@ func claudeModels() []envelope.ModelInfo {
 }
 
 // copilotModels parses available models from `copilot --help` output.
+// The help output format is:
+//
+//	--model <model>    Set the AI model to use (choices:
+//	                   "model1", "model2", ...)
 func copilotModels() []envelope.ModelInfo {
 	path, err := exec.LookPath("copilot")
 	if err != nil {
@@ -590,20 +594,20 @@ func copilotModels() []envelope.ModelInfo {
 		return nil
 	}
 
-	// Parse --model choices from help output: --model {model1,model2,...}
-	re := regexp.MustCompile(`--model\s+\{([^}]+)\}`)
+	// Extract the choices block: everything between "choices:" and the closing ")".
+	re := regexp.MustCompile(`(?s)--model\s+<model>\s+.*?\(choices:\s*(.*?)\)`)
 	matches := re.FindSubmatch(out)
 	if len(matches) < 2 {
 		return nil
 	}
 
-	parts := strings.Split(string(matches[1]), ",")
-	models := make([]envelope.ModelInfo, 0, len(parts))
-	for _, p := range parts {
-		name := strings.TrimSpace(p)
-		if name != "" {
-			models = append(models, envelope.ModelInfo{Name: name})
-		}
+	// Extract quoted model names.
+	nameRe := regexp.MustCompile(`"([^"]+)"`)
+	nameMatches := nameRe.FindAllSubmatch(matches[1], -1)
+	models := make([]envelope.ModelInfo, 0, len(nameMatches))
+	for _, nm := range nameMatches {
+		name := string(nm[1])
+		models = append(models, envelope.ModelInfo{Name: name, Value: name})
 	}
 	return models
 }

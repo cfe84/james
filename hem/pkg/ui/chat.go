@@ -669,9 +669,9 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 				_, size := utf8.DecodeRuneInString(m.input[m.cursorPos:])
 				m.cursorPos += size
 			}
-		case "alt+left":
+		case "alt+left", "ctrl+b":
 			m.cursorPos = wordLeft(m.input, m.cursorPos)
-		case "alt+right":
+		case "alt+right", "ctrl+f":
 			m.cursorPos = wordRight(m.input, m.cursorPos)
 		case "ctrl+r":
 			m.input = ""

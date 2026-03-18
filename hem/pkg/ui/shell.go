@@ -139,6 +139,10 @@ func (m shellModel) Update(msg tea.Msg) (shellModel, tea.Cmd) {
 				_, size := utf8.DecodeRuneInString(m.input[m.cursorPos:])
 				m.cursorPos += size
 			}
+		case "alt+left", "ctrl+b":
+			m.cursorPos = wordLeft(m.input, m.cursorPos)
+		case "alt+right", "ctrl+f":
+			m.cursorPos = wordRight(m.input, m.cursorPos)
 		case "home", "ctrl+a":
 			m.cursorPos = 0
 		case "end", "ctrl+e":
