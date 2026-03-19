@@ -64,7 +64,8 @@ type Updater struct {
 	stagedDir     string // path to staged binaries
 
 	checker SessionChecker
-	vlog    *log.Logger
+	vlog    *log.Logger // verbose (only with -v)
+	slog    *log.Logger // standard (always visible)
 
 	// For re-exec
 	execArgs []string // os.Args
@@ -94,6 +95,7 @@ func New(currentVersion, repo, dataDir string, checker SessionChecker, opts ...O
 		status:         StatusUpToDate,
 		checker:        checker,
 		vlog:           log.New(io.Discard, "[updater] ", log.LstdFlags),
+		slog:           log.New(os.Stderr, "", log.LstdFlags),
 		execArgs:       os.Args,
 	}
 	for _, o := range opts {
@@ -187,7 +189,7 @@ func (u *Updater) cycle(ctx context.Context) {
 		return
 	}
 
-	u.vlog.Printf("new version available: %s (current: %s)", tag, u.currentVersion)
+	u.slog.Printf("update available: v%s → v%s", u.currentVersion, tag)
 
 	// 2. Download and stage.
 	u.setStatus(StatusDownloading)
@@ -204,7 +206,8 @@ func (u *Updater) cycle(ctx context.Context) {
 
 	// 3. Wait for idle.
 	u.setStatus(StatusWaitingIdle)
-	u.vlog.Printf("update staged at %s, waiting for all sessions to be idle", stagedDir)
+	u.slog.Printf("v%s downloaded, waiting for all sessions to be idle before restarting", tag)
+	u.vlog.Printf("update staged at %s", stagedDir)
 
 	if !u.waitForIdle(ctx) {
 		u.vlog.Printf("context cancelled while waiting for idle")
@@ -213,7 +216,7 @@ func (u *Updater) cycle(ctx context.Context) {
 
 	// 4. Swap and restart.
 	u.setStatus(StatusRestarting)
-	u.vlog.Printf("all sessions idle, performing binary swap")
+	u.slog.Printf("all sessions idle, updating to v%s and restarting", tag)
 
 	if err := u.swapAndRestart(stagedDir); err != nil {
 		u.vlog.Printf("swap failed: %v", err)

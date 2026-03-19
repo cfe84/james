@@ -16,7 +16,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -305,59 +304,15 @@ func runMI6Once(ctx context.Context, h *handler.Handler, vlog *log.Logger, mi6Cl
 
 	vlog.Printf("MI6 connected (pid %d)", cmd.Process.Pid)
 
-	// Watchdog: if no data flows for 2 minutes, kill mi6-client to force reconnect.
-	// The MI6 server pings every 60s, so a 2-minute silence means the connection is dead.
-	const watchdogTimeout = 2 * time.Minute
-	lastActivity := time.Now()
-	var activityMu sync.Mutex
-
-	touchActivity := func() {
-		activityMu.Lock()
-		lastActivity = time.Now()
-		activityMu.Unlock()
-	}
-
-	go func() {
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				activityMu.Lock()
-				idle := time.Since(lastActivity)
-				activityMu.Unlock()
-				if idle > watchdogTimeout {
-					vlog.Printf("MI6 watchdog: no activity for %v, killing mi6-client", idle.Round(time.Second))
-					childCancel()
-					return
-				}
-			case <-childCtx.Done():
-				return
-			}
-		}
-	}()
-
-	// Process commands from MI6 (via mi6-client stdout) and write responses (via mi6-client stdin).
-	// Wrap stdout to track activity.
-	runStdio(childCtx, h, vlog, &activityReader{r: stdout, touch: touchActivity}, stdin)
+	// No watchdog needed: MI6 server sends pings every 60s which mi6-client
+	// handles internally (pong responses). If the connection truly dies,
+	// mi6-client's Receive() will error out and the process exits.
+	runStdio(childCtx, h, vlog, stdout, stdin)
 
 	stdin.Close()
 	return cmd.Wait()
 }
 
-// activityReader wraps a reader and calls touch() on every successful read.
-type activityReader struct {
-	r     io.Reader
-	touch func()
-}
-
-func (a *activityReader) Read(p []byte) (int, error) {
-	n, err := a.r.Read(p)
-	if n > 0 {
-		a.touch()
-	}
-	return n, err
-}
 
 func parseMI6Addr(addr string) (host, sessionID string, err error) {
 	idx := strings.IndexByte(addr, '/')
