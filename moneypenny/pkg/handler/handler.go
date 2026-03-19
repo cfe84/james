@@ -28,10 +28,11 @@ Use this to set reminders, check on long-running processes, or break work into t
 
 // Handler processes commands and returns responses.
 type Handler struct {
-	store   *store.Store
-	runner  *agent.Runner
-	version string
-	vlog    func(string, ...interface{})
+	store            *store.Store
+	runner           *agent.Runner
+	version          string
+	vlog             func(string, ...interface{})
+	updateStatusFunc func() envelope.UpdateStatusResponse
 }
 
 // resultCallback is called when an async agent execution completes.
@@ -46,6 +47,27 @@ func New(s *store.Store, runner *agent.Runner, version string) *Handler {
 // SetLogger sets a verbose logger.
 func (h *Handler) SetLogger(vlog func(string, ...interface{})) {
 	h.vlog = vlog
+}
+
+// SetUpdateStatusFunc sets the function called to get update status from the updater.
+func (h *Handler) SetUpdateStatusFunc(f func() envelope.UpdateStatusResponse) {
+	h.updateStatusFunc = f
+}
+
+// AllSessionsIdle returns true if no sessions are in the "working" state.
+// Implements updater.SessionChecker.
+func (h *Handler) AllSessionsIdle() bool {
+	sessions, err := h.store.ListSessions()
+	if err != nil {
+		h.vlog("allSessionsIdle: error listing sessions: %v", err)
+		return false // err on the side of caution
+	}
+	for _, s := range sessions {
+		if s.Status == store.StateWorking {
+			return false
+		}
+	}
+	return true
 }
 
 // Handle dispatches a command to the appropriate method handler.
@@ -104,6 +126,8 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.listModels(ctx, cmd)
 	case "get_version":
 		return h.getVersion(cmd)
+	case "update_status":
+		return h.updateStatus(cmd)
 	default:
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("unknown method: %s", cmd.Method))
 	}
@@ -545,6 +569,16 @@ func (h *Handler) executeCommand(_ context.Context, cmd *envelope.Command) *enve
 
 func (h *Handler) getVersion(cmd *envelope.Command) *envelope.Response {
 	return envelope.SuccessResponse(cmd.RequestID, map[string]string{"version": h.version})
+}
+
+func (h *Handler) updateStatus(cmd *envelope.Command) *envelope.Response {
+	if h.updateStatusFunc == nil {
+		return envelope.SuccessResponse(cmd.RequestID, envelope.UpdateStatusResponse{
+			CurrentVersion: h.version,
+			Status:         "disabled",
+		})
+	}
+	return envelope.SuccessResponse(cmd.RequestID, h.updateStatusFunc())
 }
 
 func (h *Handler) listModels(_ context.Context, cmd *envelope.Command) *envelope.Response {

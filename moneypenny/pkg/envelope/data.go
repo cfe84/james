@@ -238,3 +238,13 @@ type SessionActivityResponse struct {
 	SessionID string          `json:"session_id"`
 	Activity  []ActivityEvent `json:"activity"`
 }
+
+// UpdateStatusResponse is returned by update_status.
+type UpdateStatusResponse struct {
+	CurrentVersion  string `json:"current_version"`
+	LatestVersion   string `json:"latest_version,omitempty"`
+	UpdateAvailable bool   `json:"update_available"`
+	Status          string `json:"status"`
+	LastChecked     string `json:"last_checked,omitempty"`
+	Error           string `json:"error,omitempty"`
+}

@@ -288,6 +288,18 @@ A combined `Dockerfile` at the project root builds both Hem and Qew into a singl
 ### Deploy
 - `.build/james-deploy.sh` — requires `HEM_MI6_URL` and `JAMES_CONFIG_PATH`. Optional: `QEW_PASSWORD`, `QEW_PORT`. Stops existing container, creates new one.
 
+## Moneypenny Auto-Update
+
+Moneypenny can self-update from GitHub releases (`--auto-update` flag).
+
+1. **Architecture**: Self-contained in `moneypenny/pkg/updater/` — no dependency on hem. The updater implements `SessionChecker` interface against the handler, which queries the store for session statuses.
+2. **Version comparison**: Simple semver (major.minor.patch) string comparison. The `v` prefix from tags is stripped.
+3. **Binary swap**: Uses rename-based atomic swap with `.old` backup. Falls back to copy if cross-device. Platform-specific re-exec: Unix uses `syscall.Exec` (in-place replacement), Windows spawns new process and exits.
+4. **Idle gating**: Update waits indefinitely for all sessions to leave `working` state. No timeout — conservative approach to avoid disrupting active agent work.
+5. **MI6 resilience**: After re-exec, moneypenny's MI6 reconnect loop naturally re-establishes the connection. FIFO mode recreates pipes on startup. Sessions survive in SQLite.
+6. **Companion binaries**: Also updates `mi6-client` if found alongside the moneypenny binary, since moneypenny spawns it as a subprocess for MI6 connections.
+7. **Observability**: `update_status` protocol method exposes current state (checking/downloading/staged/waiting_idle/etc.) to hem and TUI.
+
 ## Versioning
 
 Single `VERSION` file at project root. Injected at compile time via `-ldflags "-X main.Version=..."`. All components (mi6, moneypenny, hem, qew) share the same version. Semver format.

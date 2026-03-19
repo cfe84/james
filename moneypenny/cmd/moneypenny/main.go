@@ -26,6 +26,7 @@ import (
 	"james/moneypenny/pkg/envelope"
 	"james/moneypenny/pkg/handler"
 	"james/moneypenny/pkg/store"
+	"james/moneypenny/pkg/updater"
 )
 
 // Version is set at build time via -ldflags.
@@ -37,6 +38,8 @@ func main() {
 	local := flag.Bool("local", false, "run in local FIFO mode using default path (~/.config/james/moneypenny/fifo)")
 	dataDir := flag.String("data-dir", defaultDataDir(), "directory for moneypenny data (db, keys)")
 	showPubKey := flag.Bool("show-public-key", false, "output the public key and exit")
+	autoUpdate := flag.Bool("auto-update", false, "enable automatic updates from GitHub releases")
+	updateInterval := flag.Duration("update-interval", 1*time.Hour, "how often to check for updates")
 	verbose := flag.Bool("v", false, "verbose logging to stderr")
 	flag.Parse()
 
@@ -85,6 +88,31 @@ func main() {
 
 	// Start the scheduler for timed prompts.
 	h.StartScheduler(ctx)
+
+	// Start auto-updater if enabled.
+	if *autoUpdate {
+		ulog := log.New(io.Discard, "[updater] ", log.LstdFlags)
+		if *verbose {
+			ulog = log.New(os.Stderr, "[updater] ", log.LstdFlags)
+		}
+		u := updater.New(Version, "cfe84/james", *dataDir, h,
+			updater.WithCheckInterval(*updateInterval),
+			updater.WithLogger(ulog),
+		)
+		h.SetUpdateStatusFunc(func() envelope.UpdateStatusResponse {
+			info := u.Status()
+			return envelope.UpdateStatusResponse{
+				CurrentVersion:  info.CurrentVersion,
+				LatestVersion:   info.LatestVersion,
+				UpdateAvailable: info.UpdateAvailable,
+				Status:          info.Status,
+				LastChecked:     info.LastChecked,
+				Error:           info.Error,
+			}
+		})
+		go u.Run(ctx)
+		log.Printf("auto-update enabled (check interval: %v)", *updateInterval)
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

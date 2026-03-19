@@ -328,6 +328,26 @@ Example: `hem add moneypenny -n local --fifo-folder ~/moneypenny-fifo`
 
 `hem set-default moneypenny -n NAME` — sets the default moneypenny for session commands.
 
+## Auto-Update
+
+Moneypenny can self-update from GitHub releases when started with `--auto-update`.
+
+### How it works
+
+1. **Check**: A background goroutine periodically checks the GitHub Releases API (`/repos/cfe84/james/releases/latest`) for newer versions. Default interval: 1 hour, configurable via `--update-interval`.
+2. **Download**: Downloads the platform-appropriate archive (e.g. `james-darwin-arm64.tar.gz`) and extracts `moneypenny` and `mi6-client` binaries to a staging directory (`~/.config/james/moneypenny/updates/VERSION/`).
+3. **Wait for idle**: Polls session statuses every 30 seconds. Proceeds only when all sessions are idle (not working).
+4. **Swap & restart**: Atomically replaces the running binary and `mi6-client`, then re-execs itself with the same arguments. MI6 reconnect and FIFO setup re-establish naturally.
+
+### Flags
+
+- `moneypenny --auto-update` — enable automatic updates (default: off)
+- `moneypenny --update-interval 1h` — check frequency (default: 1h)
+
+### Protocol
+
+Method: **update_status**: returns the current auto-update state. Data: `{}`. Returns `{ "current_version": "0.10.3", "latest_version": "0.10.3", "update_available": false, "status": "up_to_date|checking|downloading|staged|waiting_idle|restarting|error|disabled", "last_checked": "2026-03-19T12:00:00Z", "error": "" }`. Returns `status: "disabled"` when `--auto-update` is not enabled.
+
 ## Sessions
 
 Hem manages sessions on moneypennies. It tracks which moneypenny each session lives on in its local SQLite. By default, session commands wait for the agent to complete; use `--async` to return immediately.
