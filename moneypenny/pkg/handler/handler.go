@@ -332,10 +332,15 @@ func (h *Handler) listSessions(_ context.Context, cmd *envelope.Command) *envelo
 			SessionID: s.SessionID,
 			Name:      s.Name,
 			Status:    s.Status,
+			CreatedAt: s.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		}
+		// Use the last conversation turn as last_accessed, falling back to
+		// the session's updated_at (which tracks status changes like working→idle).
 		if ts, err := h.store.GetSessionTimestamps(s.SessionID); err == nil && ts != nil {
-			info.CreatedAt = ts.FirstTurn.UTC().Format("2006-01-02T15:04:05Z")
 			info.LastAccessed = ts.LastTurn.UTC().Format("2006-01-02T15:04:05Z")
+		}
+		if info.LastAccessed == "" {
+			info.LastAccessed = s.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z")
 		}
 		infos = append(infos, info)
 	}

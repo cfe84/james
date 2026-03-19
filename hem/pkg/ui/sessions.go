@@ -222,28 +222,34 @@ func (m sessionsModel) View() string {
 			baseStatus = s.Status[:idx]
 			subInfo = s.Status[idx+1:]
 		}
-		status := statusBadge(baseStatus)
-		if subInfo != "" {
-			status += " " + lipgloss.NewStyle().Foreground(colorMuted).Render(subInfo)
-		}
 		id := truncate(s.SessionID, 12)
 		name := truncate(s.Name, 18)
 		mp := truncate(s.Moneypenny, 10)
 		lastActive := relativeTime(s.LastAccessed)
 		if lastActive == "" {
-			lastActive = "Unknown"
+			lastActive = "-"
 		}
 
-		line := fmt.Sprintf("  %-14s %-20s %s %-12s %s",
-			id, name, padRight(status, 10), mp, lastActive)
-
-		if i == m.cursor {
-			// Pad to full width for highlight
-			if m.width > 0 && lipgloss.Width(line) < m.width {
-				line += strings.Repeat(" ", m.width-lipgloss.Width(line))
+		selected := i == m.cursor
+		if selected {
+			statusText := statusPlain(baseStatus)
+			if subInfo != "" {
+				statusText += " " + subInfo
 			}
-			b.WriteString(sessionSelectedStyle.Render(line))
+			line := fmt.Sprintf("  %-14s %-20s %-10s %-12s %s",
+				id, name, statusText, mp, lastActive)
+			style := sessionSelectedStyle
+			if m.width > 0 {
+				style = style.Width(m.width)
+			}
+			b.WriteString(style.Render(line))
 		} else {
+			status := statusBadge(baseStatus)
+			if subInfo != "" {
+				status += " " + lipgloss.NewStyle().Foreground(colorMuted).Render(subInfo)
+			}
+			line := fmt.Sprintf("  %-14s %-20s %s %-12s %s",
+				id, name, padRight(status, 10), mp, lastActive)
 			b.WriteString(sessionNormalStyle.Render(line))
 		}
 		b.WriteString("\n")

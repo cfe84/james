@@ -490,14 +490,26 @@ func (m dashboardModel) View() string {
 		showProject = hasAnyProject
 	}
 
+	// Determine status column width: check if any entry has sub info.
+	statusWidth := 10 // "● working" is ~10 chars
+	for _, e := range entries {
+		if e.SubInfo != "" {
+			// e.g. "● working [3 subs, 1 ready]" — measure the widest
+			w := lipgloss.Width(statusBadge(e.MPStatus)) + 1 + lipgloss.Width(e.SubInfo)
+			if w > statusWidth {
+				statusWidth = w
+			}
+		}
+	}
+
 	// Calculate column widths based on terminal width.
-	// Fixed columns: indent(2) + status(10) + lastActive(14) + spacing(~8)
+	// Fixed columns: indent(2) + status + lastActive(14) + spacing(~8)
 	// Flexible: name, moneypenny, project
 	w := m.width
 	if w < 80 {
 		w = 80
 	}
-	fixedWidth := 2 + 10 + 14 + 8 // indent + status + lastActive + gaps
+	fixedWidth := 2 + statusWidth + 14 + 8 // indent + status + lastActive + gaps
 	if showProject {
 		fixedWidth += 14 // project column + gap
 	}
@@ -536,18 +548,20 @@ func (m dashboardModel) View() string {
 			name = truncate(e.SessionID, nameWidth)
 		}
 		mp := truncate(e.Moneypenny, mpWidth)
-		status := statusBadge(e.MPStatus)
-		if e.SubInfo != "" {
-			status += " " + lipgloss.NewStyle().Foreground(colorMuted).Render(e.SubInfo)
-		}
 		lastActive := relativeTime(e.LastActive)
 		if lastActive == "" {
-			lastActive = "Unknown"
+			lastActive = "-"
 		}
 
 		nameFmt := fmt.Sprintf("%%-%ds", nameWidth+2)
 		mpFmt := fmt.Sprintf("%%-%ds", mpWidth+2)
-		statusPad := padRight(status, 10)
+		statusText := statusPlain(e.MPStatus)
+		if e.SubInfo != "" {
+			statusText += " " + e.SubInfo
+		}
+		statusFmt := fmt.Sprintf("%%-%ds", statusWidth)
+
+		selected := i == m.cursor
 
 		var line string
 		if showProject {
@@ -556,17 +570,34 @@ func (m dashboardModel) View() string {
 				project = "-"
 			}
 			projFmt := fmt.Sprintf("%%-%ds", projWidth+2)
-			line = fmt.Sprintf("  "+nameFmt+projFmt+"%s "+mpFmt+"%s", name, project, statusPad, mp, lastActive)
+			line = fmt.Sprintf("  "+nameFmt+projFmt+statusFmt+" "+mpFmt+"%s", name, project, statusText, mp, lastActive)
 		} else {
-			line = fmt.Sprintf("  "+nameFmt+"%s "+mpFmt+"%s", name, statusPad, mp, lastActive)
+			line = fmt.Sprintf("  "+nameFmt+statusFmt+" "+mpFmt+"%s", name, statusText, mp, lastActive)
 		}
 
-		if i == m.cursor {
-			if m.width > 0 && lipgloss.Width(line) < m.width {
-				line += strings.Repeat(" ", m.width-lipgloss.Width(line))
+		if selected {
+			style := sessionSelectedStyle
+			if m.width > 0 {
+				style = style.Width(m.width)
 			}
-			b.WriteString(sessionSelectedStyle.Render(line))
+			b.WriteString(style.Render(line))
 		} else {
+			// Re-render with colored status for non-selected rows.
+			status := statusBadge(e.MPStatus)
+			if e.SubInfo != "" {
+				status += " " + lipgloss.NewStyle().Foreground(colorMuted).Render(e.SubInfo)
+			}
+			statusPad := padRight(status, statusWidth)
+			if showProject {
+				project := truncate(e.Project, projWidth)
+				if project == "" {
+					project = "-"
+				}
+				projFmt := fmt.Sprintf("%%-%ds", projWidth+2)
+				line = fmt.Sprintf("  "+nameFmt+projFmt+"%s "+mpFmt+"%s", name, project, statusPad, mp, lastActive)
+			} else {
+				line = fmt.Sprintf("  "+nameFmt+"%s "+mpFmt+"%s", name, statusPad, mp, lastActive)
+			}
 			b.WriteString(sessionNormalStyle.Render(line))
 		}
 		b.WriteString("\n")

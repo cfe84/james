@@ -35,8 +35,9 @@ var (
 			Padding(0, 1)
 
 	// Session list
+	sessionSelectedBg    = lipgloss.Color("#4B5563")
 	sessionSelectedStyle = lipgloss.NewStyle().
-				Background(colorBgLight).
+				Background(sessionSelectedBg).
 				Foreground(lipgloss.Color("#FFFFFF")).
 				Bold(true)
 
@@ -99,6 +100,22 @@ var (
 )
 
 var statusOffline = lipgloss.NewStyle().Foreground(colorDanger).Render("✗ offline")
+
+// statusPlain returns a plain-text status string (no ANSI), for use in selected rows.
+func statusPlain(status string) string {
+	switch status {
+	case "ready":
+		return "● ready"
+	case "idle":
+		return "● idle"
+	case "working":
+		return "◉ working"
+	case "offline":
+		return "✗ offline"
+	default:
+		return "? " + status
+	}
+}
 
 func statusBadge(status string) string {
 	switch status {
