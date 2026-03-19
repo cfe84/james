@@ -224,6 +224,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleEsc()
 		}
 
+		// q exits the diff view (like Esc) when not typing a commit message.
+		if msg.String() == "q" && m.currentView == viewDiff && m.diff.mode != diffModeCommitMsg {
+			return m.handleEsc()
+		}
+
 		// View-specific keys.
 		switch m.currentView {
 		case viewDashboard:

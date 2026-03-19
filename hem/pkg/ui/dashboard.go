@@ -542,11 +542,12 @@ func (m dashboardModel) View() string {
 		}
 		lastActive := relativeTime(e.LastActive)
 		if lastActive == "" {
-			lastActive = relativeTime(e.CreatedAt)
+			lastActive = "Unknown"
 		}
 
 		nameFmt := fmt.Sprintf("%%-%ds", nameWidth+2)
 		mpFmt := fmt.Sprintf("%%-%ds", mpWidth+2)
+		statusPad := padRight(status, 10)
 
 		var line string
 		if showProject {
@@ -555,9 +556,9 @@ func (m dashboardModel) View() string {
 				project = "-"
 			}
 			projFmt := fmt.Sprintf("%%-%ds", projWidth+2)
-			line = fmt.Sprintf("  "+nameFmt+projFmt+"%-10s "+mpFmt+"%s", name, project, status, mp, lastActive)
+			line = fmt.Sprintf("  "+nameFmt+projFmt+"%s "+mpFmt+"%s", name, project, statusPad, mp, lastActive)
 		} else {
-			line = fmt.Sprintf("  "+nameFmt+"%-10s "+mpFmt+"%s", name, status, mp, lastActive)
+			line = fmt.Sprintf("  "+nameFmt+"%s "+mpFmt+"%s", name, statusPad, mp, lastActive)
 		}
 
 		if i == m.cursor {

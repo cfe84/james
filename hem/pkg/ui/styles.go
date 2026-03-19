@@ -1,6 +1,10 @@
 package ui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+)
 
 var (
 	// Colors
@@ -109,6 +113,15 @@ func statusBadge(status string) string {
 	default:
 		return lipgloss.NewStyle().Foreground(colorDanger).Render("? " + status)
 	}
+}
+
+// padRight pads a (possibly styled) string to a fixed visual width.
+func padRight(s string, width int) string {
+	w := lipgloss.Width(s)
+	if w >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-w)
 }
 
 func truncate(s string, max int) string {

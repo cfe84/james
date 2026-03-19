@@ -231,15 +231,15 @@ func (m sessionsModel) View() string {
 		mp := truncate(s.Moneypenny, 10)
 		lastActive := relativeTime(s.LastAccessed)
 		if lastActive == "" {
-			lastActive = relativeTime(s.CreatedAt)
+			lastActive = "Unknown"
 		}
 
-		line := fmt.Sprintf("  %-14s %-20s %-10s %-12s %s",
-			id, name, status, mp, lastActive)
+		line := fmt.Sprintf("  %-14s %-20s %s %-12s %s",
+			id, name, padRight(status, 10), mp, lastActive)
 
 		if i == m.cursor {
 			// Pad to full width for highlight
-			if m.width > 0 && len(line) < m.width {
+			if m.width > 0 && lipgloss.Width(line) < m.width {
 				line += strings.Repeat(" ", m.width-lipgloss.Width(line))
 			}
 			b.WriteString(sessionSelectedStyle.Render(line))

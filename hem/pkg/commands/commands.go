@@ -2121,9 +2121,6 @@ func (e *Executor) ListSessions(args []string) *protocol.Response {
 					created = formatTimestamp(created)
 				}
 			}
-			if lastActive == "" {
-				lastActive = created
-			}
 			allSessions = append(allSessions, sessionInfo{
 				SessionID:  s.SessionID,
 				Name:       s.Name,
@@ -3624,9 +3621,6 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 		// Fallback to hem's tracked creation time if moneypenny didn't send timestamps.
 		if createdAt == "" && !sess.CreatedAt.IsZero() {
 			createdAt = sess.CreatedAt.UTC().Format("2006-01-02T15:04:05Z")
-		}
-		if lastAccessed == "" {
-			lastAccessed = createdAt
 		}
 
 		projectName := projectNames[sess.ProjectID]
