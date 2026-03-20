@@ -1329,6 +1329,15 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.dashboard.loading = true
 				return m, tea.Batch(m.dashboard.loadDashboard(), dashboardPollTick())
 			}
+		case "Q":
+			m.chat.confirmDelete = false
+			m.chat.commandMode = false
+			m = m.withChatDraftSaved()
+			m.parentChats = nil // discard subagent stack
+			m.currentView = viewDashboard
+			m.dashboard.loading = true
+			m.statusMsg = ""
+			return m, tea.Batch(m.dashboard.loadDashboard(), dashboardPollTick())
 		default:
 			m.chat.confirmDelete = false
 		}

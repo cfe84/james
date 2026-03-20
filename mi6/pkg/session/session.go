@@ -9,8 +9,9 @@ import (
 
 // Client represents a connected client in a session.
 type Client struct {
-	ID      string
-	WriteCh chan []byte // buffered channel for outbound data
+	ID        string
+	WriteCh   chan []byte // buffered channel for outbound data
+	Exclusive bool       // true if this client joined with exclusive mode
 }
 
 // NewClient creates a client with a unique ID and buffered write channel.
@@ -79,6 +80,9 @@ func NewManager() *Manager {
 	}
 }
 
+// ErrExclusiveConflict is returned when a session already has an exclusive client.
+var ErrExclusiveConflict = errors.New("session: another exclusive client is already connected")
+
 // Join adds a client to a session (creating the session if needed). Returns the client.
 func (m *Manager) Join(sessionID string) *Client {
 	client := NewClient(256)
@@ -100,6 +104,38 @@ func (m *Manager) Join(sessionID string) *Client {
 	sess.mu.Unlock()
 
 	return client
+}
+
+// JoinExclusive adds a client to a session in exclusive mode.
+// Returns ErrExclusiveConflict if another exclusive client is already in the session.
+func (m *Manager) JoinExclusive(sessionID string) (*Client, error) {
+	client := NewClient(256)
+	client.Exclusive = true
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	sess, ok := m.sessions[sessionID]
+	if !ok {
+		sess = &Session{
+			ID:      sessionID,
+			clients: make(map[string]*Client),
+		}
+		m.sessions[sessionID] = sess
+	}
+
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+
+	// Check if any existing client is exclusive.
+	for _, c := range sess.clients {
+		if c.Exclusive {
+			return nil, ErrExclusiveConflict
+		}
+	}
+
+	sess.clients[client.ID] = client
+	return client, nil
 }
 
 // Leave removes a client from a session. Closes the client's WriteCh.

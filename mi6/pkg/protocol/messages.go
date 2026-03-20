@@ -19,6 +19,7 @@ const (
 	MsgServerHello                          // Server sends ECDH pub (32 bytes)
 	MsgServerAuth                           // Server sends SSH pubkey + signature (encrypted)
 	MsgClientAuth                           // Client sends SSH pubkey + signature (encrypted)
+	MsgJoinSessionExclusive                 // Client requests exclusive join (payload = session ID); rejected if another exclusive client is already in the session
 )
 
 // Message is the unit of communication on the wire.

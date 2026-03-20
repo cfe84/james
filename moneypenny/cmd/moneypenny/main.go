@@ -24,6 +24,7 @@ import (
 	"james/moneypenny/pkg/agent"
 	"james/moneypenny/pkg/envelope"
 	"james/moneypenny/pkg/handler"
+	"james/moneypenny/pkg/service"
 	"james/moneypenny/pkg/store"
 	"james/moneypenny/pkg/updater"
 )
@@ -32,6 +33,21 @@ import (
 var Version = "dev"
 
 func main() {
+	// Handle subcommands before flag parsing.
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "install":
+			runInstallWizard()
+			return
+		case "uninstall":
+			runUninstall()
+			return
+		case "status":
+			runStatus()
+			return
+		}
+	}
+
 	mi6Addr := flag.String("mi6", "", "connect via MI6 (host/session_id)")
 	fifoDir := flag.String("fifo", "", "use named pipes in FOLDER for I/O (creates moneypenny-in and moneypenny-out)")
 	local := flag.Bool("local", false, "run in local FIFO mode using default path (~/.config/james/moneypenny/fifo)")
@@ -287,7 +303,7 @@ func runMI6Once(ctx context.Context, h *handler.Handler, vlog *log.Logger, mi6Cl
 	childCtx, childCancel := context.WithCancel(ctx)
 	defer childCancel()
 
-	cmd := exec.CommandContext(childCtx, mi6Client, "--key", keyPath, addr)
+	cmd := exec.CommandContext(childCtx, mi6Client, "--key", keyPath, "--exclusive", addr)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("failed to get mi6-client stdin: %w", err)
@@ -414,4 +430,248 @@ func generateAndSaveKey(keyPath string) (interface{}, ssh.PublicKey, error) {
 
 	log.Printf("generated new ECDSA key at %s", keyPath)
 	return key, pubKey, nil
+}
+
+// ---------------------------------------------------------------------------
+// Service install/uninstall wizard
+// ---------------------------------------------------------------------------
+
+func prompt(label, defaultVal string) string {
+	if defaultVal != "" {
+		fmt.Printf("%s [%s]: ", label, defaultVal)
+	} else {
+		fmt.Printf("%s: ", label)
+	}
+	reader := bufio.NewReader(os.Stdin)
+	line, _ := reader.ReadString('\n')
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return defaultVal
+	}
+	return line
+}
+
+func promptYN(label string, defaultYes bool) bool {
+	suffix := " [Y/n]: "
+	if !defaultYes {
+		suffix = " [y/N]: "
+	}
+	fmt.Print(label + suffix)
+	reader := bufio.NewReader(os.Stdin)
+	line, _ := reader.ReadString('\n')
+	line = strings.TrimSpace(strings.ToLower(line))
+	if line == "" {
+		return defaultYes
+	}
+	return line == "y" || line == "yes"
+}
+
+func promptChoice(label string, options []string, defaultIdx int) int {
+	fmt.Println(label)
+	for i, opt := range options {
+		marker := "  "
+		if i == defaultIdx {
+			marker = "> "
+		}
+		fmt.Printf("%s%d) %s\n", marker, i+1, opt)
+	}
+	fmt.Printf("Choice [%d]: ", defaultIdx+1)
+	reader := bufio.NewReader(os.Stdin)
+	line, _ := reader.ReadString('\n')
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return defaultIdx
+	}
+	var idx int
+	if _, err := fmt.Sscanf(line, "%d", &idx); err == nil && idx >= 1 && idx <= len(options) {
+		return idx - 1
+	}
+	return defaultIdx
+}
+
+func runInstallWizard() {
+	fmt.Println("=== Moneypenny Service Installer ===")
+	fmt.Println()
+
+	// Check existing installation.
+	for _, ul := range []bool{true, false} {
+		installed, running, _ := service.Status(ul)
+		if installed {
+			level := "user"
+			if !ul {
+				level = "system"
+			}
+			state := "stopped"
+			if running {
+				state = "running"
+			}
+			fmt.Printf("Existing %s-level service found (%s).\n", level, state)
+			if !promptYN("Overwrite it?", false) {
+				fmt.Println("Aborted.")
+				os.Exit(0)
+			}
+			// Uninstall the old one first.
+			_ = service.Uninstall(ul)
+			fmt.Println()
+		}
+	}
+
+	// 1. Service level.
+	levelIdx := promptChoice("Service level:", []string{
+		"User (starts at login)",
+		"System (starts at boot, runs as your user)",
+	}, 0)
+	userLevel := levelIdx == 0
+	fmt.Println()
+
+	// 2. Connection mode.
+	modeIdx := promptChoice("Connection mode:", []string{
+		"Local (FIFO pipes, for agents on this machine)",
+		"MI6 (remote connection to an MI6 relay)",
+	}, 0)
+	fmt.Println()
+
+	var mi6Addr string
+	localMode := false
+	if modeIdx == 0 {
+		localMode = true
+	} else {
+		mi6Addr = prompt("MI6 address (host/session_id)", "")
+		if mi6Addr == "" {
+			fmt.Println("MI6 address is required.")
+			os.Exit(1)
+		}
+		fmt.Println()
+	}
+
+	// 3. Auto-update.
+	autoUpdate := promptYN("Enable auto-update?", true)
+	updateInterval := ""
+	if autoUpdate {
+		updateInterval = prompt("Update check interval", "1h")
+	}
+	fmt.Println()
+
+	// 4. Data directory.
+	dataDir := prompt("Data directory", defaultDataDir())
+	fmt.Println()
+
+	// 5. Log file.
+	logFile := prompt("Log file", service.DefaultLogFile(dataDir))
+	fmt.Println()
+
+	// 6. Verbose.
+	verbose := promptYN("Enable verbose logging?", false)
+	fmt.Println()
+
+	// Resolve binary path.
+	binPath, err := service.ResolveBinaryPath()
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	cfg := &service.Config{
+		BinaryPath:     binPath,
+		MI6Address:     mi6Addr,
+		AutoUpdate:     autoUpdate,
+		UpdateInterval: updateInterval,
+		DataDir:        dataDir,
+		LogFile:        logFile,
+		Local:          localMode,
+		Verbose:        verbose,
+		UserLevel:      userLevel,
+	}
+
+	// Summary.
+	fmt.Println("=== Summary ===")
+	level := "user"
+	if !userLevel {
+		level = "system"
+	}
+	fmt.Printf("  Level:       %s\n", level)
+	fmt.Printf("  Binary:      %s\n", binPath)
+	if localMode {
+		fmt.Printf("  Mode:        local (FIFO)\n")
+	} else {
+		fmt.Printf("  Mode:        MI6 (%s)\n", mi6Addr)
+	}
+	fmt.Printf("  Auto-update: %v\n", autoUpdate)
+	fmt.Printf("  Data dir:    %s\n", dataDir)
+	fmt.Printf("  Log file:    %s\n", logFile)
+	fmt.Println()
+
+	if !promptYN("Install?", true) {
+		fmt.Println("Aborted.")
+		os.Exit(0)
+	}
+
+	if err := service.Install(cfg); err != nil {
+		fmt.Printf("Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func runUninstall() {
+	fmt.Println("=== Moneypenny Service Uninstaller ===")
+	fmt.Println()
+
+	// Find which level is installed.
+	userInstalled, _, _ := service.Status(true)
+	sysInstalled, _, _ := service.Status(false)
+
+	if !userInstalled && !sysInstalled {
+		fmt.Println("No moneypenny service is currently installed.")
+		os.Exit(0)
+	}
+
+	userLevel := true
+	if userInstalled && sysInstalled {
+		idx := promptChoice("Both user and system services found. Which to uninstall?", []string{
+			"User-level",
+			"System-level",
+			"Both",
+		}, 0)
+		switch idx {
+		case 0:
+			userLevel = true
+		case 1:
+			userLevel = false
+		case 2:
+			// Uninstall both.
+			if err := service.Uninstall(true); err != nil {
+				fmt.Printf("Error (user): %v\n", err)
+			}
+			if err := service.Uninstall(false); err != nil {
+				fmt.Printf("Error (system): %v\n", err)
+			}
+			return
+		}
+	} else if sysInstalled {
+		userLevel = false
+	}
+
+	if err := service.Uninstall(userLevel); err != nil {
+		fmt.Printf("Error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func runStatus() {
+	for _, ul := range []bool{true, false} {
+		level := "User"
+		if !ul {
+			level = "System"
+		}
+		installed, running, _ := service.Status(ul)
+		if installed {
+			state := "stopped"
+			if running {
+				state = "running"
+			}
+			fmt.Printf("%s-level: installed (%s)\n", level, state)
+		} else {
+			fmt.Printf("%s-level: not installed\n", level)
+		}
+	}
 }

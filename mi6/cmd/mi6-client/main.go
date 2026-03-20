@@ -30,6 +30,7 @@ func main() {
 	keyPath := flag.String("key", "", "path to SSH private key file")
 	keyValue := flag.String("key-value", "", "ECDSA private key PEM content (or set MI6_KEY env var)")
 	adminCommand := flag.String("admin-command", "", "send an admin command (JSON) to MI6 server and exit")
+	exclusive := flag.Bool("exclusive", false, "exit with error if another client is already in the session")
 	generateKey := flag.Bool("generate-key", false, "generate a new ECDSA key pair and exit")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	batchTimeout := flag.Duration("batch-timeout", 100*time.Millisecond, "idle timeout for stdin batching")
@@ -135,9 +136,13 @@ func main() {
 	}
 	defer secureConn.Close()
 
-	// Send MsgJoinSession.
+	// Send MsgJoinSession (or MsgJoinSessionExclusive with --exclusive).
+	joinType := protocol.MsgJoinSession
+	if *exclusive {
+		joinType = protocol.MsgJoinSessionExclusive
+	}
 	if err := secureConn.Send(&protocol.Message{
-		Type:    protocol.MsgJoinSession,
+		Type:    joinType,
 		Payload: []byte(*sessionID),
 	}); err != nil {
 		log.Fatalf("failed to send join session: %v", err)

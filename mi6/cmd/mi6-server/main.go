@@ -247,13 +247,14 @@ func handleConnection(
 	fingerprint := ssh.FingerprintSHA256(pubKey)
 	log.Printf("Auth success for %s (key %s)", remoteAddr, fingerprint)
 
-	// Wait for MsgJoinSession.
+	// Wait for MsgJoinSession or MsgJoinSessionExclusive.
 	joinMsg, err := secureConn.Receive()
 	if err != nil {
 		log.Printf("Failed to receive join message from %s: %v", remoteAddr, err)
 		return
 	}
-	if joinMsg.Type != protocol.MsgJoinSession {
+	exclusive := joinMsg.Type == protocol.MsgJoinSessionExclusive
+	if joinMsg.Type != protocol.MsgJoinSession && !exclusive {
 		log.Printf("Expected MsgJoinSession from %s, got %d", remoteAddr, joinMsg.Type)
 		return
 	}
@@ -271,8 +272,20 @@ func handleConnection(
 		_ = secureConn.Send(&protocol.Message{Type: protocol.MsgAuthFail, Payload: []byte("invalid session ID")})
 		return
 	}
-	client := manager.Join(sessionID)
-	log.Printf("Client %s (%s) joined session %q", client.ID, remoteAddr, sessionID)
+
+	var client *session.Client
+	if exclusive {
+		client, err = manager.JoinExclusive(sessionID)
+		if err != nil {
+			log.Printf("Exclusive join rejected for %s on session %q: %v", remoteAddr, sessionID, err)
+			_ = secureConn.Send(&protocol.Message{Type: protocol.MsgAuthFail, Payload: []byte("session already has an exclusive client connected")})
+			return
+		}
+		log.Printf("Client %s (%s) joined session %q (exclusive)", client.ID, remoteAddr, sessionID)
+	} else {
+		client = manager.Join(sessionID)
+		log.Printf("Client %s (%s) joined session %q", client.ID, remoteAddr, sessionID)
+	}
 
 	// Send MsgJoinSessionOK.
 	if err := secureConn.Send(&protocol.Message{Type: protocol.MsgJoinSessionOK}); err != nil {
