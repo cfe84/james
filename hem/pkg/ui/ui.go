@@ -201,6 +201,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.diff.commitErr = nil
 				return m, nil
 			}
+			// Diff review modes: esc cancels current input mode.
+			if m.currentView == viewDiff && m.diff.mode != diffModeView {
+				m.diff.mode = diffModeView
+				m.diff.lineInput.Reset()
+				m.diff.commentInput.Reset()
+				m.diff.reviewPrompt.Reset()
+				return m, nil
+			}
 			// Clear dashboard/projectDetail filter on esc.
 			if m.currentView == viewDashboard && m.dashboard.filterText != "" {
 				m.dashboard.filterText = ""
@@ -221,11 +229,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.sessions.cursor = 0
 				return m, nil
 			}
+			// Confirm quit from diff if there are pending review comments.
+			if m.currentView == viewDiff && m.diff.shouldConfirmQuit() {
+				return m, nil
+			}
 			return m.handleEsc()
 		}
 
-		// q exits the diff view (like Esc) when not typing a commit message.
-		if msg.String() == "q" && m.currentView == viewDiff && m.diff.mode != diffModeCommitMsg {
+		// q exits the diff view (like Esc) when not in an input mode.
+		if msg.String() == "q" && m.currentView == viewDiff && m.diff.mode == diffModeView {
+			if m.diff.shouldConfirmQuit() {
+				return m, nil
+			}
 			return m.handleEsc()
 		}
 
@@ -507,6 +522,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.diff, cmd = m.diff.Update(msg)
 		return m, cmd
+
+	case diffReviewSubmitMsg:
+		// Switch to chat view and send the review prompt.
+		m.currentView = viewChat
+		m.chat.input = msg.prompt
+		m.chat.cursorPos = len(msg.prompt)
+		// Append to conversation optimistically and send.
+		m.chat.conversation = append(m.chat.conversation, conversationTurn{
+			Role:    "user",
+			Content: msg.prompt,
+		})
+		m.chat.recentCount++
+		m.chat.totalTurns++
+		m.chat.scroll = 0
+		m.chat.input = ""
+		m.chat.cursorPos = 0
+		return m, m.chat.sendMessage(msg.prompt)
 
 	case sessionDetailLoadedMsg, editProjectsLoadedMsg, editModelsLoadedMsg:
 		var cmd tea.Cmd

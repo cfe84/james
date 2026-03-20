@@ -3,6 +3,8 @@ package ui
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -14,6 +16,10 @@ type diffMode int
 const (
 	diffModeView diffMode = iota
 	diffModeCommitMsg
+	diffModeLineInput    // typing a line number for r/d
+	diffModeComment      // editing a review comment
+	diffModeSubmitReview // submit review confirmation + overall prompt
+	diffModeConfirmQuit  // quit with pending comments
 )
 
 type diffTab int
@@ -28,6 +34,27 @@ const (
 type logEntry struct {
 	line string // original line
 	hash string // commit hash (empty for non-commit lines like graph connectors)
+}
+
+// diffLineMeta holds parsed metadata for each line in the diff output.
+type diffLineMeta struct {
+	file    string // file path (from +++ b/X)
+	lineNum int    // real line number in the file (0 for header/hunk lines)
+	side    string // "+", "-", " " (context), "" (header/hunk)
+	code    string // the code content (without +/- prefix)
+}
+
+// reviewComment holds a comment on a specific diff line.
+type reviewComment struct {
+	seqLine int    // sequential line number (1-based)
+	comment string // the comment text
+}
+
+// diffReviewSubmitMsg is emitted when the user submits review comments.
+// ui.go handles this to switch to chat and send the prompt.
+type diffReviewSubmitMsg struct {
+	sessionID string
+	prompt    string
 }
 
 // diffModel displays a git diff for a session.
@@ -64,6 +91,17 @@ type diffModel struct {
 	commitScroll  int
 	commitLoading bool
 	commitErr2    error
+
+	// Diff line metadata (parsed from diff output).
+	lineMeta []diffLineMeta
+
+	// Review comments.
+	comments     map[int]*reviewComment // keyed by sequential line number (1-based)
+	lineInput    textInput              // for line number entry (r/d)
+	commentInput textInput              // for editing a comment
+	reviewPrompt textInput              // for overall review prompt
+	lineAction   string                 // "comment" or "delete"
+	pendingLine  int                    // line number being commented
 }
 
 type diffLoadedMsg struct {
@@ -98,10 +136,14 @@ type gitShowLoadedMsg struct {
 
 func newDiffModel(c *client, sessionID string) diffModel {
 	return diffModel{
-		client:    c,
-		sessionID: sessionID,
-		loading:   true,
-		logLoading: true,
+		client:       c,
+		sessionID:    sessionID,
+		loading:      true,
+		logLoading:   true,
+		comments:     make(map[int]*reviewComment),
+		lineInput:    newTextInput(false),
+		commentInput: newTextInput(true),
+		reviewPrompt: newTextInput(true),
 	}
 }
 
@@ -184,6 +226,179 @@ func (m diffModel) doPush() tea.Cmd {
 	}
 }
 
+// parseDiffMeta parses diff output and returns metadata for each line.
+func parseDiffMeta(diff string) []diffLineMeta {
+	lines := strings.Split(diff, "\n")
+	meta := make([]diffLineMeta, len(lines))
+	var currentFile string
+	var oldLine, newLine int
+
+	for i, line := range lines {
+		switch {
+		case strings.HasPrefix(line, "+++ b/"):
+			currentFile = strings.TrimPrefix(line, "+++ b/")
+			meta[i] = diffLineMeta{file: currentFile, side: ""}
+		case strings.HasPrefix(line, "+++ "):
+			// +++ /dev/null or similar
+			meta[i] = diffLineMeta{file: currentFile, side: ""}
+		case strings.HasPrefix(line, "--- "):
+			meta[i] = diffLineMeta{file: currentFile, side: ""}
+		case strings.HasPrefix(line, "diff "):
+			// diff --git a/X b/Y — extract file from b/Y
+			if idx := strings.Index(line, " b/"); idx >= 0 {
+				currentFile = line[idx+3:]
+			}
+			meta[i] = diffLineMeta{file: currentFile, side: ""}
+		case strings.HasPrefix(line, "@@"):
+			// Parse hunk header: @@ -old,count +new,count @@
+			oldLine, newLine = parseHunkHeader(line)
+			meta[i] = diffLineMeta{file: currentFile, side: ""}
+		case strings.HasPrefix(line, "+"):
+			meta[i] = diffLineMeta{
+				file:    currentFile,
+				lineNum: newLine,
+				side:    "+",
+				code:    strings.TrimPrefix(line, "+"),
+			}
+			newLine++
+		case strings.HasPrefix(line, "-"):
+			meta[i] = diffLineMeta{
+				file:    currentFile,
+				lineNum: oldLine,
+				side:    "-",
+				code:    strings.TrimPrefix(line, "-"),
+			}
+			oldLine++
+		case len(line) > 0 && line[0] == ' ':
+			meta[i] = diffLineMeta{
+				file:    currentFile,
+				lineNum: newLine,
+				side:    " ",
+				code:    line[1:],
+			}
+			oldLine++
+			newLine++
+		default:
+			// index, mode, or other header lines
+			meta[i] = diffLineMeta{file: currentFile, side: ""}
+		}
+	}
+	return meta
+}
+
+// parseHunkHeader parses @@ -old,count +new,count @@ and returns old/new start lines.
+func parseHunkHeader(line string) (oldStart, newStart int) {
+	// Format: @@ -10,5 +12,7 @@ optional text
+	line = strings.TrimPrefix(line, "@@")
+	idx := strings.Index(line, "@@")
+	if idx >= 0 {
+		line = line[:idx]
+	}
+	line = strings.TrimSpace(line)
+
+	parts := strings.Fields(line)
+	for _, p := range parts {
+		if strings.HasPrefix(p, "-") {
+			p = strings.TrimPrefix(p, "-")
+			if comma := strings.Index(p, ","); comma >= 0 {
+				p = p[:comma]
+			}
+			n, _ := strconv.Atoi(p)
+			oldStart = n
+		} else if strings.HasPrefix(p, "+") {
+			p = strings.TrimPrefix(p, "+")
+			if comma := strings.Index(p, ","); comma >= 0 {
+				p = p[:comma]
+			}
+			n, _ := strconv.Atoi(p)
+			newStart = n
+		}
+	}
+	return
+}
+
+// buildReviewPrompt generates the review prompt from comments.
+func (m diffModel) buildReviewPrompt(overallComment string) string {
+	var b strings.Builder
+
+	if strings.TrimSpace(overallComment) != "" {
+		b.WriteString(overallComment)
+		b.WriteString("\n\n")
+	}
+
+	b.WriteString("Here are some review comments on the code currently in `git diff`. ")
+	b.WriteString("If comments are questions, answer those questions. ")
+	b.WriteString("If comments are unclear, or shouldn't be integrated, ask for feedback and confirmation. ")
+	b.WriteString("Else integrate the comments.\n")
+
+	// Group comments by file.
+	type fileComment struct {
+		file    string
+		lineNum int
+		code    string
+		comment string
+	}
+	var grouped []fileComment
+	for _, lineNum := range m.sortedCommentLines() {
+		c := m.comments[lineNum]
+		idx := c.seqLine - 1 // seqLine is 1-based, lineMeta is 0-based
+		if idx >= 0 && idx < len(m.lineMeta) {
+			lm := m.lineMeta[idx]
+			grouped = append(grouped, fileComment{
+				file:    lm.file,
+				lineNum: lm.lineNum,
+				code:    lm.code,
+				comment: c.comment,
+			})
+		}
+	}
+
+	// Sort by file then line number.
+	sort.Slice(grouped, func(i, j int) bool {
+		if grouped[i].file != grouped[j].file {
+			return grouped[i].file < grouped[j].file
+		}
+		return grouped[i].lineNum < grouped[j].lineNum
+	})
+
+	currentFile := ""
+	for _, fc := range grouped {
+		if fc.file != currentFile {
+			currentFile = fc.file
+			b.WriteString(fmt.Sprintf("\n## %s\n", currentFile))
+		}
+		if fc.lineNum > 0 {
+			b.WriteString(fmt.Sprintf("\n### Line %d\n", fc.lineNum))
+		} else {
+			b.WriteString("\n### (header)\n")
+		}
+		if fc.code != "" {
+			b.WriteString("```\n")
+			b.WriteString(fc.code)
+			b.WriteString("\n```\n")
+		}
+		b.WriteString("> " + strings.ReplaceAll(fc.comment, "\n", "\n> "))
+		b.WriteString("\n")
+	}
+
+	return b.String()
+}
+
+// hasComments returns true if there are any review comments.
+func (m diffModel) hasComments() bool {
+	return len(m.comments) > 0
+}
+
+// sortedCommentLines returns comment line numbers sorted ascending.
+func (m diffModel) sortedCommentLines() []int {
+	lines := make([]int, 0, len(m.comments))
+	for lineNum := range m.comments {
+		lines = append(lines, lineNum)
+	}
+	sort.Ints(lines)
+	return lines
+}
+
 // parseLogEntries extracts commit hashes from git log --oneline --graph output.
 func parseLogEntries(gitLog string) []logEntry {
 	lines := strings.Split(gitLog, "\n")
@@ -242,6 +457,9 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 		m.loading = false
 		m.diff = msg.diff
 		m.err = msg.err
+		if msg.diff != "" {
+			m.lineMeta = parseDiffMeta(msg.diff)
+		}
 
 	case gitLogLoadedMsg:
 		m.logLoading = false
@@ -291,12 +509,26 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 		}
 
 	case tea.KeyMsg:
-		if m.mode == diffModeCommitMsg {
+		// Route to mode-specific handlers.
+		switch m.mode {
+		case diffModeCommitMsg:
 			return m.updateCommitInput(msg)
+		case diffModeLineInput:
+			return m.updateLineInput(msg)
+		case diffModeComment:
+			return m.updateCommentInput(msg)
+		case diffModeSubmitReview:
+			return m.updateSubmitReview(msg)
+		case diffModeConfirmQuit:
+			return m.updateConfirmQuit(msg)
 		}
 
 		// Commit detail view.
 		if m.tab == diffTabCommit {
+			halfPage := m.height / 2
+			if halfPage < 1 {
+				halfPage = 10
+			}
 			switch msg.String() {
 			case "esc":
 				m.tab = m.prevTab
@@ -316,8 +548,20 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 				}
 			case "pgdown":
 				m.commitScroll += 10
+			case "ctrl+u":
+				m.commitScroll -= halfPage
+				if m.commitScroll < 0 {
+					m.commitScroll = 0
+				}
+			case "ctrl+d":
+				m.commitScroll += halfPage
 			}
 			return m, nil
+		}
+
+		halfPage := m.height / 2
+		if halfPage < 1 {
+			halfPage = 10
 		}
 
 		switch msg.String() {
@@ -369,6 +613,30 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 			} else {
 				m.scroll += 10
 			}
+		case "ctrl+u":
+			if m.tab == diffTabLog {
+				m.logCursor -= halfPage
+				if m.logCursor < 0 {
+					m.logCursor = 0
+				}
+			} else {
+				m.scroll -= halfPage
+				if m.scroll < 0 {
+					m.scroll = 0
+				}
+			}
+		case "ctrl+d":
+			if m.tab == diffTabLog {
+				m.logCursor += halfPage
+				if m.logCursor >= len(m.logEntries) {
+					m.logCursor = len(m.logEntries) - 1
+				}
+				if m.logCursor < 0 {
+					m.logCursor = 0
+				}
+			} else {
+				m.scroll += halfPage
+			}
 		case "enter":
 			if m.tab == diffTabLog && len(m.logEntries) > 0 && m.logCursor < len(m.logEntries) {
 				entry := m.logEntries[m.logCursor]
@@ -382,6 +650,25 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 					m.commitScroll = 0
 					return m, m.loadGitShow(entry.hash)
 				}
+			}
+			// On diff tab with comments, enter starts submit review flow.
+			if m.tab == diffTabDiff && m.hasComments() {
+				m.mode = diffModeSubmitReview
+				m.reviewPrompt.Reset()
+			}
+		case "r":
+			// Start adding a review comment (diff tab only).
+			if m.tab == diffTabDiff && m.diff != "" {
+				m.mode = diffModeLineInput
+				m.lineAction = "comment"
+				m.lineInput.Reset()
+			}
+		case "d":
+			// Start deleting a review comment (diff tab only).
+			if m.tab == diffTabDiff && m.hasComments() {
+				m.mode = diffModeLineInput
+				m.lineAction = "delete"
+				m.lineInput.Reset()
 			}
 		case "c":
 			if m.tab == diffTabDiff && m.diff != "" {
@@ -426,6 +713,117 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 	return m, nil
 }
 
+// updateLineInput handles key input when entering a line number for r/d.
+func (m diffModel) updateLineInput(msg tea.KeyMsg) (diffModel, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = diffModeView
+		m.lineInput.Reset()
+		return m, nil
+	}
+
+	handled, submitted := m.lineInput.HandleKey(msg)
+	if submitted {
+		lineStr := strings.TrimSpace(m.lineInput.Value())
+		lineNum, err := strconv.Atoi(lineStr)
+		if err != nil || lineNum < 1 || lineNum > len(m.lineMeta) {
+			// Invalid line number, stay in input mode.
+			m.lineInput.Reset()
+			return m, nil
+		}
+
+		if m.lineAction == "delete" {
+			delete(m.comments, lineNum)
+			m.mode = diffModeView
+			m.lineInput.Reset()
+		} else {
+			// Open comment editor for this line.
+			m.pendingLine = lineNum
+			m.mode = diffModeComment
+			m.commentInput.Reset()
+			// If there's an existing comment, load it.
+			if existing, ok := m.comments[lineNum]; ok {
+				m.commentInput.SetValue(existing.comment)
+			}
+			m.lineInput.Reset()
+		}
+		return m, nil
+	}
+	if !handled {
+		// Only allow digits in line input.
+	}
+	return m, nil
+}
+
+// updateCommentInput handles key input when editing a review comment.
+func (m diffModel) updateCommentInput(msg tea.KeyMsg) (diffModel, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = diffModeView
+		m.commentInput.Reset()
+		return m, nil
+	}
+
+	handled, submitted := m.commentInput.HandleKey(msg)
+	if submitted {
+		comment := strings.TrimSpace(m.commentInput.Value())
+		if comment != "" {
+			m.comments[m.pendingLine] = &reviewComment{
+				seqLine: m.pendingLine,
+				comment: comment,
+			}
+		}
+		m.mode = diffModeView
+		m.commentInput.Reset()
+		return m, nil
+	}
+	_ = handled
+	return m, nil
+}
+
+// updateSubmitReview handles the submit review confirmation screen.
+func (m diffModel) updateSubmitReview(msg tea.KeyMsg) (diffModel, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.mode = diffModeView
+		m.reviewPrompt.Reset()
+		return m, nil
+	}
+
+	handled, submitted := m.reviewPrompt.HandleKey(msg)
+	if submitted {
+		prompt := m.buildReviewPrompt(m.reviewPrompt.Value())
+		m.comments = make(map[int]*reviewComment)
+		m.mode = diffModeView
+		m.reviewPrompt.Reset()
+		return m, func() tea.Msg {
+			return diffReviewSubmitMsg{
+				sessionID: m.sessionID,
+				prompt:    prompt,
+			}
+		}
+	}
+	_ = handled
+	return m, nil
+}
+
+// updateConfirmQuit handles the "discard comments?" confirmation.
+func (m diffModel) updateConfirmQuit(msg tea.KeyMsg) (diffModel, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		// Discard comments and signal quit.
+		m.comments = make(map[int]*reviewComment)
+		m.mode = diffModeView
+		// Return a special value to signal the quit should proceed.
+		// We set comments to empty so the outer q/esc handler will pass through.
+		return m, nil
+	case "n", "N", "esc":
+		m.mode = diffModeView
+		return m, nil
+	}
+	return m, nil
+}
+
 func (m diffModel) updateCommitInput(msg tea.KeyMsg) (diffModel, tea.Cmd) {
 	if m.committing {
 		return m, nil
@@ -456,6 +854,15 @@ func (m diffModel) updateCommitInput(msg tea.KeyMsg) (diffModel, tea.Cmd) {
 	return m, nil
 }
 
+// shouldConfirmQuit returns true if quit should be intercepted for confirmation.
+func (m *diffModel) shouldConfirmQuit() bool {
+	if m.hasComments() && m.mode != diffModeConfirmQuit {
+		m.mode = diffModeConfirmQuit
+		return true
+	}
+	return false
+}
+
 func (m diffModel) View() string {
 	var b strings.Builder
 
@@ -481,6 +888,12 @@ func (m diffModel) View() string {
 		diffLabel = lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render(diffLabel)
 		logLabel = lipgloss.NewStyle().Foreground(colorMuted).Render(logLabel)
 		b.WriteString("  " + diffLabel + " " + logLabel)
+		// Show comment count if any.
+		if m.hasComments() {
+			count := lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B")).Render(
+				fmt.Sprintf(" [%d comment(s)]", len(m.comments)))
+			b.WriteString(count)
+		}
 	} else {
 		diffLabel = lipgloss.NewStyle().Foreground(colorMuted).Render(diffLabel)
 		logLabel = lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render(logLabel)
@@ -500,6 +913,12 @@ func (m diffModel) View() string {
 	return b.String()
 }
 
+var (
+	lineNumStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280")).Width(5).Align(lipgloss.Right)
+	commentMarker  = lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B")).Render("*")
+	noCommentSpace = " "
+)
+
 func (m diffModel) viewDiff() string {
 	var b strings.Builder
 
@@ -516,18 +935,27 @@ func (m diffModel) viewDiff() string {
 		return b.String()
 	}
 
-	// Reserve space for commit input if active.
-	commitHeight := 0
-	if m.mode == diffModeCommitMsg {
-		commitHeight = 3
+	// Reserve space for bottom area (input, comments list, etc.).
+	bottomHeight := 0
+	switch m.mode {
+	case diffModeCommitMsg:
+		bottomHeight = 3
 		if m.commitErr != nil {
-			commitHeight = 4
+			bottomHeight = 4
 		}
+	case diffModeLineInput:
+		bottomHeight = 2
+	case diffModeComment:
+		bottomHeight = 4
+	case diffModeSubmitReview:
+		bottomHeight = 6 + len(m.comments)
+	case diffModeConfirmQuit:
+		bottomHeight = 2
 	}
 
-	// Render diff with colors.
+	// Render diff with colors and line numbers.
 	lines := strings.Split(m.diff, "\n")
-	viewHeight := m.height - 5 - commitHeight
+	viewHeight := m.height - 5 - bottomHeight
 	if viewHeight < 1 {
 		viewHeight = 20
 	}
@@ -548,46 +976,146 @@ func (m diffModel) viewDiff() string {
 
 	for i := m.scroll; i < end; i++ {
 		line := lines[i]
+		seqNum := i + 1 // 1-based
+
+		// Line number gutter.
+		numStr := lineNumStyle.Render(strconv.Itoa(seqNum))
+
+		// Comment marker.
+		marker := noCommentSpace
+		if _, hasComment := m.comments[seqNum]; hasComment {
+			marker = commentMarker
+		}
+
 		styled := colorDiffLine(line)
-		b.WriteString(styled)
+		b.WriteString(numStr + marker + " " + styled)
 		b.WriteString("\n")
 	}
 
+	// Status line.
 	if len(lines) > viewHeight {
-		b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render(
-			fmt.Sprintf("  line %d-%d of %d", m.scroll+1, end, len(lines))))
-		b.WriteString("\n")
-	}
-
-	// Commit message input.
-	if m.mode == diffModeCommitMsg {
-		b.WriteString("\n")
-		action := "Commit message"
-		if m.amendMode && m.pushAfter {
-			action = "Amend+force-push message"
-		} else if m.amendMode {
-			action = "Amend message"
-		} else if m.pushAfter {
-			action = "Commit+push message"
-		}
-		if m.committing {
-			if m.amendMode && m.pushAfter {
-				b.WriteString("  Amending and force-pushing...")
-			} else if m.amendMode {
-				b.WriteString("  Amending...")
-			} else if m.pushAfter {
-				b.WriteString("  Committing and pushing...")
-			} else {
-				b.WriteString("  Committing...")
-			}
+		statusParts := []string{fmt.Sprintf("line %d-%d of %d", m.scroll+1, end, len(lines))}
+		if m.hasComments() {
+			statusParts = append(statusParts, "r=comment d=delete Enter=submit")
 		} else {
-			b.WriteString("  " + labelStyle.Render(action+":") + " " + fieldActiveStyle.Render(m.commitMsg+"█"))
+			statusParts = append(statusParts, "r=comment")
 		}
-		if m.commitErr != nil {
-			b.WriteString("\n  " + lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444")).Render(m.commitErr.Error()))
-		}
+		b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render(
+			"  " + strings.Join(statusParts, "  ")))
+		b.WriteString("\n")
 	}
 
+	// Mode-specific bottom area.
+	switch m.mode {
+	case diffModeCommitMsg:
+		b.WriteString(m.viewCommitMsgInput())
+	case diffModeLineInput:
+		b.WriteString(m.viewLineInput())
+	case diffModeComment:
+		b.WriteString(m.viewCommentInput())
+	case diffModeSubmitReview:
+		b.WriteString(m.viewSubmitReview())
+	case diffModeConfirmQuit:
+		b.WriteString(m.viewConfirmQuit())
+	}
+
+	return b.String()
+}
+
+func (m diffModel) viewLineInput() string {
+	var b strings.Builder
+	action := "Comment on line"
+	if m.lineAction == "delete" {
+		action = "Delete comment on line"
+	}
+	b.WriteString("\n  " + labelStyle.Render(action+":") + " " + fieldActiveStyle.Render(m.lineInput.Render()))
+	return b.String()
+}
+
+func (m diffModel) viewCommentInput() string {
+	var b strings.Builder
+	lineNum := m.pendingLine
+	label := fmt.Sprintf("Comment on line %d", lineNum)
+	// Show the code at that line.
+	if lineNum > 0 && lineNum <= len(m.lineMeta) {
+		lm := m.lineMeta[lineNum-1]
+		if lm.code != "" {
+			codePrev := lm.code
+			if len(codePrev) > 60 {
+				codePrev = codePrev[:60] + "..."
+			}
+			label += fmt.Sprintf(" (%s:%d  %s)", lm.file, lm.lineNum, strings.TrimSpace(codePrev))
+		}
+	}
+	b.WriteString("\n  " + labelStyle.Render(label))
+	b.WriteString("\n  " + fieldActiveStyle.Render(m.commentInput.Render()))
+	b.WriteString("\n  " + lipgloss.NewStyle().Foreground(colorMuted).Render("Enter=save  Ctrl+J=newline  Esc=cancel"))
+	return b.String()
+}
+
+func (m diffModel) viewSubmitReview() string {
+	var b strings.Builder
+	b.WriteString("\n  " + lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render("Submit review comments?"))
+	b.WriteString("\n")
+
+	// Show comment summary (sorted by line number).
+	for _, lineNum := range m.sortedCommentLines() {
+		c := m.comments[lineNum]
+		commentPreview := c.comment
+		if len(commentPreview) > 50 {
+			commentPreview = commentPreview[:50] + "..."
+		}
+		file := ""
+		realLine := 0
+		if lineNum > 0 && lineNum <= len(m.lineMeta) {
+			lm := m.lineMeta[lineNum-1]
+			file = lm.file
+			realLine = lm.lineNum
+		}
+		loc := fmt.Sprintf("%s:%d", file, realLine)
+		b.WriteString(fmt.Sprintf("  %s  %s\n",
+			lipgloss.NewStyle().Foreground(lipgloss.Color("#60A5FA")).Render(loc),
+			lipgloss.NewStyle().Foreground(colorMuted).Render(commentPreview)))
+	}
+
+	b.WriteString("\n  " + labelStyle.Render("Overall comment (optional):") + " " + fieldActiveStyle.Render(m.reviewPrompt.Render()))
+	b.WriteString("\n  " + lipgloss.NewStyle().Foreground(colorMuted).Render("Enter=submit  Esc=cancel"))
+	return b.String()
+}
+
+func (m diffModel) viewConfirmQuit() string {
+	return fmt.Sprintf("\n  %s (%d comment(s) will be lost)  y/n",
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444")).Render("Discard review comments?"),
+		len(m.comments))
+}
+
+func (m diffModel) viewCommitMsgInput() string {
+	var b strings.Builder
+	b.WriteString("\n")
+	action := "Commit message"
+	if m.amendMode && m.pushAfter {
+		action = "Amend+force-push message"
+	} else if m.amendMode {
+		action = "Amend message"
+	} else if m.pushAfter {
+		action = "Commit+push message"
+	}
+	if m.committing {
+		if m.amendMode && m.pushAfter {
+			b.WriteString("  Amending and force-pushing...")
+		} else if m.amendMode {
+			b.WriteString("  Amending...")
+		} else if m.pushAfter {
+			b.WriteString("  Committing and pushing...")
+		} else {
+			b.WriteString("  Committing...")
+		}
+	} else {
+		b.WriteString("  " + labelStyle.Render(action+":") + " " + fieldActiveStyle.Render(m.commitMsg+"█"))
+	}
+	if m.commitErr != nil {
+		b.WriteString("\n  " + lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444")).Render(m.commitErr.Error()))
+	}
 	return b.String()
 }
 
