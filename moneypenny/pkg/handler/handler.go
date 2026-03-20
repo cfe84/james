@@ -758,8 +758,31 @@ func (h *Handler) gitDiff(_ context.Context, cmd *envelope.Command) *envelope.Re
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to run git diff --cached: %v", err))
 	}
 
+	// Find untracked files and generate diffs for them.
+	untrackedCmd := exec.Command("git", "ls-files", "--others", "--exclude-standard")
+	untrackedCmd.Dir = sess.Path
+	untrackedOut, err := untrackedCmd.Output()
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to list untracked files: %v", err))
+	}
+	var untrackedDiff string
+	if len(untrackedOut) > 0 {
+		files := strings.Split(strings.TrimSpace(string(untrackedOut)), "\n")
+		for _, f := range files {
+			if f == "" {
+				continue
+			}
+			// git diff --no-index exits with code 1 when there are differences,
+			// so we ignore the error and just use the output.
+			newCmd := exec.Command("git", "diff", "--no-index", "--", "/dev/null", f)
+			newCmd.Dir = sess.Path
+			out, _ := newCmd.CombinedOutput()
+			untrackedDiff += string(out)
+		}
+	}
+
 	// Combine output.
-	combined := string(unstaged) + string(staged)
+	combined := string(unstaged) + string(staged) + untrackedDiff
 
 	return envelope.SuccessResponse(cmd.RequestID, map[string]string{"diff": combined})
 }
