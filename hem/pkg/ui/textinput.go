@@ -123,3 +123,39 @@ func (t *textInput) HandleKey(msg tea.KeyMsg) (handled, submitted bool) {
 func (t *textInput) Render() string {
 	return t.text[:t.cursorPos] + "█" + t.text[t.cursorPos:]
 }
+
+// RenderWrapped returns the text with cursor, wrapped to maxWidth.
+// Each line beyond the first is prefixed with indent spaces.
+func (t *textInput) RenderWrapped(maxWidth, indent int) []string {
+	raw := t.text[:t.cursorPos] + "█" + t.text[t.cursorPos:]
+	if maxWidth <= 0 {
+		return []string{raw}
+	}
+
+	// Split on explicit newlines first, then wrap each segment.
+	segments := splitLines(raw)
+	var lines []string
+	for _, seg := range segments {
+		wrapped := wrapText(seg, maxWidth)
+		if len(wrapped) == 0 {
+			lines = append(lines, "")
+		} else {
+			lines = append(lines, wrapped...)
+		}
+	}
+	return lines
+}
+
+// splitLines splits a string on newline characters.
+func splitLines(s string) []string {
+	var lines []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\n' {
+			lines = append(lines, s[start:i])
+			start = i + 1
+		}
+	}
+	lines = append(lines, s[start:])
+	return lines
+}

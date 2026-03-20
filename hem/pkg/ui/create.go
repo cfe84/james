@@ -27,6 +27,22 @@ type formField struct {
 	isBool    bool
 	options   []string // if set, field is a selector (cycle with Space)
 	cursorPos int
+	input     *textInput // if set, delegates key handling and rendering to textInput
+}
+
+// syncFromInput copies textInput state back to the formField value/cursorPos.
+func (f *formField) syncFromInput() {
+	if f.input != nil {
+		f.value = f.input.Value()
+		f.cursorPos = f.input.cursorPos
+	}
+}
+
+// syncToInput copies formField value into the textInput (e.g. after external set).
+func (f *formField) syncToInput() {
+	if f.input != nil {
+		f.input.SetValue(f.value)
+	}
 }
 
 func newCreateModel(c *client) createModel {

@@ -86,6 +86,7 @@ type wizardModelsLoadedMsg struct {
 }
 
 func newWizardModel(c *client) wizardModel {
+	spInput := newTextInput(true)
 	return wizardModel{
 		step:        wizardStepMoneypenny,
 		client:      c,
@@ -97,7 +98,8 @@ func newWizardModel(c *client) wizardModel {
 			{label: "Project", flag: "--project", value: ""},
 			{label: "Agent", flag: "--agent", value: "", options: []string{"", "claude", "copilot"}},
 			{label: "Model", flag: "--model", value: "", options: []string{""}},
-			{label: "System Prompt", flag: "--system-prompt", value: ""},
+			{label: "Effort", flag: "--effort", value: "", options: []string{"", "low", "medium", "high"}},
+			{label: "System Prompt", flag: "--system-prompt", value: "", input: &spInput},
 			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
 			{label: "Gadgets (James tooling)", flag: "--gadgets", isBool: true, value: "false"},
 		},
@@ -292,6 +294,7 @@ func (m wizardModel) Update(msg tea.Msg) (wizardModel, tea.Cmd) {
 			if m.fields[i].flag == "--system-prompt" && p.DefaultSystemPrompt != "" && m.fields[i].value == "" {
 				m.fields[i].value = p.DefaultSystemPrompt
 				m.fields[i].cursorPos = len(p.DefaultSystemPrompt)
+				m.fields[i].syncToInput()
 			}
 		}
 		m.step = wizardStepForm
@@ -440,17 +443,59 @@ func (m wizardModel) updateFormStep(msg tea.KeyMsg) (wizardModel, tea.Cmd) {
 		return m, nil
 	}
 	field := &m.fields[m.fCursor]
+
+	// Navigation keys handled before delegating to textInput.
 	switch msg.String() {
 	case "up":
 		if m.fCursor > 0 {
 			m.fCursor--
 		}
+		return m, nil
 	case "down":
 		if m.fCursor < len(m.fields)-1 {
 			m.fCursor++
 		}
+		return m, nil
 	case "tab":
 		m.fCursor = (m.fCursor + 1) % len(m.fields)
+		return m, nil
+	}
+
+	// Delegate to textInput if the field has one.
+	if field.input != nil {
+		submitForm := func() (wizardModel, tea.Cmd) {
+			field.syncFromInput()
+			required := m.fields[0].value
+			if strings.TrimSpace(required) != "" {
+				m.creating = true
+				if m.forProject {
+					return m, m.createProject()
+				}
+				return m, m.createSession()
+			}
+			return m, nil
+		}
+		switch msg.String() {
+		case "enter":
+			return submitForm()
+		case "ctrl+u":
+			field.input.Reset()
+			field.syncFromInput()
+			return m, nil
+		default:
+			handled, submitted := field.input.HandleKey(msg)
+			if submitted {
+				return submitForm()
+			}
+			if handled {
+				field.syncFromInput()
+			}
+		}
+		return m, nil
+	}
+
+	// Standard field handling for fields without textInput.
+	switch msg.String() {
 	case "enter":
 		required := m.fields[0].value
 		if strings.TrimSpace(required) != "" {
@@ -784,6 +829,17 @@ func (m wizardModel) viewFormStep() string {
 				} else {
 					value = fieldActiveStyle.Render("[ ] " + f.value)
 				}
+			} else if f.input != nil {
+				lines := f.input.RenderWrapped(maxValueWidth, valueIndent)
+				var parts []string
+				for j, line := range lines {
+					rendered := fieldActiveStyle.Render(line)
+					if j > 0 {
+						rendered = strings.Repeat(" ", valueIndent) + rendered
+					}
+					parts = append(parts, rendered)
+				}
+				value = strings.Join(parts, "\n")
 			} else {
 				text := f.value[:f.cursorPos] + "\u2588" + f.value[f.cursorPos:]
 				lines := wrapText(text, maxValueWidth)
@@ -808,6 +864,26 @@ func (m wizardModel) viewFormStep() string {
 				value = fieldInactiveStyle.Render(f.value)
 			} else if f.value == "" {
 				value = fieldInactiveStyle.Render("(empty)")
+			} else if f.input != nil {
+				segments := splitLines(f.value)
+				var allLines []string
+				for _, seg := range segments {
+					wrapped := wrapText(seg, maxValueWidth)
+					if len(wrapped) == 0 {
+						allLines = append(allLines, "")
+					} else {
+						allLines = append(allLines, wrapped...)
+					}
+				}
+				var parts []string
+				for j, line := range allLines {
+					rendered := fieldInactiveStyle.Render(line)
+					if j > 0 {
+						rendered = strings.Repeat(" ", valueIndent) + rendered
+					}
+					parts = append(parts, rendered)
+				}
+				value = strings.Join(parts, "\n")
 			} else {
 				lines := wrapText(f.value, maxValueWidth)
 				var parts []string

@@ -163,6 +163,7 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 		Agent:        data.Agent,
 		SystemPrompt: systemPrompt,
 		Model:        data.Model,
+		Effort:       data.Effort,
 		Yolo:         data.Yolo,
 		Path:         data.Path,
 	}
@@ -187,6 +188,7 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 		Prompt:       data.Prompt,
 		SystemPrompt: systemPrompt,
 		Model:        data.Model,
+		Effort:       data.Effort,
 		Yolo:         data.Yolo,
 		Path:         data.Path,
 		Resume:       false,
@@ -239,6 +241,7 @@ func (h *Handler) continueSession(ctx context.Context, cmd *envelope.Command) *e
 		Prompt:       data.Prompt,
 		SystemPrompt: sess.SystemPrompt,
 		Model:        sess.Model,
+		Effort:       sess.Effort,
 		Yolo:         sess.Yolo,
 		Path:         sess.Path,
 		Resume:       true,
@@ -332,6 +335,8 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 			Agent:        sess.Agent,
 			Prompt:       combinedPrompt,
 			SystemPrompt: sess.SystemPrompt,
+			Model:        sess.Model,
+			Effort:       sess.Effort,
 			Yolo:         sess.Yolo,
 			Path:         sess.Path,
 			Resume:       true,
@@ -393,6 +398,7 @@ func (h *Handler) getSession(_ context.Context, cmd *envelope.Command) *envelope
 		Agent:        sess.Agent,
 		SystemPrompt: sess.SystemPrompt,
 		Model:        sess.Model,
+		Effort:       sess.Effort,
 		Yolo:         sess.Yolo,
 		Path:         sess.Path,
 	}
@@ -519,7 +525,7 @@ func (h *Handler) updateSession(_ context.Context, cmd *envelope.Command) *envel
 		}
 	}
 
-	if err := h.store.UpdateSessionFields(data.SessionID, data.Name, data.SystemPrompt, data.Model, data.Path, data.Yolo); err != nil {
+	if err := h.store.UpdateSessionFields(data.SessionID, data.Name, data.SystemPrompt, data.Model, data.Effort, data.Path, data.Yolo); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to update session: %v", err))
 	}
 
@@ -1157,6 +1163,8 @@ func (h *Handler) processDueSchedules() {
 				Agent:        sess.Agent,
 				Prompt:       sch.Prompt,
 				SystemPrompt: sess.SystemPrompt,
+				Model:        sess.Model,
+				Effort:       sess.Effort,
 				Yolo:         sess.Yolo,
 				Path:         sess.Path,
 				Resume:       true,

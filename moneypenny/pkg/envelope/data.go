@@ -5,6 +5,7 @@ type CreateSessionData struct {
 	Agent        string `json:"agent"`
 	SystemPrompt string `json:"system_prompt"`
 	Model        string `json:"model,omitempty"`
+	Effort       string `json:"effort,omitempty"`
 	Yolo         bool   `json:"yolo"`
 	Prompt       string `json:"prompt"`
 	SessionID    string `json:"session_id"`
@@ -25,6 +26,7 @@ type UpdateSessionData struct {
 	Name         *string `json:"name,omitempty"`
 	SystemPrompt *string `json:"system_prompt,omitempty"`
 	Model        *string `json:"model,omitempty"`
+	Effort       *string `json:"effort,omitempty"`
 	Yolo         *bool   `json:"yolo,omitempty"`
 	Path         *string `json:"path,omitempty"`
 }
@@ -71,6 +73,7 @@ type SessionDetail struct {
 	Agent        string `json:"agent"`
 	SystemPrompt string `json:"system_prompt"`
 	Model        string `json:"model,omitempty"`
+	Effort       string `json:"effort,omitempty"`
 	Yolo         bool   `json:"yolo"`
 	Path         string `json:"path"`
 	LastAccessed string `json:"last_accessed,omitempty"`

@@ -43,6 +43,7 @@ type editModelsLoadedMsg struct {
 }
 
 func newEditModel(c *client, sessionID string) editModel {
+	spInput := newTextInput(true)
 	return editModel{
 		client:    c,
 		sessionID: sessionID,
@@ -51,7 +52,8 @@ func newEditModel(c *client, sessionID string) editModel {
 			{label: "Name", flag: "--name", value: ""},
 			{label: "Project", flag: "--project", value: "", options: []string{""}},
 			{label: "Model", flag: "--model", value: "", options: []string{""}},
-			{label: "System Prompt", flag: "--system-prompt", value: ""},
+			{label: "Effort", flag: "--effort", value: "", options: []string{"", "low", "medium", "high"}},
+			{label: "System Prompt", flag: "--system-prompt", value: "", input: &spInput},
 			{label: "Path", flag: "--path", value: ""},
 			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
 			{label: "Gadgets (James tooling)", flag: "--gadgets", isBool: true, value: "false"},
@@ -120,21 +122,23 @@ func (m editModel) Update(msg tea.Msg) (editModel, tea.Cmd) {
 		// Project field (index 1) is left empty — it's a local hem concept,
 		// not available from moneypenny's session detail.
 		m.fields[2].value = d.Model
-		m.fields[3].value = d.SystemPrompt
-		m.fields[4].value = d.Path
+		m.fields[3].value = d.Effort
+		m.fields[4].value = d.SystemPrompt
+		m.fields[5].value = d.Path
 		if d.Yolo {
-			m.fields[5].value = "true"
-		} else {
-			m.fields[5].value = "false"
-		}
-		if d.Gadgets {
 			m.fields[6].value = "true"
 		} else {
 			m.fields[6].value = "false"
 		}
-		// Place cursors at end of values and store originals for diff.
+		if d.Gadgets {
+			m.fields[7].value = "true"
+		} else {
+			m.fields[7].value = "false"
+		}
+		// Place cursors at end of values and sync textInput fields.
 		for i := range m.fields {
 			m.fields[i].cursorPos = len(m.fields[i].value)
+			m.fields[i].syncToInput()
 		}
 		m.original = make([]string, len(m.fields))
 		for i, f := range m.fields {
@@ -183,17 +187,52 @@ func (m editModel) Update(msg tea.Msg) (editModel, tea.Cmd) {
 			return m, nil
 		}
 		field := &m.fields[m.cursor]
+
+		// Navigation keys handled before delegating to textInput.
 		switch msg.String() {
 		case "up":
 			if m.cursor > 0 {
 				m.cursor--
 			}
+			return m, nil
 		case "down":
 			if m.cursor < len(m.fields)-1 {
 				m.cursor++
 			}
+			return m, nil
 		case "tab":
 			m.cursor = (m.cursor + 1) % len(m.fields)
+			return m, nil
+		}
+
+		// Delegate to textInput if the field has one.
+		if field.input != nil {
+			switch msg.String() {
+			case "enter":
+				// Submit the form.
+				m.saving = true
+				field.syncFromInput()
+				return m, m.save()
+			case "ctrl+u":
+				field.input.Reset()
+				field.syncFromInput()
+				return m, nil
+			default:
+				handled, submitted := field.input.HandleKey(msg)
+				if submitted {
+					m.saving = true
+					field.syncFromInput()
+					return m, m.save()
+				}
+				if handled {
+					field.syncFromInput()
+				}
+			}
+			return m, nil
+		}
+
+		// Standard field handling for fields without textInput.
+		switch msg.String() {
 		case "enter":
 			m.saving = true
 			return m, m.save()
@@ -280,6 +319,13 @@ func (m editModel) View() string {
 		return dialogStyle.Render(b.String())
 	}
 
+	// labelWidth (24) + indent (2) + space (1) = 27 chars before value.
+	const valueIndent = 27
+	maxValueWidth := m.width - valueIndent - 2
+	if maxValueWidth < 20 {
+		maxValueWidth = 20
+	}
+
 	for i, f := range m.fields {
 		label := labelStyle.Render(f.label + ":")
 
@@ -303,6 +349,18 @@ func (m editModel) View() string {
 				} else {
 					value = fieldActiveStyle.Render("[ ] " + f.value)
 				}
+			} else if f.input != nil {
+				// Multiline textInput field — render wrapped.
+				lines := f.input.RenderWrapped(maxValueWidth, valueIndent)
+				var parts []string
+				for j, line := range lines {
+					rendered := fieldActiveStyle.Render(line)
+					if j > 0 {
+						rendered = strings.Repeat(" ", valueIndent) + rendered
+					}
+					parts = append(parts, rendered)
+				}
+				value = strings.Join(parts, "\n")
 			} else {
 				value = fieldActiveStyle.Render(f.value[:f.cursorPos] + "█" + f.value[f.cursorPos:])
 			}
@@ -317,6 +375,27 @@ func (m editModel) View() string {
 				value = fieldInactiveStyle.Render(f.value)
 			} else if f.value == "" {
 				value = fieldInactiveStyle.Render("(empty)")
+			} else if f.input != nil {
+				// Multiline textInput field — render wrapped (inactive).
+				segments := splitLines(f.value)
+				var allLines []string
+				for _, seg := range segments {
+					wrapped := wrapText(seg, maxValueWidth)
+					if len(wrapped) == 0 {
+						allLines = append(allLines, "")
+					} else {
+						allLines = append(allLines, wrapped...)
+					}
+				}
+				var parts []string
+				for j, line := range allLines {
+					rendered := fieldInactiveStyle.Render(line)
+					if j > 0 {
+						rendered = strings.Repeat(" ", valueIndent) + rendered
+					}
+					parts = append(parts, rendered)
+				}
+				value = strings.Join(parts, "\n")
 			} else {
 				value = fieldInactiveStyle.Render(f.value)
 			}
@@ -331,7 +410,8 @@ func (m editModel) View() string {
 		b.WriteString(statusDescStyle.Render(" Enter ") + " save  " +
 			statusDescStyle.Render(" Tab ") + " next field  " +
 			statusDescStyle.Render(" Esc ") + " cancel  " +
-			statusDescStyle.Render(" Ctrl+U ") + " clear")
+			statusDescStyle.Render(" Ctrl+U ") + " clear  " +
+			statusDescStyle.Render(" Ctrl+J ") + " newline")
 	}
 
 	if m.err != nil {

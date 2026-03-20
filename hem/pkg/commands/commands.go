@@ -822,6 +822,7 @@ type SessionShowResult struct {
 	Agent        string `json:"agent"`
 	SystemPrompt string `json:"system_prompt"`
 	Model        string `json:"model,omitempty"`
+	Effort       string `json:"effort,omitempty"`
 	Yolo         bool   `json:"yolo"`
 	Gadgets      bool   `json:"gadgets"`
 	Path         string `json:"path"`
@@ -1255,7 +1256,7 @@ func (e *Executor) DisableSetting(name string) *protocol.Response {
 // ---------------------------------------------------------------------------
 
 func (e *Executor) CreateSession(args []string) *protocol.Response {
-	var mpName, sessionName, systemPrompt, pathArg, agentName, projectNameOrID, modelName string
+	var mpName, sessionName, systemPrompt, pathArg, agentName, projectNameOrID, modelName, effortName string
 	var yolo, async, gadgets bool
 
 	remaining, err := parseFlagsFromArgs("create-session", args, func(fs *flag.FlagSet) {
@@ -1263,6 +1264,7 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 		fs.StringVar(&mpName, "moneypenny", "", "moneypenny name")
 		fs.StringVar(&agentName, "agent", "", "agent to use")
 		fs.StringVar(&modelName, "model", "", "model to use (e.g. sonnet, opus)")
+		fs.StringVar(&effortName, "effort", "", "reasoning effort level (e.g. low, medium, high)")
 		fs.StringVar(&sessionName, "name", "", "session name")
 		fs.StringVar(&systemPrompt, "system-prompt", "", "system prompt")
 		fs.BoolVar(&yolo, "yolo", false, "enable yolo mode")
@@ -1371,6 +1373,9 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 	}
 	if modelName != "" {
 		cmdData["model"] = modelName
+	}
+	if effortName != "" {
+		cmdData["effort"] = effortName
 	}
 	if yolo {
 		cmdData["yolo"] = true
@@ -1774,12 +1779,15 @@ func (e *Executor) ShowSession(args []string) *protocol.Response {
 	if v, ok := raw["model"].(string); ok {
 		result.Model = v
 	}
+	if v, ok := raw["effort"].(string); ok {
+		result.Effort = v
+	}
 
 	return protocol.OKResponse(result)
 }
 
 func (e *Executor) UpdateSession(args []string) *protocol.Response {
-	var sessionID, name, systemPrompt, pathArg, modelStr string
+	var sessionID, name, systemPrompt, pathArg, modelStr, effortStr string
 	var yoloStr, projectNameOrID, gadgetsStr string
 
 	remaining, err := parseFlagsFromArgs("update-session", args, func(fs *flag.FlagSet) {
@@ -1787,6 +1795,7 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 		fs.StringVar(&name, "name", "", "session name")
 		fs.StringVar(&systemPrompt, "system-prompt", "", "system prompt")
 		fs.StringVar(&modelStr, "model", "", "model (e.g. sonnet, opus)")
+		fs.StringVar(&effortStr, "effort", "", "reasoning effort level (e.g. low, medium, high)")
 		fs.StringVar(&yoloStr, "yolo", "", "yolo mode (true/false)")
 		fs.StringVar(&pathArg, "path", "", "working directory path")
 		fs.StringVar(&projectNameOrID, "project", "", "move to project (name or ID)")
@@ -1824,6 +1833,10 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 	}
 	if modelStr != "" {
 		cmdData["model"] = modelStr
+		hasUpdate = true
+	}
+	if effortStr != "" {
+		cmdData["effort"] = effortStr
 		hasUpdate = true
 	}
 	if pathArg != "" {
@@ -4316,7 +4329,7 @@ func (e *Executor) ActivitySession(args []string) *protocol.Response {
 
 // CreateSubSession creates a sub-session under a parent session.
 func (e *Executor) CreateSubSession(args []string) *protocol.Response {
-	var mpName, sessionName, systemPrompt, pathArg, agentName, parentSessionID, modelName, callbackPrompt string
+	var mpName, sessionName, systemPrompt, pathArg, agentName, parentSessionID, modelName, effortName, callbackPrompt string
 	var yolo, async, gadgets bool
 
 	remaining, err := parseFlagsFromArgs("create-subsession", args, func(fs *flag.FlagSet) {
@@ -4325,6 +4338,7 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 		fs.StringVar(&mpName, "moneypenny", "", "moneypenny name")
 		fs.StringVar(&agentName, "agent", "", "agent to use")
 		fs.StringVar(&modelName, "model", "", "model to use (e.g. sonnet, opus)")
+		fs.StringVar(&effortName, "effort", "", "reasoning effort level (e.g. low, medium, high)")
 		fs.StringVar(&sessionName, "name", "", "sub-session name")
 		fs.StringVar(&systemPrompt, "system-prompt", "", "system prompt")
 		fs.BoolVar(&yolo, "yolo", false, "enable yolo mode")
@@ -4435,6 +4449,9 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 	}
 	if modelName != "" {
 		cmdData["model"] = modelName
+	}
+	if effortName != "" {
+		cmdData["effort"] = effortName
 	}
 	if yolo {
 		cmdData["yolo"] = true

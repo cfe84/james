@@ -5,6 +5,7 @@ package updater
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -261,10 +262,22 @@ func (u *Updater) checkLatest(ctx context.Context) (*gitHubRelease, error) {
 	return &rel, nil
 }
 
+// exeSuffix returns ".exe" on Windows, "" otherwise.
+func exeSuffix() string {
+	if runtime.GOOS == "windows" {
+		return ".exe"
+	}
+	return ""
+}
+
 // downloadAndStage downloads the platform-specific archive and extracts moneypenny + mi6-client.
 func (u *Updater) downloadAndStage(ctx context.Context, rel *gitHubRelease) (string, error) {
-	// Find the right asset: james-GOOS-GOARCH.tar.gz
-	archiveName := fmt.Sprintf("james-%s-%s.tar.gz", runtime.GOOS, runtime.GOARCH)
+	// Find the right asset: james-GOOS-GOARCH.tar.gz (or .zip on Windows).
+	ext := ".tar.gz"
+	if runtime.GOOS == "windows" {
+		ext = ".zip"
+	}
+	archiveName := fmt.Sprintf("james-%s-%s%s", runtime.GOOS, runtime.GOARCH, ext)
 	var downloadURL string
 	for _, a := range rel.Assets {
 		if a.Name == archiveName {
@@ -300,16 +313,40 @@ func (u *Updater) downloadAndStage(ctx context.Context, rel *gitHubRelease) (str
 		return "", fmt.Errorf("create stage dir: %w", err)
 	}
 
-	// Extract from tar.gz — we want moneypenny and mi6-client binaries.
-	gz, err := gzip.NewReader(resp.Body)
+	suffix := exeSuffix()
+	wantBinaries := map[string]bool{
+		"moneypenny" + suffix: false,
+		"mi6-client" + suffix: false,
+	}
+
+	if runtime.GOOS == "windows" {
+		err = u.extractZip(resp.Body, stageDir, wantBinaries)
+	} else {
+		err = u.extractTarGz(resp.Body, stageDir, wantBinaries)
+	}
 	if err != nil {
 		os.RemoveAll(stageDir)
-		return "", fmt.Errorf("gzip reader: %w", err)
+		return "", err
+	}
+
+	// Verify at least moneypenny was extracted.
+	if !wantBinaries["moneypenny"+suffix] {
+		os.RemoveAll(stageDir)
+		return "", fmt.Errorf("moneypenny binary not found in archive")
+	}
+
+	return stageDir, nil
+}
+
+// extractTarGz extracts wanted binaries from a tar.gz stream.
+func (u *Updater) extractTarGz(r io.Reader, stageDir string, wantBinaries map[string]bool) error {
+	gz, err := gzip.NewReader(r)
+	if err != nil {
+		return fmt.Errorf("gzip reader: %w", err)
 	}
 	defer gz.Close()
 
 	tr := tar.NewReader(gz)
-	wantBinaries := map[string]bool{"moneypenny": false, "mi6-client": false}
 
 	for {
 		hdr, err := tr.Next()
@@ -317,8 +354,7 @@ func (u *Updater) downloadAndStage(ctx context.Context, rel *gitHubRelease) (str
 			break
 		}
 		if err != nil {
-			os.RemoveAll(stageDir)
-			return "", fmt.Errorf("read tar: %w", err)
+			return fmt.Errorf("read tar: %w", err)
 		}
 
 		// Entries are like james-darwin-arm64/moneypenny
@@ -330,26 +366,70 @@ func (u *Updater) downloadAndStage(ctx context.Context, rel *gitHubRelease) (str
 		outPath := filepath.Join(stageDir, base)
 		f, err := os.OpenFile(outPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
 		if err != nil {
-			os.RemoveAll(stageDir)
-			return "", fmt.Errorf("create %s: %w", base, err)
+			return fmt.Errorf("create %s: %w", base, err)
 		}
 		if _, err := io.Copy(f, tr); err != nil {
 			f.Close()
-			os.RemoveAll(stageDir)
-			return "", fmt.Errorf("extract %s: %w", base, err)
+			return fmt.Errorf("extract %s: %w", base, err)
 		}
 		f.Close()
 		wantBinaries[base] = true
 		u.vlog.Printf("extracted %s to %s", base, outPath)
 	}
 
-	// Verify at least moneypenny was extracted.
-	if !wantBinaries["moneypenny"] {
-		os.RemoveAll(stageDir)
-		return "", fmt.Errorf("moneypenny binary not found in archive")
+	return nil
+}
+
+// extractZip extracts wanted binaries from a zip archive.
+// Since zip requires random access, we download to a temp file first.
+func (u *Updater) extractZip(r io.Reader, stageDir string, wantBinaries map[string]bool) error {
+	// Write to temp file since zip needs random access.
+	tmp, err := os.CreateTemp("", "james-update-*.zip")
+	if err != nil {
+		return fmt.Errorf("create temp file: %w", err)
+	}
+	defer os.Remove(tmp.Name())
+	defer tmp.Close()
+
+	size, err := io.Copy(tmp, r)
+	if err != nil {
+		return fmt.Errorf("download to temp: %w", err)
 	}
 
-	return stageDir, nil
+	zr, err := zip.NewReader(tmp, size)
+	if err != nil {
+		return fmt.Errorf("zip reader: %w", err)
+	}
+
+	for _, f := range zr.File {
+		base := filepath.Base(f.Name)
+		if _, want := wantBinaries[base]; !want {
+			continue
+		}
+
+		rc, err := f.Open()
+		if err != nil {
+			return fmt.Errorf("open zip entry %s: %w", base, err)
+		}
+
+		outPath := filepath.Join(stageDir, base)
+		out, err := os.OpenFile(outPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+		if err != nil {
+			rc.Close()
+			return fmt.Errorf("create %s: %w", base, err)
+		}
+		if _, err := io.Copy(out, rc); err != nil {
+			out.Close()
+			rc.Close()
+			return fmt.Errorf("extract %s: %w", base, err)
+		}
+		out.Close()
+		rc.Close()
+		wantBinaries[base] = true
+		u.vlog.Printf("extracted %s to %s", base, outPath)
+	}
+
+	return nil
 }
 
 // waitForIdle polls until all sessions are idle or context is cancelled.
@@ -385,16 +465,17 @@ func (u *Updater) swapAndRestart(stagedDir string) error {
 		return fmt.Errorf("resolve symlinks: %w", err)
 	}
 
-	newExe := filepath.Join(stagedDir, "moneypenny")
+	suffix := exeSuffix()
+	newExe := filepath.Join(stagedDir, "moneypenny"+suffix)
 	if _, err := os.Stat(newExe); err != nil {
 		return fmt.Errorf("staged binary not found: %w", err)
 	}
 
 	// Also swap mi6-client if it was staged and exists alongside current binary.
 	currentDir := filepath.Dir(currentExe)
-	newMI6 := filepath.Join(stagedDir, "mi6-client")
+	newMI6 := filepath.Join(stagedDir, "mi6-client"+suffix)
 	if _, err := os.Stat(newMI6); err == nil {
-		currentMI6 := filepath.Join(currentDir, "mi6-client")
+		currentMI6 := filepath.Join(currentDir, "mi6-client"+suffix)
 		if _, err := os.Stat(currentMI6); err == nil {
 			u.vlog.Printf("swapping mi6-client: %s -> %s", newMI6, currentMI6)
 			if err := atomicSwap(newMI6, currentMI6); err != nil {

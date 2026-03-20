@@ -61,6 +61,7 @@ type RunParams struct {
 	Prompt       string
 	SystemPrompt string // only used on first invocation
 	Model        string // model override (e.g. "sonnet", "opus")
+	Effort       string // reasoning effort level (e.g. "low", "medium", "high")
 	Yolo         bool
 	Path         string // working directory for the agent
 	Resume       bool   // true for continue_session
@@ -278,6 +279,9 @@ func buildClaudeArgs(params RunParams) []string {
 	}
 	if params.Model != "" {
 		args = append(args, "--model", params.Model)
+	}
+	if params.Effort != "" {
+		args = append(args, "--reasoning-effort", params.Effort)
 	}
 	if params.Yolo {
 		args = append(args, "--dangerously-skip-permissions")

@@ -1036,18 +1036,23 @@ func (m diffModel) viewCommentInput() string {
 	var b strings.Builder
 	lineNum := m.pendingLine
 	label := fmt.Sprintf("Comment on line %d", lineNum)
-	// Show the code at that line.
+	b.WriteString("\n  " + labelStyle.Render(label))
+	// Show the code at that line (without width constraint).
 	if lineNum > 0 && lineNum <= len(m.lineMeta) {
 		lm := m.lineMeta[lineNum-1]
 		if lm.code != "" {
 			codePrev := lm.code
-			if len(codePrev) > 60 {
-				codePrev = codePrev[:60] + "..."
+			maxWidth := m.width - 30
+			if maxWidth < 40 {
+				maxWidth = 40
 			}
-			label += fmt.Sprintf(" (%s:%d  %s)", lm.file, lm.lineNum, strings.TrimSpace(codePrev))
+			if len(codePrev) > maxWidth {
+				codePrev = codePrev[:maxWidth] + "..."
+			}
+			excerpt := fmt.Sprintf("%s:%d  %s", lm.file, lm.lineNum, strings.TrimSpace(codePrev))
+			b.WriteString(" " + lipgloss.NewStyle().Foreground(colorMuted).Render(excerpt))
 		}
 	}
-	b.WriteString("\n  " + labelStyle.Render(label))
 	b.WriteString("\n  " + fieldActiveStyle.Render(m.commentInput.Render()))
 	b.WriteString("\n  " + lipgloss.NewStyle().Foreground(colorMuted).Render("Enter=save  Ctrl+J=newline  Esc=cancel"))
 	return b.String()
