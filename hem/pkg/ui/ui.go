@@ -408,6 +408,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.dashboard.loadDashboard(), dashboardPollTick())
 		}
 
+	case chatSubagentDeletedMsg:
+		if msg.err != nil {
+			m.chat.err = msg.err
+			return m, nil
+		}
+		// Remove the deleted subagent from the list.
+		for i, sub := range m.chat.subagents {
+			if sub.SessionID == msg.sessionID {
+				m.chat.subagents = append(m.chat.subagents[:i], m.chat.subagents[i+1:]...)
+				break
+			}
+		}
+		// Adjust cursor if it's now out of bounds.
+		totalItems := len(m.chat.subagents) + 1
+		if m.chat.subagentCursor >= totalItems {
+			m.chat.subagentCursor = totalItems - 1
+		}
+		m.statusMsg = "Subagent deleted"
+		return m, nil
+
 	case dashboardPollTickMsg:
 		// Always reload the main dashboard in background regardless of current view,
 		// so session states stay fresh and notifications can be detected.
@@ -1641,6 +1661,7 @@ func (m Model) renderStatusBar() string {
 		} else if m.chat.pickingSubagent {
 			keys = []string{
 				statusKeyStyle.Render("↵") + statusDescStyle.Render(" open/create"),
+				statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
 				statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
 			}
 		} else if m.chat.commandMode {

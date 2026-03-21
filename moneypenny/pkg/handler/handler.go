@@ -291,6 +291,9 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 	result, err := h.runner.Run(ctx, params)
 	if err != nil {
 		h.vlog("agent error for session %s: %v", sessionID, err)
+		// Surface the error as a conversation turn so the user can see it.
+		errMsg := fmt.Sprintf("Agent failed to execute: %v", err)
+		_ = h.store.AddConversationTurn(sessionID, "system", errMsg)
 		_ = h.store.UpdateSessionStatus(sessionID, store.StateIdle)
 		return
 	}

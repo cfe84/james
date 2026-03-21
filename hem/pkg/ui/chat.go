@@ -17,6 +17,10 @@ import (
 type chatSessionStoppedMsg struct{ err error }
 type chatSessionCompletedMsg struct{ err error }
 type chatSessionDeletedMsg struct{ err error }
+type chatSubagentDeletedMsg struct {
+	sessionID string
+	err       error
+}
 type chatOpenSubagentMsg struct {
 	sessionID string
 	name      string
@@ -63,8 +67,9 @@ type chatModel struct {
 	sending       bool
 	commandMode      bool
 	confirmDelete    bool
-	pickingSubagent  bool // subagent picker overlay
-	subagentCursor   int
+	pickingSubagent      bool // subagent picker overlay
+	subagentCursor       int
+	confirmDeleteSubagent bool // double-press delete confirmation in picker
 	isSubagent       bool // true when viewing a subagent chat
 	creatingSubagent bool   // entering prompt for new subagent
 	subagentPrompt   string // prompt input for new subagent
@@ -489,9 +494,14 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 		if m.pickingSubagent {
 			// Total items = subagents + 1 "New subagent..." entry
 			totalItems := len(m.subagents) + 1
+			// Any key other than "d" cancels the delete confirmation.
+			if msg.String() != "d" {
+				m.confirmDeleteSubagent = false
+			}
 			switch msg.String() {
 			case "esc":
 				m.pickingSubagent = false
+				m.confirmDeleteSubagent = false
 				return m, nil
 			case "up", "k":
 				if m.subagentCursor > 0 {
@@ -501,10 +511,26 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 				if m.subagentCursor < totalItems-1 {
 					m.subagentCursor++
 				}
+			case "d":
+				// Only allow delete on actual subagents, not "New subagent..." entry.
+				if m.subagentCursor < len(m.subagents) {
+					if !m.confirmDeleteSubagent {
+						m.confirmDeleteSubagent = true
+						return m, nil
+					}
+					// Confirmed — delete the subagent.
+					m.confirmDeleteSubagent = false
+					sub := m.subagents[m.subagentCursor]
+					return m, func() tea.Msg {
+						err := m.client.deleteSession(sub.SessionID)
+						return chatSubagentDeletedMsg{sessionID: sub.SessionID, err: err}
+					}
+				}
 			case "enter":
 				if m.subagentCursor < len(m.subagents) {
 					sub := m.subagents[m.subagentCursor]
 					m.pickingSubagent = false
+					m.confirmDeleteSubagent = false
 					m.commandMode = false
 					return m, func() tea.Msg {
 						return chatOpenSubagentMsg{sessionID: sub.SessionID, name: sub.Name}
@@ -512,6 +538,7 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 				}
 				// Last entry: "New subagent..."
 				m.pickingSubagent = false
+				m.confirmDeleteSubagent = false
 				m.creatingSubagent = true
 				m.subagentPrompt = ""
 				m.subagentPromptPos = 0
@@ -976,6 +1003,11 @@ func (m chatModel) View() string {
 			b.WriteString(sessionNormalStyle.Render(newLine))
 		}
 		b.WriteString("\n")
+		if m.confirmDeleteSubagent {
+			b.WriteString(lipgloss.NewStyle().Foreground(colorDanger).Bold(true).Render(
+				"  Press d again to confirm delete, any other key to cancel"))
+			b.WriteString("\n")
+		}
 		return b.String()
 	}
 
