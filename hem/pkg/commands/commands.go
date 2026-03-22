@@ -827,6 +827,7 @@ type SessionShowResult struct {
 	Gadgets      bool   `json:"gadgets"`
 	Path         string `json:"path"`
 	Status       string `json:"status"`
+	Project      string `json:"project,omitempty"`
 }
 
 const gadgetsMarker = "\nYou have access to agent orchestration using the"
@@ -1783,6 +1784,13 @@ func (e *Executor) ShowSession(args []string) *protocol.Response {
 		result.Effort = v
 	}
 
+	// Look up project name from hem's local store.
+	if hemSess, err := e.store.GetSession(sessionID); err == nil && hemSess != nil && hemSess.ProjectID != "" {
+		if proj, err := e.store.GetProject(hemSess.ProjectID); err == nil && proj != nil {
+			result.Project = proj.Name
+		}
+	}
+
 	return protocol.OKResponse(result)
 }
 
@@ -1905,7 +1913,7 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 	}
 
 	// Only send to moneypenny if there are moneypenny-level fields to update.
-	if name != "" || systemPrompt != "" || modelStr != "" || pathArg != "" || yoloStr != "" {
+	if name != "" || systemPrompt != "" || modelStr != "" || effortStr != "" || pathArg != "" || yoloStr != "" {
 		ctx := context.Background()
 		if _, err := e.sendCommand(ctx, mp, "update_session", cmdData); err != nil {
 			return protocol.ErrResponse(err.Error())

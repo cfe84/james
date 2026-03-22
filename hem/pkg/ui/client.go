@@ -50,6 +50,7 @@ type sessionDetail struct {
 	Gadgets      bool               `json:"gadgets"`
 	Path         string             `json:"path"`
 	Status       string             `json:"status"`
+	Project      string             `json:"project"`
 	Conversation []conversationTurn `json:"conversation"`
 }
 
