@@ -235,6 +235,49 @@ hem/
 
 30. **Model selection**: TUI forms (wizard, edit) use cycling selectors for agent and model fields instead of free-text input. Models are discovered per moneypenny via the `list_models` method: Claude returns hardcoded aliases (sonnet, opus, haiku); Copilot parses `--help` output. The wizard caches models per agent type and reloads when the agent selection changes. The edit form loads models when the session detail arrives (using the session's agent type). Model options always include an empty value (no override / default). If the session already has a model not in the discovered list, it's added as an option to preserve it.
 
+### Hem Command Layer Refactoring (v0.11.0+)
+
+The Executor (hem/pkg/commands) has been refactored to follow Single Responsibility Principle by extracting specialized managers:
+
+**Manager Components** (`hem/pkg/commands/`):
+
+1. **ClientManager** (`client_manager.go`): Manages transport client lifecycle and circuit breaking
+   - Caches FIFO and MI6 clients per moneypenny
+   - Implements cooldown mechanism (30s) to avoid hammering failed moneypennies
+   - Methods: `GetClient()`, `SetCooldown()`, `IsInCooldown()`, `ClearCooldown()`, `MI6KeyPath()`
+
+2. **CacheManager** (`cache_manager.go`): Manages moneypenny session data caching
+   - Provides instant dashboard/list responses via snapshot-based cache
+   - Handles background refresh coordination
+   - Thread-safe with RWMutex
+   - Methods: `GetSnapshot()`, `Update()`, `GetCacheTime()`, `IsRefreshing()`, `SetRefreshing()`
+
+3. **WatchManager** (`watch_manager.go`): Manages watch/polling for sub-session state
+   - Tracks parent-child session relationships
+   - Maintains last known session states for transition detection
+   - Methods: `AddWatcher()`, `GetWatchers()`, `RemoveWatcher()`, `SetLastState()`, `GetLastState()`, `DeleteState()`
+
+4. **Session Helpers** (`session_helpers.go`): Extracts common session parameter resolution
+   - `resolveMoneypennyForSession()`: Resolves moneypenny from name or default
+   - `applyProjectDefaults()`: Applies project settings to session params
+   - `applyGlobalDefaults()`: Applies global defaults for agent/path
+   - `generateSessionName()`: Auto-generates names from prompts
+   - `buildCreateSessionData()`: Builds moneypenny command data
+   - `validatePrompt()`: Validates prompt input
+
+**Refactored Executor** (`commands.go`):
+- Reduced from 15+ fields with 3 mutexes to 6 focused fields
+- Now coordinates between store, managers, and moneypenny transport
+- Large command methods (CreateSession, ContinueSession) refactored to use helper functions
+- Cleaner separation: orchestration logic vs. implementation details
+
+**Benefits**:
+- Each manager has single, clear responsibility
+- Easier testing and mocking
+- Reduced cognitive complexity
+- Better thread safety encapsulation
+- Simpler to extend and maintain
+
 ## Qew - Web UI for Remote Access
 
 Qew is a web-based UI that connects to a Hem server via MI6, enabling remote access from phones and other computers.

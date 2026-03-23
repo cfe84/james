@@ -2,7 +2,15 @@ package protocol
 
 import "encoding/json"
 
-// Request is sent from the CLI client to the server over the Unix socket.
+// Request is sent from the CLI client to the hem server over the Unix socket.
+// This protocol is for CLI/TUI ↔ hem-server communication.
+//
+// Note: Similar Command/Response types exist in transport and envelope packages:
+// - hem/pkg/protocol (this): CLI/TUI ↔ hem-server (Unix socket, verb+noun based)
+// - hem/pkg/transport: hem-server ↔ moneypenny (FIFO/MI6, method based)
+// - moneypenny/pkg/envelope: moneypenny internal protocol
+//
+// These are intentionally separate to maintain layer isolation and avoid cross-module dependencies.
 type Request struct {
 	Verb      string   `json:"verb"`
 	Noun      string   `json:"noun"`
@@ -10,7 +18,8 @@ type Request struct {
 	RequestID string   `json:"request_id,omitempty"`
 }
 
-// Response is sent from the server back to the CLI client.
+// Response is sent from the hem server back to the CLI client.
+// Higher-level than transport.Response, with structured data for CLI formatting.
 type Response struct {
 	Status    string          `json:"status"`               // "ok" or "error"
 	Message   string          `json:"message,omitempty"`    // error message (when status == "error")

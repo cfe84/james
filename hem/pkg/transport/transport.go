@@ -12,9 +12,15 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 )
 
-// Command is the JSON envelope sent to moneypenny.
+// Command is the JSON envelope sent from hem to moneypenny over FIFO or MI6.
+// This is the hem-server ↔ moneypenny protocol.
+//
+// Note: This is similar to moneypenny/pkg/envelope.Command but kept separate to avoid
+// cross-module dependencies between hem and moneypenny. Each module defines its own
+// protocol types for its architectural layer.
 type Command struct {
 	Type      string      `json:"type"`
 	Method    string      `json:"method"`
@@ -23,6 +29,8 @@ type Command struct {
 }
 
 // Response is the JSON envelope received from moneypenny.
+// Nearly identical to moneypenny/pkg/envelope.Response by design (same wire format),
+// but defined separately for module isolation.
 type Response struct {
 	Type      string          `json:"type"`
 	Status    string          `json:"status"`
@@ -53,13 +61,6 @@ func NewFIFOClient(fifoIn, fifoOut string) *Client {
 	}
 }
 
-// NewFIFOClientFromFolder creates a FIFO client using standard names in a folder.
-func NewFIFOClientFromFolder(folder string) *Client {
-	return NewFIFOClient(
-		filepath.Join(folder, "moneypenny-in"),
-		filepath.Join(folder, "moneypenny-out"),
-	)
-}
 
 // NewMI6Client creates a client that communicates via MI6.
 func NewMI6Client(mi6Addr, keyPath string) *Client {
@@ -68,6 +69,27 @@ func NewMI6Client(mi6Addr, keyPath string) *Client {
 		mi6Addr:       mi6Addr,
 		mi6KeyPath:    keyPath,
 	}
+}
+
+// SendCommand sends a command with the given method and data to moneypenny.
+// It applies default timeout, builds the command envelope, and handles the response.
+func (c *Client) SendCommand(ctx context.Context, method string, data interface{}) (*Response, error) {
+	// Apply a default 60-second timeout if the caller didn't set a deadline.
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 60*time.Second)
+		defer cancel()
+	}
+
+	// Build command envelope.
+	cmd := &Command{
+		Type:      "request",
+		Method:    method,
+		RequestID: generateRequestID(),
+		Data:      data,
+	}
+
+	return c.Send(ctx, cmd)
 }
 
 // Send sends a command to moneypenny and returns the response.
@@ -80,6 +102,16 @@ func (c *Client) Send(ctx context.Context, cmd *Command) (*Response, error) {
 	default:
 		return nil, fmt.Errorf("unknown transport: %s", c.transportType)
 	}
+}
+
+// generateRequestID generates a unique request ID for command tracking.
+func generateRequestID() string {
+	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
+	b := make([]byte, 12)
+	for i := range b {
+		b[i] = charset[byte(i*7)%byte(len(charset))]
+	}
+	return fmt.Sprintf("%d-%s", time.Now().UnixNano(), string(b))
 }
 
 func (c *Client) sendFIFO(ctx context.Context, cmd *Command) (*Response, error) {

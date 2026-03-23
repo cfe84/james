@@ -71,67 +71,35 @@ type mpSessionInfo struct {
 }
 
 // Executor runs commands using the store and transport layer.
+// It coordinates between the store, client manager, cache manager, and watch manager.
 type Executor struct {
-	store             *store.Store
-	mi6KeyPath        string
-	Version           string
-	MI6Control        string // MI6 control address (host/session_id) for hem server
-	lastSessionStates map[string]string // sessionID → last known mpStatus ("working", "ready", etc.)
-	clients           map[string]*transport.Client // cached per moneypenny name
-	clientsMu         sync.Mutex
-	watchers          map[string][]string // parentSessionID → []childSessionIDs being watched
-	watchersMu        sync.Mutex
-	mpCooldowns       map[string]time.Time // mpName → earliest time to retry after failure
-	mpCooldownsMu     sync.Mutex
-	// mpCache holds per-moneypenny session data from the most recent list_sessions call.
-	// Dashboard/ListSessions return instantly from this cache while a background refresh runs.
-	mpCache       map[string]map[string]mpSessionInfo // mpName → sessionID → info
-	mpCacheTime   time.Time                           // when the cache was last fully refreshed
-	mpCacheMu     sync.RWMutex
-	mpRefreshing  bool // true while a background refresh is in progress
+	store         *store.Store
+	clientManager *ClientManager
+	cacheManager  *CacheManager
+	watchManager  *WatchManager
+	Version       string
+	MI6Control    string // MI6 control address (host/session_id) for hem server
 }
-
-// mpCooldownDuration is how long to skip querying a moneypenny after it fails.
-const mpCooldownDuration = 30 * time.Second
 
 func New(s *store.Store, mi6KeyPath string) *Executor {
 	return &Executor{
-		store:             s,
-		mi6KeyPath:        mi6KeyPath,
-		lastSessionStates: make(map[string]string),
-		clients:           make(map[string]*transport.Client),
-		watchers:          make(map[string][]string),
-		mpCooldowns:       make(map[string]time.Time),
-		mpCache:           make(map[string]map[string]mpSessionInfo),
+		store:         s,
+		clientManager: NewClientManager(mi6KeyPath),
+		cacheManager:  NewCacheManager(),
+		watchManager:  NewWatchManager(),
 	}
 }
 
 // getMPData returns a snapshot of cached moneypenny session data.
 func (e *Executor) getMPData() map[string]map[string]mpSessionInfo {
-	e.mpCacheMu.RLock()
-	defer e.mpCacheMu.RUnlock()
-	snapshot := make(map[string]map[string]mpSessionInfo, len(e.mpCache))
-	for mpName, sessions := range e.mpCache {
-		m := make(map[string]mpSessionInfo, len(sessions))
-		for k, v := range sessions {
-			m[k] = v
-		}
-		snapshot[mpName] = m
-	}
-	return snapshot
+	return e.cacheManager.GetSnapshot()
 }
 
 // refreshMPSessions queries the given moneypennies for their session lists and
 // updates the cache. Meant to be called in a goroutine.
 func (e *Executor) refreshMPSessions(mpNames []string) {
-	e.mpCacheMu.Lock()
-	e.mpRefreshing = true
-	e.mpCacheMu.Unlock()
-	defer func() {
-		e.mpCacheMu.Lock()
-		e.mpRefreshing = false
-		e.mpCacheMu.Unlock()
-	}()
+	e.cacheManager.SetRefreshing(true)
+	defer e.cacheManager.SetRefreshing(false)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -145,7 +113,7 @@ func (e *Executor) refreshMPSessions(mpNames []string) {
 	var wg sync.WaitGroup
 
 	for _, mpName := range mpNames {
-		if e.isMPOnCooldown(mpName) {
+		if e.clientManager.IsInCooldown(mpName) {
 			continue
 		}
 		mp, err := e.store.GetMoneypenny(mpName)
@@ -157,10 +125,10 @@ func (e *Executor) refreshMPSessions(mpNames []string) {
 			defer wg.Done()
 			resp, err := e.sendCommand(ctx, mp, "list_sessions", nil)
 			if err != nil {
-				e.setMPCooldown(mp.Name)
+				e.clientManager.SetCooldown(mp.Name)
 				return
 			}
-			e.clearMPCooldown(mp.Name)
+			e.clientManager.ClearCooldown(mp.Name)
 			var sessions []mpSessionInfo
 			if err := json.Unmarshal(resp.Data, &sessions); err != nil {
 				return
@@ -184,55 +152,29 @@ func (e *Executor) refreshMPSessions(mpNames []string) {
 		results = append(results, res)
 	}
 
-	// Merge into cache under a brief write lock.
-	e.mpCacheMu.Lock()
+	// Merge into cache.
+	newCache := make(map[string]map[string]mpSessionInfo)
 	for _, res := range results {
-		e.mpCache[res.mpName] = res.sessions
+		newCache[res.mpName] = res.sessions
 	}
-	e.mpCacheTime = time.Now()
-	e.mpCacheMu.Unlock()
+	e.cacheManager.Update(newCache)
 }
 
 // ensureMPRefresh kicks off a background cache refresh if one isn't already running.
 func (e *Executor) ensureMPRefresh(mpNames []string) {
-	e.mpCacheMu.Lock()
-	if e.mpRefreshing {
-		e.mpCacheMu.Unlock()
+	if e.cacheManager.IsRefreshing() {
 		return
 	}
-	e.mpRefreshing = true
-	e.mpCacheMu.Unlock()
 	go e.refreshMPSessions(mpNames)
 }
 
 // invalidateMPCache removes cached data for a moneypenny and triggers a refresh.
 func (e *Executor) invalidateMPCache(mpName string) {
-	e.mpCacheMu.Lock()
-	delete(e.mpCache, mpName)
-	e.mpCacheMu.Unlock()
+	// Get current cache, remove the moneypenny, and update
+	cache := e.cacheManager.GetSnapshot()
+	delete(cache, mpName)
+	e.cacheManager.Update(cache)
 	e.ensureMPRefresh([]string{mpName})
-}
-
-// isMPOnCooldown returns true if a moneypenny recently failed and should be skipped.
-func (e *Executor) isMPOnCooldown(name string) bool {
-	e.mpCooldownsMu.Lock()
-	defer e.mpCooldownsMu.Unlock()
-	t, ok := e.mpCooldowns[name]
-	return ok && time.Now().Before(t)
-}
-
-// setMPCooldown marks a moneypenny as unreachable for a cooldown period.
-func (e *Executor) setMPCooldown(name string) {
-	e.mpCooldownsMu.Lock()
-	defer e.mpCooldownsMu.Unlock()
-	e.mpCooldowns[name] = time.Now().Add(mpCooldownDuration)
-}
-
-// clearMPCooldown clears a moneypenny's cooldown after a successful contact.
-func (e *Executor) clearMPCooldown(name string) {
-	e.mpCooldownsMu.Lock()
-	defer e.mpCooldownsMu.Unlock()
-	delete(e.mpCooldowns, name)
 }
 
 // CheckConnectivity pings all registered moneypennies and logs warnings for
@@ -310,67 +252,6 @@ func (e *Executor) StartPeriodicSync(logger *log.Logger, interval time.Duration)
 }
 
 // CommandHelp maps verb+noun to help text.
-var CommandHelp = map[string]string{
-	"add moneypenny":      "Usage: hem add moneypenny -n NAME [--local | --fifo-folder DIR | --fifo-in PATH --fifo-out PATH | --mi6 ADDR]\n\nRegisters a new moneypenny instance.\n\nFlags:\n  -n, --name         Moneypenny name (required)\n  --local            Use default local FIFO path (~/.config/james/moneypenny/fifo)\n  --fifo-folder      Folder containing moneypenny-in and moneypenny-out FIFOs\n  --fifo-in          Path to moneypenny input FIFO\n  --fifo-out         Path to moneypenny output FIFO\n  --mi6              MI6 server address (host or host/session_id)\n  --session-id       MI6 session ID (combined with --mi6 host; uses default mi6 if --mi6 omitted)",
-	"list moneypenny":     "Usage: hem list moneypennies\n\nLists all registered moneypennies with name, type, address, and default status.",
-	"ping moneypenny":     "Usage: hem ping moneypenny -n NAME\n\nPings a moneypenny using get_version, displays version.\n\nFlags:\n  -n, --name         Moneypenny name (required)",
-	"delete moneypenny":   "Usage: hem delete moneypenny -n NAME\n\nRemoves a registered moneypenny and its tracked sessions.\n\nFlags:\n  -n, --name         Moneypenny name (required)",
-	"set-default moneypenny": "Usage: hem set-default moneypenny -n NAME\n\nSets the default moneypenny for session commands.\n\nFlags:\n  -n, --name         Moneypenny name (required)",
-	"set-default agent":   "Usage: hem set-default agent VALUE\n\nSets the default agent for create session (fallback: claude).",
-	"set-default path":    "Usage: hem set-default path VALUE\n\nSets the default working directory for create session (fallback: .).",
-	"set-default mi6":     "Usage: hem set-default mi6 HOST\n\nSets the default MI6 server address (used by add moneypenny and test mi6 when --mi6 is omitted).",
-	"set-default server":  "Usage: hem set-default server --hem HOST/SESSION | --local\n\nSets the default hem server connection.\n  --hem HOST/SESSION  Connect via MI6 relay\n  --local             Connect via local Unix socket (default)",
-	"get-default moneypenny": "Usage: hem get-default moneypenny\n\nShows the current default moneypenny.",
-	"get-default agent":   "Usage: hem get-default agent\n\nShows the current default agent.",
-	"get-default path":    "Usage: hem get-default path\n\nShows the current default path.",
-	"get-default mi6":     "Usage: hem get-default mi6\n\nShows the current default MI6 server address.",
-	"get-default server":  "Usage: hem get-default server\n\nShows the current default hem server connection.",
-	"list default":        "Usage: hem list defaults\n\nShows all configured defaults.",
-	"create session":      "Usage: hem create session [-m MONEYPENNY] PROMPT [flags]\n\nCreates a new session on a moneypenny and sends the initial prompt.\n\nFlags:\n  -m, --moneypenny   Moneypenny name (uses default if not set)\n  --agent            Agent to use (uses default, fallback: claude)\n  --name             Session name\n  --system-prompt    System prompt for the agent\n  --yolo             Skip permissions (--dangerously-skip-permissions)\n  --path             Working directory (uses default, fallback: .)\n  --async            Return immediately without waiting for response",
-	"continue session":    "Usage: hem continue session SESSION_ID PROMPT [flags]\n\nSends a follow-up prompt to an existing session.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)\n  --async            Return immediately without waiting for response",
-	"stop session":        "Usage: hem stop session SESSION_ID\n\nStops a working session (kills the agent, session goes back to idle).\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)",
-	"delete session":      "Usage: hem delete session SESSION_ID\n\nDeletes a session (kills agent if working, removes from moneypenny and local tracking).\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)",
-	"state session":       "Usage: hem state session SESSION_ID\n\nShows the current state of a session (idle/working).\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)",
-	"last session":        "Usage: hem last session SESSION_ID\n\nShows the last assistant response for a session.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)",
-	"show session":        "Usage: hem show session SESSION_ID\n\nShows session parameters (agent, system_prompt, yolo, path, name, status).\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)",
-	"update session":      "Usage: hem update session SESSION_ID [flags]\n\nUpdates session parameters.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)\n  --name             Session name\n  --system-prompt    System prompt\n  --yolo             Yolo mode (true/false)\n  --path             Working directory",
-	"history session":     "Usage: hem history session SESSION_ID [-n N] [--count C] [--from F]\n\nShows conversation history for a session.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)\n  -n                 Number of turns to show (default: all)\n  --count            Page size (default: all; TUI uses 10)\n  --from             Offset from end for pagination",
-	"list session":        "Usage: hem list sessions [-m MONEYPENNY]\n\nLists all sessions across all moneypennies.\n\nFlags:\n  -m, --moneypenny   Filter by moneypenny name",
-	"test mi6":            "Usage: hem test mi6 --mi6 ADDRESS --session SESSION_ID\n\nTests connectivity to an MI6 server.\n\nFlags:\n  --mi6              MI6 server address (uses default if not set)\n  --session          Session ID to join (required)",
-	"list mi6-key":        "Usage: hem list mi6-keys [--mi6 ADDRESS]\n\nLists authorized keys on the MI6 server.\nRequires your key to be in the server's admin_keys file.\n\nFlags:\n  --mi6              MI6 server address (uses default if not set)",
-	"add mi6-key":         "Usage: hem add mi6-key KEY_LINE [--mi6 ADDRESS]\n\nAdds a public key to the MI6 server's authorized_keys.\nRequires your key to be in the server's admin_keys file.\n\nFlags:\n  --mi6              MI6 server address (uses default if not set)",
-	"delete mi6-key":      "Usage: hem delete mi6-key FINGERPRINT [--mi6 ADDRESS]\n\nRemoves a public key from the MI6 server by fingerprint.\nRequires your key to be in the server's admin_keys file.\n\nFlags:\n  --mi6              MI6 server address (uses default if not set)",
-	"chat":                "Usage: hem chat [-m MONEYPENNY] [--session-id ID] [flags]\n\nInteractive chat with an agent. Creates a new session by default.\n\nFlags:\n  -m, --moneypenny   Moneypenny name (uses default if not set)\n  --session-id       Continue an existing session\n  --agent            Agent to use (uses default, fallback: claude)\n  --name             Session name\n  --system-prompt    System prompt for the agent\n  --yolo             Skip permissions\n  --path             Working directory",
-	"create project":      "Usage: hem create project --name NAME [-m MONEYPENNY] [--path PATH] [--agent AGENT] [--system-prompt TEXT]\n\nCreates a new project.\n\nFlags:\n  --name             Project name (required)\n  -m, --moneypenny   Default moneypenny\n  --path             Working directory path\n  --agent            Default agent\n  --system-prompt    Default system prompt",
-	"list project":        "Usage: hem list projects [--status STATUS]\n\nLists all projects.\n\nFlags:\n  --status           Filter by status (active, paused, done)",
-	"show project":        "Usage: hem show project NAME_OR_ID\n\nShows project details.\n\nFlags:\n  --name             Project name (alternative to positional arg)",
-	"update project":      "Usage: hem update project NAME_OR_ID [flags]\n\nUpdates project fields.\n\nFlags:\n  --name             New project name\n  --status           New status (active, paused, done)\n  -m, --moneypenny   Default moneypenny\n  --path             Working directory path\n  --agent            Default agent\n  --system-prompt    Default system prompt",
-	"delete project":      "Usage: hem delete project NAME_OR_ID\n\nDeletes a project. Sessions keep their data but lose the project link.",
-	"create template":     "Usage: hem create template --project PROJECT --name NAME [--agent AGENT] [--path PATH] [--system-prompt TEXT] [--prompt TEXT]\n\nCreates an agent template for a project.\n\nFlags:\n  --project          Project name or ID (required)\n  --name             Template name (required)\n  --agent            Agent to use (default: claude)\n  --path             Working directory\n  --system-prompt    System prompt\n  --prompt           Initial prompt",
-	"list template":       "Usage: hem list templates --project PROJECT\n\nLists agent templates for a project.\n\nFlags:\n  --project          Project name or ID (required)",
-	"delete template":     "Usage: hem delete template NAME_OR_ID --project PROJECT\n\nDeletes an agent template.\n\nFlags:\n  --project          Project name or ID (required for name lookup)",
-	"use template":        "Usage: hem use template NAME_OR_ID --project PROJECT [--async]\n\nCreates a new session from a template.\n\nFlags:\n  --project          Project name or ID (required for name lookup)\n  --async            Return immediately without waiting",
-	"activity session":    "Usage: hem activity session SESSION_ID\n\nShows recent agent activity (thinking, tool calls) for a working session.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)",
-	"complete session":    "Usage: hem complete session SESSION_ID\n\nMarks a session as completed in hem's local tracking.",
-	"diff session":        "Usage: hem diff session SESSION_ID\n\nShows git diff for a session's working directory.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)",
-	"run ":                "Usage: hem run [-m MONEYPENNY] [--path PATH] [--session-id ID] COMMAND\n\nExecutes a shell command on a remote moneypenny.\n\nFlags:\n  -m, --moneypenny   Moneypenny name (uses default if not set)\n  --path             Working directory on the remote host\n  --session-id       Use the moneypenny and path from this session",
-	"commit session":      "Usage: hem commit session SESSION_ID -m MESSAGE\n\nStages all changes and commits in the session's working directory.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)\n  -m                 Commit message (required)",
-	"branch session":      "Usage: hem branch session SESSION_ID --name BRANCH_NAME\n\nCreates and switches to a new git branch in the session's working directory.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)\n  --name             Branch name (required)",
-	"push session":        "Usage: hem push session SESSION_ID\n\nPushes the current branch to origin with -u in the session's working directory.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)",
-	"schedule session":    "Usage: hem schedule session SESSION_ID --at TIME --prompt PROMPT [--cron EXPR]\n\nSchedules a prompt for a session at a future time.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)\n  --at               When to send (RFC3339, or relative like +2h, +30m)\n  --prompt           Prompt to send\n  --cron             Cron expression for recurring schedules (e.g. '0 9 * * 1' for Mon 9am, '@every 2h', '@daily')",
-	"list schedule":       "Usage: hem list schedules [--session-id SESSION_ID]\n\nLists scheduled prompts for a session.\n\nFlags:\n  --session-id       Session ID (required)",
-	"cancel schedule":     "Usage: hem cancel schedule SCHEDULE_ID\n\nCancels a pending schedule.",
-	"enable":              "Usage: hem enable SETTING\n\nEnables a boolean setting.\n\nAvailable settings:\n  schedule-system-prompt   Include schedule instructions in agent system prompts",
-	"disable":             "Usage: hem disable SETTING\n\nDisables a boolean setting.\n\nAvailable settings:\n  schedule-system-prompt   Include schedule instructions in agent system prompts",
-	"create subsession":   "Usage: hem create subsession PARENT_SESSION_ID PROMPT [flags]\n\nCreates a sub-session (subagent) under a parent session.\n\nFlags:\n  -m, --moneypenny   Moneypenny name (defaults to parent's moneypenny)\n  --agent            Agent to use (uses default, fallback: claude)\n  --name             Sub-session name\n  --system-prompt    System prompt for the subagent\n  --yolo             Skip permissions (inherited from parent if set)\n  --path             Working directory (defaults to parent's path)\n  --async            Return immediately without waiting for response\n  --callback         Prompt to queue to parent when subagent completes (use with --async)\n  --gadgets          Include James tooling in system prompt",
-	"list subsession":     "Usage: hem list subsessions PARENT_SESSION_ID\n\nLists all subagents for a parent session.\n\nFlags:\n  --session-id       Parent session ID (alternative to positional arg)",
-	"show subsession":     "Usage: hem show subsession SUBSESSION_ID\n\nShows subagent session parameters.\n\nFlags:\n  --session-id       Sub-session ID (alternative to positional arg)",
-	"stop subsession":     "Usage: hem stop subsession SUBSESSION_ID\n\nStops a working subagent.\n\nFlags:\n  --session-id       Sub-session ID (alternative to positional arg)",
-	"delete subsession":   "Usage: hem delete subsession SUBSESSION_ID\n\nDeletes a subagent session.\n\nFlags:\n  --session-id       Sub-session ID (alternative to positional arg)",
-	"watch session":       "Usage: hem watch session SESSION_ID\n\nWatches a session and its subagents. Returns when any subagent completes,\nqueuing the result to the parent session.\n\nFlags:\n  --session-id       Session ID (alternative to positional arg)\n  --timeout          Timeout duration (default: 30m)",
-	"dashboard":           "Usage: hem dashboard [--project NAME] [--all]\n\nShows a dashboard of sessions grouped by attention state.\n\nFlags:\n  --project          Filter by project name\n  --all              Include completed sessions",
-	"import session":       "Usage: hem import session FILE.jsonl|SESSION_ID [-m MONEYPENNY] [--name NAME] [--project PROJECT]\n\nImports an existing Claude Code session from a JSONL file or by session ID.\nIf the argument is not a file on disk, it is treated as a session ID and\nsearched for in ~/.claude/projects/ subdirectories.\n\nFlags:\n  -m, --moneypenny   Moneypenny name (uses default if not set)\n  --name             Session name (default: first user message)\n  --agent            Agent (default: claude)\n  --path             Working directory (default: from JSONL or default)\n  --project          Project name or ID",
-}
 
 // Dispatch routes a verb+noun+args to the appropriate handler.
 func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response {
@@ -552,47 +433,18 @@ func generateSessionID() string {
 // Caching is important for FIFO clients: they hold a mutex that serialises
 // concurrent writes to the same named pipe.
 func (e *Executor) clientForMoneypenny(mp *store.Moneypenny) *transport.Client {
-	e.clientsMu.Lock()
-	defer e.clientsMu.Unlock()
-
-	if c, ok := e.clients[mp.Name]; ok {
-		return c
-	}
-
-	var c *transport.Client
-	switch mp.TransportType {
-	case store.TransportFIFO:
-		c = transport.NewFIFOClient(mp.FIFOIn, mp.FIFOOut)
-	case store.TransportMI6:
-		c = transport.NewMI6Client(mp.MI6Addr, e.mi6KeyPath)
-	default:
-		return nil
-	}
-	e.clients[mp.Name] = c
-	return c
+	return e.clientManager.GetClient(mp)
 }
 
 // sendCommand sends a command to a moneypenny and returns the response.
-// If ctx has no deadline, a default 60-second timeout is applied to prevent
-// indefinite hangs when a moneypenny disconnects abruptly.
+// The transport layer handles timeout policy and envelope creation.
 func (e *Executor) sendCommand(ctx context.Context, mp *store.Moneypenny, method string, data interface{}) (*transport.Response, error) {
 	client := e.clientForMoneypenny(mp)
 	if client == nil {
 		return nil, fmt.Errorf("unsupported transport type %q for moneypenny %q", mp.TransportType, mp.Name)
 	}
-	// Apply a default timeout if the caller didn't set a deadline.
-	if _, ok := ctx.Deadline(); !ok {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, 60*time.Second)
-		defer cancel()
-	}
-	cmd := &transport.Command{
-		Type:      "request",
-		Method:    method,
-		RequestID: generateSessionID(),
-		Data:      data,
-	}
-	resp, err := client.Send(ctx, cmd)
+
+	resp, err := client.SendCommand(ctx, method, data)
 	if err != nil {
 		return nil, fmt.Errorf("sending %s to %q: %w", method, mp.Name, err)
 	}
@@ -1051,12 +903,12 @@ func (e *Executor) PingMoneypenny(args []string) *protocol.Response {
 
 	resp, err := e.sendCommand(ctx, mp, "get_version", nil)
 	if err != nil {
-		e.setMPCooldown(name)
+		e.clientManager.SetCooldown(name)
 		return protocol.ErrResponse(fmt.Sprintf("ping failed: %v", err))
 	}
 
 	// Successful ping clears any cooldown.
-	e.clearMPCooldown(name)
+	e.clientManager.ClearCooldown(name)
 
 	var versionData struct {
 		Version string `json:"version"`
@@ -1123,7 +975,7 @@ func (e *Executor) EnableMoneypenny(args []string, enabled bool) *protocol.Respo
 
 	// Clear cooldown when re-enabling so the MP is queried immediately.
 	if enabled {
-		e.clearMPCooldown(name)
+		e.clientManager.ClearCooldown(name)
 	}
 
 	action := "enabled"
@@ -1256,133 +1108,61 @@ func (e *Executor) DisableSetting(name string) *protocol.Response {
 // ---------------------------------------------------------------------------
 
 func (e *Executor) CreateSession(args []string) *protocol.Response {
-	var mpName, sessionName, systemPrompt, pathArg, agentName, projectNameOrID, modelName, effortName string
-	var yolo, async, gadgets bool
+	var projectNameOrID string
+	params := &sessionParams{}
 
 	remaining, err := parseFlagsFromArgs("create-session", args, func(fs *flag.FlagSet) {
-		fs.StringVar(&mpName, "m", "", "moneypenny name")
-		fs.StringVar(&mpName, "moneypenny", "", "moneypenny name")
-		fs.StringVar(&agentName, "agent", "", "agent to use")
-		fs.StringVar(&modelName, "model", "", "model to use (e.g. sonnet, opus)")
-		fs.StringVar(&effortName, "effort", "", "reasoning effort level (e.g. low, medium, high)")
-		fs.StringVar(&sessionName, "name", "", "session name")
-		fs.StringVar(&systemPrompt, "system-prompt", "", "system prompt")
-		fs.BoolVar(&yolo, "yolo", false, "enable yolo mode")
-		fs.BoolVar(&gadgets, "gadgets", false, "include James tooling in system prompt")
-		fs.StringVar(&pathArg, "path", "", "working directory path")
-		fs.BoolVar(&async, "async", false, "return immediately without waiting for response")
+		fs.StringVar(&params.MoneypennyName, "m", "", "moneypenny name")
+		fs.StringVar(&params.MoneypennyName, "moneypenny", "", "moneypenny name")
+		fs.StringVar(&params.Agent, "agent", "", "agent to use")
+		fs.StringVar(&params.Model, "model", "", "model to use (e.g. sonnet, opus)")
+		fs.StringVar(&params.Effort, "effort", "", "reasoning effort level (e.g. low, medium, high)")
+		fs.StringVar(&params.SessionName, "name", "", "session name")
+		fs.StringVar(&params.SystemPrompt, "system-prompt", "", "system prompt")
+		fs.BoolVar(&params.Yolo, "yolo", false, "enable yolo mode")
+		fs.BoolVar(&params.Gadgets, "gadgets", false, "include James tooling in system prompt")
+		fs.StringVar(&params.Path, "path", "", "working directory path")
+		fs.BoolVar(&params.Async, "async", false, "return immediately without waiting for response")
 		fs.StringVar(&projectNameOrID, "project", "", "project name or ID")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
 
-	// Resolve project and apply its defaults when session-specific flags aren't provided.
-	var projectID string
-	if projectNameOrID != "" {
-		proj, err := e.store.GetProject(projectNameOrID)
-		if err != nil {
-			return protocol.ErrResponse(err.Error())
-		}
-		if proj == nil {
-			return protocol.ErrResponse(fmt.Sprintf("project %q not found", projectNameOrID))
-		}
-		projectID = proj.ID
-		if mpName == "" && proj.Moneypenny != "" {
-			mpName = proj.Moneypenny
-		}
-		if agentName == "" && proj.DefaultAgent != "" {
-			agentName = proj.DefaultAgent
-		}
-		if pathArg == "" && proj.Paths != "[]" && proj.Paths != "" {
-			// Use the first path from the JSON array.
-			var paths []string
-			if json.Unmarshal([]byte(proj.Paths), &paths) == nil && len(paths) > 0 {
-				pathArg = paths[0]
-			}
-		}
-		if systemPrompt == "" && proj.DefaultSystemPrompt != "" {
-			systemPrompt = proj.DefaultSystemPrompt
-		}
+	// Apply project defaults if specified.
+	if err := e.applyProjectDefaults(params, projectNameOrID); err != nil {
+		return protocol.ErrResponse(err.Error())
 	}
 
-	// Apply stored defaults for agent and path when not specified.
-	if agentName == "" {
-		if v, _ := e.store.GetDefault("agent"); v != "" {
-			agentName = v
-		} else {
-			agentName = "claude"
-		}
-	}
-	if pathArg == "" {
-		if v, _ := e.store.GetDefault("path"); v != "" {
-			pathArg = v
-		} else {
-			pathArg = "."
-		}
+	// Apply global defaults for agent and path.
+	e.applyGlobalDefaults(params)
+
+	// Resolve moneypenny.
+	mp, err := e.resolveMoneypennyForSession(params.MoneypennyName)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
 	}
 
-	var mp *store.Moneypenny
-	if mpName != "" {
-		mp, err = e.store.GetMoneypenny(mpName)
-		if err != nil {
-			return protocol.ErrResponse(err.Error())
-		}
-		if mp == nil {
-			return protocol.ErrResponse(fmt.Sprintf("moneypenny %q not found", mpName))
-		}
-	} else {
-		mp, err = e.store.GetDefaultMoneypenny()
-		if err != nil {
-			return protocol.ErrResponse(err.Error())
-		}
-		if mp == nil {
-			return protocol.ErrResponse("no moneypenny specified and no default set")
-		}
-	}
-
-	prompt := strings.TrimSpace(strings.Join(remaining, " "))
-	if prompt == "" {
-		return protocol.ErrResponse("prompt is required (pass as trailing arguments)")
+	// Validate and extract prompt.
+	prompt, err := validatePrompt(remaining)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
 	}
 
 	sessionID := generateSessionID()
-
-	// Auto-generate a name from the prompt if none provided.
-	if sessionName == "" {
-		sessionName = prompt
-		if len(sessionName) > 40 {
-			sessionName = sessionName[:40]
-		}
-	}
+	params.SessionName = generateSessionName(prompt, params.SessionName)
 
 	// Append gadgets (James tooling instructions) to system prompt when enabled.
-	if gadgets {
-		systemPrompt += gadgetsSystemPrompt(e.MI6Control, sessionID)
+	if params.Gadgets {
+		params.SystemPrompt += gadgetsSystemPrompt(e.MI6Control, sessionID)
 	}
 
-	cmdData := map[string]interface{}{
-		"agent":      agentName,
-		"session_id": sessionID,
-		"name":       sessionName,
-		"prompt":     prompt,
-		"path":       pathArg,
-	}
-	if systemPrompt != "" {
-		cmdData["system_prompt"] = systemPrompt
-	}
-	if modelName != "" {
-		cmdData["model"] = modelName
-	}
-	if effortName != "" {
-		cmdData["effort"] = effortName
-	}
-	if yolo {
-		cmdData["yolo"] = true
-	}
+	// Build command data.
+	cmdData := buildCreateSessionData(params, sessionID, prompt)
 
-	if projectID != "" {
-		if err := e.store.TrackSession(sessionID, mp.Name, projectID); err != nil {
+	// Track session locally.
+	if params.ProjectID != "" {
+		if err := e.store.TrackSession(sessionID, mp.Name, params.ProjectID); err != nil {
 			return protocol.ErrResponse(fmt.Sprintf("tracking session: %v", err))
 		}
 	} else {
@@ -1391,6 +1171,7 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 		}
 	}
 
+	// Send create_session command to moneypenny.
 	ctx := context.Background()
 	_, err = e.sendCommand(ctx, mp, "create_session", cmdData)
 	if err != nil {
@@ -1398,7 +1179,7 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 	}
 	e.invalidateMPCache(mp.Name)
 
-	if async {
+	if params.Async {
 		return protocol.OKResponse(SessionCreatedResult{
 			SessionID: sessionID,
 			Async:     true,
@@ -3795,7 +3576,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 
 	// Update state cache (clients detect working→ready transitions).
 	for _, entry := range entries {
-		e.lastSessionStates[entry.SessionID] = entry.MPStatus
+		e.watchManager.SetLastState(entry.SessionID, entry.MPStatus)
 	}
 
 	result := TableResult{
@@ -3876,7 +3657,7 @@ func (e *Executor) TestMI6(args []string) *protocol.Response {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	if err := transport.TestMI6(ctx, addr, e.mi6KeyPath); err != nil {
+	if err := transport.TestMI6(ctx, addr, e.clientManager.MI6KeyPath()); err != nil {
 		return protocol.ErrResponse(fmt.Sprintf("MI6 connectivity test failed: %v", err))
 	}
 
@@ -3909,7 +3690,7 @@ func (e *Executor) MI6ListKeys(args []string) *protocol.Response {
 	defer cancel()
 
 	cmdJSON := `{"command":"list_keys"}`
-	respData, err := transport.MI6AdminCommand(ctx, mi6Addr, e.mi6KeyPath, cmdJSON)
+	respData, err := transport.MI6AdminCommand(ctx, mi6Addr, e.clientManager.MI6KeyPath(), cmdJSON)
 	if err != nil {
 		return protocol.ErrResponse(fmt.Sprintf("MI6 admin command failed: %v", err))
 	}
@@ -3970,7 +3751,7 @@ func (e *Executor) MI6AddKey(args []string) *protocol.Response {
 		"command": "add_key",
 		"key":     keyLine,
 	})
-	respData, err := transport.MI6AdminCommand(ctx, mi6Addr, e.mi6KeyPath, string(cmdJSON))
+	respData, err := transport.MI6AdminCommand(ctx, mi6Addr, e.clientManager.MI6KeyPath(), string(cmdJSON))
 	if err != nil {
 		return protocol.ErrResponse(fmt.Sprintf("MI6 admin command failed: %v", err))
 	}
@@ -4024,7 +3805,7 @@ func (e *Executor) MI6DeleteKey(args []string) *protocol.Response {
 		"command":     "delete_key",
 		"fingerprint": fingerprint,
 	})
-	respData, err := transport.MI6AdminCommand(ctx, mi6Addr, e.mi6KeyPath, string(cmdJSON))
+	respData, err := transport.MI6AdminCommand(ctx, mi6Addr, e.clientManager.MI6KeyPath(), string(cmdJSON))
 	if err != nil {
 		return protocol.ErrResponse(fmt.Sprintf("MI6 admin command failed: %v", err))
 	}
