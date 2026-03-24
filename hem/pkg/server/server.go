@@ -102,6 +102,8 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	resp := s.dispatcher.Dispatch(req.Verb, req.Noun, req.Args)
 	resp.RequestID = req.RequestID
+	resp.Verb = req.Verb
+	resp.Noun = req.Noun
 
 	if resp.Status == "error" {
 		s.vlog.Printf("response: status=error message=%q", resp.Message)

@@ -1,5 +1,12 @@
 package envelope
 
+// Notification events
+const (
+	EventSessionStateChanged = "session_state_changed"
+	EventSessionCompleted    = "session_completed"
+	EventSessionError        = "session_error"
+)
+
 // CreateSessionData is the data payload for create_session.
 type CreateSessionData struct {
 	Agent        string `json:"agent"`

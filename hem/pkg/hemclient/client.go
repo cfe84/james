@@ -25,6 +25,12 @@ type Sender interface {
 	Send(req *protocol.Request) (*protocol.Response, error)
 }
 
+// BroadcastSender extends Sender with broadcast message support.
+type BroadcastSender interface {
+	Sender
+	Broadcasts() <-chan *protocol.Response // read-only channel for broadcast messages
+}
+
 // SocketSender sends requests over a Unix domain socket (one connection per request).
 type SocketSender struct {
 	SockPath string
@@ -66,13 +72,15 @@ type MI6Sender struct {
 	Addr    string
 	KeyPath string
 
-	mu        sync.Mutex
-	cmd       *exec.Cmd
-	stdin     io.WriteCloser
-	scanner   *bufio.Scanner
-	stderrBuf bytes.Buffer
-	waitCh    chan struct{} // closed when mi6-client process exits
-	waitErr   error
+	mu           sync.Mutex
+	cmd          *exec.Cmd
+	stdin        io.WriteCloser
+	scanner      *bufio.Scanner
+	stderrBuf    bytes.Buffer
+	waitCh       chan struct{}                // closed when mi6-client process exits
+	waitErr      error
+	broadcastCh  chan *protocol.Response      // channel for broadcasting messages to listeners
+	pendingResps map[string]chan *protocol.Response // pending requests waiting for responses
 }
 
 // Connect establishes the MI6 connection. Must be called before Send.
@@ -109,6 +117,8 @@ func (s *MI6Sender) connectInternal() error {
 	s.stdin = stdin
 	s.scanner = bufio.NewScanner(stdout)
 	s.scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
+	s.broadcastCh = make(chan *protocol.Response, 100)
+	s.pendingResps = make(map[string]chan *protocol.Response)
 
 	// Wait for mi6-client to either connect or fail early.
 	s.waitCh = make(chan struct{})
@@ -116,6 +126,9 @@ func (s *MI6Sender) connectInternal() error {
 		s.waitErr = cmd.Wait()
 		close(s.waitCh)
 	}()
+
+	// Start background reader goroutine to route messages.
+	go s.readLoop()
 
 	select {
 	case <-s.waitCh:
@@ -134,11 +147,62 @@ func (s *MI6Sender) connectInternal() error {
 	}
 }
 
+// readLoop runs in a background goroutine and routes incoming messages.
+func (s *MI6Sender) readLoop() {
+	for s.scanner.Scan() {
+		var resp protocol.Response
+		if err := json.Unmarshal(s.scanner.Bytes(), &resp); err != nil {
+			// Not a valid response (could be a request from another client); skip.
+			continue
+		}
+
+		s.mu.Lock()
+		if resp.RequestID != "" {
+			// This is a response to a specific request.
+			if ch, ok := s.pendingResps[resp.RequestID]; ok {
+				select {
+				case ch <- &resp:
+					delete(s.pendingResps, resp.RequestID)
+				default:
+					// Channel full or closed, skip.
+				}
+			} else {
+				// No pending request for this ID — treat as broadcast.
+				select {
+				case s.broadcastCh <- &resp:
+				default:
+					// Broadcast channel full, drop message.
+				}
+			}
+		} else {
+			// No RequestID — this is a broadcast message.
+			select {
+			case s.broadcastCh <- &resp:
+			default:
+				// Broadcast channel full, drop message.
+			}
+		}
+		s.mu.Unlock()
+	}
+
+	// Scanner stopped — connection died. Close broadcast channel.
+	s.mu.Lock()
+	if s.broadcastCh != nil {
+		close(s.broadcastCh)
+		s.broadcastCh = nil
+	}
+	// Close all pending response channels.
+	for id, ch := range s.pendingResps {
+		close(ch)
+		delete(s.pendingResps, id)
+	}
+	s.mu.Unlock()
+}
+
 func (s *MI6Sender) Send(req *protocol.Request) (*protocol.Response, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if s.stdin == nil {
+		s.mu.Unlock()
 		return nil, fmt.Errorf("MI6 not connected")
 	}
 
@@ -146,53 +210,65 @@ func (s *MI6Sender) Send(req *protocol.Request) (*protocol.Response, error) {
 	id := fmt.Sprintf("hem-%d-%d", os.Getpid(), atomic.AddUint64(&reqCounter, 1))
 	req.RequestID = id
 
+	// Create a channel for this request's response.
+	respCh := make(chan *protocol.Response, 1)
+	s.pendingResps[id] = respCh
+
 	data, err := json.Marshal(req)
 	if err != nil {
+		delete(s.pendingResps, id)
+		s.mu.Unlock()
 		return nil, fmt.Errorf("marshaling request: %w", err)
 	}
 	data = append(data, '\n')
 
 	if _, err := s.stdin.Write(data); err != nil {
+		delete(s.pendingResps, id)
 		// Connection lost — try to reconnect once.
 		s.closeInternal()
 		if reconnErr := s.connectInternal(); reconnErr != nil {
+			s.mu.Unlock()
 			return nil, fmt.Errorf("MI6 connection lost, reconnect failed: %w", reconnErr)
 		}
+		// Re-register the pending response channel after reconnect.
+		s.pendingResps[id] = respCh
 		// Re-serialize with same request ID.
 		if _, err := s.stdin.Write(data); err != nil {
+			delete(s.pendingResps, id)
+			s.mu.Unlock()
 			return nil, fmt.Errorf("writing to MI6 after reconnect: %w", err)
 		}
 	}
+	s.mu.Unlock()
 
-	// Read lines until we find a response matching our request ID.
-	for {
-		if !s.scanner.Scan() {
-			// Check if process died.
-			select {
-			case <-s.waitCh:
-				errMsg := strings.TrimSpace(s.stderrBuf.String())
-				if errMsg != "" {
-					return nil, fmt.Errorf("mi6-client died: %s", errMsg)
-				}
-				return nil, fmt.Errorf("mi6-client died: %v", s.waitErr)
-			default:
-			}
-			return nil, fmt.Errorf("no response from MI6")
+	// Wait for response or timeout.
+	select {
+	case resp, ok := <-respCh:
+		if !ok {
+			return nil, fmt.Errorf("MI6 connection closed while waiting for response")
 		}
-
-		var resp protocol.Response
-		if err := json.Unmarshal(s.scanner.Bytes(), &resp); err != nil {
-			// Not a valid response (could be a request from another client); skip.
-			continue
+		return resp, nil
+	case <-s.waitCh:
+		s.mu.Lock()
+		errMsg := strings.TrimSpace(s.stderrBuf.String())
+		s.mu.Unlock()
+		if errMsg != "" {
+			return nil, fmt.Errorf("mi6-client died: %s", errMsg)
 		}
-
-		// Skip messages without a matching request ID (responses to other clients).
-		if resp.RequestID != id {
-			continue
-		}
-
-		return &resp, nil
+		return nil, fmt.Errorf("mi6-client died: %v", s.waitErr)
+	case <-time.After(60 * time.Second):
+		s.mu.Lock()
+		delete(s.pendingResps, id)
+		s.mu.Unlock()
+		return nil, fmt.Errorf("timeout waiting for response")
 	}
+}
+
+// Broadcasts returns a read-only channel for receiving broadcast messages.
+func (s *MI6Sender) Broadcasts() <-chan *protocol.Response {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.broadcastCh
 }
 
 // Close shuts down the MI6 connection.
@@ -212,6 +288,7 @@ func (s *MI6Sender) closeInternal() {
 		<-s.waitCh // wait for the goroutine that called cmd.Wait()
 		s.waitCh = nil
 	}
+	// Note: broadcastCh and pendingResps are cleaned up by readLoop when scanner stops.
 	s.cmd = nil
 	s.scanner = nil
 }

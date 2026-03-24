@@ -7,8 +7,9 @@ import (
 
 // Message types
 const (
-	TypeCommand  = "request"
-	TypeResponse = "response"
+	TypeCommand      = "request"
+	TypeResponse     = "response"
+	TypeNotification = "notification"
 )
 
 // Status values
@@ -45,6 +46,14 @@ type Response struct {
 	RequestID string      `json:"request_id"`
 	ErrorCode string      `json:"error_code,omitempty"`
 	Data      interface{} `json:"data"`
+}
+
+// Notification represents an asynchronous event notification sent to hem.
+type Notification struct {
+	Type      string      `json:"type"` // always "notification"
+	Event     string      `json:"event"`
+	SessionID string      `json:"session_id"`
+	Data      interface{} `json:"data,omitempty"`
 }
 
 // SuccessResponse creates a success response for the given request.
@@ -90,6 +99,25 @@ func ParseCommand(data []byte) (*Command, error) {
 // Marshal serializes a response to JSON bytes (with a trailing newline for line-based protocol).
 func (r *Response) Marshal() ([]byte, error) {
 	b, err := json.Marshal(r)
+	if err != nil {
+		return nil, err
+	}
+	return append(b, '\n'), nil
+}
+
+// NewNotification creates a notification for an asynchronous event.
+func NewNotification(event, sessionID string, data interface{}) *Notification {
+	return &Notification{
+		Type:      TypeNotification,
+		Event:     event,
+		SessionID: sessionID,
+		Data:      data,
+	}
+}
+
+// Marshal serializes a notification to JSON bytes (with a trailing newline for line-based protocol).
+func (n *Notification) Marshal() ([]byte, error) {
+	b, err := json.Marshal(n)
 	if err != nil {
 		return nil, err
 	}

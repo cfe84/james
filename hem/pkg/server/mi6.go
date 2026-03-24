@@ -144,6 +144,8 @@ func (m *MI6Listener) runOnce() error {
 
 		resp := m.dispatcher.Dispatch(req.Verb, req.Noun, req.Args)
 		resp.RequestID = req.RequestID
+		resp.Verb = req.Verb
+		resp.Noun = req.Noun
 
 		b, err := json.Marshal(resp)
 		if err != nil {

@@ -22,6 +22,15 @@ func newMI6Client(sender hemclient.Sender) *client {
 	return &client{sender: sender}
 }
 
+// broadcasts returns a channel for receiving broadcast messages (MI6 only).
+// Returns nil for Unix socket clients.
+func (c *client) broadcasts() <-chan *protocol.Response {
+	if bs, ok := c.sender.(hemclient.BroadcastSender); ok {
+		return bs.Broadcasts()
+	}
+	return nil
+}
+
 func (c *client) send(verb, noun string, args ...string) (*protocol.Response, error) {
 	req := &protocol.Request{Verb: verb, Noun: noun, Args: args}
 	return c.sender.Send(req)
