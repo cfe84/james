@@ -8,16 +8,34 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"james/hem/pkg/protocol"
 )
 
 type dashboardPollTickMsg struct{}
+type broadcastMsg struct{ resp *protocol.Response }
 
-const dashboardPollInterval = 5 * time.Second
+const dashboardPollInterval = 60 * time.Second // Fallback refresh every 60s
 
 func dashboardPollTick() tea.Cmd {
 	return tea.Tick(dashboardPollInterval, func(time.Time) tea.Msg {
 		return dashboardPollTickMsg{}
 	})
+}
+
+// listenForBroadcasts subscribes to broadcast messages from the MI6 connection.
+func listenForBroadcasts(broadcasts <-chan *protocol.Response) tea.Cmd {
+	return func() tea.Msg {
+		if broadcasts == nil {
+			// No broadcast support (Unix socket client)
+			return nil
+		}
+		resp, ok := <-broadcasts
+		if !ok {
+			// Channel closed
+			return nil
+		}
+		return broadcastMsg{resp: resp}
+	}
 }
 
 // dashboardEntry represents a session in the dashboard.
@@ -195,7 +213,15 @@ func (m dashboardModel) completeSession(id string) tea.Cmd {
 }
 
 func (m dashboardModel) Init() tea.Cmd {
-	return tea.Batch(m.loadDashboard(), dashboardPollTick())
+	// Start initial load, fallback polling, and broadcast listener.
+	cmds := []tea.Cmd{m.loadDashboard(), dashboardPollTick()}
+
+	// Add broadcast listener if using MI6.
+	if broadcasts := m.client.broadcasts(); broadcasts != nil {
+		cmds = append(cmds, listenForBroadcasts(broadcasts))
+	}
+
+	return tea.Batch(cmds...)
 }
 
 func (m dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
@@ -218,6 +244,21 @@ func (m dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 				m.cursor = max(0, len(m.entries)-1)
 			}
 		}
+
+	case broadcastMsg:
+		// Handle broadcast messages to update local state.
+		// Determine if we need to refresh based on the broadcast.
+		shouldRefresh := m.shouldRefreshOnBroadcast(msg.resp)
+
+		// Always continue listening for broadcasts.
+		nextCmd := listenForBroadcasts(m.client.broadcasts())
+
+		if shouldRefresh && !m.loading {
+			// Trigger a refresh and continue listening.
+			return m, tea.Batch(m.loadDashboard(), nextCmd)
+		}
+
+		return m, nextCmd
 
 	case sessionCompletedMsg:
 		if msg.err != nil {
@@ -416,6 +457,40 @@ func categoryLabel(cat int) string {
 		return categoryDoneStyle.Render(" COMPLETED ")
 	}
 	return ""
+}
+
+// shouldRefreshOnBroadcast determines if a broadcast message should trigger a dashboard refresh.
+func (m dashboardModel) shouldRefreshOnBroadcast(resp *protocol.Response) bool {
+	if resp == nil {
+		return false
+	}
+
+	// Identify the command type from verb/noun to determine if it affects dashboard.
+	verb, noun := resp.Verb, resp.Noun
+
+	// Refresh on any command that could affect dashboard entries.
+	switch {
+	case verb == "create" && noun == "session":
+		return true // New session created
+	case verb == "complete" && noun == "session":
+		return true // Session completed
+	case verb == "delete" && noun == "session":
+		return true // Session deleted
+	case verb == "update" && noun == "session":
+		return true // Session updated (name, status, etc.)
+	case verb == "continue" && noun == "session":
+		return true // Session prompt sent (might change status)
+	case verb == "stop" && noun == "session":
+		return true // Session stopped
+	case verb == "create" && noun == "subsession":
+		return true // Subagent created
+	case verb == "delete" && noun == "subsession":
+		return true // Subagent deleted
+	case verb == "stop" && noun == "subsession":
+		return true // Subagent stopped
+	}
+
+	return false
 }
 
 func (m dashboardModel) View() string {
