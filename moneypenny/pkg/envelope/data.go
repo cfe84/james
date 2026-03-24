@@ -5,6 +5,11 @@ const (
 	EventSessionStateChanged = "session_state_changed"
 	EventSessionCompleted    = "session_completed"
 	EventSessionError        = "session_error"
+	EventChatActivity        = "chat_activity"
+	EventChatMessage         = "chat_message"
+	EventChatStatus          = "chat_status"
+	EventChatSubagent        = "chat_subagent"
+	EventChatSchedule        = "chat_schedule"
 )
 
 // CreateSessionData is the data payload for create_session.

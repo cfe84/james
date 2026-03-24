@@ -58,6 +58,8 @@ func (h *Handler) SetUpdateStatusFunc(f func() envelope.UpdateStatusResponse) {
 // SetNotificationWriter sets the writer for sending async notifications.
 func (h *Handler) SetNotificationWriter(nw *envelope.NotificationWriter) {
 	h.notifyWriter = nw
+	h.store.SetNotificationWriter(nw)
+	h.runner.SetNotificationWriter(nw)
 }
 
 // AllSessionsIdle returns true if no sessions are in the "working" state.
@@ -182,6 +184,14 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to update status: %v", err))
 	}
 
+	// Notify that session is now working.
+	if h.notifyWriter != nil {
+		_ = h.notifyWriter.Send(envelope.EventChatStatus, data.SessionID, map[string]string{
+			"status": store.StateWorking,
+			"reason": "agent_started",
+		})
+	}
+
 	// Add user prompt to conversation.
 	if err := h.store.AddConversationTurn(data.SessionID, "user", data.Prompt); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to add conversation turn: %v", err))
@@ -233,6 +243,14 @@ func (h *Handler) continueSession(ctx context.Context, cmd *envelope.Command) *e
 	// Update status to working.
 	if err := h.store.UpdateSessionStatus(data.SessionID, store.StateWorking); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to update status: %v", err))
+	}
+
+	// Notify that session is now working.
+	if h.notifyWriter != nil {
+		_ = h.notifyWriter.Send(envelope.EventChatStatus, data.SessionID, map[string]string{
+			"status": store.StateWorking,
+			"reason": "agent_started",
+		})
 	}
 
 	// Add user prompt to conversation.
@@ -308,6 +326,10 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 				"status": store.StateIdle,
 				"reason": "agent_error",
 			})
+			_ = h.notifyWriter.Send(envelope.EventChatStatus, sessionID, map[string]string{
+				"status": store.StateIdle,
+				"reason": "agent_error",
+			})
 		}
 		return
 	}
@@ -368,6 +390,10 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 	// Notify hem that session became idle after completion.
 	if h.notifyWriter != nil {
 		_ = h.notifyWriter.Send(envelope.EventSessionStateChanged, sessionID, map[string]string{
+			"status": store.StateIdle,
+			"reason": "completed",
+		})
+		_ = h.notifyWriter.Send(envelope.EventChatStatus, sessionID, map[string]string{
 			"status": store.StateIdle,
 			"reason": "completed",
 		})
@@ -1046,6 +1072,16 @@ func (h *Handler) schedule(_ context.Context, cmd *envelope.Command) *envelope.R
 
 	h.vlog("created schedule %d for session %s at %s", id, data.SessionID, scheduledAt.Format(time.RFC3339))
 
+	// Notify about new schedule.
+	if h.notifyWriter != nil {
+		_ = h.notifyWriter.Send(envelope.EventChatSchedule, data.SessionID, map[string]interface{}{
+			"schedule_id": id,
+			"prompt":      data.Prompt,
+			"schedule_at": scheduledAt.UTC().Format(time.RFC3339),
+			"action":      "created",
+		})
+	}
+
 	return envelope.SuccessResponse(cmd.RequestID, envelope.ScheduleResponse{
 		ScheduleID:  id,
 		SessionID:   data.SessionID,
@@ -1094,11 +1130,25 @@ func (h *Handler) cancelSchedule(_ context.Context, cmd *envelope.Command) *enve
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "schedule_id is required")
 	}
 
+	// Get schedule details before canceling for notification.
+	schedule, err := h.store.GetSchedule(data.ScheduleID)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to get schedule: %v", err))
+	}
+
 	if err := h.store.CancelSchedule(data.ScheduleID); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to cancel schedule: %v", err))
 	}
 
 	h.vlog("cancelled schedule %d", data.ScheduleID)
+
+	// Notify about cancelled schedule.
+	if h.notifyWriter != nil && schedule != nil {
+		_ = h.notifyWriter.Send(envelope.EventChatSchedule, schedule.SessionID, map[string]interface{}{
+			"schedule_id": data.ScheduleID,
+			"action":      "deleted",
+		})
+	}
 
 	return envelope.SuccessResponse(cmd.RequestID, map[string]interface{}{"schedule_id": data.ScheduleID, "cancelled": true})
 }
@@ -1192,6 +1242,16 @@ func (h *Handler) processDueSchedules() {
 		if err := h.store.UpdateScheduleStatus(sch.ID, store.ScheduleRunning); err != nil {
 			h.vlog("scheduler: failed to update schedule %d status: %v", sch.ID, err)
 			continue
+		}
+
+		// Notify about schedule execution.
+		if h.notifyWriter != nil {
+			_ = h.notifyWriter.Send(envelope.EventChatSchedule, sch.SessionID, map[string]interface{}{
+				"schedule_id": sch.ID,
+				"prompt":      sch.Prompt,
+				"schedule_at": sch.ScheduledAt.Format(time.RFC3339),
+				"action":      "executed",
+			})
 		}
 
 		sess, err := h.store.GetSession(sch.SessionID)

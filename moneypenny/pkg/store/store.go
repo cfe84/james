@@ -6,6 +6,8 @@ import (
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
+
+	"james/moneypenny/pkg/envelope"
 )
 
 // Session states
@@ -58,7 +60,8 @@ type Schedule struct {
 
 // Store manages the SQLite database.
 type Store struct {
-	db *sql.DB
+	db           *sql.DB
+	notifyWriter *envelope.NotificationWriter
 }
 
 // New opens (or creates) the SQLite database at the given path and runs migrations.
@@ -85,6 +88,11 @@ func New(dbPath string) (*Store, error) {
 	}
 
 	return &Store{db: db}, nil
+}
+
+// SetNotificationWriter sets the notification writer for sending real-time events.
+func (s *Store) SetNotificationWriter(nw *envelope.NotificationWriter) {
+	s.notifyWriter = nw
 }
 
 func migrate(db *sql.DB) error {
@@ -326,13 +334,25 @@ func (s *Store) DeleteSession(sessionID string) error {
 
 // AddConversationTurn adds a turn to the conversation history.
 func (s *Store) AddConversationTurn(sessionID string, role string, content string) error {
-	_, err := s.db.Exec(
+	result, err := s.db.Exec(
 		`INSERT INTO conversation_turns (session_id, role, content) VALUES (?, ?, ?)`,
 		sessionID, role, content,
 	)
 	if err != nil {
 		return fmt.Errorf("add conversation turn: %w", err)
 	}
+
+	// Send notification about new message
+	if s.notifyWriter != nil {
+		turnIndex, _ := result.LastInsertId()
+		_ = s.notifyWriter.Send(envelope.EventChatMessage, sessionID, map[string]interface{}{
+			"role":       role,
+			"content":    content,
+			"timestamp":  time.Now().Format(time.RFC3339),
+			"turn_index": int(turnIndex),
+		})
+	}
+
 	return nil
 }
 

@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"james/moneypenny/pkg/envelope"
 )
 
 // Result holds the parsed result from a claude invocation.
@@ -71,10 +73,11 @@ type RunParams struct {
 
 // Runner manages agent subprocess execution.
 type Runner struct {
-	mu       sync.Mutex
-	procs    map[string]*exec.Cmd      // sessionID -> running process
-	activity map[string]*activityBuffer // sessionID -> recent activity
-	vlog     *log.Logger
+	mu           sync.Mutex
+	procs        map[string]*exec.Cmd      // sessionID -> running process
+	activity     map[string]*activityBuffer // sessionID -> recent activity
+	vlog         *log.Logger
+	notifyWriter *envelope.NotificationWriter
 }
 
 // New creates a new Runner.
@@ -84,6 +87,13 @@ func New(vlog *log.Logger) *Runner {
 		activity: make(map[string]*activityBuffer),
 		vlog:     vlog,
 	}
+}
+
+// SetNotificationWriter sets the notification writer for sending real-time events.
+func (r *Runner) SetNotificationWriter(nw *envelope.NotificationWriter) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.notifyWriter = nw
 }
 
 // GetActivity returns recent activity events for a session.
@@ -131,7 +141,7 @@ func (r *Runner) Run(ctx context.Context, params RunParams) (*Result, error) {
 
 	// For Claude agents, use stream-json and parse events line by line.
 	if params.Agent != "copilot" {
-		return r.runStreaming(cmd, buf, &stderrBuf)
+		return r.runStreaming(cmd, buf, params.SessionID, &stderrBuf)
 	}
 
 	// Copilot: blocking output.
@@ -143,7 +153,7 @@ func (r *Runner) Run(ctx context.Context, params RunParams) (*Result, error) {
 }
 
 // runStreaming runs a Claude agent with stream-json, parsing events into the activity buffer.
-func (r *Runner) runStreaming(cmd *exec.Cmd, buf *activityBuffer, stderrBuf *bytes.Buffer) (*Result, error) {
+func (r *Runner) runStreaming(cmd *exec.Cmd, buf *activityBuffer, sessionID string, stderrBuf *bytes.Buffer) (*Result, error) {
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("creating stdout pipe: %w", err)
@@ -203,6 +213,13 @@ func (r *Runner) runStreaming(cmd *exec.Cmd, buf *activityBuffer, stderrBuf *byt
 						buf.add(ActivityEvent{Type: "text", Summary: truncStr(text, 150), Timestamp: now})
 					}
 				}
+			}
+			// Send activity notification after processing assistant event
+			if r.notifyWriter != nil && len(contentBlocks) > 0 {
+				snapshot := buf.snapshot()
+				_ = r.notifyWriter.Send(envelope.EventChatActivity, sessionID, map[string]interface{}{
+					"events": snapshot,
+				})
 			}
 		case "result":
 			if r, ok := event["result"].(string); ok {
