@@ -303,7 +303,7 @@ func runMI6Once(ctx context.Context, h *handler.Handler, vlog *log.Logger, mi6Cl
 	childCtx, childCancel := context.WithCancel(ctx)
 	defer childCancel()
 
-	cmd := exec.CommandContext(childCtx, mi6Client, "--key", keyPath, "--exclusive", addr)
+	cmd := exec.CommandContext(childCtx, mi6Client, "--key", keyPath, addr)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("failed to get mi6-client stdin: %w", err)

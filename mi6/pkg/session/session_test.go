@@ -8,10 +8,7 @@ import (
 
 func TestJoinCreatesSessionAndReturnsClient(t *testing.T) {
 	m := NewManager()
-	c, err := m.Join("s1")
-	if err != nil {
-		t.Fatalf("Join failed: %v", err)
-	}
+	c := m.Join("s1")
 	if c == nil {
 		t.Fatal("expected non-nil client")
 	}
@@ -31,14 +28,8 @@ func TestJoinCreatesSessionAndReturnsClient(t *testing.T) {
 
 func TestTwoClientsJoinSameSession(t *testing.T) {
 	m := NewManager()
-	c1, err := m.Join("s1")
-	if err != nil {
-		t.Fatalf("Join failed: %v", err)
-	}
-	c2, err := m.Join("s1")
-	if err != nil {
-		t.Fatalf("Join failed: %v", err)
-	}
+	c1 := m.Join("s1")
+	c2 := m.Join("s1")
 	if c1.ID == c2.ID {
 		t.Fatal("expected different client IDs")
 	}
@@ -49,18 +40,9 @@ func TestTwoClientsJoinSameSession(t *testing.T) {
 
 func TestBroadcastDeliversToOthersNotSender(t *testing.T) {
 	m := NewManager()
-	c1, err := m.Join("s1")
-	if err != nil {
-		t.Fatalf("Join failed: %v", err)
-	}
-	c2, err := m.Join("s1")
-	if err != nil {
-		t.Fatalf("Join failed: %v", err)
-	}
-	c3, err := m.Join("s1")
-	if err != nil {
-		t.Fatalf("Join failed: %v", err)
-	}
+	c1 := m.Join("s1")
+	c2 := m.Join("s1")
+	c3 := m.Join("s1")
 
 	msg := []byte("hello")
 	m.Broadcast("s1", c1.ID, msg)
@@ -95,14 +77,8 @@ func TestBroadcastDeliversToOthersNotSender(t *testing.T) {
 
 func TestLeaveRemovesClientAndClosesWriteCh(t *testing.T) {
 	m := NewManager()
-	c1, err := m.Join("s1")
-	if err != nil {
-		t.Fatalf("Join failed: %v", err)
-	}
-	c2, err := m.Join("s1")
-	if err != nil {
-		t.Fatalf("Join failed: %v", err)
-	}
+	c1 := m.Join("s1")
+	c2 := m.Join("s1")
 
 	m.Leave("s1", c1.ID)
 
@@ -122,10 +98,7 @@ func TestLeaveRemovesClientAndClosesWriteCh(t *testing.T) {
 
 func TestLeaveLastClientDeletesSession(t *testing.T) {
 	m := NewManager()
-	c, err := m.Join("s1")
-	if err != nil {
-		t.Fatalf("Join failed: %v", err)
-	}
+	c := m.Join("s1")
 	m.Leave("s1", c.ID)
 
 	if m.ClientCount("s1") != 0 {
@@ -143,14 +116,8 @@ func TestLeaveLastClientDeletesSession(t *testing.T) {
 
 func TestBroadcastSkipsFullChannels(t *testing.T) {
 	m := NewManager()
-	sender, err := m.Join("s1")
-	if err != nil {
-		t.Fatalf("Join failed: %v", err)
-	}
-	slow, err := m.Join("s1")
-	if err != nil {
-		t.Fatalf("Join failed: %v", err)
-	}
+	sender := m.Join("s1")
+	slow := m.Join("s1")
 
 	// Fill up slow consumer's channel
 	for i := 0; i < 256; i++ {
@@ -179,18 +146,12 @@ func TestClientCountReturnsCorrectValues(t *testing.T) {
 		t.Fatal("expected 0 for nonexistent session")
 	}
 
-	c1, err := m.Join("s1")
-	if err != nil {
-		t.Fatalf("Join failed: %v", err)
-	}
+	c1 := m.Join("s1")
 	if m.ClientCount("s1") != 1 {
 		t.Fatalf("expected 1, got %d", m.ClientCount("s1"))
 	}
 
-	c2, err := m.Join("s1")
-	if err != nil {
-		t.Fatalf("Join failed: %v", err)
-	}
+	c2 := m.Join("s1")
 	if m.ClientCount("s1") != 2 {
 		t.Fatalf("expected 2, got %d", m.ClientCount("s1"))
 	}
@@ -215,10 +176,7 @@ func TestConcurrentJoinLeaveBroadcast(t *testing.T) {
 	for i := 0; i < goroutines; i++ {
 		go func() {
 			defer wg.Done()
-			c, err := m.Join("s1")
-			if err != nil {
-				t.Fatalf("Join failed: %v", err)
-			}
+			c := m.Join("s1")
 			m.Broadcast("s1", c.ID, []byte("data"))
 			m.Leave("s1", c.ID)
 		}()
@@ -228,87 +186,5 @@ func TestConcurrentJoinLeaveBroadcast(t *testing.T) {
 
 	if m.ClientCount("s1") != 0 {
 		t.Fatalf("expected 0 clients after all left, got %d", m.ClientCount("s1"))
-	}
-}
-
-func TestExclusiveClientMustBeAlone(t *testing.T) {
-	m := NewManager()
-
-	// Exclusive client joins empty session - should succeed
-	c1, err := m.JoinExclusive("s1")
-	if err != nil {
-		t.Fatalf("Expected exclusive join to succeed on empty session, got: %v", err)
-	}
-	if !c1.Exclusive {
-		t.Fatal("Expected client to be marked as exclusive")
-	}
-	if m.ClientCount("s1") != 1 {
-		t.Fatalf("Expected 1 client, got %d", m.ClientCount("s1"))
-	}
-
-	// Second exclusive client tries to join - should fail
-	_, err = m.JoinExclusive("s1")
-	if err == nil {
-		t.Fatal("Expected exclusive join to fail when another client exists")
-	}
-	if err != ErrExclusiveConflict {
-		t.Fatalf("Expected ErrExclusiveConflict, got %v", err)
-	}
-
-	// Non-exclusive client tries to join - should fail
-	_, err = m.Join("s1")
-	if err == nil {
-		t.Fatal("Expected non-exclusive join to fail when exclusive client exists")
-	}
-	if err != ErrExclusiveConflict {
-		t.Fatalf("Expected ErrExclusiveConflict, got %v", err)
-	}
-
-	// After exclusive client leaves, new client can join
-	m.Leave("s1", c1.ID)
-	c2, err := m.Join("s1")
-	if err != nil {
-		t.Fatalf("Expected join to succeed after exclusive left, got: %v", err)
-	}
-	if c2.Exclusive {
-		t.Fatal("Expected non-exclusive client")
-	}
-}
-
-func TestNonExclusiveCannotJoinWhenExclusivePresent(t *testing.T) {
-	m := NewManager()
-
-	// Non-exclusive clients join first
-	c1, err := m.Join("s1")
-	if err != nil {
-		t.Fatalf("Join failed: %v", err)
-	}
-	c2, err := m.Join("s1")
-	if err != nil {
-		t.Fatalf("Join failed: %v", err)
-	}
-	if m.ClientCount("s1") != 2 {
-		t.Fatalf("Expected 2 clients, got %d", m.ClientCount("s1"))
-	}
-
-	// Exclusive client tries to join - should fail
-	_, err = m.JoinExclusive("s1")
-	if err == nil {
-		t.Fatal("Expected exclusive join to fail when other clients exist")
-	}
-	if err != ErrExclusiveConflict {
-		t.Fatalf("Expected ErrExclusiveConflict, got %v", err)
-	}
-
-	// After all non-exclusive clients leave, exclusive can join
-	m.Leave("s1", c1.ID)
-	m.Leave("s1", c2.ID)
-
-	c3, err := m.JoinExclusive("s1")
-	if err != nil {
-		t.Fatalf("Expected exclusive join to succeed after all left, got: %v", err)
-	}
-	if !c3.Exclusive {
-		t.Fatal("Expected exclusive client")
 	}
 }
