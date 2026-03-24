@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"os/exec"
@@ -13,6 +14,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+
+	"james/hem/pkg/protocol"
 )
 
 type chatSessionStoppedMsg struct{ err error }
@@ -32,8 +35,9 @@ type chatSubagentCreatedMsg struct {
 	err       error
 }
 type chatPollTickMsg struct{}
+type chatBroadcastMsg struct{ resp *protocol.Response }
 
-const chatPollInterval = 3 * time.Second
+const chatPollInterval = 180 * time.Second // Fallback only (was 3s)
 
 // chatModel displays conversation history and allows sending messages.
 const chatPageSize = 10
@@ -280,8 +284,49 @@ func chatPollTick() tea.Cmd {
 	})
 }
 
+func listenForChatBroadcasts(broadcasts <-chan *protocol.Response, sessionID string) tea.Cmd {
+	return func() tea.Msg {
+		if broadcasts == nil {
+			return nil
+		}
+		for {
+			resp, ok := <-broadcasts
+			if !ok {
+				return nil
+			}
+			// Only process broadcasts for this session
+			if matchesChatSession(resp, sessionID) {
+				return chatBroadcastMsg{resp: resp}
+			}
+		}
+	}
+}
+
+func matchesChatSession(resp *protocol.Response, sessionID string) bool {
+	// Extract session_id from notification data
+	var data map[string]interface{}
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		return false
+	}
+	sid, _ := data["session_id"].(string)
+	return sid == sessionID
+}
+
 func (m chatModel) Init() tea.Cmd {
-	return tea.Batch(m.loadHistory(), m.loadSchedules(), m.loadSubagents(), m.loadActivity(), chatPollTick())
+	cmds := []tea.Cmd{
+		m.loadHistory(),
+		m.loadSchedules(),
+		m.loadSubagents(),
+		m.loadActivity(),
+		chatPollTick(),
+	}
+
+	// Start broadcast listener
+	if broadcasts := m.client.broadcasts(); broadcasts != nil {
+		cmds = append(cmds, listenForChatBroadcasts(broadcasts, m.sessionID))
+	}
+
+	return tea.Batch(cmds...)
 }
 
 func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
@@ -295,6 +340,45 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 			return m, tea.Batch(cmds...)
 		}
 		return m, chatPollTick()
+
+	case chatBroadcastMsg:
+		// Handle real-time notifications from moneypenny
+		cmds := []tea.Cmd{listenForChatBroadcasts(m.client.broadcasts(), m.sessionID)}
+
+		// Route by event type (verb/noun from moneypenny notification)
+		switch msg.resp.Verb {
+		case "activity":
+			// Real-time activity stream update during agent execution
+			if !m.loading && !m.polling {
+				cmds = append(cmds, m.loadActivity())
+			}
+
+		case "message":
+			// New conversation message added
+			if !m.loading && !m.polling {
+				cmds = append(cmds, m.loadHistory())
+			}
+
+		case "status":
+			// Session status changed (working/idle)
+			if !m.loading && !m.polling {
+				cmds = append(cmds, m.loadHistory())
+			}
+
+		case "subagent":
+			// Subagent created or changed
+			if !m.loading && !m.polling {
+				cmds = append(cmds, m.loadSubagents())
+			}
+
+		case "schedule":
+			// Schedule created/executed/deleted
+			if !m.loading && !m.polling {
+				cmds = append(cmds, m.loadSchedules())
+			}
+		}
+
+		return m, tea.Batch(cmds...)
 
 	case historyLoadedMsg:
 		m.loading = false
