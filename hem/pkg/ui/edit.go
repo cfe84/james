@@ -119,8 +119,7 @@ func (m editModel) Update(msg tea.Msg) (editModel, tea.Cmd) {
 		m.moneypenny = d.Moneypenny
 		m.agent = d.Agent
 		m.fields[0].value = d.Name
-		// Project field (index 1) is left empty — it's a local hem concept,
-		// not available from moneypenny's session detail.
+		m.fields[1].value = d.Project
 		m.fields[2].value = d.Model
 		m.fields[3].value = d.Effort
 		m.fields[4].value = d.SystemPrompt
