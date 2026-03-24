@@ -33,6 +33,7 @@ type Handler struct {
 	version          string
 	vlog             func(string, ...interface{})
 	updateStatusFunc func() envelope.UpdateStatusResponse
+	notifyWriter     *envelope.NotificationWriter // for sending async notifications to hem
 }
 
 // resultCallback is called when an async agent execution completes.
@@ -52,6 +53,11 @@ func (h *Handler) SetLogger(vlog func(string, ...interface{})) {
 // SetUpdateStatusFunc sets the function called to get update status from the updater.
 func (h *Handler) SetUpdateStatusFunc(f func() envelope.UpdateStatusResponse) {
 	h.updateStatusFunc = f
+}
+
+// SetNotificationWriter sets the writer for sending async notifications.
+func (h *Handler) SetNotificationWriter(nw *envelope.NotificationWriter) {
+	h.notifyWriter = nw
 }
 
 // AllSessionsIdle returns true if no sessions are in the "working" state.
@@ -295,6 +301,14 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 		errMsg := fmt.Sprintf("Agent failed to execute: %v", err)
 		_ = h.store.AddConversationTurn(sessionID, "system", errMsg)
 		_ = h.store.UpdateSessionStatus(sessionID, store.StateIdle)
+
+		// Notify hem that session became idle after error.
+		if h.notifyWriter != nil {
+			_ = h.notifyWriter.Send(envelope.EventSessionStateChanged, sessionID, map[string]string{
+				"status": store.StateIdle,
+				"reason": "agent_error",
+			})
+		}
 		return
 	}
 
@@ -349,6 +363,14 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 
 	if err := h.store.UpdateSessionStatus(sessionID, store.StateIdle); err != nil {
 		h.vlog("failed to update status for session %s: %v", sessionID, err)
+	}
+
+	// Notify hem that session became idle after completion.
+	if h.notifyWriter != nil {
+		_ = h.notifyWriter.Send(envelope.EventSessionStateChanged, sessionID, map[string]string{
+			"status": store.StateIdle,
+			"reason": "completed",
+		})
 	}
 }
 

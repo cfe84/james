@@ -172,6 +172,9 @@ func truncateLog(b []byte, maxLen int) string {
 
 // runStdio reads JSON commands from r (one per line), processes them, and writes responses to w.
 func runStdio(ctx context.Context, h *handler.Handler, vlog *log.Logger, r io.Reader, w io.Writer) {
+	// Set notification writer so handler can send async notifications.
+	h.SetNotificationWriter(envelope.NewNotificationWriter(w))
+
 	scanner := bufio.NewScanner(r)
 	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
 	for scanner.Scan() {
