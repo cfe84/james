@@ -30,11 +30,19 @@ type Response struct {
 	Message   string          `json:"message,omitempty"`
 	Data      json.RawMessage `json:"data,omitempty"`
 	RequestID string          `json:"request_id,omitempty"`
+	Verb      string          `json:"verb,omitempty"` // for broadcast identification
+	Noun      string          `json:"noun,omitempty"` // for broadcast identification
 }
 
 // HemClient sends requests to a Hem server and returns responses.
 type HemClient interface {
 	Send(req *Request) (*Response, error)
+}
+
+// BroadcastHemClient extends HemClient with broadcast subscription support.
+type BroadcastHemClient interface {
+	HemClient
+	Subscribe() (<-chan *Response, func()) // returns broadcast channel and unsubscribe function
 }
 
 // SocketClient connects to a Hem server via Unix domain socket (one connection per request).
@@ -79,22 +87,31 @@ type MI6Client struct {
 	keyPath string
 	vlog    *log.Logger
 
-	mu      sync.Mutex
-	cmd     *exec.Cmd
-	stdin   *json.Encoder
-	scanner *bufio.Scanner
-	pending map[string]chan *Response // request_id -> response channel
-	ready   chan struct{}
+	mu           sync.Mutex
+	cmd          *exec.Cmd
+	stdin        *json.Encoder
+	scanner      *bufio.Scanner
+	pending      map[string]chan *Response // request_id -> response channel
+	ready        chan struct{}
+	broadcastCh  chan *Response            // broadcasts to all WebSocket clients
+	broadcastMu  sync.RWMutex
+	subscribers  map[*websocketSubscriber]struct{} // WebSocket clients listening for broadcasts
+}
+
+type websocketSubscriber struct {
+	ch chan *Response
 }
 
 // NewMI6Client creates a client that talks to Hem over MI6.
 func NewMI6Client(addr, keyPath string, vlog *log.Logger) *MI6Client {
 	return &MI6Client{
-		addr:    addr,
-		keyPath: keyPath,
-		vlog:    vlog,
-		pending: make(map[string]chan *Response),
-		ready:   make(chan struct{}),
+		addr:        addr,
+		keyPath:     keyPath,
+		vlog:        vlog,
+		pending:     make(map[string]chan *Response),
+		ready:       make(chan struct{}),
+		broadcastCh: make(chan *Response, 100),
+		subscribers: make(map[*websocketSubscriber]struct{}),
 	}
 }
 
@@ -172,17 +189,52 @@ func (c *MI6Client) readResponses() {
 			// Not a valid response (e.g. request from another client); skip.
 			continue
 		}
-		if resp.RequestID == "" {
-			// No request ID — not a response to any of our requests; skip.
-			continue
+
+		// Route message based on RequestID.
+		if resp.RequestID != "" {
+			// Check if it's a response to one of our pending requests.
+			c.mu.Lock()
+			ch, ok := c.pending[resp.RequestID]
+			c.mu.Unlock()
+			if ok {
+				ch <- &resp
+				continue
+			}
 		}
-		c.mu.Lock()
-		ch, ok := c.pending[resp.RequestID]
-		c.mu.Unlock()
-		if ok {
-			ch <- &resp
+
+		// No pending request or no RequestID → treat as broadcast.
+		// Forward to all WebSocket subscribers.
+		c.broadcastMu.RLock()
+		for sub := range c.subscribers {
+			select {
+			case sub.ch <- &resp:
+			default:
+				// Subscriber channel full, drop message.
+			}
 		}
+		c.broadcastMu.RUnlock()
 	}
+}
+
+// Subscribe creates a subscription for broadcast messages.
+// Returns a channel that receives broadcasts and an unsubscribe function.
+func (c *MI6Client) Subscribe() (<-chan *Response, func()) {
+	sub := &websocketSubscriber{
+		ch: make(chan *Response, 50),
+	}
+
+	c.broadcastMu.Lock()
+	c.subscribers[sub] = struct{}{}
+	c.broadcastMu.Unlock()
+
+	unsubscribe := func() {
+		c.broadcastMu.Lock()
+		delete(c.subscribers, sub)
+		close(sub.ch)
+		c.broadcastMu.Unlock()
+	}
+
+	return sub.ch, unsubscribe
 }
 
 // Send sends a request to Hem via MI6 and waits for a response.

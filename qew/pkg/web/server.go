@@ -152,6 +152,39 @@ func (s *Server) handleWS(ws *websocket.Conn) {
 	defer ws.Close()
 	s.vlog.Printf("WebSocket connected: %s", ws.Request().RemoteAddr)
 
+	// Subscribe to broadcasts if using MI6.
+	var broadcastCh <-chan *Response
+	var unsubscribe func()
+	if bc, ok := s.hem.(BroadcastHemClient); ok {
+		broadcastCh, unsubscribe = bc.Subscribe()
+		defer unsubscribe()
+		s.vlog.Printf("WebSocket subscribed to broadcasts")
+	}
+
+	// Channel for messages to send to client.
+	sendCh := make(chan interface{}, 10)
+	defer close(sendCh)
+
+	// Goroutine to send messages to WebSocket.
+	go func() {
+		for msg := range sendCh {
+			if err := websocket.JSON.Send(ws, msg); err != nil {
+				s.vlog.Printf("WebSocket send error: %v", err)
+				return
+			}
+		}
+	}()
+
+	// Goroutine to listen for broadcasts.
+	if broadcastCh != nil {
+		go func() {
+			for resp := range broadcastCh {
+				sendCh <- resp
+			}
+		}()
+	}
+
+	// Main loop: read requests from client.
 	for {
 		var raw json.RawMessage
 		if err := websocket.JSON.Receive(ws, &raw); err != nil {
@@ -161,10 +194,10 @@ func (s *Server) handleWS(ws *websocket.Conn) {
 
 		var req Request
 		if err := json.Unmarshal(raw, &req); err != nil {
-			websocket.JSON.Send(ws, map[string]string{
+			sendCh <- map[string]string{
 				"status":  "error",
 				"message": fmt.Sprintf("bad request: %v", err),
-			})
+			}
 			continue
 		}
 
@@ -172,14 +205,14 @@ func (s *Server) handleWS(ws *websocket.Conn) {
 
 		resp, err := s.hem.Send(&req)
 		if err != nil {
-			websocket.JSON.Send(ws, map[string]string{
+			sendCh <- map[string]string{
 				"status":  "error",
 				"message": fmt.Sprintf("backend error: %v", err),
-			})
+			}
 			continue
 		}
 
-		websocket.JSON.Send(ws, resp)
+		sendCh <- resp
 	}
 }
 
