@@ -14,19 +14,19 @@ James is a set of tools for orchestrating AI agents (Bond pun intended). It lets
 ### Mac (Apple Silicon)
 
 ```bash
-curl -sL https://github.com/cfe84/james/releases/latest/download/james-darwin-arm64.tar.gz | tar xz -C /usr/local/bin --strip-components=1
+curl -sL https://github.com/cfe84/james/releases/latest/download/james-darwin-arm64.tar.gz | tar xz -C $HOME/.local/bin --strip-components=1
 ```
 
 ### Linux (amd64)
 
 ```bash
-curl -sL https://github.com/cfe84/james/releases/latest/download/james-linux-amd64.tar.gz | tar xz -C /usr/local/bin --strip-components=1
+curl -sL https://github.com/cfe84/james/releases/latest/download/james-linux-amd64.tar.gz | tar xz -C $HOME/.local/bin --strip-components=1
 ```
 
 ### Linux (arm64)
 
 ```bash
-curl -sL https://github.com/cfe84/james/releases/latest/download/james-linux-arm64.tar.gz | tar xz -C /usr/local/bin --strip-components=1
+curl -sL https://github.com/cfe84/james/releases/latest/download/james-linux-arm64.tar.gz | tar xz -C $HOME/.local/bin --strip-components=1
 ```
 
 ### Windows (amd64)
