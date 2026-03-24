@@ -278,12 +278,17 @@ func handleConnection(
 		client, err = manager.JoinExclusive(sessionID)
 		if err != nil {
 			log.Printf("Exclusive join rejected for %s on session %q: %v", remoteAddr, sessionID, err)
-			_ = secureConn.Send(&protocol.Message{Type: protocol.MsgAuthFail, Payload: []byte("session already has an exclusive client connected")})
+			_ = secureConn.Send(&protocol.Message{Type: protocol.MsgAuthFail, Payload: []byte("session already has a client connected (exclusive required)")})
 			return
 		}
 		log.Printf("Client %s (%s) joined session %q (exclusive)", client.ID, remoteAddr, sessionID)
 	} else {
-		client = manager.Join(sessionID)
+		client, err = manager.Join(sessionID)
+		if err != nil {
+			log.Printf("Join rejected for %s on session %q: %v", remoteAddr, sessionID, err)
+			_ = secureConn.Send(&protocol.Message{Type: protocol.MsgAuthFail, Payload: []byte("session has an exclusive client connected")})
+			return
+		}
 		log.Printf("Client %s (%s) joined session %q", client.ID, remoteAddr, sessionID)
 	}
 

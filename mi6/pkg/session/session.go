@@ -84,7 +84,7 @@ func NewManager() *Manager {
 var ErrExclusiveConflict = errors.New("session: another exclusive client is already connected")
 
 // Join adds a client to a session (creating the session if needed). Returns the client.
-func (m *Manager) Join(sessionID string) *Client {
+func (m *Manager) Join(sessionID string) (*Client, error) {
 	client := NewClient(256)
 
 	m.mu.Lock()
@@ -100,14 +100,22 @@ func (m *Manager) Join(sessionID string) *Client {
 	}
 
 	sess.mu.Lock()
-	sess.clients[client.ID] = client
-	sess.mu.Unlock()
+	defer sess.mu.Unlock()
 
-	return client
+	// Check if there's an exclusive client - non-exclusive clients cannot join.
+	for _, c := range sess.clients {
+		if c.Exclusive {
+			return nil, ErrExclusiveConflict
+		}
+	}
+
+	sess.clients[client.ID] = client
+	return client, nil
 }
 
 // JoinExclusive adds a client to a session in exclusive mode.
-// Returns ErrExclusiveConflict if another exclusive client is already in the session.
+// Returns ErrExclusiveConflict if ANY other client is already in the session.
+// Exclusive clients must be alone in their session.
 func (m *Manager) JoinExclusive(sessionID string) (*Client, error) {
 	client := NewClient(256)
 	client.Exclusive = true
@@ -127,11 +135,9 @@ func (m *Manager) JoinExclusive(sessionID string) (*Client, error) {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 
-	// Check if any existing client is exclusive.
-	for _, c := range sess.clients {
-		if c.Exclusive {
-			return nil, ErrExclusiveConflict
-		}
+	// Exclusive client must be alone - reject if there are ANY existing clients.
+	if len(sess.clients) > 0 {
+		return nil, ErrExclusiveConflict
 	}
 
 	sess.clients[client.ID] = client
