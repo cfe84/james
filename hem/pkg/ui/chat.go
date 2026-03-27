@@ -84,6 +84,7 @@ type chatModel struct {
 	browserLoading   bool
 	browserErr       error
 	client        *client
+	renderCache      map[string]string // key: width+"\x00"+content → rendered markdown
 }
 
 func newChatModel(c *client, sessionID, sessionName, moneypennyName string) chatModel {
@@ -93,6 +94,7 @@ func newChatModel(c *client, sessionID, sessionName, moneypennyName string) chat
 		sessionName:    sessionName,
 		moneypennyName: moneypennyName,
 		loading:        true,
+		renderCache:    make(map[string]string),
 	}
 }
 
@@ -816,7 +818,7 @@ func (m chatModel) View() string {
 		}
 		msgLines = append(msgLines, prefix)
 
-		// Render content.
+		// Render content (with caching for markdown).
 		contentWidth := m.width - 4
 		if contentWidth < 20 {
 			contentWidth = 80
@@ -828,7 +830,7 @@ func (m chatModel) View() string {
 		var rendered string
 		switch turn.Role {
 		case "assistant", "user":
-			rendered = renderMarkdown(content, contentWidth)
+			rendered = m.cachedRenderMarkdown(content, contentWidth)
 		case "system":
 			rendered = wordWrap(content, contentWidth)
 		default:
@@ -1115,6 +1117,21 @@ func (m chatModel) recentTurns() []conversationTurn {
 }
 
 // renderMarkdown renders markdown content using glamour.
+// cachedRenderMarkdown returns cached rendered markdown, or renders and caches it.
+// Cache key includes width so width changes produce fresh renders.
+func (m chatModel) cachedRenderMarkdown(content string, width int) string {
+	if m.renderCache == nil {
+		return renderMarkdown(content, width)
+	}
+	key := fmt.Sprintf("%d\x00%s", width, content)
+	if cached, ok := m.renderCache[key]; ok {
+		return cached
+	}
+	rendered := renderMarkdown(content, width)
+	m.renderCache[key] = rendered
+	return rendered
+}
+
 func renderMarkdown(content string, width int) string {
 	if strings.TrimSpace(content) == "" {
 		return content
