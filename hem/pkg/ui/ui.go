@@ -527,7 +527,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.chat.width = m.width
 		m.chat.height = m.height - 3
 		m.chat.isSubagent = true
-		return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), chatPollTick())
+		return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), m.chat.chatPollTickAdaptive())
 
 	case historyLoadedMsg, messageSentMsg, olderHistoryLoadedMsg,
 		activityLoadedMsg, schedulesLoadedMsg, subagentsLoadedMsg, scheduleCreatedMsg,
@@ -610,7 +610,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusMsg = "Session updated"
 		if m.previousView == viewChat {
 			m.currentView = viewChat
-			return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), chatPollTick())
+			return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), m.chat.chatPollTickAdaptive())
 		}
 		m.currentView = viewSessions
 		m.sessions.loading = true
@@ -704,9 +704,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.currentView = viewChat
 		m.previousView = viewDashboard
 		if cm.response == "" {
-			return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), chatPollTick())
+			return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), m.chat.chatPollTickAdaptive())
 		}
-		return m, chatPollTick()
+		return m, m.chat.chatPollTickAdaptive()
 	}
 
 	return m, nil
@@ -891,7 +891,7 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.chat.height = m.height - 3
 			m.currentView = viewChat
 			m.previousView = viewDashboard
-			return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), chatPollTick())
+			return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), m.chat.chatPollTickAdaptive())
 		}
 	case "c":
 		e := m.dashboard.selectedEntry()
@@ -1061,7 +1061,7 @@ func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.chat.height = m.height - 3
 			m.currentView = viewChat
 			m.previousView = viewProjectDetail
-			return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), chatPollTick())
+			return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), m.chat.chatPollTickAdaptive())
 		}
 	case "c":
 		e := m.projectDetail.selectedEntry()
@@ -1190,7 +1190,7 @@ func (m Model) updateSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m = m.withChatDraftRestored()
 			m.currentView = viewChat
 			m.previousView = viewSessions
-			return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), chatPollTick())
+			return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), m.chat.chatPollTickAdaptive())
 		}
 	case "n":
 		m.wizard = newWizardModel(m.client)
@@ -1363,7 +1363,7 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if len(m.parentChats) > 0 {
 				m.chat = m.parentChats[len(m.parentChats)-1]
 				m.parentChats = m.parentChats[:len(m.parentChats)-1]
-				return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), chatPollTick())
+				return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), m.chat.chatPollTickAdaptive())
 			}
 			// Save draft and leave to previous view.
 			m = m.withChatDraftSaved()

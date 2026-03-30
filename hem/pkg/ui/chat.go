@@ -37,7 +37,10 @@ type chatSubagentCreatedMsg struct {
 type chatPollTickMsg struct{}
 type chatBroadcastMsg struct{ resp *protocol.Response }
 
-const chatPollInterval = 180 * time.Second // Fallback only (was 3s)
+const (
+	chatPollInterval       = 180 * time.Second // Fallback for idle sessions with broadcasts
+	chatPollIntervalActive = 3 * time.Second   // Fast poll when session is working (no broadcasts)
+)
 
 // chatModel displays conversation history and allows sending messages.
 const chatPageSize = 10
@@ -278,8 +281,16 @@ func openWithDefault(path string) error {
 	}
 }
 
-func chatPollTick() tea.Cmd {
-	return tea.Tick(chatPollInterval, func(time.Time) tea.Msg {
+// chatPollTickAdaptive returns a poll tick with an interval that depends on
+// whether the session is actively working and whether broadcasts are available.
+// When broadcasts provide real-time updates, we use the slow fallback.
+// Without broadcasts (Unix socket), we poll quickly while working.
+func (m chatModel) chatPollTickAdaptive() tea.Cmd {
+	interval := chatPollInterval
+	if m.sessionStatus == "working" && m.client.broadcasts() == nil {
+		interval = chatPollIntervalActive
+	}
+	return tea.Tick(interval, func(time.Time) tea.Msg {
 		return chatPollTickMsg{}
 	})
 }
@@ -318,7 +329,7 @@ func (m chatModel) Init() tea.Cmd {
 		m.loadSchedules(),
 		m.loadSubagents(),
 		m.loadActivity(),
-		chatPollTick(),
+		m.chatPollTickAdaptive(),
 	}
 
 	// Start broadcast listener
@@ -336,10 +347,10 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 		// Skip if a previous poll load is still in-flight to avoid races.
 		if !m.sending && !m.loading && !m.polling {
 			m.polling = true
-			cmds := []tea.Cmd{m.loadHistory(), m.loadSchedules(), m.loadSubagents(), m.loadActivity(), chatPollTick()}
+			cmds := []tea.Cmd{m.loadHistory(), m.loadSchedules(), m.loadSubagents(), m.loadActivity(), m.chatPollTickAdaptive()}
 			return m, tea.Batch(cmds...)
 		}
-		return m, chatPollTick()
+		return m, m.chatPollTickAdaptive()
 
 	case chatBroadcastMsg:
 		// Handle real-time notifications from moneypenny
@@ -478,7 +489,7 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 		}
 		// Start polling immediately so the working indicator and eventual
 		// response are picked up without waiting for the next tick.
-		return m, tea.Batch(m.loadHistory(), chatPollTick())
+		return m, tea.Batch(m.loadHistory(), m.chatPollTickAdaptive())
 
 	case schedulesLoadedMsg:
 		if msg.err == nil {

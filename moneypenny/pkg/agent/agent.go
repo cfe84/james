@@ -164,6 +164,7 @@ func (r *Runner) runStreaming(cmd *exec.Cmd, buf *activityBuffer, sessionID stri
 	}
 
 	var resultText string
+	var lastRawEvent string // keep the last raw JSON line for error diagnostics
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 256*1024), 10*1024*1024)
 
@@ -172,6 +173,7 @@ func (r *Runner) runStreaming(cmd *exec.Cmd, buf *activityBuffer, sessionID stri
 		if line == "" {
 			continue
 		}
+		lastRawEvent = line
 
 		var event map[string]any
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
@@ -222,19 +224,29 @@ func (r *Runner) runStreaming(cmd *exec.Cmd, buf *activityBuffer, sessionID stri
 				})
 			}
 		case "result":
+			r.vlog.Printf("stream: result event: %s", truncStr(line, 500))
 			if r, ok := event["result"].(string); ok {
 				resultText = r
 			} else if r, ok := event["result"]; ok {
 				b, _ := json.Marshal(r)
 				resultText = string(b)
 			}
+		case "error":
+			r.vlog.Printf("stream: error event: %s", truncStr(line, 500))
+			if errMsg, ok := event["error"].(string); ok {
+				resultText = "Error: " + errMsg
+			} else if errObj, ok := event["error"].(map[string]any); ok {
+				if msg, ok := errObj["message"].(string); ok {
+					resultText = "Error: " + msg
+				}
+			}
 		default:
-			r.vlog.Printf("stream: unhandled event type=%q keys=%v", evType, mapKeys(event))
+			r.vlog.Printf("stream: unhandled event type=%q keys=%v data=%s", evType, mapKeys(event), truncStr(line, 300))
 		}
 	}
 
 	if err := cmd.Wait(); err != nil {
-		return nil, fmtAgentError(err, stderrBuf)
+		return nil, fmtAgentErrorFull(err, stderrBuf, resultText, lastRawEvent)
 	}
 	return &Result{Text: resultText}, nil
 }
@@ -429,4 +441,31 @@ func fmtAgentError(err error, stderrBuf *bytes.Buffer) error {
 		lines = lines[len(lines)-30:]
 	}
 	return fmt.Errorf("agent process failed: %w\nstderr:\n%s", err, strings.Join(lines, "\n"))
+}
+
+// fmtAgentErrorFull formats an agent error with all available context:
+// stderr, any result text parsed from the stream, and the last raw event.
+func fmtAgentErrorFull(err error, stderrBuf *bytes.Buffer, resultText, lastRawEvent string) error {
+	var parts []string
+	parts = append(parts, fmt.Sprintf("agent process failed: %v", err))
+
+	if resultText != "" {
+		parts = append(parts, fmt.Sprintf("output: %s", truncStr(resultText, 500)))
+	}
+
+	stderr := strings.TrimSpace(stderrBuf.String())
+	if stderr != "" {
+		lines := strings.Split(stderr, "\n")
+		if len(lines) > 30 {
+			lines = lines[len(lines)-30:]
+		}
+		parts = append(parts, fmt.Sprintf("stderr:\n%s", strings.Join(lines, "\n")))
+	}
+
+	// If we have no other context, include the last raw event for diagnostics.
+	if resultText == "" && stderr == "" && lastRawEvent != "" {
+		parts = append(parts, fmt.Sprintf("last event: %s", truncStr(lastRawEvent, 500)))
+	}
+
+	return fmt.Errorf("%s", strings.Join(parts, "\n"))
 }
