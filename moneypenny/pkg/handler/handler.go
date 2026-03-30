@@ -649,37 +649,57 @@ func claudeModels() []envelope.ModelInfo {
 	}
 }
 
-// copilotModels parses available models from `copilot --help` output.
-// The help output format is:
-//
-//	--model <model>    Set the AI model to use (choices:
-//	                   "model1", "model2", ...)
+// Copilot model cache (querying is slow, ~10-20s).
+var (
+	copilotModelCache     []envelope.ModelInfo
+	copilotModelCacheTime time.Time
+	copilotModelCacheTTL  = 1 * time.Hour
+)
+
+// copilotModels queries copilot for available models by running a prompt.
+// Results are cached for 1 hour to avoid repeated slow queries.
 func copilotModels() []envelope.ModelInfo {
+	if len(copilotModelCache) > 0 && time.Since(copilotModelCacheTime) < copilotModelCacheTTL {
+		return copilotModelCache
+	}
 	path, err := exec.LookPath("copilot")
 	if err != nil {
 		return nil
 	}
-	out, err := exec.Command(path, "--help").CombinedOutput()
+
+	// Ask copilot to list its available models. Use --available-tools '' to
+	// prevent it from using tools (faster, cheaper). Timeout after 30 seconds.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path,
+		"-p", "List the model identifiers available for --model. One per line. No other text, no markdown formatting.",
+		"--output-format", "text",
+		"--available-tools", "",
+	)
+	out, err := cmd.Output()
 	if err != nil {
 		return nil
 	}
 
-	// Extract the choices block: everything between "choices:" and the closing ")".
-	re := regexp.MustCompile(`(?s)--model\s+<model>\s+.*?\(choices:\s*(.*?)\)`)
-	matches := re.FindSubmatch(out)
-	if len(matches) < 2 {
-		return nil
-	}
-
-	// Extract quoted model names.
-	nameRe := regexp.MustCompile(`"([^"]+)"`)
-	nameMatches := nameRe.FindAllSubmatch(matches[1], -1)
-	models := make([]envelope.ModelInfo, 0, len(nameMatches))
-	for _, nm := range nameMatches {
-		name := string(nm[1])
+	var models []envelope.ModelInfo
+	for _, line := range strings.Split(string(out), "\n") {
+		name := strings.TrimSpace(line)
+		if name == "" {
+			continue
+		}
+		// Stop at the summary footer (lines starting with "Total" or similar).
+		if strings.HasPrefix(name, "Total ") || strings.HasPrefix(name, "API ") ||
+			strings.HasPrefix(name, "Breakdown ") {
+			break
+		}
 		models = append(models, envelope.ModelInfo{Name: name, Value: name})
 	}
-	return models
+	if len(models) > 0 {
+		copilotModelCache = models
+		copilotModelCacheTime = time.Now()
+		return models
+	}
+	return nil
 }
 
 func (h *Handler) stopSession(_ context.Context, cmd *envelope.Command) *envelope.Response {

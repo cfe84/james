@@ -48,6 +48,7 @@ func (f *formField) syncToInput() {
 func newCreateModel(c *client) createModel {
 	return createModel{
 		client: c,
+		async:  true, // TUI always creates async; polling is done by chat/dashboard
 		fields: []formField{
 			{label: "Prompt", flag: "", value: ""},
 			{label: "Name", flag: "--name", value: ""},

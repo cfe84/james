@@ -954,14 +954,50 @@ func (m diffModel) viewDiff() string {
 	}
 
 	// Render diff with colors and line numbers.
-	lines := strings.Split(m.diff, "\n")
+	rawLines := strings.Split(m.diff, "\n")
 	viewHeight := m.height - 5 - bottomHeight
 	if viewHeight < 1 {
 		viewHeight = 20
 	}
 
+	// Available width for diff content (after gutter: 5 linenum + 1 marker + 1 space).
+	gutterWidth := 7
+	contentWidth := m.width - gutterWidth
+	if contentWidth < 20 {
+		contentWidth = 20
+	}
+
+	// Build visual lines with wrapping. Each visual line tracks the original
+	// line number (seqNum). Continuation lines have seqNum = 0.
+	type visualLine struct {
+		seqNum int    // 1-based original line number; 0 for continuation
+		text   string // raw text for this segment
+	}
+	var vlines []visualLine
+	for i, line := range rawLines {
+		seqNum := i + 1
+		if len(line) <= contentWidth {
+			vlines = append(vlines, visualLine{seqNum: seqNum, text: line})
+		} else {
+			first := true
+			for len(line) > 0 {
+				chunk := line
+				if len(chunk) > contentWidth {
+					chunk = chunk[:contentWidth]
+				}
+				line = line[len(chunk):]
+				sn := 0
+				if first {
+					sn = seqNum
+					first = false
+				}
+				vlines = append(vlines, visualLine{seqNum: sn, text: chunk})
+			}
+		}
+	}
+
 	// Clamp scroll.
-	maxScroll := len(lines) - viewHeight
+	maxScroll := len(vlines) - viewHeight
 	if maxScroll < 0 {
 		maxScroll = 0
 	}
@@ -970,31 +1006,39 @@ func (m diffModel) viewDiff() string {
 	}
 
 	end := m.scroll + viewHeight
-	if end > len(lines) {
-		end = len(lines)
+	if end > len(vlines) {
+		end = len(vlines)
 	}
 
+	blankGutter := strings.Repeat(" ", gutterWidth)
+
 	for i := m.scroll; i < end; i++ {
-		line := lines[i]
-		seqNum := i + 1 // 1-based
-
-		// Line number gutter.
-		numStr := lineNumStyle.Render(strconv.Itoa(seqNum))
-
-		// Comment marker.
-		marker := noCommentSpace
-		if _, hasComment := m.comments[seqNum]; hasComment {
-			marker = commentMarker
+		vl := vlines[i]
+		if vl.seqNum > 0 {
+			numStr := lineNumStyle.Render(strconv.Itoa(vl.seqNum))
+			marker := noCommentSpace
+			if _, hasComment := m.comments[vl.seqNum]; hasComment {
+				marker = commentMarker
+			}
+			b.WriteString(numStr + marker + " " + colorDiffLine(vl.text) + "\n")
+		} else {
+			b.WriteString(blankGutter + colorDiffLine(vl.text) + "\n")
 		}
-
-		styled := colorDiffLine(line)
-		b.WriteString(numStr + marker + " " + styled)
-		b.WriteString("\n")
 	}
 
 	// Status line.
-	if len(lines) > viewHeight {
-		statusParts := []string{fmt.Sprintf("line %d-%d of %d", m.scroll+1, end, len(lines))}
+	if len(vlines) > viewHeight {
+		// Find original line range for status display.
+		firstLine, lastLine := 0, 0
+		for i := m.scroll; i < end; i++ {
+			if vlines[i].seqNum > 0 {
+				if firstLine == 0 {
+					firstLine = vlines[i].seqNum
+				}
+				lastLine = vlines[i].seqNum
+			}
+		}
+		statusParts := []string{fmt.Sprintf("line %d-%d of %d", firstLine, lastLine, len(rawLines))}
 		if m.hasComments() {
 			statusParts = append(statusParts, "r=comment d=delete Enter=submit")
 		} else {
@@ -1053,7 +1097,18 @@ func (m diffModel) viewCommentInput() string {
 			b.WriteString(" " + lipgloss.NewStyle().Foreground(colorMuted).Render(excerpt))
 		}
 	}
-	b.WriteString("\n  " + fieldActiveStyle.Render(m.commentInput.Render()))
+	inputWidth := m.width - 6 // account for "  " prefix and padding
+	if inputWidth < 20 {
+		inputWidth = 20
+	}
+	wrappedLines := m.commentInput.RenderWrapped(inputWidth, 2)
+	for i, line := range wrappedLines {
+		if i == 0 {
+			b.WriteString("\n  " + fieldActiveStyle.Render(line))
+		} else {
+			b.WriteString("\n  " + fieldActiveStyle.Render(line))
+		}
+	}
 	b.WriteString("\n  " + lipgloss.NewStyle().Foreground(colorMuted).Render("Enter=save  Ctrl+J=newline  Esc=cancel"))
 	return b.String()
 }
@@ -1206,13 +1261,37 @@ func (m diffModel) viewCommit() string {
 		return b.String()
 	}
 
-	lines := strings.Split(m.commitDetail, "\n")
+	rawLines := strings.Split(m.commitDetail, "\n")
 	viewHeight := m.height - 5
 	if viewHeight < 1 {
 		viewHeight = 20
 	}
 
-	maxScroll := len(lines) - viewHeight
+	// Wrap long lines to fit terminal width.
+	commitContentWidth := m.width - 2
+	if commitContentWidth < 20 {
+		commitContentWidth = 20
+	}
+	type vline struct {
+		text string
+	}
+	var vlines []vline
+	for _, line := range rawLines {
+		if len(line) <= commitContentWidth {
+			vlines = append(vlines, vline{text: line})
+		} else {
+			for len(line) > 0 {
+				chunk := line
+				if len(chunk) > commitContentWidth {
+					chunk = chunk[:commitContentWidth]
+				}
+				line = line[len(chunk):]
+				vlines = append(vlines, vline{text: chunk})
+			}
+		}
+	}
+
+	maxScroll := len(vlines) - viewHeight
 	if maxScroll < 0 {
 		maxScroll = 0
 	}
@@ -1221,20 +1300,18 @@ func (m diffModel) viewCommit() string {
 	}
 
 	end := m.commitScroll + viewHeight
-	if end > len(lines) {
-		end = len(lines)
+	if end > len(vlines) {
+		end = len(vlines)
 	}
 
 	for i := m.commitScroll; i < end; i++ {
-		line := lines[i]
-		styled := colorDiffLine(line)
-		b.WriteString(styled)
+		b.WriteString(colorDiffLine(vlines[i].text))
 		b.WriteString("\n")
 	}
 
-	if len(lines) > viewHeight {
+	if len(vlines) > viewHeight {
 		b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render(
-			fmt.Sprintf("  line %d-%d of %d  Esc=back", m.commitScroll+1, end, len(lines))))
+			fmt.Sprintf("  line %d-%d of %d  Esc=back", m.commitScroll+1, end, len(vlines))))
 		b.WriteString("\n")
 	} else {
 		b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render(

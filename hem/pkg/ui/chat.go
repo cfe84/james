@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -55,8 +56,7 @@ type chatModel struct {
 	schedules     []scheduleInfo
 	subagents     []subagentInfo
 	activity      []activityEvent // recent agent activity (thinking, tool calls)
-	input         string
-	cursorPos     int
+	chatInput     textInput
 	width         int
 	height        int
 	scroll        int // scroll offset from bottom
@@ -94,6 +94,7 @@ func newChatModel(c *client, sessionID, sessionName, moneypennyName string) chat
 		sessionName:    sessionName,
 		moneypennyName: moneypennyName,
 		loading:        true,
+		chatInput:      newTextInput(true),
 		renderCache:    make(map[string]string),
 	}
 }
@@ -252,8 +253,24 @@ func (m chatModel) transferAndOpen(remotePath string) tea.Cmd {
 			return fileTransferredMsg{err: err}
 		}
 		// Open the file with the system default application.
-		exec.Command("open", localPath).Start()
+		if err := openWithDefault(localPath); err != nil {
+			return fileTransferredMsg{err: fmt.Errorf("opening %s: %w", localPath, err)}
+		}
 		return fileTransferredMsg{localPath: localPath}
+	}
+}
+
+// openWithDefault opens a file with the OS default application.
+func openWithDefault(path string) error {
+	switch runtime.GOOS {
+	case "darwin":
+		return exec.Command("open", path).Start()
+	case "linux":
+		return exec.Command("xdg-open", path).Start()
+	case "windows":
+		return exec.Command("cmd", "/c", "start", "", path).Start()
+	default:
+		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
 	}
 }
 
@@ -605,28 +622,25 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 			case "esc":
 				m.scheduling = false
 				m.scheduleAt = ""
-				m.input = ""
-				m.cursorPos = 0
+				m.chatInput.Reset()
 				return m, nil
 			case "enter":
 				if m.scheduleAt == "" {
 					// First enter: capture the time.
-					at := strings.TrimSpace(m.input)
+					at := strings.TrimSpace(m.chatInput.Value())
 					if at == "" {
 						return m, nil
 					}
 					m.scheduleAt = at
-					m.input = ""
-					m.cursorPos = 0
+					m.chatInput.Reset()
 					return m, nil
 				}
 				// Second enter: capture the prompt and create schedule.
-				prompt := strings.TrimSpace(m.input)
+				prompt := strings.TrimSpace(m.chatInput.Value())
 				if prompt == "" {
 					return m, nil
 				}
-				m.input = ""
-				m.cursorPos = 0
+				m.chatInput.Reset()
 				return m, m.createSchedule(m.scheduleAt, prompt)
 			}
 			// Fall through to normal input handling for text entry.
@@ -654,15 +668,32 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 			return m, nil
 		}
 
+		// Handle scroll keys before delegating to textInput.
 		switch msg.String() {
-		case "enter":
+		case "pgup", "ctrl+u":
+			m.scroll += 10
+			if m.scroll > 0 && !m.loadingMore && len(m.conversation) < m.totalTurns {
+				m.loadingMore = true
+				return m, m.loadOlderHistory()
+			}
+			return m, nil
+		case "pgdown", "ctrl+d":
+			m.scroll -= 10
+			if m.scroll < 0 {
+				m.scroll = 0
+			}
+			return m, nil
+		}
+
+		// Delegate to textInput for all text editing.
+		handled, submitted := m.chatInput.HandleKey(msg)
+		if submitted {
 			if m.scheduling {
 				return m, nil // handled above
 			}
-			prompt := strings.TrimSpace(m.input)
+			prompt := strings.TrimSpace(m.chatInput.Value())
 			if prompt != "" && !m.sending {
-				m.input = ""
-				m.cursorPos = 0
+				m.chatInput.Reset()
 				m.sending = true
 				m.err = nil
 				m.conversation = append(m.conversation, conversationTurn{
@@ -674,62 +705,8 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 				m.scroll = 0
 				return m, m.sendMessage(prompt)
 			}
-		case "shift+enter", "alt+enter", "ctrl+j":
-			m.input = m.input[:m.cursorPos] + "\n" + m.input[m.cursorPos:]
-			m.cursorPos++
-		case "backspace":
-			if m.cursorPos > 0 {
-				_, size := utf8.DecodeLastRuneInString(m.input[:m.cursorPos])
-				m.input = m.input[:m.cursorPos-size] + m.input[m.cursorPos:]
-				m.cursorPos -= size
-			}
-		case "delete":
-			if m.cursorPos < len(m.input) {
-				_, size := utf8.DecodeRuneInString(m.input[m.cursorPos:])
-				m.input = m.input[:m.cursorPos] + m.input[m.cursorPos+size:]
-			}
-		case "left":
-			if m.cursorPos > 0 {
-				_, size := utf8.DecodeLastRuneInString(m.input[:m.cursorPos])
-				m.cursorPos -= size
-			}
-		case "right":
-			if m.cursorPos < len(m.input) {
-				_, size := utf8.DecodeRuneInString(m.input[m.cursorPos:])
-				m.cursorPos += size
-			}
-		case "alt+left", "ctrl+b":
-			m.cursorPos = wordLeft(m.input, m.cursorPos)
-		case "alt+right", "ctrl+f":
-			m.cursorPos = wordRight(m.input, m.cursorPos)
-		case "ctrl+r":
-			m.input = ""
-			m.cursorPos = 0
-		case "home":
-			m.cursorPos = 0
-		case "end":
-			m.cursorPos = len(m.input)
-		case "pgup", "ctrl+u":
-			m.scroll += 10
-			if m.scroll > 0 && !m.loadingMore && len(m.conversation) < m.totalTurns {
-				m.loadingMore = true
-				return m, m.loadOlderHistory()
-			}
-		case "pgdown", "ctrl+d":
-			m.scroll -= 10
-			if m.scroll < 0 {
-				m.scroll = 0
-			}
-		default:
-			if msg.Type == tea.KeyRunes {
-				s := string(msg.Runes)
-				m.input = m.input[:m.cursorPos] + s + m.input[m.cursorPos:]
-				m.cursorPos += len(s)
-			} else if msg.Type == tea.KeySpace {
-				m.input = m.input[:m.cursorPos] + " " + m.input[m.cursorPos:]
-				m.cursorPos++
-			}
 		}
+		_ = handled
 	}
 	return m, nil
 }
@@ -766,13 +743,11 @@ func (m chatModel) View() string {
 	}
 	inputLineCount := 1
 	if !m.commandMode {
-		cursor := "█"
+		inputLines := m.chatInput.RenderWrapped(inputWidth, 3)
+		inputLineCount = len(inputLines)
 		if m.sending {
-			cursor = ""
+			inputLineCount = 1
 		}
-		displayInput := m.input[:m.cursorPos] + cursor + m.input[m.cursorPos:]
-		wrapped := wordWrap(displayInput, inputWidth)
-		inputLineCount = strings.Count(wrapped, "\n") + 1
 	}
 
 	// Calculate available height for messages.
@@ -1077,9 +1052,7 @@ func (m chatModel) View() string {
 			label = fmt.Sprintf(" ⏰ [%s] Prompt: ", m.scheduleAt)
 		}
 		schedLabel := lipgloss.NewStyle().Foreground(colorWarning).Bold(true).Render(label)
-		cursor := "█"
-		displayInput := m.input[:m.cursorPos] + cursor + m.input[m.cursorPos:]
-		b.WriteString(schedLabel + displayInput)
+		b.WriteString(schedLabel + m.chatInput.Render())
 	} else if m.commandMode {
 		cmdBar := lipgloss.NewStyle().Foreground(colorWarning).Bold(true).Render(" COMMAND MODE ")
 		if m.confirmDelete {
@@ -1089,18 +1062,16 @@ func (m chatModel) View() string {
 		b.WriteString(cmdBar)
 	} else {
 		prompt := inputPromptStyle.Render(" > ")
-		cursor := "█"
 		if m.sending {
-			cursor = ""
-		}
-		displayInput := m.input[:m.cursorPos] + cursor + m.input[m.cursorPos:]
-		wrapped := wordWrap(displayInput, inputWidth)
-		lines := strings.Split(wrapped, "\n")
-		for i, line := range lines {
-			if i == 0 {
-				b.WriteString(prompt + line)
-			} else {
-				b.WriteString("\n   " + line)
+			b.WriteString(prompt)
+		} else {
+			lines := m.chatInput.RenderWrapped(inputWidth, 3)
+			for i, line := range lines {
+				if i == 0 {
+					b.WriteString(prompt + line)
+				} else {
+					b.WriteString("\n   " + line)
+				}
 			}
 		}
 	}

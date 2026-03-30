@@ -2,9 +2,11 @@ package agent
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -109,7 +111,8 @@ func (r *Runner) Run(ctx context.Context, params RunParams) (*Result, error) {
 		cmd.Dir = params.Path
 	}
 	cmd.Env = append(os.Environ(), "HEM_SESSION_ID="+params.SessionID)
-	cmd.Stderr = os.Stderr
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
 
 	r.vlog.Printf("exec: %s %s", agentPath, strings.Join(args, " "))
 
@@ -128,19 +131,19 @@ func (r *Runner) Run(ctx context.Context, params RunParams) (*Result, error) {
 
 	// For Claude agents, use stream-json and parse events line by line.
 	if params.Agent != "copilot" {
-		return r.runStreaming(cmd, buf)
+		return r.runStreaming(cmd, buf, &stderrBuf)
 	}
 
 	// Copilot: blocking output.
 	output, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("agent process failed: %w", err)
+		return nil, fmtAgentError(err, &stderrBuf)
 	}
 	return &Result{Text: parseOutput(params.Agent, output)}, nil
 }
 
 // runStreaming runs a Claude agent with stream-json, parsing events into the activity buffer.
-func (r *Runner) runStreaming(cmd *exec.Cmd, buf *activityBuffer) (*Result, error) {
+func (r *Runner) runStreaming(cmd *exec.Cmd, buf *activityBuffer, stderrBuf *bytes.Buffer) (*Result, error) {
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("creating stdout pipe: %w", err)
@@ -214,7 +217,7 @@ func (r *Runner) runStreaming(cmd *exec.Cmd, buf *activityBuffer) (*Result, erro
 	}
 
 	if err := cmd.Wait(); err != nil {
-		return nil, fmt.Errorf("agent process failed: %w", err)
+		return nil, fmtAgentError(err, stderrBuf)
 	}
 	return &Result{Text: resultText}, nil
 }
@@ -394,4 +397,19 @@ func truncStr(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// fmtAgentError formats an agent execution error, including the last few lines
+// of stderr output when available for easier debugging.
+func fmtAgentError(err error, stderrBuf *bytes.Buffer) error {
+	stderr := strings.TrimSpace(stderrBuf.String())
+	if stderr == "" {
+		return fmt.Errorf("agent process failed: %w", err)
+	}
+	// Keep only the last few lines of stderr (most relevant).
+	lines := strings.Split(stderr, "\n")
+	if len(lines) > 30 {
+		lines = lines[len(lines)-30:]
+	}
+	return fmt.Errorf("agent process failed: %w\nstderr:\n%s", err, strings.Join(lines, "\n"))
 }

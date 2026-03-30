@@ -90,6 +90,7 @@ func newWizardModel(c *client) wizardModel {
 	return wizardModel{
 		step:        wizardStepMoneypenny,
 		client:      c,
+		async:       true, // TUI always creates async; polling is done by chat/dashboard
 		mpLoading:   true,
 		currentPath: defaultWizardPath(),
 		fields: []formField{

@@ -280,6 +280,43 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateCreateTemplate(msg)
 		}
 
+	case tea.MouseMsg:
+		switch msg.Button {
+		case tea.MouseButtonWheelUp:
+			switch m.currentView {
+			case viewChat:
+				m.chat.scroll += 3
+				if m.chat.scroll > 0 && !m.chat.loadingMore && len(m.chat.conversation) < m.chat.totalTurns {
+					m.chat.loadingMore = true
+					return m, m.chat.loadOlderHistory()
+				}
+			case viewDiff:
+				m.diff.scroll -= 3
+				if m.diff.scroll < 0 {
+					m.diff.scroll = 0
+				}
+			case viewShell:
+				m.shell.scroll += 3
+			}
+		case tea.MouseButtonWheelDown:
+			switch m.currentView {
+			case viewChat:
+				m.chat.scroll -= 3
+				if m.chat.scroll < 0 {
+					m.chat.scroll = 0
+				}
+			case viewDiff:
+				m.diff.scroll += 3
+			case viewShell:
+				m.shell.scroll -= 3
+				if m.shell.scroll < 0 {
+					m.shell.scroll = 0
+				}
+			}
+		}
+		// Consume all mouse events (don't pass through) to prevent escape sequence leaks.
+		return m, nil
+
 	// Route messages to appropriate view.
 	case sessionCompletedMsg, dashboardDeletedMsg:
 		if m.currentView == viewProjectDetail {
@@ -546,8 +583,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case diffReviewSubmitMsg:
 		// Switch to chat view and send the review prompt.
 		m.currentView = viewChat
-		m.chat.input = msg.prompt
-		m.chat.cursorPos = len(msg.prompt)
+		m.chat.chatInput.SetValue(msg.prompt)
 		// Append to conversation optimistically and send.
 		m.chat.conversation = append(m.chat.conversation, conversationTurn{
 			Role:    "user",
@@ -556,8 +592,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.chat.recentCount++
 		m.chat.totalTurns++
 		m.chat.scroll = 0
-		m.chat.input = ""
-		m.chat.cursorPos = 0
+		m.chat.chatInput.Reset()
 		return m, m.chat.sendMessage(msg.prompt)
 
 	case sessionDetailLoadedMsg, editProjectsLoadedMsg, editModelsLoadedMsg:
@@ -679,8 +714,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m Model) withChatDraftSaved() Model {
 	if m.chat.sessionID != "" {
-		if m.chat.input != "" {
-			m.chatDrafts[m.chat.sessionID] = m.chat.input
+		if !m.chat.chatInput.IsEmpty() {
+			m.chatDrafts[m.chat.sessionID] = m.chat.chatInput.Value()
 		} else {
 			delete(m.chatDrafts, m.chat.sessionID)
 		}
@@ -690,8 +725,7 @@ func (m Model) withChatDraftSaved() Model {
 
 func (m Model) withChatDraftRestored() Model {
 	if draft, ok := m.chatDrafts[m.chat.sessionID]; ok {
-		m.chat.input = draft
-		m.chat.cursorPos = len(draft)
+		m.chat.chatInput.SetValue(draft)
 	}
 	return m
 }
@@ -1279,8 +1313,7 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.chat.commandMode = false
 			m.chat.scheduling = true
 			m.chat.scheduleAt = ""
-			m.chat.input = ""
-			m.chat.cursorPos = 0
+			m.chat.chatInput.Reset()
 			return m, nil
 		case "a":
 			m.chat.confirmDelete = false
@@ -1882,7 +1915,7 @@ func Run(version string, opts ...UIOptions) error {
 	if len(opts) > 0 {
 		o = opts[0]
 	}
-	p := tea.NewProgram(New(version, o), tea.WithAltScreen())
+	p := tea.NewProgram(New(version, o), tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err := p.Run()
 	return err
 }
