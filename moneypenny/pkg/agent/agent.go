@@ -139,17 +139,11 @@ func (r *Runner) Run(ctx context.Context, params RunParams) (*Result, error) {
 		r.mu.Unlock()
 	}()
 
-	// For Claude agents, use stream-json and parse events line by line.
-	if params.Agent != "copilot" {
-		return r.runStreaming(cmd, buf, params.SessionID, &stderrBuf)
+	// Both Claude and Copilot use streaming JSON output.
+	if params.Agent == "copilot" {
+		return r.runCopilotStreaming(cmd, buf, params.SessionID, &stderrBuf)
 	}
-
-	// Copilot: blocking output.
-	output, err := cmd.Output()
-	if err != nil {
-		return nil, fmtAgentError(err, &stderrBuf)
-	}
-	return &Result{Text: parseOutput(params.Agent, output)}, nil
+	return r.runStreaming(cmd, buf, params.SessionID, &stderrBuf)
 }
 
 // runStreaming runs a Claude agent with stream-json, parsing events into the activity buffer.
@@ -251,6 +245,158 @@ func (r *Runner) runStreaming(cmd *exec.Cmd, buf *activityBuffer, sessionID stri
 	return &Result{Text: resultText}, nil
 }
 
+// runCopilotStreaming runs a Copilot agent with --output-format json --stream on,
+// parsing JSONL events into the activity buffer (same pattern as Claude streaming).
+func (r *Runner) runCopilotStreaming(cmd *exec.Cmd, buf *activityBuffer, sessionID string, stderrBuf *bytes.Buffer) (*Result, error) {
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, fmt.Errorf("creating stdout pipe: %w", err)
+	}
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("starting agent: %w", err)
+	}
+
+	var resultText string
+	var lastRawEvent string
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 0, 256*1024), 10*1024*1024)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+		lastRawEvent = line
+
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			r.vlog.Printf("copilot stream: unparseable line: %s", truncStr(line, 200))
+			continue
+		}
+
+		evType, _ := event["type"].(string)
+		data, _ := event["data"].(map[string]any)
+		now := time.Now().UTC().Format(time.RFC3339)
+
+		switch evType {
+		case "assistant.turn_start":
+			buf.add(ActivityEvent{Type: "thinking", Summary: "thinking...", Timestamp: now})
+			if r.notifyWriter != nil {
+				_ = r.notifyWriter.Send(envelope.EventChatActivity, sessionID, map[string]interface{}{
+					"events": buf.snapshot(),
+				})
+			}
+
+		case "assistant.message":
+			if data != nil {
+				content, _ := data["content"].(string)
+				if content != "" {
+					resultText = content
+					buf.add(ActivityEvent{Type: "text", Summary: truncStr(content, 150), Timestamp: now})
+				}
+				// Parse tool requests for activity.
+				if toolReqs, ok := data["toolRequests"].([]any); ok {
+					for _, tr := range toolReqs {
+						trMap, ok := tr.(map[string]any)
+						if !ok {
+							continue
+						}
+						name, _ := trMap["name"].(string)
+						if name == "" || name == "report_intent" {
+							continue
+						}
+						summary := name
+						if args, ok := trMap["arguments"].(map[string]any); ok {
+							summary = copilotToolSummary(name, args)
+						}
+						buf.add(ActivityEvent{Type: "tool_use", Summary: summary, Timestamp: now})
+					}
+				}
+				if r.notifyWriter != nil {
+					_ = r.notifyWriter.Send(envelope.EventChatActivity, sessionID, map[string]interface{}{
+						"events": buf.snapshot(),
+					})
+				}
+			}
+
+		case "tool.execution_start":
+			if data != nil {
+				toolName, _ := data["toolName"].(string)
+				if toolName != "" {
+					summary := toolName
+					if args, ok := data["arguments"].(map[string]any); ok {
+						summary = copilotToolSummary(toolName, args)
+					}
+					buf.add(ActivityEvent{Type: "tool_use", Summary: summary, Timestamp: now})
+					if r.notifyWriter != nil {
+						_ = r.notifyWriter.Send(envelope.EventChatActivity, sessionID, map[string]interface{}{
+							"events": buf.snapshot(),
+						})
+					}
+				}
+			}
+
+		case "tool.execution_complete":
+			// Could log tool results, but we mainly care about tool starts for activity.
+
+		case "result":
+			r.vlog.Printf("copilot stream: result event: %s", truncStr(line, 500))
+
+		case "assistant.message_delta", "assistant.turn_end",
+			"session.mcp_server_status_changed", "session.mcp_servers_loaded",
+			"session.tools_updated", "session.background_tasks_changed",
+			"user.message":
+			// Skip ephemeral/informational events.
+
+		default:
+			r.vlog.Printf("copilot stream: unhandled event type=%q", evType)
+		}
+	}
+
+	if err := cmd.Wait(); err != nil {
+		return nil, fmtAgentErrorFull(err, stderrBuf, resultText, lastRawEvent)
+	}
+	return &Result{Text: strings.TrimSpace(resultText)}, nil
+}
+
+// copilotToolSummary builds a short description of a copilot tool use.
+func copilotToolSummary(name string, args map[string]any) string {
+	// Try to extract a path argument (used by view, edit, create, etc.)
+	if p, ok := args["path"].(string); ok && p != "" {
+		return name + " " + p
+	}
+	switch name {
+	case "bash":
+		if cmd, ok := args["command"].(string); ok {
+			desc, _ := args["description"].(string)
+			if desc != "" {
+				return desc
+			}
+			return "bash " + truncStr(cmd, 80)
+		}
+	case "grep":
+		if p, ok := args["pattern"].(string); ok {
+			return name + " " + truncStr(p, 60)
+		}
+	case "glob":
+		if p, ok := args["pattern"].(string); ok {
+			return name + " " + truncStr(p, 60)
+		}
+	case "report_intent":
+		if intent, ok := args["intent"].(string); ok {
+			return intent
+		}
+	}
+	// Generic fallback: show first string argument value.
+	for _, v := range args {
+		if s, ok := v.(string); ok && s != "" {
+			return name + " " + truncStr(s, 60)
+		}
+	}
+	return name
+}
+
 // toolSummary builds a short description of a tool_use block.
 func toolSummary(b map[string]any) string {
 	name, _ := b["name"].(string)
@@ -324,6 +470,8 @@ func buildClaudeArgs(params RunParams) []string {
 
 func buildCopilotArgs(params RunParams) []string {
 	args := []string{
+		"--output-format", "json",
+		"--stream", "on",
 		"--resume", params.SessionID,
 		"-s",
 	}
@@ -335,16 +483,6 @@ func buildCopilotArgs(params RunParams) []string {
 	}
 	args = append(args, "-p", params.Prompt)
 	return args
-}
-
-// parseOutput extracts text from agent output based on agent type.
-func parseOutput(agentName string, output []byte) string {
-	switch agentName {
-	case "copilot":
-		return strings.TrimSpace(string(output))
-	default:
-		return parseClaudeOutput(output)
-	}
 }
 
 // Stop kills the subprocess for the given session.
@@ -366,51 +504,6 @@ func (r *Runner) IsRunning(sessionID string) bool {
 	defer r.mu.Unlock()
 	_, ok := r.procs[sessionID]
 	return ok
-}
-
-// parseClaudeOutput extracts the text response from Claude's JSON output (fallback).
-func parseClaudeOutput(output []byte) string {
-	raw := strings.TrimSpace(string(output))
-	if raw == "" {
-		return ""
-	}
-	var single map[string]any
-	if err := json.Unmarshal([]byte(raw), &single); err == nil {
-		if result, ok := extractResult(single); ok {
-			return result
-		}
-	}
-	lines := strings.Split(raw, "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(lines[i])
-		if line == "" {
-			continue
-		}
-		var obj map[string]any
-		if err := json.Unmarshal([]byte(line), &obj); err == nil {
-			if result, ok := extractResult(obj); ok {
-				return result
-			}
-		}
-	}
-	return raw
-}
-
-func extractResult(obj map[string]any) (string, bool) {
-	result, ok := obj["result"]
-	if !ok {
-		return "", false
-	}
-	switch v := result.(type) {
-	case string:
-		return v, true
-	default:
-		b, err := json.Marshal(v)
-		if err != nil {
-			return fmt.Sprintf("%v", v), true
-		}
-		return string(b), true
-	}
 }
 
 func mapKeys(m map[string]any) []string {
