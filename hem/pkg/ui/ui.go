@@ -93,8 +93,9 @@ type Model struct {
 
 // UIOptions configures the TUI.
 type UIOptions struct {
-	Silent bool
-	Sender hemclient.Sender
+	Silent           bool
+	Sender           hemclient.Sender
+	UseNotifications bool // feature flag: use broadcast notifications (--ff-use-notifications)
 }
 
 // New creates the initial UI model.
@@ -109,6 +110,9 @@ func New(version string, opts ...UIOptions) Model {
 	}
 	if c == nil {
 		c = newClient()
+	}
+	if len(opts) > 0 {
+		c.useNotifications = opts[0].UseNotifications
 	}
 	return Model{
 		currentView:       viewDashboard,
@@ -396,7 +400,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.previousView == viewDashboard {
 			m.currentView = viewDashboard
 			m.dashboard.loading = true
-			return m, tea.Batch(m.dashboard.loadDashboard(), dashboardPollTick())
+			return m, tea.Batch(m.dashboard.loadDashboard(), m.dashboard.dashboardPollTickAdaptive())
 		}
 		m.currentView = viewProjectDetail
 		m.projectDetail.loading = true
@@ -469,7 +473,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			m.currentView = viewDashboard
 			m.dashboard.loading = true
-			return m, tea.Batch(m.dashboard.loadDashboard(), dashboardPollTick())
+			return m, tea.Batch(m.dashboard.loadDashboard(), m.dashboard.dashboardPollTickAdaptive())
 		}
 
 	case chatSubagentDeletedMsg:
@@ -496,14 +500,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Always reload the main dashboard in background regardless of current view,
 		// so session states stay fresh and notifications can be detected.
 		if !m.dashboard.loading {
-			cmds := []tea.Cmd{m.dashboard.loadDashboard(), dashboardPollTick()}
+			cmds := []tea.Cmd{m.dashboard.loadDashboard(), m.dashboard.dashboardPollTickAdaptive()}
 			// Also refresh project detail if active.
 			if m.currentView == viewProjectDetail && !m.projectDetail.loading {
 				cmds = append(cmds, m.projectDetail.loadDashboard())
 			}
 			return m, tea.Batch(cmds...)
 		}
-		return m, dashboardPollTick()
+		return m, m.dashboard.dashboardPollTickAdaptive()
 
 	case dashboardLoadedMsg:
 		// Detect working→ready transitions for notifications.
@@ -559,6 +563,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case historyLoadedMsg, messageSentMsg, olderHistoryLoadedMsg,
 		activityLoadedMsg, schedulesLoadedMsg, subagentsLoadedMsg, scheduleCreatedMsg,
 		chatSubagentCreatedMsg, browserLoadedMsg, fileTransferredMsg:
+		uilog("routing chat msg type=%T to chat.Update (currentView=%d)", msg, m.currentView)
 		var cmd tea.Cmd
 		m.chat, cmd = m.chat.Update(msg)
 		return m, cmd
@@ -704,7 +709,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			default:
 				m.currentView = viewDashboard
 				m.dashboard.loading = true
-				return m, tea.Batch(m.dashboard.loadDashboard(), dashboardPollTick())
+				return m, tea.Batch(m.dashboard.loadDashboard(), m.dashboard.dashboardPollTickAdaptive())
 			}
 		}
 
@@ -766,7 +771,7 @@ func (m Model) handleEsc() (tea.Model, tea.Cmd) {
 		m.currentView = viewDashboard
 		m.statusMsg = ""
 		m.dashboard.loading = true
-		return m, tea.Batch(m.dashboard.loadDashboard(), dashboardPollTick())
+		return m, tea.Batch(m.dashboard.loadDashboard(), m.dashboard.dashboardPollTickAdaptive())
 	case viewProjectDetail:
 		m.currentView = viewProjects
 		m.statusMsg = ""
@@ -776,7 +781,7 @@ func (m Model) handleEsc() (tea.Model, tea.Cmd) {
 		m.currentView = viewDashboard
 		m.statusMsg = ""
 		m.dashboard.loading = true
-		return m, tea.Batch(m.dashboard.loadDashboard(), dashboardPollTick())
+		return m, tea.Batch(m.dashboard.loadDashboard(), m.dashboard.dashboardPollTickAdaptive())
 	case viewCreate:
 		prev := m.previousView
 		m.currentView = prev
@@ -790,7 +795,7 @@ func (m Model) handleEsc() (tea.Model, tea.Cmd) {
 			return m, m.sessions.loadSessions()
 		default:
 			m.dashboard.loading = true
-			return m, tea.Batch(m.dashboard.loadDashboard(), dashboardPollTick())
+			return m, tea.Batch(m.dashboard.loadDashboard(), m.dashboard.dashboardPollTickAdaptive())
 		}
 	case viewEdit:
 		prev := m.previousView
@@ -821,7 +826,7 @@ func (m Model) handleEsc() (tea.Model, tea.Cmd) {
 		m.currentView = viewDashboard
 		m.statusMsg = ""
 		m.dashboard.loading = true
-		return m, tea.Batch(m.dashboard.loadDashboard(), dashboardPollTick())
+		return m, tea.Batch(m.dashboard.loadDashboard(), m.dashboard.dashboardPollTickAdaptive())
 	case viewImport:
 		m.currentView = viewSessions
 		m.statusMsg = ""
@@ -840,14 +845,14 @@ func (m Model) handleEsc() (tea.Model, tea.Cmd) {
 			return m, m.sessions.loadSessions()
 		default:
 			m.dashboard.loading = true
-			return m, tea.Batch(m.dashboard.loadDashboard(), dashboardPollTick())
+			return m, tea.Batch(m.dashboard.loadDashboard(), m.dashboard.dashboardPollTickAdaptive())
 		}
 	case viewTemplatePicker:
 		m.statusMsg = ""
 		if m.previousView == viewDashboard {
 			m.currentView = viewDashboard
 			m.dashboard.loading = true
-			return m, tea.Batch(m.dashboard.loadDashboard(), dashboardPollTick())
+			return m, tea.Batch(m.dashboard.loadDashboard(), m.dashboard.dashboardPollTickAdaptive())
 		}
 		m.currentView = viewProjectDetail
 		m.projectDetail.loading = true
@@ -878,7 +883,7 @@ func (m Model) handleEsc() (tea.Model, tea.Cmd) {
 			return m, nil
 		default:
 			m.dashboard.loading = true
-			return m, tea.Batch(m.dashboard.loadDashboard(), dashboardPollTick())
+			return m, tea.Batch(m.dashboard.loadDashboard(), m.dashboard.dashboardPollTickAdaptive())
 		}
 	}
 	return m, nil
@@ -894,7 +899,9 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
 		e := m.dashboard.selectedEntry()
+		uilog("dashboard: enter pressed, selectedEntry=%v cursor=%d entries=%d filtered=%d", e != nil, m.dashboard.cursor, len(m.dashboard.entries), len(m.dashboard.filteredEntries()))
 		if e != nil {
+			uilog("dashboard: opening session id=%s name=%q mp=%s status=%s parent=%s", e.SessionID, e.Name, e.Moneypenny, e.MPStatus, e.ParentSessionID)
 			if e.ParentSessionID != "" {
 				// Opening a subagent: push parent chat onto stack, then open sub.
 				parentName := ""
@@ -918,8 +925,10 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.chat.height = m.height - 3
 			m.currentView = viewChat
 			m.previousView = viewDashboard
+			uilog("dashboard: switched to viewChat, loading history+activity")
 			return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), m.chat.chatPollTickAdaptive())
 		}
+		uilog("dashboard: enter pressed but no entry selected")
 	case "c":
 		e := m.dashboard.selectedEntry()
 		if e != nil {
@@ -1065,7 +1074,9 @@ func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
 		e := m.projectDetail.selectedEntry()
+		uilog("projectDetail: enter pressed, selectedEntry=%v", e != nil)
 		if e != nil {
+			uilog("projectDetail: opening session id=%s name=%q mp=%s", e.SessionID, e.Name, e.Moneypenny)
 			if e.ParentSessionID != "" {
 				parentName := ""
 				for _, pe := range m.projectDetail.entries {
@@ -1210,13 +1221,16 @@ func (m Model) updateSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
 		s := m.sessions.selectedSession()
+		uilog("sessions: enter pressed, selectedSession=%v cursor=%d sessions=%d", s != nil, m.sessions.cursor, len(m.sessions.sessions))
 		if s != nil {
+			uilog("sessions: opening session id=%s name=%q mp=%s", s.SessionID, s.Name, s.Moneypenny)
 			m.chat = newChatModel(m.client, s.SessionID, s.Name, s.Moneypenny)
 			m.chat.width = m.width
 			m.chat.height = m.height - 3
 			m = m.withChatDraftRestored()
 			m.currentView = viewChat
 			m.previousView = viewSessions
+			uilog("sessions: switched to viewChat, loading history+activity")
 			return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), m.chat.chatPollTickAdaptive())
 		}
 	case "n":
@@ -1407,7 +1421,7 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			default:
 				m.currentView = viewDashboard
 				m.dashboard.loading = true
-				return m, tea.Batch(m.dashboard.loadDashboard(), dashboardPollTick())
+				return m, tea.Batch(m.dashboard.loadDashboard(), m.dashboard.dashboardPollTickAdaptive())
 			}
 		case "Q":
 			m.chat.confirmDelete = false
@@ -1417,7 +1431,7 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.currentView = viewDashboard
 			m.dashboard.loading = true
 			m.statusMsg = ""
-			return m, tea.Batch(m.dashboard.loadDashboard(), dashboardPollTick())
+			return m, tea.Batch(m.dashboard.loadDashboard(), m.dashboard.dashboardPollTickAdaptive())
 		default:
 			m.chat.confirmDelete = false
 		}
@@ -1526,7 +1540,7 @@ func (m Model) updateWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			switch m.previousView {
 			case viewDashboard:
 				m.dashboard.loading = true
-				return m, tea.Batch(m.dashboard.loadDashboard(), dashboardPollTick())
+				return m, tea.Batch(m.dashboard.loadDashboard(), m.dashboard.dashboardPollTickAdaptive())
 			case viewProjectDetail:
 				m.projectDetail.loading = true
 				return m, m.projectDetail.loadDashboard()
@@ -1536,7 +1550,7 @@ func (m Model) updateWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			default:
 				m.currentView = viewDashboard
 				m.dashboard.loading = true
-				return m, tea.Batch(m.dashboard.loadDashboard(), dashboardPollTick())
+				return m, tea.Batch(m.dashboard.loadDashboard(), m.dashboard.dashboardPollTickAdaptive())
 			}
 		case wizardStepPath:
 			m.wizard.step = wizardStepMoneypenny

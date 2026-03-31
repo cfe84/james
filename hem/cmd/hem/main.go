@@ -46,7 +46,7 @@ func main() {
 
 	// Extract global flags from args before cli.Parse.
 	var mi6Addr string
-	var silent, verbose, forceLocal bool
+	var silent, verbose, forceLocal, ffUseNotifications bool
 	filteredArgs := make([]string, 0, len(os.Args))
 	filteredArgs = append(filteredArgs, os.Args[0])
 	for i := 1; i < len(os.Args); i++ {
@@ -59,6 +59,8 @@ func main() {
 			verbose = true
 		} else if !isSetDefaultServer && os.Args[i] == "--local" {
 			forceLocal = true
+		} else if os.Args[i] == "--ff-use-notifications" {
+			ffUseNotifications = true
 		} else {
 			filteredArgs = append(filteredArgs, os.Args[i])
 		}
@@ -145,7 +147,7 @@ func main() {
 		runChat(cmd.Args)
 		return
 	case "ui":
-		if err := ui.Run(Version, ui.UIOptions{Sender: sender, Silent: silent}); err != nil {
+		if err := ui.Run(Version, ui.UIOptions{Sender: sender, Silent: silent, UseNotifications: ffUseNotifications}); err != nil {
 			fmt.Fprintf(os.Stderr, "%sError: %v%s\n", colorRed, err, colorReset)
 			os.Exit(1)
 		}

@@ -3,7 +3,6 @@ package commands
 import (
 	"context"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -2959,10 +2958,13 @@ func (e *Executor) ListModels(args []string) *protocol.Response {
 }
 
 // TransferFileResult is returned by TransferFile.
+// Content is base64-encoded file data so the client can write it locally
+// (server and client may be on different machines).
 type TransferFileResult struct {
-	LocalPath string `json:"local_path"`
+	LocalPath string `json:"local_path,omitempty"` // deprecated, kept for backward compat
 	Name      string `json:"name"`
 	Size      int64  `json:"size"`
+	Content   string `json:"content"` // base64-encoded file content
 }
 
 func (e *Executor) TransferFile(noun string, args []string) *protocol.Response {
@@ -3028,27 +3030,12 @@ func (e *Executor) TransferFile(noun string, args []string) *protocol.Response {
 		return protocol.ErrResponse(fmt.Sprintf("parsing transfer response: %v", err))
 	}
 
-	// Decode base64 content.
-	decoded, err := base64.StdEncoding.DecodeString(transferResp.Content)
-	if err != nil {
-		return protocol.ErrResponse(fmt.Sprintf("decoding file content: %v", err))
-	}
-
-	// Save to temporary directory.
-	tmpDir, err := os.MkdirTemp("", "hem-transfer-*")
-	if err != nil {
-		return protocol.ErrResponse(fmt.Sprintf("creating temp dir: %v", err))
-	}
-
-	localPath := filepath.Join(tmpDir, transferResp.Name)
-	if err := os.WriteFile(localPath, decoded, 0644); err != nil {
-		return protocol.ErrResponse(fmt.Sprintf("writing file: %v", err))
-	}
-
+	// Pass the base64 content through to the client, which will write
+	// the file locally. Server and client may be on different machines.
 	return protocol.OKResponse(TransferFileResult{
-		LocalPath: localPath,
-		Name:      transferResp.Name,
-		Size:      transferResp.Size,
+		Name:    transferResp.Name,
+		Size:    transferResp.Size,
+		Content: transferResp.Content,
 	})
 }
 

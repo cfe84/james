@@ -1,8 +1,11 @@
 package ui
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 
 	"james/hem/pkg/hemclient"
 	"james/hem/pkg/protocol"
@@ -11,7 +14,8 @@ import (
 
 // client wraps hemclient for the UI, providing typed methods.
 type client struct {
-	sender hemclient.Sender
+	sender           hemclient.Sender
+	useNotifications bool // when true, use broadcast notifications; when false, rely on polling
 }
 
 func newClient() *client {
@@ -22,9 +26,12 @@ func newMI6Client(sender hemclient.Sender) *client {
 	return &client{sender: sender}
 }
 
-// broadcasts returns a channel for receiving broadcast messages (MI6 only).
-// Returns nil for Unix socket clients.
+// broadcasts returns a channel for receiving broadcast messages.
+// Returns nil when notifications are disabled or transport doesn't support them.
 func (c *client) broadcasts() <-chan *protocol.Response {
+	if !c.useNotifications {
+		return nil
+	}
 	if bs, ok := c.sender.(hemclient.BroadcastSender); ok {
 		return bs.Broadcasts()
 	}
@@ -593,10 +600,30 @@ func (c *client) transferFile(moneypenny, path string) (string, error) {
 		LocalPath string `json:"local_path"`
 		Name      string `json:"name"`
 		Size      int64  `json:"size"`
+		Content   string `json:"content"`
 	}
 	if err := json.Unmarshal(resp.Data, &result); err != nil {
 		return "", fmt.Errorf("parsing transfer result: %w", err)
 	}
+
+	// If server returned content, write it locally (server may be remote).
+	if result.Content != "" {
+		decoded, err := base64.StdEncoding.DecodeString(result.Content)
+		if err != nil {
+			return "", fmt.Errorf("decoding file content: %w", err)
+		}
+		tmpDir, err := os.MkdirTemp("", "hem-transfer-*")
+		if err != nil {
+			return "", fmt.Errorf("creating temp dir: %w", err)
+		}
+		localPath := filepath.Join(tmpDir, result.Name)
+		if err := os.WriteFile(localPath, decoded, 0644); err != nil {
+			return "", fmt.Errorf("writing file: %w", err)
+		}
+		return localPath, nil
+	}
+
+	// Fallback: server wrote the file locally (same machine).
 	return result.LocalPath, nil
 }
 

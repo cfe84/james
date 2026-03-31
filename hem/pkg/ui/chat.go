@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -38,8 +39,9 @@ type chatPollTickMsg struct{}
 type chatBroadcastMsg struct{ resp *protocol.Response }
 
 const (
-	chatPollInterval       = 180 * time.Second // Fallback for idle sessions with broadcasts
-	chatPollIntervalActive = 3 * time.Second   // Fast poll when session is working (no broadcasts)
+	chatPollInterval       = 180 * time.Second // Slow fallback (notifications enabled)
+	chatPollIntervalIdle   = 30 * time.Second  // Idle poll (no notifications)
+	chatPollIntervalActive = 3 * time.Second   // Fast poll when session is working (no notifications)
 )
 
 // chatModel displays conversation history and allows sending messages.
@@ -239,7 +241,13 @@ func (m chatModel) loadSubagents() tea.Cmd {
 
 func (m chatModel) loadActivity() tea.Cmd {
 	return func() tea.Msg {
+		start := time.Now()
 		events, err := m.client.getSessionActivity(m.sessionID)
+		if err != nil {
+			uilog("loadActivity: error after %v: %v", time.Since(start), err)
+		} else {
+			uilog("loadActivity: done in %v, events=%d", time.Since(start), len(events))
+		}
 		return activityLoadedMsg{activity: events, err: err}
 	}
 }
@@ -258,43 +266,70 @@ func (m chatModel) loadBrowser(path string) tea.Cmd {
 func (m chatModel) transferAndOpen(remotePath string) tea.Cmd {
 	mp := m.moneypennyName
 	return func() tea.Msg {
+		uilog("transferAndOpen: remotePath=%q mp=%q", remotePath, mp)
 		localPath, err := m.client.transferFile(mp, remotePath)
 		if err != nil {
+			uilog("transferAndOpen: transfer error: %v", err)
 			return fileTransferredMsg{err: err}
+		}
+		// Verify the file actually exists before trying to open it.
+		if info, statErr := os.Stat(localPath); statErr != nil {
+			uilog("transferAndOpen: file does not exist at %q: %v", localPath, statErr)
+			return fileTransferredMsg{err: fmt.Errorf("transferred file missing: %w", statErr)}
+		} else {
+			uilog("transferAndOpen: file exists at %q, size=%d", localPath, info.Size())
 		}
 		// Open the file with the system default application.
 		if err := openWithDefault(localPath); err != nil {
+			uilog("transferAndOpen: open error: %v", err)
 			return fileTransferredMsg{err: fmt.Errorf("opening %s: %w", localPath, err)}
 		}
+		uilog("transferAndOpen: opened successfully")
 		return fileTransferredMsg{localPath: localPath}
 	}
 }
 
 // openWithDefault opens a file with the OS default application.
+// Detaches child stdin/stdout/stderr so bubbletea's raw terminal mode
+// doesn't interfere with the launched application.
 func openWithDefault(path string) error {
+	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "darwin":
-		return exec.Command("open", path).Start()
+		cmd = exec.Command("open", path)
 	case "linux":
-		return exec.Command("xdg-open", path).Start()
+		cmd = exec.Command("xdg-open", path)
 	case "windows":
-		return exec.Command("cmd", "/c", "start", "", path).Start()
+		cmd = exec.Command("cmd", "/c", "start", "", path)
 	default:
 		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
 	}
+	// Detach stdin from bubbletea's raw-mode terminal.
+	cmd.Stdin = nil
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		uilog("open command failed: %v output=%q", err, string(out))
+		return fmt.Errorf("%w: %s", err, string(out))
+	}
+	uilog("open command succeeded for %q", path)
+	return nil
 }
 
 // chatPollTickAdaptive returns a poll tick with an interval that depends on
-// whether the session is actively working and whether broadcasts are available.
-// When broadcasts provide real-time updates, we use the slow fallback.
-// Without broadcasts (Unix socket), we poll quickly while working.
+// whether notifications are enabled and whether the session is working.
+//
+// With notifications (--ff-use-notifications): 180s fallback, broadcasts handle real-time.
+// Without notifications (default): 3s when working, 30s when idle.
 func (m chatModel) chatPollTickAdaptive() tea.Cmd {
-	interval := chatPollInterval
-	hasBroadcasts := m.client.broadcasts() != nil
-	if m.sessionStatus == "working" && !hasBroadcasts {
+	var interval time.Duration
+	if m.client.useNotifications {
+		interval = chatPollInterval
+	} else if m.sessionStatus == "working" {
 		interval = chatPollIntervalActive
+	} else {
+		interval = chatPollIntervalIdle
 	}
-	uilog("poll schedule: interval=%v status=%s broadcasts=%v", interval, m.sessionStatus, hasBroadcasts)
+	uilog("poll schedule: interval=%v status=%s notifications=%v", interval, m.sessionStatus, m.client.useNotifications)
 	return tea.Tick(interval, func(time.Time) tea.Msg {
 		return chatPollTickMsg{}
 	})
@@ -522,6 +557,7 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 		}
 
 	case activityLoadedMsg:
+		uilog("activityLoaded: err=%v events=%d status=%s", msg.err, len(msg.activity), m.sessionStatus)
 		if msg.err == nil {
 			// Don't replace existing activity with empty while working — avoids flicker.
 			if len(msg.activity) > 0 || m.sessionStatus != "working" {
@@ -549,6 +585,7 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 		}
 
 	case fileTransferredMsg:
+		uilog("fileTransferred: localPath=%q err=%v", msg.localPath, msg.err)
 		m.browsingFiles = false
 		m.browserLoading = false
 		if msg.err != nil {

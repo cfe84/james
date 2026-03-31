@@ -14,12 +14,34 @@ import (
 type dashboardPollTickMsg struct{}
 type broadcastMsg struct{ resp *protocol.Response }
 
-const dashboardPollInterval = 60 * time.Second // Fallback refresh every 60s
+const (
+	dashboardPollInterval       = 60 * time.Second // Slow fallback (notifications enabled)
+	dashboardPollIntervalActive = 5 * time.Second  // Fast poll when sessions are working (no notifications)
+)
 
-func dashboardPollTick() tea.Cmd {
-	return tea.Tick(dashboardPollInterval, func(time.Time) tea.Msg {
+// dashboardPollTickAdaptive polls faster when sessions are working and
+// notifications are disabled (the default).
+func (m dashboardModel) dashboardPollTickAdaptive() tea.Cmd {
+	var interval time.Duration
+	if m.client.useNotifications {
+		interval = dashboardPollInterval
+	} else if m.hasWorkingSessions() {
+		interval = dashboardPollIntervalActive
+	} else {
+		interval = dashboardPollInterval
+	}
+	return tea.Tick(interval, func(time.Time) tea.Msg {
 		return dashboardPollTickMsg{}
 	})
+}
+
+func (m dashboardModel) hasWorkingSessions() bool {
+	for _, e := range m.entries {
+		if e.MPStatus == "working" {
+			return true
+		}
+	}
+	return false
 }
 
 // listenForBroadcasts subscribes to broadcast messages from the MI6 connection.
@@ -214,7 +236,7 @@ func (m dashboardModel) completeSession(id string) tea.Cmd {
 
 func (m dashboardModel) Init() tea.Cmd {
 	// Start initial load, fallback polling, and broadcast listener.
-	cmds := []tea.Cmd{m.loadDashboard(), dashboardPollTick()}
+	cmds := []tea.Cmd{m.loadDashboard(), m.dashboardPollTickAdaptive()}
 
 	// Add broadcast listener if using MI6.
 	if broadcasts := m.client.broadcasts(); broadcasts != nil {
@@ -228,9 +250,9 @@ func (m dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case dashboardPollTickMsg:
 		if !m.loading {
-			return m, tea.Batch(m.loadDashboard(), dashboardPollTick())
+			return m, tea.Batch(m.loadDashboard(), m.dashboardPollTickAdaptive())
 		}
-		return m, dashboardPollTick()
+		return m, m.dashboardPollTickAdaptive()
 
 	case dashboardLoadedMsg:
 		m.loading = false
