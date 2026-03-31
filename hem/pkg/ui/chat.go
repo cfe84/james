@@ -158,8 +158,10 @@ type fileTransferredMsg struct {
 
 func (m chatModel) loadHistory() tea.Cmd {
 	return func() tea.Msg {
+		start := time.Now()
 		page, err := m.client.getHistoryPaginated(m.sessionID, chatPageSize, 0)
 		if err != nil {
+			uilog("loadHistory: error after %v: %v", time.Since(start), err)
 			return historyLoadedMsg{err: err}
 		}
 		// Also fetch session status.
@@ -168,6 +170,7 @@ func (m chatModel) loadHistory() tea.Cmd {
 		if err == nil {
 			status = detail.Status
 		}
+		uilog("loadHistory: done in %v, turns=%d total=%d status=%s", time.Since(start), len(page.Conversation), page.Total, status)
 		return historyLoadedMsg{conversation: page.Conversation, total: page.Total, status: status}
 	}
 }
@@ -287,9 +290,11 @@ func openWithDefault(path string) error {
 // Without broadcasts (Unix socket), we poll quickly while working.
 func (m chatModel) chatPollTickAdaptive() tea.Cmd {
 	interval := chatPollInterval
-	if m.sessionStatus == "working" && m.client.broadcasts() == nil {
+	hasBroadcasts := m.client.broadcasts() != nil
+	if m.sessionStatus == "working" && !hasBroadcasts {
 		interval = chatPollIntervalActive
 	}
+	uilog("poll schedule: interval=%v status=%s broadcasts=%v", interval, m.sessionStatus, hasBroadcasts)
 	return tea.Tick(interval, func(time.Time) tea.Msg {
 		return chatPollTickMsg{}
 	})
@@ -345,6 +350,7 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 	case chatPollTickMsg:
 		// Periodically reload history and schedules to catch agent responses.
 		// Skip if a previous poll load is still in-flight to avoid races.
+		uilog("poll tick: status=%s sending=%v loading=%v polling=%v", m.sessionStatus, m.sending, m.loading, m.polling)
 		if !m.sending && !m.loading && !m.polling {
 			m.polling = true
 			cmds := []tea.Cmd{m.loadHistory(), m.loadSchedules(), m.loadSubagents(), m.loadActivity(), m.chatPollTickAdaptive()}
@@ -354,6 +360,7 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 
 	case chatBroadcastMsg:
 		// Handle real-time notifications from moneypenny
+		uilog("broadcast: verb=%s noun=%s", msg.resp.Verb, msg.resp.Noun)
 		cmds := []tea.Cmd{listenForChatBroadcasts(m.client.broadcasts(), m.sessionID)}
 
 		// Route by event type (verb/noun from moneypenny notification)
@@ -395,6 +402,7 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 		m.loading = false
 		m.polling = false
 		if msg.err == nil {
+			uilog("history loaded: status=%s turns=%d total=%d", msg.status, len(msg.conversation), msg.total)
 			m.sessionStatus = msg.status
 			if msg.status == "working" && m.workingVerb == "" {
 				m.workingVerb = pickSpyVerb()
@@ -423,6 +431,7 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 			}
 
 			if changed {
+				uilog("history changed: old=%d new=%d", len(oldRecent), len(msg.conversation))
 				// Collect queued turns not yet in server data.
 				var pendingQueued []conversationTurn
 				for i := range m.conversation {
@@ -458,6 +467,8 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 				m.recentCount = len(msg.conversation) + len(pendingQueued)
 				m.scroll = 0
 			}
+		} else if msg.err != nil {
+			uilog("history load error: %v", msg.err)
 		}
 		m.err = msg.err
 
@@ -471,6 +482,7 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 
 	case messageSentMsg:
 		m.sending = false
+		uilog("message sent: err=%v queued=%v", msg.err, msg.queued)
 		if msg.err != nil {
 			m.err = msg.err
 		} else if msg.queued {

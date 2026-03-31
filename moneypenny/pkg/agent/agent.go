@@ -291,6 +291,8 @@ func (r *Runner) runCopilotStreaming(cmd *exec.Cmd, buf *activityBuffer, session
 		case "assistant.message":
 			if data != nil {
 				content, _ := data["content"].(string)
+				r.vlog.Printf("copilot stream: assistant.message content=%d bytes, toolRequests=%v",
+					len(content), data["toolRequests"] != nil)
 				if content != "" {
 					resultText = content
 					buf.add(ActivityEvent{Type: "text", Summary: truncStr(content, 150), Timestamp: now})
@@ -337,11 +339,40 @@ func (r *Runner) runCopilotStreaming(cmd *exec.Cmd, buf *activityBuffer, session
 				}
 			}
 
+		case "tool.execution_partial_result":
+			if data != nil {
+				partial, _ := data["partialOutput"].(string)
+				if partial != "" {
+					// Show the last line of partial output as activity.
+					lines := strings.Split(strings.TrimRight(partial, "\n"), "\n")
+					lastLine := lines[len(lines)-1]
+					buf.add(ActivityEvent{Type: "tool_use", Summary: truncStr(lastLine, 150), Timestamp: now})
+					if r.notifyWriter != nil {
+						_ = r.notifyWriter.Send(envelope.EventChatActivity, sessionID, map[string]interface{}{
+							"events": buf.snapshot(),
+						})
+					}
+				}
+			}
+
 		case "tool.execution_complete":
 			// Could log tool results, but we mainly care about tool starts for activity.
 
 		case "result":
 			r.vlog.Printf("copilot stream: result event: %s", truncStr(line, 500))
+
+		case "assistant.reasoning":
+			if data != nil {
+				content, _ := data["content"].(string)
+				if content != "" {
+					buf.add(ActivityEvent{Type: "thinking", Summary: truncStr(content, 150), Timestamp: now})
+					if r.notifyWriter != nil {
+						_ = r.notifyWriter.Send(envelope.EventChatActivity, sessionID, map[string]interface{}{
+							"events": buf.snapshot(),
+						})
+					}
+				}
+			}
 
 		case "assistant.message_delta", "assistant.turn_end",
 			"session.mcp_server_status_changed", "session.mcp_servers_loaded",

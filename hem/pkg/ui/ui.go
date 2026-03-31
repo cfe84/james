@@ -3,6 +3,9 @@ package ui
 import (
 	"encoding/json"
 	"fmt"
+	"log"
+	"os"
+	"path/filepath"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -11,6 +14,30 @@ import (
 	"james/hem/pkg/commands"
 	"james/hem/pkg/hemclient"
 )
+
+// uiLog is the TUI debug logger. Writes to ~/.config/james/hem/ui.log.
+// Initialized lazily on first use; nil-safe (logs are no-ops if init fails).
+var uiLog *log.Logger
+
+func initUILog() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	logDir := filepath.Join(home, ".config", "james", "hem")
+	os.MkdirAll(logDir, 0700)
+	f, err := os.OpenFile(filepath.Join(logDir, "ui.log"), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return
+	}
+	uiLog = log.New(f, "[ui] ", log.Ltime|log.Lmicroseconds)
+}
+
+func uilog(format string, args ...interface{}) {
+	if uiLog != nil {
+		uiLog.Printf(format, args...)
+	}
+}
 
 type view int
 
@@ -1911,6 +1938,8 @@ func (m Model) renderStatusBar() string {
 
 // Run starts the TUI.
 func Run(version string, opts ...UIOptions) error {
+	initUILog()
+	uilog("TUI starting, version=%s", version)
 	var o UIOptions
 	if len(opts) > 0 {
 		o = opts[0]
