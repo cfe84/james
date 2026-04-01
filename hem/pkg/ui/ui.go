@@ -205,6 +205,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.chat.pickingSubagent = false
 					return m, nil
 				}
+				if m.chat.viewingFile {
+					if m.chat.viewFileMode != fileViewModeView {
+						// Let the file viewer handle Esc for comment modes.
+						var cmd tea.Cmd
+						m.chat, cmd = m.chat.Update(msg)
+						return m, cmd
+					}
+					m.chat.viewingFile = false
+					return m, nil
+				}
+				if m.chat.downloadMode {
+					m.chat.downloadMode = false
+					m.chat.downloadErr = nil
+					return m, nil
+				}
 				if m.chat.browsingFiles {
 					m.chat.browsingFiles = false
 					m.chat.browserErr = nil
@@ -562,11 +577,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case historyLoadedMsg, messageSentMsg, olderHistoryLoadedMsg,
 		activityLoadedMsg, schedulesLoadedMsg, subagentsLoadedMsg, scheduleCreatedMsg,
-		chatSubagentCreatedMsg, browserLoadedMsg, fileTransferredMsg:
+		chatSubagentCreatedMsg, browserLoadedMsg, fileTransferredMsg,
+		fileContentLoadedMsg, fileDownloadedMsg, downloadBrowserLoadedMsg:
 		uilog("routing chat msg type=%T to chat.Update (currentView=%d)", msg, m.currentView)
 		var cmd tea.Cmd
 		m.chat, cmd = m.chat.Update(msg)
 		return m, cmd
+
+	case fileReviewSubmitMsg:
+		// Close file viewer and send the review prompt in chat.
+		m.chat.viewingFile = false
+		m.chat.conversation = append(m.chat.conversation, conversationTurn{
+			Role:    "user",
+			Content: msg.prompt,
+		})
+		m.chat.recentCount++
+		m.chat.totalTurns++
+		m.chat.scroll = 0
+		return m, m.chat.sendMessage(msg.prompt)
 
 	case diffCommitDoneMsg:
 		var cmd tea.Cmd

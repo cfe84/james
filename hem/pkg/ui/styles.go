@@ -150,3 +150,10 @@ func truncate(s string, max int) string {
 	}
 	return s[:max-3] + "..."
 }
+
+func pluralS(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}

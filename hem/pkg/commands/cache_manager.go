@@ -45,6 +45,14 @@ func (cm *CacheManager) Update(data map[string]map[string]mpSessionInfo) {
 	cm.cacheTime = time.Now()
 }
 
+// UpdateMP updates the cache for a single moneypenny without replacing the rest.
+func (cm *CacheManager) UpdateMP(mpName string, sessions map[string]mpSessionInfo) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	cm.mpCache[mpName] = sessions
+	cm.cacheTime = time.Now()
+}
+
 // GetCacheTime returns when the cache was last refreshed.
 func (cm *CacheManager) GetCacheTime() time.Time {
 	cm.mu.RLock()

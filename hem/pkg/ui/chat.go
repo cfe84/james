@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -54,6 +56,27 @@ type subagentInfo struct {
 	Yolo      bool
 }
 
+// fileComment is a comment on a specific line in the file viewer.
+type fileComment struct {
+	lineNum int
+	comment string
+}
+
+// fileViewMode controls the file viewer's input state.
+type fileViewMode int
+
+const (
+	fileViewModeView     fileViewMode = iota // browsing the file
+	fileViewModeLineInput                     // entering a line number
+	fileViewModeComment                       // typing a comment
+	fileViewModeSubmit                        // submitting review
+)
+
+// fileReviewSubmitMsg is sent when the user submits file review comments.
+type fileReviewSubmitMsg struct {
+	prompt string
+}
+
 type chatModel struct {
 	sessionID     string
 	sessionName   string
@@ -92,8 +115,226 @@ type chatModel struct {
 	browserCursor    int
 	browserLoading   bool
 	browserErr       error
+	// In-TUI file viewer (h key in browser)
+	viewingFile         bool     // file viewer overlay active
+	viewFileName        string   // name of file being viewed
+	viewFileRemotePath  string   // remote path for review context
+	viewFileLines       []string // file content lines
+	viewFileScroll      int      // scroll offset in file viewer
+	viewFileComments    map[int]*fileComment // keyed by line number (1-based)
+	viewFileMode        fileViewMode         // current input mode
+	viewFilePendingLine int                  // line being commented
+	viewFileLineInput   textInput            // for line number entry
+	viewFileCommentInput textInput           // for comment text
+	viewFileReviewPrompt textInput           // for overall review comment
+	// Download folder picker (d key in browser)
+	downloadMode       bool       // download folder picker active
+	downloadPath       string     // current directory in download picker
+	downloadEntries    []dirEntry // directory listing for download picker
+	downloadCursor     int
+	downloadLoading    bool
+	downloadErr        error
+	downloadSourcePath string     // remote path of file to download
 	client        *client
 	renderCache      map[string]string // key: width+"\x00"+content → rendered markdown
+}
+
+// downloadDirs returns only directory entries from the download browser listing.
+func (m chatModel) downloadDirs() []dirEntry {
+	var dirs []dirEntry
+	for _, e := range m.downloadEntries {
+		if e.IsDir {
+			dirs = append(dirs, e)
+		}
+	}
+	return dirs
+}
+
+// File viewer input handlers.
+
+func (m chatModel) updateFileViewBrowse(msg tea.KeyMsg) (chatModel, tea.Cmd) {
+	viewHeight := m.height - 4
+	if viewHeight < 1 {
+		viewHeight = 20
+	}
+	switch msg.String() {
+	case "esc", "q":
+		m.viewingFile = false
+		return m, nil
+	case "up", "k":
+		if m.viewFileScroll > 0 {
+			m.viewFileScroll--
+		}
+	case "down", "j":
+		maxScroll := len(m.viewFileLines) - viewHeight
+		if maxScroll < 0 {
+			maxScroll = 0
+		}
+		if m.viewFileScroll < maxScroll {
+			m.viewFileScroll++
+		}
+	case "pgup":
+		m.viewFileScroll -= viewHeight
+		if m.viewFileScroll < 0 {
+			m.viewFileScroll = 0
+		}
+	case "pgdown":
+		maxScroll := len(m.viewFileLines) - viewHeight
+		if maxScroll < 0 {
+			maxScroll = 0
+		}
+		m.viewFileScroll += viewHeight
+		if m.viewFileScroll > maxScroll {
+			m.viewFileScroll = maxScroll
+		}
+	case "home":
+		m.viewFileScroll = 0
+	case "end", "G":
+		maxScroll := len(m.viewFileLines) - viewHeight
+		if maxScroll < 0 {
+			maxScroll = 0
+		}
+		m.viewFileScroll = maxScroll
+	case "r":
+		// Add a review comment: enter line number.
+		m.viewFileMode = fileViewModeLineInput
+		m.viewFileLineInput.Reset()
+	case "d":
+		// Delete a comment: enter line number then remove.
+		if len(m.viewFileComments) > 0 {
+			m.viewFileMode = fileViewModeLineInput
+			m.viewFileLineInput.Reset()
+			m.viewFilePendingLine = -1 // signals delete mode
+		}
+	case "s":
+		// Submit review comments.
+		if len(m.viewFileComments) > 0 {
+			m.viewFileMode = fileViewModeSubmit
+			m.viewFileReviewPrompt.Reset()
+		}
+	}
+	return m, nil
+}
+
+func (m chatModel) updateFileViewLineInput(msg tea.KeyMsg) (chatModel, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.viewFileMode = fileViewModeView
+		m.viewFileLineInput.Reset()
+		return m, nil
+	}
+	_, submitted := m.viewFileLineInput.HandleKey(msg)
+	if submitted {
+		lineStr := strings.TrimSpace(m.viewFileLineInput.Value())
+		lineNum, err := strconv.Atoi(lineStr)
+		if err != nil || lineNum < 1 || lineNum > len(m.viewFileLines) {
+			m.viewFileLineInput.Reset()
+			m.viewFileMode = fileViewModeView
+			return m, nil
+		}
+		if m.viewFilePendingLine == -1 {
+			// Delete mode.
+			delete(m.viewFileComments, lineNum)
+			m.viewFileMode = fileViewModeView
+			m.viewFileLineInput.Reset()
+		} else {
+			// Comment mode: open comment editor.
+			m.viewFilePendingLine = lineNum
+			m.viewFileMode = fileViewModeComment
+			m.viewFileCommentInput.Reset()
+			if existing, ok := m.viewFileComments[lineNum]; ok {
+				m.viewFileCommentInput.SetValue(existing.comment)
+			}
+		}
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m chatModel) updateFileViewComment(msg tea.KeyMsg) (chatModel, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.viewFileMode = fileViewModeView
+		m.viewFileCommentInput.Reset()
+		return m, nil
+	}
+	_, submitted := m.viewFileCommentInput.HandleKey(msg)
+	if submitted {
+		comment := strings.TrimSpace(m.viewFileCommentInput.Value())
+		if comment != "" {
+			m.viewFileComments[m.viewFilePendingLine] = &fileComment{
+				lineNum: m.viewFilePendingLine,
+				comment: comment,
+			}
+		}
+		m.viewFileMode = fileViewModeView
+		m.viewFileCommentInput.Reset()
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m chatModel) updateFileViewSubmit(msg tea.KeyMsg) (chatModel, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.viewFileMode = fileViewModeView
+		m.viewFileReviewPrompt.Reset()
+		return m, nil
+	}
+	_, submitted := m.viewFileReviewPrompt.HandleKey(msg)
+	if submitted {
+		prompt := m.buildFileReviewPrompt(m.viewFileReviewPrompt.Value())
+		m.viewFileComments = make(map[int]*fileComment)
+		m.viewFileMode = fileViewModeView
+		m.viewFileReviewPrompt.Reset()
+		return m, func() tea.Msg {
+			return fileReviewSubmitMsg{prompt: prompt}
+		}
+	}
+	return m, nil
+}
+
+func (m chatModel) sortedFileCommentLines() []int {
+	lines := make([]int, 0, len(m.viewFileComments))
+	for ln := range m.viewFileComments {
+		lines = append(lines, ln)
+	}
+	sort.Ints(lines)
+	return lines
+}
+
+func (m chatModel) buildFileReviewPrompt(overallComment string) string {
+	var b strings.Builder
+
+	if strings.TrimSpace(overallComment) != "" {
+		b.WriteString(overallComment)
+		b.WriteString("\n\n")
+	}
+
+	b.WriteString("Here are some review comments on the file `")
+	b.WriteString(m.viewFileRemotePath)
+	b.WriteString("`. ")
+	b.WriteString("If comments are questions, answer those questions. ")
+	b.WriteString("If comments are unclear, or shouldn't be integrated, ask for feedback and confirmation. ")
+	b.WriteString("Else integrate the comments.\n")
+
+	for _, lineNum := range m.sortedFileCommentLines() {
+		c := m.viewFileComments[lineNum]
+		b.WriteString(fmt.Sprintf("\n### Line %d\n", lineNum))
+		// Include the code at that line for context.
+		if lineNum > 0 && lineNum <= len(m.viewFileLines) {
+			code := m.viewFileLines[lineNum-1]
+			if strings.TrimSpace(code) != "" {
+				b.WriteString("```\n")
+				b.WriteString(code)
+				b.WriteString("\n```\n")
+			}
+		}
+		b.WriteString("> " + strings.ReplaceAll(c.comment, "\n", "\n> "))
+		b.WriteString("\n")
+	}
+
+	return b.String()
 }
 
 func newChatModel(c *client, sessionID, sessionName, moneypennyName string) chatModel {
@@ -156,6 +397,24 @@ type browserLoadedMsg struct {
 type fileTransferredMsg struct {
 	localPath string
 	err       error
+}
+
+type fileContentLoadedMsg struct {
+	name       string
+	remotePath string // full remote path for review context
+	content    string // decoded text content
+	err        error
+}
+
+type fileDownloadedMsg struct {
+	destPath string
+	err      error
+}
+
+type downloadBrowserLoadedMsg struct {
+	path    string
+	entries []dirEntry
+	err     error
 }
 
 func (m chatModel) loadHistory() tea.Cmd {
@@ -263,6 +522,32 @@ func (m chatModel) loadBrowser(path string) tea.Cmd {
 	}
 }
 
+func (m chatModel) loadFileContent(remotePath string) tea.Cmd {
+	mp := m.moneypennyName
+	return func() tea.Msg {
+		name, content, err := m.client.fetchFileContent(mp, remotePath)
+		if err != nil {
+			return fileContentLoadedMsg{err: err}
+		}
+		return fileContentLoadedMsg{name: name, remotePath: remotePath, content: content}
+	}
+}
+
+func (m chatModel) downloadFile(remotePath, localDir string) tea.Cmd {
+	mp := m.moneypennyName
+	return func() tea.Msg {
+		destPath, err := m.client.downloadFileTo(mp, remotePath, localDir)
+		return fileDownloadedMsg{destPath: destPath, err: err}
+	}
+}
+
+func loadDownloadBrowser(path string) tea.Cmd {
+	return func() tea.Msg {
+		entries, err := listLocalDir(path)
+		return downloadBrowserLoadedMsg{path: path, entries: entries, err: err}
+	}
+}
+
 func (m chatModel) transferAndOpen(remotePath string) tea.Cmd {
 	mp := m.moneypennyName
 	return func() tea.Msg {
@@ -313,6 +598,23 @@ func openWithDefault(path string) error {
 	}
 	uilog("open command succeeded for %q", path)
 	return nil
+}
+
+// copyToClipboard copies text to the system clipboard.
+func copyToClipboard(text string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("pbcopy")
+	case "linux":
+		cmd = exec.Command("xclip", "-selection", "clipboard")
+	case "windows":
+		cmd = exec.Command("clip")
+	default:
+		return fmt.Errorf("unsupported OS: %s", runtime.GOOS)
+	}
+	cmd.Stdin = strings.NewReader(text)
+	return cmd.Run()
 }
 
 // chatPollTickAdaptive returns a poll tick with an interval that depends on
@@ -592,6 +894,47 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 			m.err = msg.err
 		}
 
+	case fileContentLoadedMsg:
+		m.browserLoading = false
+		if msg.err != nil {
+			m.browserErr = msg.err
+		} else {
+			m.browsingFiles = false
+			m.viewingFile = true
+			m.viewFileName = msg.name
+			m.viewFileRemotePath = msg.remotePath
+			m.viewFileLines = strings.Split(msg.content, "\n")
+			m.viewFileScroll = 0
+			m.viewFileComments = make(map[int]*fileComment)
+			m.viewFileMode = fileViewModeView
+			m.viewFileLineInput = newTextInput(false)
+			m.viewFileCommentInput = newTextInput(true)
+			m.viewFileReviewPrompt = newTextInput(true)
+		}
+
+	case fileDownloadedMsg:
+		m.downloadMode = false
+		m.downloadLoading = false
+		if msg.err != nil {
+			m.err = msg.err
+		} else {
+			m.browsingFiles = false
+			m.err = nil
+			// Show success as a transient status (will be cleared on next action).
+			m.browserErr = fmt.Errorf("Downloaded to %s", msg.destPath)
+		}
+
+	case downloadBrowserLoadedMsg:
+		m.downloadLoading = false
+		if msg.err != nil {
+			m.downloadErr = msg.err
+		} else {
+			m.downloadPath = msg.path
+			m.downloadEntries = msg.entries
+			m.downloadCursor = 0
+			m.downloadErr = nil
+		}
+
 	case chatSubagentCreatedMsg:
 		m.creatingSubagent = false
 		m.subagentPrompt = ""
@@ -717,6 +1060,25 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 			if hasParent {
 				totalItems++
 			}
+
+			// Helper to get the selected entry (adjusting for ".." row).
+			selectedEntry := func() *dirEntry {
+				if m.browserLoading {
+					return nil
+				}
+				idx := m.browserCursor
+				if hasParent {
+					if idx == 0 {
+						return nil // ".." selected
+					}
+					idx--
+				}
+				if idx < len(m.browserEntries) {
+					return &m.browserEntries[idx]
+				}
+				return nil
+			}
+
 			switch msg.String() {
 			case "esc":
 				m.browsingFiles = false
@@ -734,31 +1096,133 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 				if m.browserLoading {
 					return m, nil
 				}
-				// Determine which entry was selected.
-				idx := m.browserCursor
-				if hasParent {
-					if idx == 0 {
-						// Go up to parent directory.
-						m.browserLoading = true
-						return m, m.loadBrowser(filepath.Dir(m.browserPath))
-					}
-					idx-- // adjust for ".." entry
+				// ".." selected — go up.
+				if hasParent && m.browserCursor == 0 {
+					m.browserLoading = true
+					return m, m.loadBrowser(filepath.Dir(m.browserPath))
 				}
-				if idx < len(m.browserEntries) {
-					entry := m.browserEntries[idx]
+				entry := selectedEntry()
+				if entry != nil {
 					if entry.IsDir {
-						// Navigate into directory.
 						newPath := m.browserPath + "/" + entry.Name
 						m.browserLoading = true
 						return m, m.loadBrowser(newPath)
 					}
-					// File selected — transfer and open.
+					// File selected — transfer and open in default app.
 					remotePath := m.browserPath + "/" + entry.Name
 					m.browserLoading = true
 					return m, m.transferAndOpen(remotePath)
 				}
+			case "h":
+				// Open file in Hem (in-TUI viewer).
+				entry := selectedEntry()
+				if entry != nil && !entry.IsDir {
+					remotePath := m.browserPath + "/" + entry.Name
+					m.browserLoading = true
+					return m, m.loadFileContent(remotePath)
+				}
+			case "d":
+				// Download file to local directory.
+				entry := selectedEntry()
+				if entry != nil && !entry.IsDir {
+					m.downloadSourcePath = m.browserPath + "/" + entry.Name
+					m.downloadMode = true
+					m.downloadLoading = true
+					// Start from last used download path, or home dir.
+					startPath, _ := m.client.getDefault("download-path")
+					if startPath == "" {
+						startPath, _ = os.UserHomeDir()
+					}
+					return m, loadDownloadBrowser(startPath)
+				}
+			case "c":
+				// Copy full path to clipboard.
+				entry := selectedEntry()
+				if entry != nil {
+					fullPath := m.browserPath + "/" + entry.Name
+					if err := copyToClipboard(fullPath); err != nil {
+						m.browserErr = fmt.Errorf("clipboard: %v", err)
+					} else {
+						m.browserErr = fmt.Errorf("Copied: %s", fullPath)
+					}
+				} else if m.browserPath != "" {
+					// No entry selected (e.g. on ".."), copy current directory.
+					if err := copyToClipboard(m.browserPath); err != nil {
+						m.browserErr = fmt.Errorf("clipboard: %v", err)
+					} else {
+						m.browserErr = fmt.Errorf("Copied: %s", m.browserPath)
+					}
+				}
 			}
 			return m, nil
+		}
+
+		// Download folder picker overlay.
+		if m.downloadMode {
+			hasParent := m.downloadPath != "/" && m.downloadPath != ""
+			totalItems := len(m.downloadEntries)
+			if hasParent {
+				totalItems++
+			}
+			// Only show directories in download picker.
+			switch msg.String() {
+			case "esc":
+				m.downloadMode = false
+				m.downloadErr = nil
+				return m, nil
+			case "up", "k":
+				if m.downloadCursor > 0 {
+					m.downloadCursor--
+				}
+			case "down", "j":
+				if m.downloadCursor < totalItems-1 {
+					m.downloadCursor++
+				}
+			case "enter":
+				if m.downloadLoading {
+					return m, nil
+				}
+				// Navigate into selected directory.
+				if hasParent && m.downloadCursor == 0 {
+					m.downloadLoading = true
+					return m, loadDownloadBrowser(filepath.Dir(m.downloadPath))
+				}
+				idx := m.downloadCursor
+				if hasParent {
+					idx--
+				}
+				// Only directories in the list.
+				dirs := m.downloadDirs()
+				if idx < len(dirs) {
+					newPath := m.downloadPath + "/" + dirs[idx].Name
+					m.downloadLoading = true
+					return m, loadDownloadBrowser(newPath)
+				}
+			case " ":
+				// Space = confirm this directory as download destination.
+				if m.downloadLoading {
+					return m, nil
+				}
+				m.downloadLoading = true
+				// Remember this path for next time.
+				_ = m.client.setDefault("download-path", m.downloadPath)
+				return m, m.downloadFile(m.downloadSourcePath, m.downloadPath)
+			}
+			return m, nil
+		}
+
+		// In-TUI file viewer overlay.
+		if m.viewingFile {
+			switch m.viewFileMode {
+			case fileViewModeLineInput:
+				return m.updateFileViewLineInput(msg)
+			case fileViewModeComment:
+				return m.updateFileViewComment(msg)
+			case fileViewModeSubmit:
+				return m.updateFileViewSubmit(msg)
+			default:
+				return m.updateFileViewBrowse(msg)
+			}
 		}
 
 		if m.scheduling {
@@ -1132,6 +1596,185 @@ func (m chatModel) View() string {
 		return b.String()
 	}
 
+	// In-TUI file viewer overlay
+	if m.viewingFile {
+		label := lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render(" 📄 " + m.viewFileName)
+		commentCount := len(m.viewFileComments)
+		if commentCount > 0 {
+			label += lipgloss.NewStyle().Foreground(colorWarning).Bold(true).Render(
+				fmt.Sprintf(" (%d comment%s)", commentCount, pluralS(commentCount)))
+		}
+		b.WriteString(label)
+		b.WriteString("\n")
+
+		// Line input mode.
+		if m.viewFileMode == fileViewModeLineInput {
+			action := "Comment on"
+			if m.viewFilePendingLine == -1 {
+				action = "Delete comment on"
+			}
+			b.WriteString("  " + lipgloss.NewStyle().Foreground(colorPrimary).Render(
+				action+" line: ") + m.viewFileLineInput.Render() + "█")
+			b.WriteString("\n  " + lipgloss.NewStyle().Foreground(colorMuted).Render("Enter=confirm  Esc=cancel"))
+			b.WriteString("\n")
+			return b.String()
+		}
+
+		// Comment input mode.
+		if m.viewFileMode == fileViewModeComment {
+			lineNum := m.viewFilePendingLine
+			b.WriteString("  " + lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render(
+				fmt.Sprintf("Comment on line %d", lineNum)))
+			// Show code excerpt.
+			if lineNum > 0 && lineNum <= len(m.viewFileLines) {
+				code := strings.TrimSpace(m.viewFileLines[lineNum-1])
+				maxW := m.width - 30
+				if maxW < 40 {
+					maxW = 40
+				}
+				if len(code) > maxW {
+					code = code[:maxW] + "..."
+				}
+				b.WriteString(" " + lipgloss.NewStyle().Foreground(colorMuted).Render(code))
+			}
+			inputWidth := m.width - 6
+			if inputWidth < 20 {
+				inputWidth = 20
+			}
+			wrappedLines := m.viewFileCommentInput.RenderWrapped(inputWidth, 2)
+			for _, line := range wrappedLines {
+				b.WriteString("\n  " + fieldActiveStyle.Render(line))
+			}
+			b.WriteString("\n  " + lipgloss.NewStyle().Foreground(colorMuted).Render(
+				"Enter=save  Ctrl+J=newline  Esc=cancel"))
+			b.WriteString("\n")
+			return b.String()
+		}
+
+		// Submit review mode.
+		if m.viewFileMode == fileViewModeSubmit {
+			b.WriteString("  " + lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render(
+				"Submit review comments?"))
+			b.WriteString("\n")
+			for _, lineNum := range m.sortedFileCommentLines() {
+				c := m.viewFileComments[lineNum]
+				preview := c.comment
+				if len(preview) > 50 {
+					preview = preview[:50] + "..."
+				}
+				loc := fmt.Sprintf("line %d", lineNum)
+				b.WriteString(fmt.Sprintf("  %s  %s\n",
+					lipgloss.NewStyle().Foreground(lipgloss.Color("#60A5FA")).Render(loc),
+					lipgloss.NewStyle().Foreground(colorMuted).Render(preview)))
+			}
+			b.WriteString("\n  " + lipgloss.NewStyle().Foreground(colorPrimary).Render(
+				"Overall comment (optional): ") + fieldActiveStyle.Render(m.viewFileReviewPrompt.Render()))
+			b.WriteString("\n  " + lipgloss.NewStyle().Foreground(colorMuted).Render(
+				"Enter=submit  Esc=cancel"))
+			b.WriteString("\n")
+			return b.String()
+		}
+
+		// Normal file view mode.
+		viewHeight := m.height - 4
+		if viewHeight < 1 {
+			viewHeight = 20
+		}
+		contentWidth := m.width - 8 // 6 for line number gutter + comment marker + margin
+		if contentWidth < 20 {
+			contentWidth = 20
+		}
+
+		maxScroll := len(m.viewFileLines) - viewHeight
+		if maxScroll < 0 {
+			maxScroll = 0
+		}
+
+		end := m.viewFileScroll + viewHeight
+		if end > len(m.viewFileLines) {
+			end = len(m.viewFileLines)
+		}
+
+		gutterStyle := lipgloss.NewStyle().Foreground(colorMuted)
+		lineStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#E0E0E0"))
+		commentMarkerStyle := lipgloss.NewStyle().Foreground(colorWarning).Render("*")
+
+		for i := m.viewFileScroll; i < end; i++ {
+			lineNum := gutterStyle.Render(fmt.Sprintf("%4d", i+1))
+			marker := " "
+			if _, hasComment := m.viewFileComments[i+1]; hasComment {
+				marker = commentMarkerStyle
+			}
+			line := m.viewFileLines[i]
+			if len(line) > contentWidth {
+				line = line[:contentWidth]
+			}
+			b.WriteString(lineNum + marker + " " + lineStyle.Render(line))
+			b.WriteString("\n")
+		}
+
+		status := lipgloss.NewStyle().Foreground(colorMuted)
+		hints := "r=comment  "
+		if commentCount > 0 {
+			hints += "d=delete  s=submit  "
+		}
+		if len(m.viewFileLines) > viewHeight {
+			b.WriteString(status.Render(fmt.Sprintf(
+				"  line %d-%d of %d  %sEsc=back", m.viewFileScroll+1, end, len(m.viewFileLines), hints)))
+		} else {
+			b.WriteString(status.Render("  " + hints + "Esc=back"))
+		}
+		b.WriteString("\n")
+		return b.String()
+	}
+
+	// Download folder picker overlay
+	if m.downloadMode {
+		label := lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render(
+			" 📥 Download to: " + m.downloadPath)
+		b.WriteString(label)
+		b.WriteString("\n")
+		if m.downloadLoading {
+			b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render("  Loading..."))
+			b.WriteString("\n")
+		} else if m.downloadErr != nil {
+			b.WriteString(lipgloss.NewStyle().Foreground(colorDanger).Render(fmt.Sprintf("  Error: %v", m.downloadErr)))
+			b.WriteString("\n")
+		} else {
+			idx := 0
+			hasParent := m.downloadPath != "/" && m.downloadPath != ""
+			if hasParent {
+				line := "  📁 .."
+				if idx == m.downloadCursor {
+					b.WriteString(sessionSelectedStyle.Render(line))
+				} else {
+					b.WriteString(sessionNormalStyle.Render(line))
+				}
+				b.WriteString("\n")
+				idx++
+			}
+			dirs := m.downloadDirs()
+			for _, entry := range dirs {
+				line := fmt.Sprintf("  📁 %s", entry.Name)
+				if idx == m.downloadCursor {
+					b.WriteString(sessionSelectedStyle.Render(line))
+				} else {
+					b.WriteString(sessionNormalStyle.Render(line))
+				}
+				b.WriteString("\n")
+				idx++
+			}
+			if len(dirs) == 0 && !hasParent {
+				b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render("  (no subdirectories)"))
+				b.WriteString("\n")
+			}
+		}
+		hint := lipgloss.NewStyle().Foreground(colorMuted).Render("  Space=download here  Enter=open folder  Esc=cancel")
+		b.WriteString(hint)
+		b.WriteString("\n")
+		return b.String()
+	}
+
 	// File browser overlay
 	if m.browsingFiles {
 		label := lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render(" 📂 " + m.browserPath)
@@ -1175,6 +1818,9 @@ func (m chatModel) View() string {
 				b.WriteString("\n")
 			}
 		}
+		hint := lipgloss.NewStyle().Foreground(colorMuted).Render("  Enter=open app  h=view in Hem  d=download  c=copy path  Esc=back")
+		b.WriteString(hint)
+		b.WriteString("\n")
 		return b.String()
 	}
 

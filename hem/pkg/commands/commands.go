@@ -145,18 +145,94 @@ func (e *Executor) refreshMPSessions(mpNames []string) {
 		close(ch)
 	}()
 
-	// Collect all results first (blocks until all goroutines finish).
-	var results []result
+	// Update cache incrementally as results arrive so fast moneypennies
+	// don't wait for slow/unreachable ones.
 	for res := range ch {
-		results = append(results, res)
+		e.cacheManager.UpdateMP(res.mpName, res.sessions)
+	}
+}
+
+// refreshMPSessionsQuick does a synchronous fetch with a short wait (3s).
+// Used on the first ever dashboard/list-sessions call when the cache is empty.
+// Returns after 3s with whatever results arrived. Remaining goroutines continue
+// in the background and update the cache when they finish (10s total timeout).
+func (e *Executor) refreshMPSessionsQuick(mpNames []string) {
+	e.cacheManager.SetRefreshing(true)
+
+	// Use 10s timeout for the actual network calls (same as full refresh).
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+
+	type result struct {
+		mpName   string
+		sessions map[string]mpSessionInfo
 	}
 
-	// Merge into cache.
-	newCache := make(map[string]map[string]mpSessionInfo)
-	for _, res := range results {
-		newCache[res.mpName] = res.sessions
+	ch := make(chan result, len(mpNames))
+	var wg sync.WaitGroup
+
+	for _, mpName := range mpNames {
+		if e.clientManager.IsInCooldown(mpName) {
+			continue
+		}
+		mp, err := e.store.GetMoneypenny(mpName)
+		if err != nil || mp == nil {
+			continue
+		}
+		wg.Add(1)
+		go func(mp *store.Moneypenny) {
+			defer wg.Done()
+			resp, err := e.sendCommand(ctx, mp, "list_sessions", nil)
+			if err != nil {
+				e.clientManager.SetCooldown(mp.Name)
+				return
+			}
+			e.clientManager.ClearCooldown(mp.Name)
+			var sessions []mpSessionInfo
+			if err := json.Unmarshal(resp.Data, &sessions); err != nil {
+				return
+			}
+			m := make(map[string]mpSessionInfo, len(sessions))
+			for _, s := range sessions {
+				m[s.SessionID] = s
+			}
+			ch <- result{mpName: mp.Name, sessions: m}
+		}(mp)
 	}
-	e.cacheManager.Update(newCache)
+
+	// Background: drain remaining results after we return, then clean up.
+	go func() {
+		wg.Wait()
+		close(ch)
+		cancel()
+		e.cacheManager.SetRefreshing(false)
+	}()
+
+	// Wait up to 3s for results, then return with whatever we have.
+	// Remaining goroutines continue updating the cache in the background.
+	timer := time.NewTimer(3 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case res, ok := <-ch:
+			if !ok {
+				return // all done within 3s
+			}
+			e.cacheManager.UpdateMP(res.mpName, res.sessions)
+		case <-timer.C:
+			// Drain any results that arrived just now.
+			for {
+				select {
+				case res, ok := <-ch:
+					if !ok {
+						return
+					}
+					e.cacheManager.UpdateMP(res.mpName, res.sessions)
+				default:
+					return
+				}
+			}
+		}
+	}
 }
 
 // ensureMPRefresh kicks off a background cache refresh if one isn't already running.
@@ -315,7 +391,9 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.SetDefaultValue("path", args)
 	case "set-default mi6":
 		return e.SetDefaultValue("mi6", args)
-	case "get-default moneypenny", "get-default agent", "get-default path", "get-default mi6":
+	case "set-default download-path":
+		return e.SetDefaultValue("download-path", args)
+	case "get-default moneypenny", "get-default agent", "get-default path", "get-default mi6", "get-default download-path":
 		return e.GetDefaultValue(noun)
 	case "list default":
 		return e.ListDefaults(args)
@@ -1862,7 +1940,8 @@ func (e *Executor) ListSessions(args []string) *protocol.Response {
 		}
 	}
 	if !hasData && len(mpNames) > 0 {
-		e.refreshMPSessions(mpNames)
+		// First call with no cache: do a quick synchronous fetch (3s timeout).
+		e.refreshMPSessionsQuick(mpNames)
 		mpData = e.getMPData()
 	} else {
 		e.ensureMPRefresh(mpNames)
@@ -3370,7 +3449,9 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 		}
 	}
 	if !hasData && len(mpNames) > 0 {
-		e.refreshMPSessions(mpNames)
+		// First call with no cache: do a quick synchronous fetch (3s timeout)
+		// so we show something on the first dashboard load.
+		e.refreshMPSessionsQuick(mpNames)
 		mpData = e.getMPData()
 	} else {
 		e.ensureMPRefresh(mpNames)

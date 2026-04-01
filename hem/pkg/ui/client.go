@@ -627,6 +627,116 @@ func (c *client) transferFile(moneypenny, path string) (string, error) {
 	return result.LocalPath, nil
 }
 
+// fetchFileContent retrieves a remote file's content as decoded text.
+func (c *client) fetchFileContent(moneypenny, path string) (name string, content string, err error) {
+	args := []string{}
+	if moneypenny != "" {
+		args = append(args, "-m", moneypenny)
+	}
+	args = append(args, "--path", path)
+	resp, err := c.send("transfer-file", "", args...)
+	if err != nil {
+		return "", "", err
+	}
+	if resp.Status == protocol.StatusError {
+		return "", "", fmt.Errorf("%s", resp.Message)
+	}
+	var result struct {
+		Name    string `json:"name"`
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return "", "", fmt.Errorf("parsing transfer result: %w", err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(result.Content)
+	if err != nil {
+		return "", "", fmt.Errorf("decoding file content: %w", err)
+	}
+	return result.Name, string(decoded), nil
+}
+
+// downloadFileTo transfers a remote file and saves it to the specified local directory.
+func (c *client) downloadFileTo(moneypenny, remotePath, localDir string) (string, error) {
+	args := []string{}
+	if moneypenny != "" {
+		args = append(args, "-m", moneypenny)
+	}
+	args = append(args, "--path", remotePath)
+	resp, err := c.send("transfer-file", "", args...)
+	if err != nil {
+		return "", err
+	}
+	if resp.Status == protocol.StatusError {
+		return "", fmt.Errorf("%s", resp.Message)
+	}
+	var result struct {
+		Name    string `json:"name"`
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return "", fmt.Errorf("parsing transfer result: %w", err)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(result.Content)
+	if err != nil {
+		return "", fmt.Errorf("decoding file content: %w", err)
+	}
+	destPath := filepath.Join(localDir, result.Name)
+	if err := os.WriteFile(destPath, decoded, 0644); err != nil {
+		return "", fmt.Errorf("writing file: %w", err)
+	}
+	return destPath, nil
+}
+
+// setDefault stores a default value via the server.
+func (c *client) setDefault(key, value string) error {
+	resp, err := c.send("set-default", key, value)
+	if err != nil {
+		return err
+	}
+	if resp.Status == protocol.StatusError {
+		return fmt.Errorf("%s", resp.Message)
+	}
+	return nil
+}
+
+// getDefault retrieves a default value from the server.
+func (c *client) getDefault(key string) (string, error) {
+	resp, err := c.send("get-default", key)
+	if err != nil {
+		return "", err
+	}
+	if resp.Status == protocol.StatusError {
+		return "", fmt.Errorf("%s", resp.Message)
+	}
+	var result struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return "", fmt.Errorf("parsing default result: %w", err)
+	}
+	return result.Message, nil
+}
+
+// listLocalDir lists entries in a directory on the client machine (not remote).
+func listLocalDir(path string) ([]dirEntry, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, err
+	}
+	var result []dirEntry
+	for _, e := range entries {
+		// Skip hidden files.
+		if len(e.Name()) > 0 && e.Name()[0] == '.' {
+			continue
+		}
+		result = append(result, dirEntry{
+			Name:  e.Name(),
+			IsDir: e.IsDir(),
+		})
+	}
+	return result, nil
+}
+
 type activityEvent struct {
 	Type      string `json:"type"`
 	Summary   string `json:"summary"`
