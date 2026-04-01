@@ -52,12 +52,14 @@ Subagents (parallel tasks):
   Stop a subagent: %s stop subsession SUBSESSION_ID
   Delete a subagent: %s delete subsession SUBSESSION_ID
 
-IMPORTANT: NEVER start hem server if you are not directly instructed to do it.`,
+IMPORTANT: NEVER start hem server if you are not directly instructed to do it.
+IMPORTANT: NEVER start moneypenny if you are not directly instructed to do it.
+IMPORTANT: All %s commands already include the correct MI6 connection flag (--hem). Do NOT modify or remove the --hem flag. Do NOT attempt to connect via Unix socket or localhost. The --hem flag routes commands through the MI6 relay to the hem server — this is the only way to communicate.`,
 		hemCmd, hemCmd, sessionID,
 		hemCmd, sessionID, hemCmd, sessionID, hemCmd,
 		hemCmd, sessionID, hemCmd, sessionID,
 		hemCmd, sessionID, hemCmd, sessionID,
-		hemCmd, hemCmd, hemCmd)
+		hemCmd, hemCmd, hemCmd, hemCmd)
 }
 
 // mpSessionInfo holds cached session data from a moneypenny's list_sessions response.
