@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -686,12 +687,16 @@ var (
 // Results are cached for 1 hour to avoid repeated slow queries.
 func copilotModels() []envelope.ModelInfo {
 	if len(copilotModelCache) > 0 && time.Since(copilotModelCacheTime) < copilotModelCacheTTL {
+		log.Printf("copilot models: returning %d cached models (age: %v)", len(copilotModelCache), time.Since(copilotModelCacheTime))
 		return copilotModelCache
 	}
 	path, err := exec.LookPath("copilot")
 	if err != nil {
+		log.Printf("copilot models: copilot not found in PATH: %v", err)
 		return nil
 	}
+
+	log.Printf("copilot models: querying copilot at %s", path)
 
 	// Ask copilot to list its available models. Use --available-tools '' to
 	// prevent it from using tools (faster, cheaper). Timeout after 30 seconds.
@@ -704,8 +709,11 @@ func copilotModels() []envelope.ModelInfo {
 	)
 	out, err := cmd.Output()
 	if err != nil {
+		log.Printf("copilot models: query failed: %v", err)
 		return nil
 	}
+
+	log.Printf("copilot models: raw output (%d bytes): %q", len(out), string(out))
 
 	var models []envelope.ModelInfo
 	for _, line := range strings.Split(string(out), "\n") {
@@ -723,8 +731,10 @@ func copilotModels() []envelope.ModelInfo {
 	if len(models) > 0 {
 		copilotModelCache = models
 		copilotModelCacheTime = time.Now()
+		log.Printf("copilot models: cached %d models", len(models))
 		return models
 	}
+	log.Printf("copilot models: no models parsed from output")
 	return nil
 }
 

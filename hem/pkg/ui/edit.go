@@ -95,6 +95,10 @@ func (m editModel) save() tea.Cmd {
 				fields[f.flag] = f.value
 			}
 		}
+		// If effort is being cleared (empty value), send "none" sentinel.
+		if v, ok := fields["--effort"]; ok && v == "" {
+			fields["--effort"] = "none"
+		}
 		// If gadgets changed, don't also send system-prompt (the server handles it).
 		if _, ok := fields["--gadgets"]; ok {
 			delete(fields, "--system-prompt")

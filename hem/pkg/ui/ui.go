@@ -1399,6 +1399,9 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
+		case "r":
+			m.chat.confirmDelete = false
+			return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity())
 		case "f":
 			m.chat.confirmDelete = false
 			m.chat.browsingFiles = true
@@ -1776,6 +1779,7 @@ func (m Model) renderStatusBar() string {
 				statusKeyStyle.Render("s") + statusDescStyle.Render(" stop"),
 				statusKeyStyle.Render("t") + statusDescStyle.Render(" schedule"),
 				statusKeyStyle.Render("f") + statusDescStyle.Render(" files"),
+			statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
 				statusKeyStyle.Render("x") + statusDescStyle.Render(" shell"),
 				statusKeyStyle.Render("1-9") + statusDescStyle.Render(" sub#"),
 				statusKeyStyle.Render("↵") + statusDescStyle.Render(" resume"),

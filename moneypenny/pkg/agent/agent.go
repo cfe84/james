@@ -490,7 +490,7 @@ func buildClaudeArgs(params RunParams) []string {
 		args = append(args, "--model", params.Model)
 	}
 	if params.Effort != "" {
-		args = append(args, "--reasoning-effort", params.Effort)
+		args = append(args, "--effort", params.Effort)
 	}
 	if params.Yolo {
 		args = append(args, "--dangerously-skip-permissions")

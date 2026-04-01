@@ -1702,7 +1702,11 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 		hasUpdate = true
 	}
 	if effortStr != "" {
-		cmdData["effort"] = effortStr
+		if effortStr == "none" {
+			cmdData["effort"] = "" // clear effort
+		} else {
+			cmdData["effort"] = effortStr
+		}
 		hasUpdate = true
 	}
 	if pathArg != "" {
@@ -3401,6 +3405,8 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 		Moneypenny      string
 		CreatedAt       string
 		LastActive      string
+		LastActiveRaw   string // ISO timestamp for sorting (not formatted)
+		CreatedAtRaw    string // ISO timestamp for sorting (not formatted)
 		SortKey         int // 0=REVIEW, 1=WORKING, 2=COMPLETED
 		ParentSessionID string // non-empty for subagent entries
 	}
@@ -3548,15 +3554,17 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 		lastActiveFormatted := formatTimestamp(lastAccessed)
 
 		entries = append(entries, dashboardEntry{
-			SessionID:  sess.SessionID,
-			Name:       displayName,
-			Project:    projectName,
-			MPStatus:   displayStatus,
-			HemStatus:  sess.HemStatus,
-			Moneypenny: sess.MoneypennyName,
-			CreatedAt:  createdAtFormatted,
-			LastActive: lastActiveFormatted,
-			SortKey:    sortKey,
+			SessionID:    sess.SessionID,
+			Name:         displayName,
+			Project:      projectName,
+			MPStatus:     displayStatus,
+			HemStatus:    sess.HemStatus,
+			Moneypenny:   sess.MoneypennyName,
+			CreatedAt:    createdAtFormatted,
+			LastActive:   lastActiveFormatted,
+			LastActiveRaw: lastAccessed,
+			CreatedAtRaw:  createdAt,
+			SortKey:      sortKey,
 		})
 
 		// Add subagent entries right after parent.
@@ -3597,6 +3605,8 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 				Moneypenny:      sub.MoneypennyName,
 				CreatedAt:       formatTimestamp(subCreated),
 				LastActive:      formatTimestamp(subLastAccessed),
+				LastActiveRaw:   subLastAccessed,
+				CreatedAtRaw:    subCreated,
 				SortKey:         sortKey, // same category as parent
 				ParentSessionID: sess.SessionID,
 			})
@@ -3619,16 +3629,17 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 			}
 		}
 	}
-	// groupLastActive returns the most recent LastActive from a parent+subs group.
+	// groupLastActive returns the most recent raw ISO timestamp from a parent+subs group.
+	// Uses raw timestamps (ISO 8601) which sort lexicographically in chronological order.
 	groupLastActive := func(g parentWithSubs) string {
-		best := g.parent.LastActive
+		best := g.parent.LastActiveRaw
 		if best == "" {
-			best = g.parent.CreatedAt
+			best = g.parent.CreatedAtRaw
 		}
 		for _, s := range g.subs {
-			la := s.LastActive
+			la := s.LastActiveRaw
 			if la == "" {
-				la = s.CreatedAt
+				la = s.CreatedAtRaw
 			}
 			if la > best {
 				best = la
