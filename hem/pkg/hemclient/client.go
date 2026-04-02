@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -77,10 +78,10 @@ type MI6Sender struct {
 	stdin        io.WriteCloser
 	scanner      *bufio.Scanner
 	stderrBuf    bytes.Buffer
-	waitCh       chan struct{}                // closed when mi6-client process exits
+	waitCh       chan struct{}                         // closed when mi6-client process exits
 	waitErr      error
-	broadcastCh  chan *protocol.Response      // channel for broadcasting messages to listeners
-	pendingResps map[string]chan *protocol.Response // pending requests waiting for responses
+	broadcastCh  chan *protocol.Response               // channel for broadcasting messages to listeners
+	pendingResps map[string]chan *protocol.Response     // pending requests waiting for responses
 }
 
 // Connect establishes the MI6 connection. Must be called before Send.
@@ -147,6 +148,18 @@ func (s *MI6Sender) connectInternal() error {
 	}
 }
 
+// reconnectInternal tears down and re-establishes the connection. Caller must hold s.mu.
+func (s *MI6Sender) reconnectInternal() error {
+	log.Printf("MI6: reconnecting to %s...", s.Addr)
+	s.closeInternal()
+	if err := s.connectInternal(); err != nil {
+		log.Printf("MI6: reconnect failed: %v", err)
+		return err
+	}
+	log.Printf("MI6: reconnected successfully")
+	return nil
+}
+
 // readLoop runs in a background goroutine and routes incoming messages.
 func (s *MI6Sender) readLoop() {
 	for s.scanner.Scan() {
@@ -185,8 +198,9 @@ func (s *MI6Sender) readLoop() {
 		s.mu.Unlock()
 	}
 
-	// Scanner stopped — connection died. Close broadcast channel.
+	// Scanner stopped — connection died. Close broadcast channel and pending responses.
 	s.mu.Lock()
+	log.Printf("MI6: readLoop ended (connection lost)")
 	if s.broadcastCh != nil {
 		close(s.broadcastCh)
 		s.broadcastCh = nil
@@ -196,14 +210,18 @@ func (s *MI6Sender) readLoop() {
 		close(ch)
 		delete(s.pendingResps, id)
 	}
+	s.stdin = nil // mark as disconnected
 	s.mu.Unlock()
 }
 
 func (s *MI6Sender) Send(req *protocol.Request) (*protocol.Response, error) {
 	s.mu.Lock()
 	if s.stdin == nil {
-		s.mu.Unlock()
-		return nil, fmt.Errorf("MI6 not connected")
+		// Not connected — attempt to reconnect.
+		if err := s.reconnectInternal(); err != nil {
+			s.mu.Unlock()
+			return nil, fmt.Errorf("MI6 not connected, reconnect failed: %w", err)
+		}
 	}
 
 	// Assign a unique request ID so we can match the response.
@@ -225,8 +243,7 @@ func (s *MI6Sender) Send(req *protocol.Request) (*protocol.Response, error) {
 	if _, err := s.stdin.Write(data); err != nil {
 		delete(s.pendingResps, id)
 		// Connection lost — try to reconnect once.
-		s.closeInternal()
-		if reconnErr := s.connectInternal(); reconnErr != nil {
+		if reconnErr := s.reconnectInternal(); reconnErr != nil {
 			s.mu.Unlock()
 			return nil, fmt.Errorf("MI6 connection lost, reconnect failed: %w", reconnErr)
 		}
@@ -265,9 +282,14 @@ func (s *MI6Sender) Send(req *protocol.Request) (*protocol.Response, error) {
 }
 
 // Broadcasts returns a read-only channel for receiving broadcast messages.
+// If the connection is dead, attempts to reconnect and returns the new channel.
 func (s *MI6Sender) Broadcasts() <-chan *protocol.Response {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.broadcastCh == nil && s.stdin == nil {
+		// Connection is dead — try to reconnect so broadcasts resume.
+		_ = s.reconnectInternal()
+	}
 	return s.broadcastCh
 }
 

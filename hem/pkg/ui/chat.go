@@ -39,6 +39,7 @@ type chatSubagentCreatedMsg struct {
 }
 type chatPollTickMsg struct{}
 type chatBroadcastMsg struct{ resp *protocol.Response }
+type chatBroadcastReconnectMsg struct{}
 
 const (
 	chatPollInterval       = 180 * time.Second // Slow fallback (notifications enabled)
@@ -640,12 +641,13 @@ func (m chatModel) chatPollTickAdaptive() tea.Cmd {
 func listenForChatBroadcasts(broadcasts <-chan *protocol.Response, sessionID string) tea.Cmd {
 	return func() tea.Msg {
 		if broadcasts == nil {
-			return nil
+			return chatBroadcastReconnectMsg{}
 		}
 		for {
 			resp, ok := <-broadcasts
 			if !ok {
-				return nil
+				// Channel closed — MI6 connection lost.
+				return chatBroadcastReconnectMsg{}
 			}
 			// Only process broadcasts for this session
 			if matchesChatSession(resp, sessionID) {
@@ -694,6 +696,18 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 			return m, tea.Batch(cmds...)
 		}
 		return m, m.chatPollTickAdaptive()
+
+	case chatBroadcastReconnectMsg:
+		// MI6 broadcast channel closed — try to re-subscribe.
+		if ch := m.client.broadcasts(); ch != nil {
+			uilog("MI6 chat broadcast: reconnected, re-subscribing")
+			return m, listenForChatBroadcasts(ch, m.sessionID)
+		}
+		uilog("MI6 chat broadcast: still disconnected, retrying in 3s")
+		return m, func() tea.Msg {
+			time.Sleep(3 * time.Second)
+			return chatBroadcastReconnectMsg{}
+		}
 
 	case chatBroadcastMsg:
 		// Handle real-time notifications from moneypenny

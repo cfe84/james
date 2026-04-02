@@ -13,6 +13,7 @@ import (
 
 type dashboardPollTickMsg struct{}
 type broadcastMsg struct{ resp *protocol.Response }
+type broadcastReconnectMsg struct{} // signals that broadcast channel closed, should reconnect
 
 const (
 	dashboardPollInterval       = 60 * time.Second // Slow fallback (notifications enabled)
@@ -48,13 +49,13 @@ func (m dashboardModel) hasWorkingSessions() bool {
 func listenForBroadcasts(broadcasts <-chan *protocol.Response) tea.Cmd {
 	return func() tea.Msg {
 		if broadcasts == nil {
-			// No broadcast support (Unix socket client)
-			return nil
+			// No broadcast support (Unix socket client) or channel closed.
+			return broadcastReconnectMsg{}
 		}
 		resp, ok := <-broadcasts
 		if !ok {
-			// Channel closed
-			return nil
+			// Channel closed — MI6 connection lost.
+			return broadcastReconnectMsg{}
 		}
 		return broadcastMsg{resp: resp}
 	}
@@ -265,6 +266,20 @@ func (m dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 			if m.cursor >= len(m.entries) {
 				m.cursor = max(0, len(m.entries)-1)
 			}
+		}
+
+	case broadcastReconnectMsg:
+		// MI6 broadcast channel closed — try to re-subscribe.
+		// Broadcasts() will attempt reconnect if connection is dead.
+		if ch := m.client.broadcasts(); ch != nil {
+			uilog("MI6 broadcast: reconnected, re-subscribing")
+			return m, listenForBroadcasts(ch)
+		}
+		// Still disconnected — retry after a delay.
+		uilog("MI6 broadcast: still disconnected, retrying in 3s")
+		return m, func() tea.Msg {
+			time.Sleep(3 * time.Second)
+			return broadcastReconnectMsg{}
 		}
 
 	case broadcastMsg:

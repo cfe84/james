@@ -575,6 +575,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.chat.isSubagent = true
 		return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), m.chat.chatPollTickAdaptive())
 
+	case broadcastMsg, broadcastReconnectMsg:
+		// Route dashboard broadcast messages.
+		if m.currentView == viewProjectDetail {
+			var cmd tea.Cmd
+			m.projectDetail, cmd = m.projectDetail.Update(msg)
+			return m, cmd
+		}
+		var cmd tea.Cmd
+		m.dashboard, cmd = m.dashboard.Update(msg)
+		return m, cmd
+
+	case chatBroadcastMsg, chatBroadcastReconnectMsg:
+		// Route chat broadcast messages.
+		var cmd tea.Cmd
+		m.chat, cmd = m.chat.Update(msg)
+		return m, cmd
+
 	case historyLoadedMsg, messageSentMsg, olderHistoryLoadedMsg,
 		activityLoadedMsg, schedulesLoadedMsg, subagentsLoadedMsg, scheduleCreatedMsg,
 		chatSubagentCreatedMsg, browserLoadedMsg, fileTransferredMsg,
