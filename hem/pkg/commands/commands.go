@@ -55,7 +55,8 @@ Subagents (parallel tasks):
 IMPORTANT: NEVER start hem server if you are not directly instructed to do it.
 IMPORTANT: NEVER start moneypenny if you are not directly instructed to do it.
 IMPORTANT: All %s commands already include the correct MI6 connection flag (--hem). Do NOT modify or remove the --hem flag. Do NOT attempt to connect via Unix socket or localhost. The --hem flag routes commands through the MI6 relay to the hem server — this is the only way to communicate.
-IMPORTANT: When the user asks you to "start an agent", "launch an agent", "spin up a session", or similar — they mean create a new session using %s create session (or %s create subsession for a subagent). Do NOT attempt to run claude, copilot, or any agent binary directly. All agent lifecycle is managed through hem.`,
+IMPORTANT: When the user asks you to "start an agent", "launch an agent", "spin up a session", or similar — they mean create a new session using %s create session (or %s create subsession for a subagent). Do NOT attempt to run claude, copilot, or any agent binary directly. All agent lifecycle is managed through hem.
+IMPORTANT: Do NOT set the git committer or author to Claude, Copilot, or any AI name. Leave the user's existing git config (user.name/user.email) unchanged. Commits should appear as authored by the human user.`,
 		hemCmd, hemCmd, sessionID,
 		hemCmd, sessionID, hemCmd, sessionID, hemCmd,
 		hemCmd, sessionID, hemCmd, sessionID,
