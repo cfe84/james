@@ -1350,7 +1350,7 @@ func (m Model) updateSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.chat.commandMode && !m.chat.pickingSubagent && !m.chat.creatingSubagent {
+	if m.chat.commandMode && !m.chat.pickingSubagent && !m.chat.creatingSubagent && !m.chat.pickingSchedule {
 		switch msg.String() {
 		case "s":
 			m.chat.confirmDelete = false
