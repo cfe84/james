@@ -205,6 +205,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.chat.pickingSubagent = false
 					return m, nil
 				}
+				if m.chat.pickingSchedule {
+					m.chat.pickingSchedule = false
+					m.chat.confirmDeleteSchedule = false
+					return m, nil
+				}
 				if m.chat.viewingFile {
 					if m.chat.viewFileMode != fileViewModeView {
 						// Let the file viewer handle Esc for comment modes.
@@ -223,6 +228,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.chat.browsingFiles {
 					m.chat.browsingFiles = false
 					m.chat.browserErr = nil
+					return m, nil
+				}
+				if m.chat.scheduling {
+					m.chat.scheduling = false
+					m.chat.scheduleAt = ""
+					m.chat.chatInput.Reset()
 					return m, nil
 				}
 				if !m.chat.commandMode {
@@ -593,7 +604,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case historyLoadedMsg, messageSentMsg, olderHistoryLoadedMsg,
-		activityLoadedMsg, schedulesLoadedMsg, subagentsLoadedMsg, scheduleCreatedMsg,
+		activityLoadedMsg, schedulesLoadedMsg, subagentsLoadedMsg, scheduleCreatedMsg, scheduleCancelledMsg,
 		chatSubagentCreatedMsg, browserLoadedMsg, fileTransferredMsg,
 		fileContentLoadedMsg, fileDownloadedMsg, downloadBrowserLoadedMsg:
 		uilog("routing chat msg type=%T to chat.Update (currentView=%d)", msg, m.currentView)
@@ -1396,6 +1407,14 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "t":
 			m.chat.confirmDelete = false
+			if len(m.chat.pendingSchedules()) > 0 {
+				// Show schedule picker to manage existing schedules.
+				m.chat.pickingSchedule = true
+				m.chat.scheduleCursor = 0
+				m.chat.confirmDeleteSchedule = false
+				return m, nil
+			}
+			// No pending schedules — go straight to create.
 			m.chat.commandMode = false
 			m.chat.scheduling = true
 			m.chat.scheduleAt = ""
@@ -1785,6 +1804,12 @@ func (m Model) renderStatusBar() string {
 				statusKeyStyle.Render("↵") + statusDescStyle.Render(" open/create"),
 				statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
 				statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
+			}
+		} else if m.chat.pickingSchedule {
+			keys = []string{
+				statusKeyStyle.Render("↵") + statusDescStyle.Render(" new"),
+				statusKeyStyle.Render("d") + statusDescStyle.Render(" cancel schedule"),
+				statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
 			}
 		} else if m.chat.commandMode {
 			keys = []string{

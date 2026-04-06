@@ -109,6 +109,9 @@ type chatModel struct {
 	subagentPromptPos int   // cursor position in subagent prompt
 	scheduling    bool   // in schedule prompt entry mode
 	scheduleAt    string // time for the scheduled prompt
+	pickingSchedule      bool // schedule picker overlay
+	scheduleCursor       int
+	confirmDeleteSchedule bool
 	workingVerb   string // random spy verb chosen once per working session
 	browsingFiles    bool       // file browser overlay
 	browserPath      string     // current directory in browser
@@ -383,6 +386,10 @@ type activityLoadedMsg struct {
 type scheduleCreatedMsg struct {
 	err error
 }
+type scheduleCancelledMsg struct {
+	scheduleID int64
+	err        error
+}
 
 type subagentsLoadedMsg struct {
 	subagents []subagentInfo
@@ -478,6 +485,17 @@ func (m chatModel) createSchedule(at, prompt string) tea.Cmd {
 		err := m.client.scheduleSession(m.sessionID, at, prompt)
 		return scheduleCreatedMsg{err: err}
 	}
+}
+
+// pendingSchedules returns schedules that are still pending.
+func (m chatModel) pendingSchedules() []scheduleInfo {
+	var result []scheduleInfo
+	for _, s := range m.schedules {
+		if s.Status == "pending" {
+			result = append(result, s)
+		}
+	}
+	return result
 }
 
 func (m chatModel) loadSubagents() tea.Cmd {
@@ -867,6 +885,29 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 		}
 		return m, m.loadSchedules()
 
+	case scheduleCancelledMsg:
+		m.confirmDeleteSchedule = false
+		if msg.err != nil {
+			m.err = msg.err
+		}
+		// Remove the cancelled schedule from the list.
+		for i, s := range m.schedules {
+			if s.ID == msg.scheduleID {
+				m.schedules = append(m.schedules[:i], m.schedules[i+1:]...)
+				break
+			}
+		}
+		// Adjust cursor.
+		pending := m.pendingSchedules()
+		if m.scheduleCursor >= len(pending) {
+			m.scheduleCursor = max(0, len(pending)-1)
+		}
+		// If no more pending schedules, close picker.
+		if len(pending) == 0 {
+			m.pickingSchedule = false
+		}
+		return m, m.loadSchedules()
+
 	case subagentsLoadedMsg:
 		if msg.err == nil {
 			m.subagents = msg.subagents
@@ -1063,6 +1104,54 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 				m.subagentPrompt = ""
 				m.subagentPromptPos = 0
 				return m, nil
+			}
+			return m, nil
+		}
+
+		if m.pickingSchedule {
+			pending := m.pendingSchedules()
+			totalItems := len(pending) + 1 // +1 for "New schedule..." entry
+			if msg.String() != "d" {
+				m.confirmDeleteSchedule = false
+			}
+			switch msg.String() {
+			case "esc":
+				m.pickingSchedule = false
+				m.confirmDeleteSchedule = false
+				return m, nil
+			case "up", "k":
+				if m.scheduleCursor > 0 {
+					m.scheduleCursor--
+				}
+			case "down", "j":
+				if m.scheduleCursor < totalItems-1 {
+					m.scheduleCursor++
+				}
+			case "d":
+				if m.scheduleCursor < len(pending) {
+					if !m.confirmDeleteSchedule {
+						m.confirmDeleteSchedule = true
+						return m, nil
+					}
+					// Confirmed — cancel the schedule.
+					m.confirmDeleteSchedule = false
+					sch := pending[m.scheduleCursor]
+					return m, func() tea.Msg {
+						err := m.client.cancelSchedule(m.sessionID, sch.ID)
+						return scheduleCancelledMsg{scheduleID: sch.ID, err: err}
+					}
+				}
+			case "enter":
+				// Last entry: "New schedule..."
+				if m.scheduleCursor >= len(pending) {
+					m.pickingSchedule = false
+					m.confirmDeleteSchedule = false
+					m.commandMode = false
+					m.scheduling = true
+					m.scheduleAt = ""
+					m.chatInput.Reset()
+					return m, nil
+				}
 			}
 			return m, nil
 		}
@@ -1605,6 +1694,44 @@ func (m chatModel) View() string {
 		if m.confirmDeleteSubagent {
 			b.WriteString(lipgloss.NewStyle().Foreground(colorDanger).Bold(true).Render(
 				"  Press d again to confirm delete, any other key to cancel"))
+			b.WriteString("\n")
+		}
+		return b.String()
+	}
+
+	if m.pickingSchedule {
+		pending := m.pendingSchedules()
+		pickerLabel := lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render(" ⏰ Schedules: ")
+		b.WriteString(pickerLabel)
+		b.WriteString("\n")
+		for i, sch := range pending {
+			schedTime := sch.ScheduledAt
+			if t, err := time.Parse(time.RFC3339, sch.ScheduledAt); err == nil {
+				schedTime = t.Local().Format("Jan 2, 3:04 PM")
+			}
+			prompt := sch.Prompt
+			if len(prompt) > 60 {
+				prompt = prompt[:57] + "..."
+			}
+			line := fmt.Sprintf("  %s — %s", schedTime, prompt)
+			if i == m.scheduleCursor {
+				b.WriteString(sessionSelectedStyle.Render(line))
+			} else {
+				b.WriteString(sessionNormalStyle.Render(line))
+			}
+			b.WriteString("\n")
+		}
+		// "New schedule..." entry
+		newLine := "  + New schedule..."
+		if m.scheduleCursor == len(pending) {
+			b.WriteString(sessionSelectedStyle.Render(newLine))
+		} else {
+			b.WriteString(sessionNormalStyle.Render(newLine))
+		}
+		b.WriteString("\n")
+		if m.confirmDeleteSchedule {
+			b.WriteString(lipgloss.NewStyle().Foreground(colorDanger).Bold(true).Render(
+				"  Press d again to confirm cancel, any other key to abort"))
 			b.WriteString("\n")
 		}
 		return b.String()
