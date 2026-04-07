@@ -135,7 +135,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		h := msg.Height - 3 // status bar
+		h := m.viewHeight()
 		m.dashboard.width = msg.Width
 		m.dashboard.height = h
 		m.projectDetail.width = msg.Width
@@ -400,7 +400,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.currentView = viewMoneypennies
 		m.moneypennies = newMoneypenniesModel(m.client)
 		m.moneypennies.width = m.width
-		m.moneypennies.height = m.height - 3
+		m.moneypennies.height = m.viewHeight()
 		return m, m.moneypennies.loadMoneypennies()
 
 	case wizardMPLoadedMsg, wizardDirLoadedMsg, wizardProjectLoadedMsg, wizardProjectsLoadedMsg, wizardModelsLoadedMsg:
@@ -582,7 +582,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.parentChats = append(m.parentChats, m.chat)
 		m.chat = newChatModel(m.client, msg.sessionID, msg.name, m.chat.moneypennyName)
 		m.chat.width = m.width
-		m.chat.height = m.height - 3
+		m.chat.height = m.viewHeight()
 		m.chat.isSubagent = true
 		return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), m.chat.chatPollTickAdaptive())
 
@@ -655,7 +655,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.currentView = viewSessions
 		m.sessions = newSessionsModel(m.client)
 		m.sessions.width = m.width
-		m.sessions.height = m.height - 3
+		m.sessions.height = m.viewHeight()
 		return m, m.sessions.loadSessions()
 
 	case shellCommandDoneMsg:
@@ -715,7 +715,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.currentView = viewProjects
 		m.projects = newProjectsModel(m.client)
 		m.projects.width = m.width
-		m.projects.height = m.height - 3
+		m.projects.height = m.viewHeight()
 		return m, m.projects.loadProjects()
 
 	case projectCreatedMsg:
@@ -729,7 +729,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.currentView = viewProjects
 		m.projects = newProjectsModel(m.client)
 		m.projects.width = m.width
-		m.projects.height = m.height - 3
+		m.projects.height = m.viewHeight()
 		return m, m.projects.loadProjects()
 
 	case sessionCreatedMsg:
@@ -775,7 +775,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.chat = newChatModel(m.client, cm.sessionID, "", mpName)
 		m.chat.width = m.width
-		m.chat.height = m.height - 3
+		m.chat.height = m.viewHeight()
 		if cm.response != "" {
 			var prompt string
 			if isWizard && len(m.wizard.fields) > 0 {
@@ -969,7 +969,7 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 				parentChat := newChatModel(m.client, e.ParentSessionID, parentName, e.Moneypenny)
 				parentChat.width = m.width
-				parentChat.height = m.height - 3
+				parentChat.height = m.viewHeight()
 				m.parentChats = append(m.parentChats, parentChat)
 				m.chat = newChatModel(m.client, e.SessionID, e.Name, e.Moneypenny)
 				m.chat.isSubagent = true
@@ -978,7 +978,7 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m = m.withChatDraftRestored()
 			}
 			m.chat.width = m.width
-			m.chat.height = m.height - 3
+			m.chat.height = m.viewHeight()
 			m.currentView = viewChat
 			m.previousView = viewDashboard
 			uilog("dashboard: switched to viewChat, loading history+activity")
@@ -998,7 +998,7 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "n":
 		m.wizard = newWizardModel(m.client)
 		m.wizard.width = m.width
-		m.wizard.height = m.height - 3
+		m.wizard.height = m.viewHeight()
 		m.currentView = viewWizard
 		m.previousView = viewDashboard
 		return m, m.wizard.Init()
@@ -1007,7 +1007,7 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if e != nil {
 			m.edit = newEditModel(m.client, e.SessionID)
 			m.edit.width = m.width
-			m.edit.height = m.height - 3
+			m.edit.height = m.viewHeight()
 			m.currentView = viewEdit
 			return m, tea.Batch(m.edit.loadDetail(), m.edit.loadProjects())
 		}
@@ -1016,7 +1016,7 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if e != nil {
 			m.diff = newDiffModel(m.client, e.SessionID)
 			m.diff.width = m.width
-			m.diff.height = m.height - 3
+			m.diff.height = m.viewHeight()
 			m.currentView = viewDiff
 			m.previousView = viewDashboard
 			return m, tea.Batch(m.diff.loadDiff(), m.diff.loadGitLog(), m.diff.loadGitInfo())
@@ -1026,7 +1026,7 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if e != nil {
 			m.shell = newShellModelFromSession(m.client, e.SessionID, e.Name)
 			m.shell.width = m.width
-			m.shell.height = m.height - 3
+			m.shell.height = m.viewHeight()
 			m.currentView = viewShell
 			m.previousView = viewDashboard
 			return m, nil
@@ -1034,19 +1034,19 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "l":
 		m.sessions = newSessionsModel(m.client)
 		m.sessions.width = m.width
-		m.sessions.height = m.height - 3
+		m.sessions.height = m.viewHeight()
 		m.currentView = viewSessions
 		return m, m.sessions.loadSessions()
 	case "m":
 		m.moneypennies = newMoneypenniesModel(m.client)
 		m.moneypennies.width = m.width
-		m.moneypennies.height = m.height - 3
+		m.moneypennies.height = m.viewHeight()
 		m.currentView = viewMoneypennies
 		return m, m.moneypennies.loadMoneypennies()
 	case "p":
 		m.projects = newProjectsModel(m.client)
 		m.projects.width = m.width
-		m.projects.height = m.height - 3
+		m.projects.height = m.viewHeight()
 		m.currentView = viewProjects
 		return m, m.projects.loadProjects()
 	case "s":
@@ -1065,7 +1065,7 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "t":
 		m.templatePicker = newTemplatePickerModel(m.client, "")
 		m.templatePicker.width = m.width
-		m.templatePicker.height = m.height - 3
+		m.templatePicker.height = m.viewHeight()
 		m.currentView = viewTemplatePicker
 		m.previousView = viewDashboard
 		return m, m.templatePicker.loadTemplates()
@@ -1086,7 +1086,7 @@ func (m Model) updateProjects(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.projectDetail.projectFilter = p.Name
 			m.projectDetail.title = p.Name
 			m.projectDetail.width = m.width
-			m.projectDetail.height = m.height - 3
+			m.projectDetail.height = m.viewHeight()
 			m.projectDetail.loading = true
 			m.currentView = viewProjectDetail
 			return m, m.projectDetail.loadDashboard()
@@ -1101,14 +1101,14 @@ func (m Model) updateProjects(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if p != nil {
 			m.editProject = newEditProjectModel(m.client, p)
 			m.editProject.width = m.width
-			m.editProject.height = m.height - 3
+			m.editProject.height = m.viewHeight()
 			m.currentView = viewEditProject
 			return m, nil
 		}
 	case "n":
 		m.wizard = newProjectWizardModel(m.client)
 		m.wizard.width = m.width
-		m.wizard.height = m.height - 3
+		m.wizard.height = m.viewHeight()
 		m.currentView = viewWizard
 		m.previousView = viewProjects
 		return m, m.wizard.Init()
@@ -1143,7 +1143,7 @@ func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 				parentChat := newChatModel(m.client, e.ParentSessionID, parentName, e.Moneypenny)
 				parentChat.width = m.width
-				parentChat.height = m.height - 3
+				parentChat.height = m.viewHeight()
 				m.parentChats = append(m.parentChats, parentChat)
 				m.chat = newChatModel(m.client, e.SessionID, e.Name, e.Moneypenny)
 				m.chat.isSubagent = true
@@ -1152,7 +1152,7 @@ func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m = m.withChatDraftRestored()
 			}
 			m.chat.width = m.width
-			m.chat.height = m.height - 3
+			m.chat.height = m.viewHeight()
 			m.currentView = viewChat
 			m.previousView = viewProjectDetail
 			return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), m.chat.chatPollTickAdaptive())
@@ -1172,7 +1172,7 @@ func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if e != nil {
 			m.edit = newEditModel(m.client, e.SessionID)
 			m.edit.width = m.width
-			m.edit.height = m.height - 3
+			m.edit.height = m.viewHeight()
 			m.currentView = viewEdit
 			return m, tea.Batch(m.edit.loadDetail(), m.edit.loadProjects())
 		}
@@ -1181,7 +1181,7 @@ func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if e != nil {
 			m.diff = newDiffModel(m.client, e.SessionID)
 			m.diff.width = m.width
-			m.diff.height = m.height - 3
+			m.diff.height = m.viewHeight()
 			m.currentView = viewDiff
 			m.previousView = viewProjectDetail
 			return m, tea.Batch(m.diff.loadDiff(), m.diff.loadGitLog(), m.diff.loadGitInfo())
@@ -1189,14 +1189,14 @@ func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "n":
 		m.wizard = newWizardModelForProject(m.client, m.projectDetail.projectFilter)
 		m.wizard.width = m.width
-		m.wizard.height = m.height - 3
+		m.wizard.height = m.viewHeight()
 		m.currentView = viewWizard
 		m.previousView = viewProjectDetail
 		return m, m.wizard.Init()
 	case "t":
 		m.templatePicker = newTemplatePickerModel(m.client, m.projectDetail.projectFilter)
 		m.templatePicker.width = m.width
-		m.templatePicker.height = m.height - 3
+		m.templatePicker.height = m.viewHeight()
 		m.currentView = viewTemplatePicker
 		m.previousView = viewProjectDetail
 		return m, m.templatePicker.loadTemplates()
@@ -1218,7 +1218,7 @@ func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if e != nil {
 			m.shell = newShellModelFromSession(m.client, e.SessionID, e.Name)
 			m.shell.width = m.width
-			m.shell.height = m.height - 3
+			m.shell.height = m.viewHeight()
 			m.currentView = viewShell
 			m.previousView = viewProjectDetail
 			return m, nil
@@ -1242,7 +1242,7 @@ func (m Model) updateTemplatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.templatePicker.projectName != "" {
 			m.createTemplate = newCreateTemplateModel(m.client, m.templatePicker.projectName)
 			m.createTemplate.width = m.width
-			m.createTemplate.height = m.height - 3
+			m.createTemplate.height = m.viewHeight()
 			m.currentView = viewCreateTemplate
 			return m, m.createTemplate.loadProjectPath()
 		}
@@ -1282,7 +1282,7 @@ func (m Model) updateSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			uilog("sessions: opening session id=%s name=%q mp=%s", s.SessionID, s.Name, s.Moneypenny)
 			m.chat = newChatModel(m.client, s.SessionID, s.Name, s.Moneypenny)
 			m.chat.width = m.width
-			m.chat.height = m.height - 3
+			m.chat.height = m.viewHeight()
 			m = m.withChatDraftRestored()
 			m.currentView = viewChat
 			m.previousView = viewSessions
@@ -1292,7 +1292,7 @@ func (m Model) updateSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "n":
 		m.wizard = newWizardModel(m.client)
 		m.wizard.width = m.width
-		m.wizard.height = m.height - 3
+		m.wizard.height = m.viewHeight()
 		m.currentView = viewWizard
 		m.previousView = viewSessions
 		return m, m.wizard.Init()
@@ -1301,7 +1301,7 @@ func (m Model) updateSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if s != nil {
 			m.edit = newEditModel(m.client, s.SessionID)
 			m.edit.width = m.width
-			m.edit.height = m.height - 3
+			m.edit.height = m.viewHeight()
 			m.currentView = viewEdit
 			return m, tea.Batch(m.edit.loadDetail(), m.edit.loadProjects())
 		}
@@ -1318,7 +1318,7 @@ func (m Model) updateSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "i":
 		m.importForm = newImportModel(m.client)
 		m.importForm.width = m.width
-		m.importForm.height = m.height - 3
+		m.importForm.height = m.viewHeight()
 		m.currentView = viewImport
 		return m, nil
 	case "g":
@@ -1326,7 +1326,7 @@ func (m Model) updateSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if s != nil {
 			m.diff = newDiffModel(m.client, s.SessionID)
 			m.diff.width = m.width
-			m.diff.height = m.height - 3
+			m.diff.height = m.viewHeight()
 			m.currentView = viewDiff
 			m.previousView = viewSessions
 			return m, tea.Batch(m.diff.loadDiff(), m.diff.loadGitLog(), m.diff.loadGitInfo())
@@ -1336,7 +1336,7 @@ func (m Model) updateSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if s != nil {
 			m.shell = newShellModelFromSession(m.client, s.SessionID, s.Name)
 			m.shell.width = m.width
-			m.shell.height = m.height - 3
+			m.shell.height = m.viewHeight()
 			m.currentView = viewShell
 			m.previousView = viewSessions
 			return m, nil
@@ -1383,7 +1383,7 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.chat.commandMode = false
 			m.edit = newEditModel(m.client, m.chat.sessionID)
 			m.edit.width = m.width
-			m.edit.height = m.height - 3
+			m.edit.height = m.viewHeight()
 			m.currentView = viewEdit
 			m.previousView = viewChat
 			return m, tea.Batch(m.edit.loadDetail(), m.edit.loadProjects())
@@ -1392,7 +1392,7 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.chat.commandMode = false
 			m.diff = newDiffModel(m.client, m.chat.sessionID)
 			m.diff.width = m.width
-			m.diff.height = m.height - 3
+			m.diff.height = m.viewHeight()
 			m.currentView = viewDiff
 			m.previousView = viewChat
 			return m, tea.Batch(m.diff.loadDiff(), m.diff.loadGitLog(), m.diff.loadGitInfo())
@@ -1401,7 +1401,7 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.chat.commandMode = false
 			m.shell = newShellModelFromSession(m.client, m.chat.sessionID, m.chat.sessionName)
 			m.shell.width = m.width
-			m.shell.height = m.height - 3
+			m.shell.height = m.viewHeight()
 			m.currentView = viewShell
 			m.previousView = viewChat
 			return m, nil
@@ -1548,7 +1548,7 @@ func (m Model) updateMoneypennies(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "n":
 		m.addMoneypenny = newAddMoneypennyModel(m.client)
 		m.addMoneypenny.width = m.width
-		m.addMoneypenny.height = m.height - 3
+		m.addMoneypenny.height = m.viewHeight()
 		m.currentView = viewAddMoneypenny
 		return m, nil
 	case "e":
@@ -1561,7 +1561,7 @@ func (m Model) updateMoneypennies(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if mp != nil {
 			m.shell = newShellModel(m.client, mp.Name, "", "Shell: "+mp.Name)
 			m.shell.width = m.width
-			m.shell.height = m.height - 3
+			m.shell.height = m.viewHeight()
 			m.currentView = viewShell
 			m.previousView = viewMoneypennies
 			return m, nil
@@ -1635,6 +1635,16 @@ func (m Model) updateWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// viewHeight returns the height available for view content (terminal height minus status bar).
+func (m Model) viewHeight() int {
+	sbLines := strings.Count(m.renderStatusBar(), "\n") + 1
+	h := m.height - sbLines - 1 // -1 for \n separator
+	if h < 1 {
+		h = 1
+	}
+	return h
+}
+
 func (m Model) View() string {
 	var content string
 	switch m.currentView {
@@ -1673,6 +1683,26 @@ func (m Model) View() string {
 	}
 
 	statusBar := m.renderStatusBar()
+	statusBarLines := strings.Count(statusBar, "\n") + 1
+
+	// Total output must be exactly m.height lines.
+	// Layout: content lines + 1 (\n separator) + statusBarLines = m.height
+	targetContentLines := m.height - statusBarLines - 1
+	if targetContentLines < 1 {
+		targetContentLines = 1
+	}
+
+	// Count actual content lines (number of \n = number of lines, since last line has no trailing \n).
+	contentLines := strings.Count(content, "\n")
+
+	if contentLines < targetContentLines {
+		// Pad content to fill the space.
+		padding := strings.Repeat("\n", targetContentLines-contentLines)
+		content += padding
+	}
+	// Note: we don't trim — if content is too long, bubbletea will scroll,
+	// which is better than cutting off the input prompt.
+
 	return content + "\n" + statusBar
 }
 
