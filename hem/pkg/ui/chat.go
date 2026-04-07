@@ -1462,7 +1462,12 @@ func (m chatModel) View() string {
 	}
 
 	// Calculate available height for messages.
-	msgHeight := m.height - 3 - inputLineCount // title + error + input
+	// Layout: title (1 line) + messages (msgHeight) + error (0 or 1) + input (inputLineCount)
+	errLines := 0
+	if m.err != nil {
+		errLines = 1
+	}
+	msgHeight := m.height - 1 - errLines - inputLineCount
 
 	// Render messages.
 	var msgLines []string
