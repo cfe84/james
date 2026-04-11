@@ -525,6 +525,8 @@ func (m dashboardModel) shouldRefreshOnBroadcast(resp *protocol.Response) bool {
 		return true // Subagent deleted
 	case verb == "stop" && noun == "subsession":
 		return true // Subagent stopped
+	case verb == "refresh" && noun == "dashboard":
+		return true // Server-side cache updated (incremental MP refresh)
 	}
 
 	return false

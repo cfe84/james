@@ -83,6 +83,7 @@ type Executor struct {
 	watchManager  *WatchManager
 	Version       string
 	MI6Control    string // MI6 control address (host/session_id) for hem server
+	BroadcastFunc func(resp *protocol.Response) // optional: push broadcasts to connected MI6 clients
 }
 
 func New(s *store.Store, mi6KeyPath string) *Executor {
@@ -97,6 +98,18 @@ func New(s *store.Store, mi6KeyPath string) *Executor {
 // getMPData returns a snapshot of cached moneypenny session data.
 func (e *Executor) getMPData() map[string]map[string]mpSessionInfo {
 	return e.cacheManager.GetSnapshot()
+}
+
+// emitDashboardRefresh sends a broadcast to connected clients indicating that
+// cached MP data has been updated and the dashboard should be refreshed.
+func (e *Executor) emitDashboardRefresh() {
+	if e.BroadcastFunc != nil {
+		e.BroadcastFunc(&protocol.Response{
+			Status: "ok",
+			Verb:   "refresh",
+			Noun:   "dashboard",
+		})
+	}
 }
 
 // refreshMPSessions queries the given moneypennies for their session lists and
@@ -151,9 +164,11 @@ func (e *Executor) refreshMPSessions(mpNames []string) {
 	}()
 
 	// Update cache incrementally as results arrive so fast moneypennies
-	// don't wait for slow/unreachable ones.
+	// don't wait for slow/unreachable ones. Emit a broadcast after each
+	// update so connected TUI clients can refresh incrementally.
 	for res := range ch {
 		e.cacheManager.UpdateMP(res.mpName, res.sessions)
+		e.emitDashboardRefresh()
 	}
 }
 
@@ -204,10 +219,22 @@ func (e *Executor) refreshMPSessionsQuick(mpNames []string) {
 		}(mp)
 	}
 
-	// Background: drain remaining results after we return, then clean up.
+	// Signal channel: closed when the foreground is done reading from ch.
+	// The background goroutine takes over draining remaining results.
+	fgDone := make(chan struct{})
+
+	// Background: wait for all goroutines, then drain any results the
+	// foreground didn't consume, emitting broadcasts for each.
 	go func() {
 		wg.Wait()
 		close(ch)
+		// Wait for foreground to finish reading.
+		<-fgDone
+		// Drain any remaining results that arrived after foreground returned.
+		for res := range ch {
+			e.cacheManager.UpdateMP(res.mpName, res.sessions)
+			e.emitDashboardRefresh()
+		}
 		cancel()
 		e.cacheManager.SetRefreshing(false)
 	}()
@@ -216,6 +243,7 @@ func (e *Executor) refreshMPSessionsQuick(mpNames []string) {
 	// Remaining goroutines continue updating the cache in the background.
 	timer := time.NewTimer(3 * time.Second)
 	defer timer.Stop()
+	defer close(fgDone)
 	for {
 		select {
 		case res, ok := <-ch:

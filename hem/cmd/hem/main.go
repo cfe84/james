@@ -792,6 +792,13 @@ func runServer() {
 		log.Printf("connecting MI6 control channel: %s", mi6Control)
 		mi6Listener := server.NewMI6Listener(mi6Control, keyPath, exec, vlog)
 		go mi6Listener.Run()
+
+		// Wire up broadcast function so executor can push updates to MI6 clients.
+		exec.BroadcastFunc = func(resp *protocol.Response) {
+			if err := mi6Listener.WriteBroadcast(resp); err != nil {
+				vlog.Printf("broadcast: %v", err)
+			}
+		}
 	}
 
 	sockPath := server.DefaultSocketPath()

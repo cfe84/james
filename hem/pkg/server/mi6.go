@@ -79,6 +79,23 @@ func (m *MI6Listener) Run() {
 	}
 }
 
+// WriteBroadcast sends an unsolicited message to the MI6 control channel.
+// Messages without a RequestID are treated as broadcasts by the client's readLoop.
+func (m *MI6Listener) WriteBroadcast(resp *protocol.Response) error {
+	b, err := json.Marshal(resp)
+	if err != nil {
+		return err
+	}
+	b = append(b, '\n')
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.stdin == nil {
+		return fmt.Errorf("MI6 control: not connected")
+	}
+	_, err = m.stdin.Write(b)
+	return err
+}
+
 // Stop shuts down the MI6 listener.
 func (m *MI6Listener) Stop() {
 	close(m.stopCh)
