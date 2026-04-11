@@ -257,8 +257,8 @@ func (e *Executor) invalidateMPCache(mpName string) {
 	e.ensureMPRefresh([]string{mpName})
 }
 
-// CheckConnectivity pings all registered moneypennies and logs warnings for
-// any that are unreachable. Intended to be called at server startup.
+// CheckConnectivity pings all registered moneypennies in parallel and logs
+// warnings for any that are unreachable. Non-blocking: returns after 5s max.
 func (e *Executor) CheckConnectivity(logger *log.Logger) {
 	mps, err := e.store.ListMoneypennies()
 	if err != nil {
@@ -269,21 +269,43 @@ func (e *Executor) CheckConnectivity(logger *log.Logger) {
 		return
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	type result struct {
+		name string
+		addr string
+		err  error
+	}
+	ch := make(chan result, len(mps))
+
 	for _, mp := range mps {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		_, err := e.sendCommand(ctx, mp, "get_version", nil)
-		cancel()
-		if err != nil {
-			logger.Printf("WARNING: moneypenny %q (%s) is unreachable: %v", mp.Name, moneypennyAddress(mp), err)
-		} else {
-			logger.Printf("moneypenny %q (%s) OK", mp.Name, moneypennyAddress(mp))
+		go func(mp *store.Moneypenny) {
+			_, err := e.sendCommand(ctx, mp, "get_version", nil)
+			ch <- result{name: mp.Name, addr: moneypennyAddress(mp), err: err}
+		}(mp)
+	}
+
+	// Collect results up to context deadline.
+	for range mps {
+		select {
+		case r := <-ch:
+			if r.err != nil {
+				logger.Printf("WARNING: moneypenny %q (%s) is unreachable: %v", r.name, r.addr, r.err)
+				e.clientManager.SetCooldown(r.name)
+			} else {
+				logger.Printf("moneypenny %q (%s) OK", r.name, r.addr)
+			}
+		case <-ctx.Done():
+			logger.Printf("WARNING: connectivity check timed out, some moneypennies may be unreachable")
+			return
 		}
 	}
 }
 
-// SyncSessions queries all moneypennies for their sessions and tracks any
-// that hem doesn't know about yet. This allows hem to adopt sessions that
-// were created by other hem instances or before this hem was connected.
+// SyncSessions queries all moneypennies in parallel for their sessions and
+// tracks any that hem doesn't know about yet. Respects cooldowns to avoid
+// blocking on unreachable moneypennies.
 func (e *Executor) SyncSessions(logger *log.Logger) {
 	mps, err := e.store.ListMoneypennies()
 	if err != nil {
@@ -291,24 +313,48 @@ func (e *Executor) SyncSessions(logger *log.Logger) {
 		return
 	}
 
-	for _, mp := range mps {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		resp, err := e.sendCommand(ctx, mp, "list_sessions", nil)
-		cancel()
-		if err != nil {
-			continue
-		}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
-		var sessions []struct {
+	type syncResult struct {
+		mpName   string
+		sessions []struct {
 			SessionID string `json:"session_id"`
 		}
-		if err := json.Unmarshal(resp.Data, &sessions); err != nil {
+	}
+	ch := make(chan *syncResult, len(mps))
+	var wg sync.WaitGroup
+
+	for _, mp := range mps {
+		if e.clientManager.IsInCooldown(mp.Name) {
 			continue
 		}
+		wg.Add(1)
+		go func(mp *store.Moneypenny) {
+			defer wg.Done()
+			resp, err := e.sendCommand(ctx, mp, "list_sessions", nil)
+			if err != nil {
+				e.clientManager.SetCooldown(mp.Name)
+				return
+			}
+			e.clientManager.ClearCooldown(mp.Name)
+			r := &syncResult{mpName: mp.Name}
+			if err := json.Unmarshal(resp.Data, &r.sessions); err != nil {
+				return
+			}
+			ch <- r
+		}(mp)
+	}
 
+	go func() {
+		wg.Wait()
+		close(ch)
+	}()
+
+	for r := range ch {
 		adopted := 0
-		for _, s := range sessions {
-			isNew, err := e.store.TrackSessionIfNew(s.SessionID, mp.Name)
+		for _, s := range r.sessions {
+			isNew, err := e.store.TrackSessionIfNew(s.SessionID, r.mpName)
 			if err != nil {
 				logger.Printf("sync: failed to track session %s: %v", s.SessionID, err)
 			} else if isNew {
@@ -316,7 +362,7 @@ func (e *Executor) SyncSessions(logger *log.Logger) {
 			}
 		}
 		if adopted > 0 {
-			logger.Printf("sync: adopted %d new sessions from moneypenny %q", adopted, mp.Name)
+			logger.Printf("sync: adopted %d new sessions from moneypenny %q", adopted, r.mpName)
 		}
 	}
 }
