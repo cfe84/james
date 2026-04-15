@@ -87,7 +87,8 @@ Each component has its own `go.mod` and `Makefile`. Version is injected from `VE
 | Projects | `projects.go` | Enter=open, e=edit, n=new, d=delete |
 | Project detail | `dashboard.go` (reused) | Enter=chat, c=complete, d=delete, e=edit, g=diff, n=new (wizard), x=shell |
 | Sessions | `sessions.go` | Enter=chat, n=new (wizard), e=edit, d=delete, g=diff, i=import, s=stop, x=shell |
-| Chat | `chat.go` | Enter=send, ^J=newline, Esc=command mode, Del=delete right, Alt+←/→=word nav. Command: c=complete, d=delete, e=edit, g=diff, s=stop, t=schedule, x=shell |
+| Chat | `chat.go` | Enter=send, ^J=newline, Esc=command mode, Del=delete right, Alt+←/→=word nav. Command: c=complete, d=delete, e=edit, f=files, g=diff, m=memory, r=refresh, s=stop, t=schedule, x=shell |
+| Memory | `memory.go` | Ctrl+S=save, Esc=back |
 | Shell | `shell.go` | Enter=run, Ctrl+U=clear, PgUp/PgDn=scroll |
 | Moneypennies | `moneypennies.go` | Enter=ping, n=new, s=set default, d=delete, x=shell |
 | Add moneypenny | `addmoneypenny.go` | Tab=next field, Space=cycle type, Enter=add |

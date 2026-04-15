@@ -129,6 +129,10 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.listSchedules(ctx, cmd)
 	case "cancel_schedule":
 		return h.cancelSchedule(ctx, cmd)
+	case "get_memory":
+		return h.getMemory(ctx, cmd)
+	case "update_memory":
+		return h.updateMemory(ctx, cmd)
 	case "get_session_activity":
 		return h.getSessionActivity(ctx, cmd)
 	case "list_models":
@@ -312,6 +316,12 @@ func (h *Handler) queuePrompt(_ context.Context, cmd *envelope.Command) *envelop
 // runAgent executes the agent in the background, updating the store when done.
 // After completion, it checks the prompt queue and auto-continues if there are queued prompts.
 func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
+	// Inject session memory into system prompt at runtime so agents always
+	// see the latest memory content, even if it was updated since session creation.
+	if memory, err := h.store.GetMemory(sessionID); err == nil && memory != "" {
+		params.SystemPrompt += "\n\n<session-memory>\n" + memory + "\n</session-memory>"
+	}
+
 	ctx := context.Background()
 	result, err := h.runner.Run(ctx, params)
 	if err != nil {
@@ -453,6 +463,7 @@ func (h *Handler) getSession(_ context.Context, cmd *envelope.Command) *envelope
 		Effort:       sess.Effort,
 		Yolo:         sess.Yolo,
 		Path:         sess.Path,
+		Memory:       sess.Memory,
 	}
 
 	if ts, err := h.store.GetSessionTimestamps(data.SessionID); err == nil && ts != nil {
@@ -582,6 +593,45 @@ func (h *Handler) updateSession(_ context.Context, cmd *envelope.Command) *envel
 	}
 
 	return envelope.SuccessResponse(cmd.RequestID, map[string]string{"session_id": data.SessionID})
+}
+
+func (h *Handler) getMemory(_ context.Context, cmd *envelope.Command) *envelope.Response {
+	var data envelope.SessionIDData
+	if err := json.Unmarshal(cmd.Data, &data); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
+	}
+	if data.SessionID == "" {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id is required")
+	}
+
+	content, err := h.store.GetMemory(data.SessionID)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, err.Error())
+	}
+
+	return envelope.SuccessResponse(cmd.RequestID, envelope.MemoryResponse{
+		SessionID: data.SessionID,
+		Content:   content,
+	})
+}
+
+func (h *Handler) updateMemory(_ context.Context, cmd *envelope.Command) *envelope.Response {
+	var data envelope.UpdateMemoryData
+	if err := json.Unmarshal(cmd.Data, &data); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
+	}
+	if data.SessionID == "" {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id is required")
+	}
+
+	if err := h.store.SetMemory(data.SessionID, data.Content); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
+	}
+
+	return envelope.SuccessResponse(cmd.RequestID, envelope.MemoryResponse{
+		SessionID: data.SessionID,
+		Content:   data.Content,
+	})
 }
 
 func (h *Handler) executeCommand(_ context.Context, cmd *envelope.Command) *envelope.Response {

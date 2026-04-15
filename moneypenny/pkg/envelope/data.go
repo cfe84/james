@@ -88,6 +88,7 @@ type SessionDetail struct {
 	Effort       string `json:"effort,omitempty"`
 	Yolo         bool   `json:"yolo"`
 	Path         string `json:"path"`
+	Memory       string `json:"memory,omitempty"`
 	LastAccessed string `json:"last_accessed,omitempty"`
 }
 
@@ -115,6 +116,18 @@ type CreateSessionResponse struct {
 type ContinueSessionResponse struct {
 	SessionID string `json:"session_id"`
 	Response  string `json:"response"`
+}
+
+// UpdateMemoryData is the data payload for update_memory.
+type UpdateMemoryData struct {
+	SessionID string `json:"session_id"`
+	Content   string `json:"content"`
+}
+
+// MemoryResponse is returned by get_memory and update_memory.
+type MemoryResponse struct {
+	SessionID string `json:"session_id"`
+	Content   string `json:"content"`
 }
 
 // ListDirectoryData is the data payload for list_directory.

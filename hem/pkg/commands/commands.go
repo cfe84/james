@@ -569,6 +569,12 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.DeleteSubSession(args)
 	case "watch session":
 		return e.WatchSession(args)
+
+	// Memory commands
+	case "show memory":
+		return e.ShowMemory(args)
+	case "update memory":
+		return e.UpdateMemory(args)
 	default:
 		return protocol.ErrResponse(fmt.Sprintf("unknown command: %s %s", verb, noun))
 	}
@@ -833,12 +839,33 @@ type SessionShowResult struct {
 	Effort       string `json:"effort,omitempty"`
 	Yolo         bool   `json:"yolo"`
 	Gadgets      bool   `json:"gadgets"`
+	Memory       bool   `json:"memory"`
 	Path         string `json:"path"`
 	Status       string `json:"status"`
 	Project      string `json:"project,omitempty"`
 }
 
 const gadgetsMarker = "\nYou have access to agent orchestration using the"
+const memoryMarker = "\nYou have a persistent memory for this session."
+
+func memorySystemPrompt(hemCmd, sessionID string) string {
+	return fmt.Sprintf(`
+You have a persistent memory for this session. Memory survives across conversation turns and session continuations.
+
+Current memory is injected into your system prompt inside <session-memory> tags each time you run. If no <session-memory> tags are present, your memory is empty.
+
+Memory commands:
+  View memory: %s show memory %s
+  Update memory: %s update memory %s CONTENT
+
+IMPORTANT: update memory REPLACES the entire memory content. When updating, rewrite the full memory — keep what is still relevant, remove what is outdated, and add new learnings. Do NOT append blindly.
+
+Use memory to track:
+- Key decisions and context about the task
+- User preferences discovered during the conversation
+- Important file paths, patterns, or conventions
+- Anything you would want to remember if the conversation continues later`, hemCmd, sessionID, hemCmd, sessionID)
+}
 
 type ConversationTurn struct {
 	Role      string `json:"role"`
@@ -1314,6 +1341,13 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 		params.SystemPrompt += gadgetsSystemPrompt(e.MI6Control, sessionID)
 	}
 
+	// Always inject memory instructions when hem is reachable (MI6 or local).
+	// Memory is independent of gadgets — even non-gadgets sessions can use memory.
+	if e.MI6Control != "" {
+		hemCmd := fmt.Sprintf("hem --hem %s", e.MI6Control)
+		params.SystemPrompt += memorySystemPrompt(hemCmd, sessionID)
+	}
+
 	// Build command data.
 	cmdData := buildCreateSessionData(params, sessionID, prompt)
 
@@ -1698,12 +1732,19 @@ func (e *Executor) ShowSession(args []string) *protocol.Response {
 		result.Agent = v
 	}
 	if v, ok := raw["system_prompt"].(string); ok {
-		if idx := strings.Index(v, gadgetsMarker); idx >= 0 {
-			result.SystemPrompt = v[:idx]
+		sp := v
+		if idx := strings.Index(sp, gadgetsMarker); idx >= 0 {
+			sp = sp[:idx]
 			result.Gadgets = true
-		} else {
-			result.SystemPrompt = v
 		}
+		if idx := strings.Index(sp, memoryMarker); idx >= 0 {
+			sp = sp[:idx]
+			result.Memory = true
+		}
+		result.SystemPrompt = sp
+	}
+	if v, ok := raw["memory"].(string); ok && v != "" {
+		result.Memory = true
 	}
 	if v, ok := raw["yolo"].(bool); ok {
 		result.Yolo = v
@@ -1817,15 +1858,28 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 		hasGadgets := strings.Contains(currentSP, gadgetsMarker[1:]) // skip leading newline
 
 		if gadgetsStr == "true" && !hasGadgets {
-			// Append gadgets.
-			systemPrompt = currentSP + gadgetsSystemPrompt(e.MI6Control, sessionID)
+			// Append gadgets — insert before memory if memory exists.
+			base := currentSP
+			var memorySuffix string
+			if midx := strings.Index(base, memoryMarker); midx >= 0 {
+				memorySuffix = base[midx:]
+				base = base[:midx]
+			}
+			systemPrompt = base + gadgetsSystemPrompt(e.MI6Control, sessionID) + memorySuffix
 			cmdData["system_prompt"] = systemPrompt
 			hasUpdate = true
 		} else if gadgetsStr == "false" && hasGadgets {
-			// Strip gadgets — find the marker and remove everything from it.
+			// Strip gadgets — preserve memory if present.
 			idx := strings.Index(currentSP, gadgetsMarker)
 			if idx >= 0 {
-				systemPrompt = currentSP[:idx]
+				before := currentSP[:idx]
+				after := currentSP[idx:]
+				// Check if memory prompt follows gadgets.
+				if midx := strings.Index(after, memoryMarker); midx >= 0 {
+					systemPrompt = before + after[midx:]
+				} else {
+					systemPrompt = before
+				}
 			} else {
 				systemPrompt = currentSP
 			}
@@ -1863,6 +1917,98 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 
 	return protocol.OKResponse(TextResult{
 		Message: fmt.Sprintf("Session %s updated.", sessionID),
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Memory commands
+// ---------------------------------------------------------------------------
+
+func (e *Executor) ShowMemory(args []string) *protocol.Response {
+	var sessionID string
+
+	remaining, err := parseFlagsFromArgs("show-memory", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&sessionID, "session-id", "", "session ID")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if sessionID == "" {
+		if len(remaining) == 0 {
+			return protocol.ErrResponse("session_id is required")
+		}
+		sessionID = remaining[0]
+	}
+
+	mp, err := e.resolveSessionMoneypenny(sessionID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	cmdData := map[string]interface{}{
+		"session_id": sessionID,
+	}
+
+	ctx := context.Background()
+	resp, err := e.sendCommand(ctx, mp, "get_memory", cmdData)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	var memResp struct {
+		Content string `json:"content"`
+	}
+	if err := json.Unmarshal(resp.Data, &memResp); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("parsing memory response: %v", err))
+	}
+
+	if memResp.Content == "" {
+		return protocol.OKResponse(TextResult{Message: "(empty)"})
+	}
+	return protocol.OKResponse(TextResult{Message: memResp.Content})
+}
+
+func (e *Executor) UpdateMemory(args []string) *protocol.Response {
+	var sessionID string
+
+	remaining, err := parseFlagsFromArgs("update-memory", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&sessionID, "session-id", "", "session ID")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if sessionID == "" {
+		if len(remaining) == 0 {
+			return protocol.ErrResponse("session_id is required: update memory SESSION_ID CONTENT")
+		}
+		sessionID = remaining[0]
+		remaining = remaining[1:]
+	}
+
+	if len(remaining) == 0 {
+		return protocol.ErrResponse("content is required: update memory SESSION_ID CONTENT")
+	}
+	content := strings.Join(remaining, " ")
+
+	mp, err := e.resolveSessionMoneypenny(sessionID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	cmdData := map[string]interface{}{
+		"session_id": sessionID,
+		"content":    content,
+	}
+
+	ctx := context.Background()
+	if _, err := e.sendCommand(ctx, mp, "update_memory", cmdData); err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	return protocol.OKResponse(TextResult{
+		Message: fmt.Sprintf("Memory updated for session %s.", sessionID),
 	})
 }
 
@@ -2623,6 +2769,10 @@ func (e *Executor) UseTemplate(args []string) *protocol.Response {
 
 	// Templates always include gadgets (James tooling).
 	systemPrompt += gadgetsSystemPrompt(e.MI6Control, sessionID)
+	if e.MI6Control != "" {
+		hemCmd := fmt.Sprintf("hem --hem %s", e.MI6Control)
+		systemPrompt += memorySystemPrompt(hemCmd, sessionID)
+	}
 
 	cmdData := map[string]interface{}{
 		"agent":      agent,
@@ -4382,6 +4532,10 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 
 	if gadgets {
 		systemPrompt += gadgetsSystemPrompt(e.MI6Control, sessionID)
+	}
+	if e.MI6Control != "" {
+		hemCmd := fmt.Sprintf("hem --hem %s", e.MI6Control)
+		systemPrompt += memorySystemPrompt(hemCmd, sessionID)
 	}
 
 	cmdData := map[string]interface{}{

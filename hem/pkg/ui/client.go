@@ -125,6 +125,34 @@ func (c *client) listSessions(mpFilter string) ([]sessionInfo, error) {
 	return sessions, nil
 }
 
+func (c *client) getMemory(sessionID string) (string, error) {
+	resp, err := c.send("show", "memory", sessionID)
+	if err != nil {
+		return "", err
+	}
+	if resp.Status == protocol.StatusError {
+		return "", fmt.Errorf("%s", resp.Message)
+	}
+	var result struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return "", fmt.Errorf("parsing memory: %w", err)
+	}
+	return result.Message, nil
+}
+
+func (c *client) updateMemory(sessionID, content string) error {
+	resp, err := c.send("update", "memory", sessionID, content)
+	if err != nil {
+		return err
+	}
+	if resp.Status == protocol.StatusError {
+		return fmt.Errorf("%s", resp.Message)
+	}
+	return nil
+}
+
 func (c *client) showSession(sessionID string) (*sessionDetail, error) {
 	resp, err := c.send("show", "session", sessionID)
 	if err != nil {

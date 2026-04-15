@@ -58,6 +58,7 @@ const (
 	viewWizard
 	viewTemplatePicker
 	viewCreateTemplate
+	viewMemory
 )
 
 // Model is the top-level bubbletea model.
@@ -74,6 +75,7 @@ type Model struct {
 	editProject   editProjectModel
 	importForm    importModel
 	diff          diffModel
+	memory        memoryModel
 	moneypennies    moneypenniesModel
 	addMoneypenny   addMoneypennyModel
 	shell           shellModel
@@ -335,6 +337,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateTemplatePicker(msg)
 		case viewCreateTemplate:
 			return m.updateCreateTemplate(msg)
+		case viewMemory:
+			return m.updateMemory(msg)
 		}
 
 	case tea.MouseMsg:
@@ -704,6 +708,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessions.loading = true
 		return m, m.sessions.loadSessions()
 
+	case memoryLoadedMsg, memorySavedMsg:
+		var cmd tea.Cmd
+		m.memory, cmd = m.memory.Update(msg)
+		return m, cmd
+
 	case projectUpdatedMsg:
 		pm := msg
 		if pm.err != nil {
@@ -941,6 +950,10 @@ func (m Model) handleEsc() (tea.Model, tea.Cmd) {
 			m.dashboard.loading = true
 			return m, tea.Batch(m.dashboard.loadDashboard(), m.dashboard.dashboardPollTickAdaptive())
 		}
+	case viewMemory:
+		m.currentView = viewChat
+		m.statusMsg = ""
+		return m, nil
 	}
 	return m, nil
 }
@@ -1438,6 +1451,15 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "r":
 			m.chat.confirmDelete = false
 			return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity())
+		case "m":
+			m.chat.confirmDelete = false
+			m.chat.commandMode = false
+			m.memory = newMemoryModel(m.client, m.chat.sessionID)
+			m.memory.width = m.width
+			m.memory.height = m.viewHeight()
+			m.currentView = viewMemory
+			m.previousView = viewChat
+			return m, m.memory.loadMemory()
 		case "f":
 			m.chat.confirmDelete = false
 			m.chat.browsingFiles = true
@@ -1517,6 +1539,12 @@ func (m Model) updateCreate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) updateEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.edit, cmd = m.edit.Update(msg)
+	return m, cmd
+}
+
+func (m Model) updateMemory(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.memory, cmd = m.memory.Update(msg)
 	return m, cmd
 }
 
@@ -1680,6 +1708,8 @@ func (m Model) View() string {
 		content = m.templatePicker.View()
 	case viewCreateTemplate:
 		content = m.createTemplate.View()
+	case viewMemory:
+		content = m.memory.View()
 	}
 
 	statusBar := m.renderStatusBar()
@@ -1851,6 +1881,7 @@ func (m Model) renderStatusBar() string {
 				statusKeyStyle.Render("s") + statusDescStyle.Render(" stop"),
 				statusKeyStyle.Render("t") + statusDescStyle.Render(" schedule"),
 				statusKeyStyle.Render("f") + statusDescStyle.Render(" files"),
+				statusKeyStyle.Render("m") + statusDescStyle.Render(" memory"),
 			statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
 				statusKeyStyle.Render("x") + statusDescStyle.Render(" shell"),
 				statusKeyStyle.Render("1-9") + statusDescStyle.Render(" sub#"),
@@ -1952,6 +1983,11 @@ func (m Model) renderStatusBar() string {
 			statusKeyStyle.Render("↵") + statusDescStyle.Render(" run"),
 			statusKeyStyle.Render("^U") + statusDescStyle.Render(" clear"),
 			statusKeyStyle.Render("pgup/dn") + statusDescStyle.Render(" scroll"),
+			statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
+		}
+	case viewMemory:
+		keys = []string{
+			statusKeyStyle.Render("^S") + statusDescStyle.Render(" save"),
 			statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
 		}
 	case viewWizard:

@@ -501,6 +501,31 @@ Schedule instructions are appended to every session's system prompt automaticall
 - In the chat view, pending schedules are displayed with a ⏰ icon.
 - In command mode, `t` creates a new schedule (two-step input: first the time, then the prompt).
 
+## Session Memory
+
+Each session has a persistent memory — a free-form text blob that survives across conversation turns and session continuations.
+
+### How it works
+
+- Memory is stored per session in moneypenny's SQLite database.
+- When the agent runs, memory content is injected into the system prompt inside `<session-memory>` tags.
+- Memory instructions are automatically included in the system prompt when the session has hem CLI access (MI6 connection), independent of the gadgets flag.
+- Agents update memory by calling `hem update memory SESSION_ID CONTENT`. This **replaces** the full memory content (not append).
+
+### CLI Commands
+
+`hem show memory SESSION_ID` — shows the current memory content for a session.
+`hem update memory SESSION_ID CONTENT` — replaces the session's memory with new content.
+
+### TUI
+
+- In chat command mode, `m` opens the memory editor.
+- The memory editor is a full-screen text area with Ctrl+S to save and Esc to go back.
+
+### Agent prompt
+
+Agents are instructed to use memory to track key decisions, user preferences, file paths, conventions, and anything relevant for future continuations. They are told to rewrite the full memory on each update, keeping what's relevant and removing what's outdated.
+
 ## Sub-agents
 
 Sessions can spawn sub-sessions for parallel task execution. Sub-sessions are linked to a parent session and are managed as a group.

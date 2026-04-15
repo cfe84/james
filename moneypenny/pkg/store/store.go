@@ -27,6 +27,7 @@ type Session struct {
 	Yolo         bool
 	Path         string
 	Status       string
+	Memory       string
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
 }
@@ -155,6 +156,9 @@ CREATE INDEX IF NOT EXISTS idx_schedules_pending ON schedules(status, scheduled_
 	// Migration: add effort column to sessions if missing.
 	db.Exec(`ALTER TABLE sessions ADD COLUMN effort TEXT NOT NULL DEFAULT ''`)
 
+	// Migration: add memory column to sessions if missing.
+	db.Exec(`ALTER TABLE sessions ADD COLUMN memory TEXT NOT NULL DEFAULT ''`)
+
 	return nil
 }
 
@@ -189,7 +193,7 @@ func (s *Store) CreateSession(sess *Session) error {
 // GetSession retrieves a session by ID. Returns nil, nil if not found.
 func (s *Store) GetSession(sessionID string) (*Session, error) {
 	row := s.db.QueryRow(
-		`SELECT session_id, name, agent, system_prompt, model, effort, yolo, path, status, created_at, updated_at
+		`SELECT session_id, name, agent, system_prompt, model, effort, yolo, path, status, memory, created_at, updated_at
 		 FROM sessions WHERE session_id = ?`, sessionID,
 	)
 
@@ -197,7 +201,7 @@ func (s *Store) GetSession(sessionID string) (*Session, error) {
 	var yolo int
 	err := row.Scan(
 		&sess.SessionID, &sess.Name, &sess.Agent, &sess.SystemPrompt, &sess.Model, &sess.Effort,
-		&yolo, &sess.Path, &sess.Status, &sess.CreatedAt, &sess.UpdatedAt,
+		&yolo, &sess.Path, &sess.Status, &sess.Memory, &sess.CreatedAt, &sess.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -212,7 +216,7 @@ func (s *Store) GetSession(sessionID string) (*Session, error) {
 // ListSessions returns all sessions.
 func (s *Store) ListSessions() ([]*Session, error) {
 	rows, err := s.db.Query(
-		`SELECT session_id, name, agent, system_prompt, model, effort, yolo, path, status, created_at, updated_at
+		`SELECT session_id, name, agent, system_prompt, model, effort, yolo, path, status, memory, created_at, updated_at
 		 FROM sessions ORDER BY created_at`,
 	)
 	if err != nil {
@@ -226,7 +230,7 @@ func (s *Store) ListSessions() ([]*Session, error) {
 		var yolo int
 		if err := rows.Scan(
 			&sess.SessionID, &sess.Name, &sess.Agent, &sess.SystemPrompt, &sess.Model, &sess.Effort,
-			&yolo, &sess.Path, &sess.Status, &sess.CreatedAt, &sess.UpdatedAt,
+			&yolo, &sess.Path, &sess.Status, &sess.Memory, &sess.CreatedAt, &sess.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
@@ -276,6 +280,39 @@ func (s *Store) UpdateSessionFields(sessionID string, name, systemPrompt, model,
 	)
 	if err != nil {
 		return fmt.Errorf("update session: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("session %q not found", sessionID)
+	}
+	return nil
+}
+
+// GetMemory returns the memory content for a session.
+func (s *Store) GetMemory(sessionID string) (string, error) {
+	var memory string
+	err := s.db.QueryRow(`SELECT memory FROM sessions WHERE session_id = ?`, sessionID).Scan(&memory)
+	if err == sql.ErrNoRows {
+		return "", fmt.Errorf("session %q not found", sessionID)
+	}
+	if err != nil {
+		return "", fmt.Errorf("get memory: %w", err)
+	}
+	return memory, nil
+}
+
+// SetMemory replaces the memory content for a session.
+func (s *Store) SetMemory(sessionID, content string) error {
+	now := time.Now().UTC()
+	res, err := s.db.Exec(
+		`UPDATE sessions SET memory = ?, updated_at = ? WHERE session_id = ?`,
+		content, now, sessionID,
+	)
+	if err != nil {
+		return fmt.Errorf("set memory: %w", err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {

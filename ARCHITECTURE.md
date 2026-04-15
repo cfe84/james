@@ -235,6 +235,8 @@ hem/
 
 30. **Model selection**: TUI forms (wizard, edit) use cycling selectors for agent and model fields instead of free-text input. Models are discovered per moneypenny via the `list_models` method: Claude returns hardcoded aliases (sonnet, opus, haiku); Copilot parses `--help` output. The wizard caches models per agent type and reloads when the agent selection changes. The edit form loads models when the session detail arrives (using the session's agent type). Model options always include an empty value (no override / default). If the session already has a model not in the discovered list, it's added as an option to preserve it.
 
+31. **Session memory**: Each session has a persistent `memory` text column in moneypenny's SQLite. Memory is injected into the system prompt at runtime (not stored in the system prompt field) via `<session-memory>` tags in the `runAgent()` function, so agents always see the latest content. Memory instructions are appended to the system prompt at session creation time whenever hem has MI6 connectivity, independently of the gadgets flag. The instructions tell agents to use `hem update memory SESSION_ID CONTENT` (replace semantics, not append). Hem exposes `show memory` and `update memory` commands. TUI provides a memory editor view (`m` key in chat command mode) with Ctrl+S to save. When toggling gadgets on/off, the memory marker is preserved independently of the gadgets marker.
+
 ### Hem Command Layer Refactoring (v0.11.0+)
 
 The Executor (hem/pkg/commands) has been refactored to follow Single Responsibility Principle by extracting specialized managers:
