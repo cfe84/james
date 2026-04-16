@@ -132,7 +132,8 @@ type MemoryResponse struct {
 
 // ListDirectoryData is the data payload for list_directory.
 type ListDirectoryData struct {
-	Path string `json:"path"`
+	Path       string `json:"path"`
+	ShowHidden bool   `json:"show_hidden,omitempty"`
 }
 
 // DirEntry represents a single directory entry.

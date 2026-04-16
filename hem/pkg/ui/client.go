@@ -550,13 +550,16 @@ type dirEntry struct {
 	IsDir bool   `json:"is_dir"`
 }
 
-func (c *client) listDirectory(moneypenny, path string) ([]dirEntry, error) {
+func (c *client) listDirectory(moneypenny, path string, showHidden ...bool) ([]dirEntry, error) {
 	args := []string{}
 	if moneypenny != "" {
 		args = append(args, "-m", moneypenny)
 	}
 	if path != "" {
 		args = append(args, "--path", path)
+	}
+	if len(showHidden) > 0 && showHidden[0] {
+		args = append(args, "--show-hidden")
 	}
 	resp, err := c.send("list-directory", "", args...)
 	if err != nil {
@@ -746,15 +749,16 @@ func (c *client) getDefault(key string) (string, error) {
 }
 
 // listLocalDir lists entries in a directory on the client machine (not remote).
-func listLocalDir(path string) ([]dirEntry, error) {
+func listLocalDir(path string, showHidden ...bool) ([]dirEntry, error) {
 	entries, err := os.ReadDir(path)
 	if err != nil {
 		return nil, err
 	}
+	hidden := len(showHidden) > 0 && showHidden[0]
 	var result []dirEntry
 	for _, e := range entries {
-		// Skip hidden files.
-		if len(e.Name()) > 0 && e.Name()[0] == '.' {
+		// Skip hidden files unless requested.
+		if !hidden && len(e.Name()) > 0 && e.Name()[0] == '.' {
 			continue
 		}
 		result = append(result, dirEntry{

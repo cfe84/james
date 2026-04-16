@@ -3159,11 +3159,13 @@ type DirEntryInfo struct {
 
 func (e *Executor) ListDirectory(noun string, args []string) *protocol.Response {
 	var mpName, pathArg string
+	var showHidden bool
 
 	remaining, err := parseFlagsFromArgs("list-directory", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&mpName, "m", "", "moneypenny name")
 		fs.StringVar(&mpName, "moneypenny", "", "moneypenny name")
 		fs.StringVar(&pathArg, "path", "", "directory path")
+		fs.BoolVar(&showHidden, "show-hidden", false, "show hidden files/directories")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -3196,9 +3198,13 @@ func (e *Executor) ListDirectory(noun string, args []string) *protocol.Response 
 	}
 
 	ctx := context.Background()
-	resp, err := e.sendCommand(ctx, mp, "list_directory", map[string]interface{}{
+	cmdData := map[string]interface{}{
 		"path": pathArg,
-	})
+	}
+	if showHidden {
+		cmdData["show_hidden"] = true
+	}
+	resp, err := e.sendCommand(ctx, mp, "list_directory", cmdData)
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
 	}

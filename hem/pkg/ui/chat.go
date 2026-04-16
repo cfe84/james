@@ -113,12 +113,13 @@ type chatModel struct {
 	scheduleCursor       int
 	confirmDeleteSchedule bool
 	workingVerb   string // random spy verb chosen once per working session
-	browsingFiles    bool       // file browser overlay
-	browserPath      string     // current directory in browser
-	browserEntries   []dirEntry // directory listing
-	browserCursor    int
-	browserLoading   bool
-	browserErr       error
+	browsingFiles      bool       // file browser overlay
+	browserPath        string     // current directory in browser
+	browserEntries     []dirEntry // directory listing
+	browserCursor      int
+	browserLoading     bool
+	browserErr         error
+	browserShowHidden  bool // toggle with 'a' to show/hide hidden files
 	// In-TUI file viewer (h key in browser)
 	viewingFile         bool     // file viewer overlay active
 	viewFileName        string   // name of file being viewed
@@ -532,8 +533,9 @@ func (m chatModel) loadActivity() tea.Cmd {
 
 func (m chatModel) loadBrowser(path string) tea.Cmd {
 	mp := m.moneypennyName
+	showHidden := m.browserShowHidden
 	return func() tea.Msg {
-		entries, err := m.client.listDirectory(mp, path)
+		entries, err := m.client.listDirectory(mp, path, showHidden)
 		if err != nil {
 			return browserLoadedMsg{path: path, err: err}
 		}
@@ -1216,6 +1218,12 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 					m.browserLoading = true
 					return m, m.transferAndOpen(remotePath)
 				}
+			case "a":
+				// Toggle show/hide hidden files.
+				m.browserShowHidden = !m.browserShowHidden
+				m.browserLoading = true
+				m.browserCursor = 0
+				return m, m.loadBrowser(m.browserPath)
 			case "h":
 				// Open file in Hem (in-TUI viewer).
 				entry := selectedEntry()
@@ -1925,6 +1933,9 @@ func (m chatModel) View() string {
 	if m.browsingFiles {
 		label := lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render(" 📂 " + m.browserPath)
 		b.WriteString(label)
+		if m.browserShowHidden {
+			b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render("  [showing hidden]"))
+		}
 		b.WriteString("\n")
 		if m.browserLoading {
 			b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render("  Loading..."))
@@ -1964,7 +1975,7 @@ func (m chatModel) View() string {
 				b.WriteString("\n")
 			}
 		}
-		hint := lipgloss.NewStyle().Foreground(colorMuted).Render("  Enter=open app  h=view in Hem  d=download  c=copy path  Esc=back")
+		hint := lipgloss.NewStyle().Foreground(colorMuted).Render("  Enter=open app  h=view in Hem  d=download  a=toggle hidden  c=copy path  Esc=back")
 		b.WriteString(hint)
 		b.WriteString("\n")
 		return b.String()

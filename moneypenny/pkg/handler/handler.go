@@ -1031,8 +1031,8 @@ func (h *Handler) listDirectory(_ context.Context, cmd *envelope.Command) *envel
 
 	var entries []envelope.DirEntry
 	for _, e := range dirEntries {
-		// Skip hidden files/directories.
-		if len(e.Name()) > 0 && e.Name()[0] == '.' {
+		// Skip hidden files/directories unless explicitly requested.
+		if !data.ShowHidden && len(e.Name()) > 0 && e.Name()[0] == '.' {
 			continue
 		}
 		entries = append(entries, envelope.DirEntry{

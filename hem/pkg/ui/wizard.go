@@ -44,6 +44,7 @@ type wizardModel struct {
 	dirEntries  []dirEntry
 	pathCursor  int
 	pathLoading bool
+	showHidden  bool // toggle with 'a' to show/hide hidden directories
 
 	// Step 3: form (reuses createModel fields minus moneypenny/path)
 	fields   []formField
@@ -169,8 +170,9 @@ func (m wizardModel) loadProjects() tea.Cmd {
 func (m wizardModel) loadDirectory() tea.Cmd {
 	mp := m.selectedMP
 	path := m.currentPath
+	showHidden := m.showHidden
 	return func() tea.Msg {
-		entries, err := m.client.listDirectory(mp, path)
+		entries, err := m.client.listDirectory(mp, path, showHidden)
 		return wizardDirLoadedMsg{entries: entries, err: err}
 	}
 }
@@ -435,6 +437,12 @@ func (m wizardModel) updatePathStep(msg tea.KeyMsg) (wizardModel, tea.Cmd) {
 			m.pathLoading = true
 			return m, m.loadDirectory()
 		}
+	case "a":
+		// Toggle show/hide hidden directories.
+		m.showHidden = !m.showHidden
+		m.pathLoading = true
+		m.pathCursor = 0
+		return m, m.loadDirectory()
 	}
 	return m, nil
 }
@@ -745,7 +753,12 @@ func (m wizardModel) viewPathStep() string {
 
 	pathLabel := lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render(m.currentPath)
 	mpLabel := lipgloss.NewStyle().Foreground(colorMuted).Render(m.selectedMP)
-	b.WriteString(fmt.Sprintf("  %s  on %s\n\n", pathLabel, mpLabel))
+	b.WriteString(fmt.Sprintf("  %s  on %s", pathLabel, mpLabel))
+	if m.showHidden {
+		hiddenLabel := lipgloss.NewStyle().Foreground(colorMuted).Render("  [showing hidden]")
+		b.WriteString(hiddenLabel)
+	}
+	b.WriteString("\n\n")
 
 	if m.pathLoading {
 		b.WriteString("  Loading...\n")

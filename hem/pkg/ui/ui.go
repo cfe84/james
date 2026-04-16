@@ -1480,7 +1480,7 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if startPath == "" {
 					startPath = "/"
 				}
-				entries, err := m.client.listDirectory(m.chat.moneypennyName, startPath)
+				entries, err := m.client.listDirectory(m.chat.moneypennyName, startPath, m.chat.browserShowHidden)
 				if err != nil {
 					return browserLoadedMsg{path: startPath, err: err}
 				}
@@ -2001,6 +2001,7 @@ func (m Model) renderStatusBar() string {
 			keys = []string{
 				statusKeyStyle.Render("↵") + statusDescStyle.Render(" open"),
 				statusKeyStyle.Render("tab") + statusDescStyle.Render(" confirm path"),
+				statusKeyStyle.Render("a") + statusDescStyle.Render(" toggle hidden"),
 				statusKeyStyle.Render("⌫") + statusDescStyle.Render(" up"),
 				statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
 			}
