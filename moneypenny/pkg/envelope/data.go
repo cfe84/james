@@ -268,6 +268,18 @@ type SessionActivityResponse struct {
 	Activity  []ActivityEvent `json:"activity"`
 }
 
+// CheckAgentsResponse is returned by check_agents.
+type CheckAgentsResponse struct {
+	Agents []AgentAvailability `json:"agents"`
+}
+
+// AgentAvailability describes whether an agent binary is available.
+type AgentAvailability struct {
+	Name  string `json:"name"`
+	Found bool   `json:"found"`
+	Path  string `json:"path,omitempty"`
+}
+
 // UpdateStatusResponse is returned by update_status.
 type UpdateStatusResponse struct {
 	CurrentVersion  string `json:"current_version"`

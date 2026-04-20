@@ -795,3 +795,31 @@ qew --development --listen 127.0.0.1:8077
 - This is a client-side command: the CLI handles the interactive loop directly, sending create/continue requests to the hem server.
 - Ctrl+C or EOF exits the chat.
 
+## Diagnostics
+
+`hem diagnose [--hem ADDRESS | --local]` — runs connectivity and health diagnostics.
+
+**Two-phase architecture**: Phase 1 runs client-side (no server needed), Phase 2 queries the server.
+
+### Phase 1 — Local checks (instant, no server needed):
+- **Data directory**: `~/.config/james/hem/` exists and is writable.
+- **SSH key pair**: `hem_ecdsa` and `hem_ecdsa.pub` exist, reports fingerprint.
+- **Database**: Opens `hem.db`, reports table counts (moneypennies, sessions, projects).
+
+### Phase 2 — Server checks (single `diagnose` command):
+- **Server connection**: Connects to hem server (Unix socket or MI6), reports latency.
+- **MI6 control**: Reports whether MI6 control channel is configured.
+- **Moneypenny connectivity**: Pings all registered moneypennies in parallel via `get_version`, reports version and latency.
+- **Version mismatch**: Warns when moneypenny versions differ from hem version.
+- **Agent availability**: Queries reachable moneypennies for agent binaries (claude, copilot) via `check_agents` command. Version-gated: skips moneypennies running older versions that don't support the command.
+- **Cooldown status**: Reports moneypennies currently in cooldown with remaining time.
+- **Session counts**: Total sessions by status (active, completed).
+- **Cache state**: Age of last cache refresh, whether refresh is in progress.
+
+### Output:
+- **Text mode** (default): Streaming output, each check printed as soon as ready.
+- **JSON mode** (`-o json`): Buffers all results, outputs single JSON array at end.
+
+### Moneypenny `check_agents` command:
+Cross-platform agent binary detection using Go's `exec.LookPath()` (works on Windows, macOS, Linux). Returns availability and resolved path for known agents (claude, copilot).
+

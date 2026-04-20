@@ -75,6 +75,16 @@ func (cm *ClientManager) ClearCooldown(mpName string) {
 	delete(cm.cooldowns, mpName)
 }
 
+// GetCooldownUntil returns the cooldown expiry time for a moneypenny, or zero if not in cooldown.
+func (cm *ClientManager) GetCooldownUntil(mpName string) time.Time {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	if cooldownUntil, ok := cm.cooldowns[mpName]; ok && time.Now().Before(cooldownUntil) {
+		return cooldownUntil
+	}
+	return time.Time{}
+}
+
 // MI6KeyPath returns the MI6 key path.
 func (cm *ClientManager) MI6KeyPath() string {
 	return cm.mi6KeyPath

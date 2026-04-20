@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -438,6 +439,9 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 	if verb == "disable" {
 		return e.DisableSetting(noun)
 	}
+	if verb == "diagnose" {
+		return e.Diagnose(args)
+	}
 	if verb == "list-directory" {
 		return e.ListDirectory(noun, args)
 	}
@@ -762,6 +766,33 @@ func parseFlagsFromArgs(name string, args []string, setup func(fs *flag.FlagSet)
 		return nil, err
 	}
 	return fs.Args(), nil
+}
+
+// versionLessThan compares two semver strings (e.g. "0.14.1" < "0.14.2").
+// Compares integer components left-to-right. Returns false on parse errors.
+func versionLessThan(a, b string) bool {
+	partsA := strings.Split(a, ".")
+	partsB := strings.Split(b, ".")
+	maxLen := len(partsA)
+	if len(partsB) > maxLen {
+		maxLen = len(partsB)
+	}
+	for i := 0; i < maxLen; i++ {
+		var va, vb int
+		if i < len(partsA) {
+			va, _ = strconv.Atoi(partsA[i])
+		}
+		if i < len(partsB) {
+			vb, _ = strconv.Atoi(partsB[i])
+		}
+		if va < vb {
+			return true
+		}
+		if va > vb {
+			return false
+		}
+	}
+	return false // equal
 }
 
 // formatTimestamp formats an ISO timestamp into a human-friendly format.

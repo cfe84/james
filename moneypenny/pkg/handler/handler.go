@@ -139,6 +139,8 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.listModels(ctx, cmd)
 	case "get_version":
 		return h.getVersion(cmd)
+	case "check_agents":
+		return h.checkAgents(cmd)
 	case "update_status":
 		return h.updateStatus(cmd)
 	default:
@@ -677,6 +679,20 @@ func (h *Handler) executeCommand(_ context.Context, cmd *envelope.Command) *enve
 
 func (h *Handler) getVersion(cmd *envelope.Command) *envelope.Response {
 	return envelope.SuccessResponse(cmd.RequestID, map[string]string{"version": h.version})
+}
+
+func (h *Handler) checkAgents(cmd *envelope.Command) *envelope.Response {
+	knownAgents := []string{"claude", "copilot"}
+	var agents []envelope.AgentAvailability
+	for _, name := range knownAgents {
+		a := envelope.AgentAvailability{Name: name}
+		if path, err := exec.LookPath(name); err == nil {
+			a.Found = true
+			a.Path = path
+		}
+		agents = append(agents, a)
+	}
+	return envelope.SuccessResponse(cmd.RequestID, envelope.CheckAgentsResponse{Agents: agents})
 }
 
 func (h *Handler) updateStatus(cmd *envelope.Command) *envelope.Response {

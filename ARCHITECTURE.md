@@ -237,6 +237,8 @@ hem/
 
 31. **Session memory**: Each session has a persistent `memory` text column in moneypenny's SQLite. Memory is injected into the system prompt at runtime (not stored in the system prompt field) via `<session-memory>` tags in the `runAgent()` function, so agents always see the latest content. Memory instructions are appended to the system prompt at session creation time whenever hem has MI6 connectivity, independently of the gadgets flag. The instructions tell agents to use `hem update memory SESSION_ID CONTENT` (replace semantics, not append). Hem exposes `show memory` and `update memory` commands. TUI provides a memory editor view (`m` key in chat command mode) with Ctrl+S to save. When toggling gadgets on/off, the memory marker is preserved independently of the gadgets marker.
 
+32. **Diagnostics**: `hem diagnose` uses a two-phase client-side architecture for streaming output. Phase 1 runs local checks (data directory, SSH keys, database) without a server connection, printing results immediately. Phase 2 sends a single `diagnose` command to the server, which pings all moneypennies in parallel, checks agent availability via `check_agents`, and collects cache/session stats. The CLI unpacks the structured `DiagnoseResult` and prints each section as it goes. JSON mode (`-o json`) buffers all checks and outputs a single JSON array at the end. Agent binary detection uses `exec.LookPath()` for cross-platform support (Windows, macOS, Linux). The `check_agents` moneypenny command is version-gated (≥1.0.0) for retrocompatibility with older moneypenny instances.
+
 ### Hem Command Layer Refactoring (v0.11.0+)
 
 The Executor (hem/pkg/commands) has been refactored to follow Single Responsibility Principle by extracting specialized managers:

@@ -152,6 +152,17 @@ func main() {
 			os.Exit(1)
 		}
 		return
+	case "diagnose":
+		for _, a := range cmd.Args {
+			if a == "-h" || a == "--help" {
+				if help, ok := commands.CommandHelp["diagnose"]; ok {
+					fmt.Println(help)
+				}
+				return
+			}
+		}
+		runDiagnose(mi6Addr, cmd.OutputType)
+		return
 	case "dashboard":
 		req := &protocol.Request{Verb: "dashboard", Noun: "", Args: cmd.Args}
 		resp, err := sender.Send(req)
@@ -399,6 +410,7 @@ func handleMI6Admin(verb string, args []string) {
 		fmt.Println(adminResp.Message)
 	}
 }
+
 
 // buildSender creates a Sender based on whether --hem was specified.
 func buildSender(mi6Addr string) hemclient.Sender {
@@ -893,6 +905,9 @@ MI6:
 
 UI:
   ui [--silent]          Open the interactive terminal UI
+
+Diagnostics:
+  diagnose                  Run connectivity and health diagnostics
 
 Other:
   show-public-key
