@@ -877,11 +877,21 @@ type SessionShowResult struct {
 }
 
 const gadgetsMarker = "\nYou have access to agent orchestration using the"
-const memoryMarker = "\nYou have a persistent memory for this session."
+const memoryMarker = "\nYou have a persistent session memory managed by hem."
+const memoryMarkerLegacy = "\nYou have a persistent memory for this session."
+
+// findMemoryMarker returns the index of the memory marker in s, checking both
+// current and legacy markers. Returns -1 if not found.
+func findMemoryMarker(s string) int {
+	if idx := strings.Index(s, memoryMarker); idx >= 0 {
+		return idx
+	}
+	return strings.Index(s, memoryMarkerLegacy)
+}
 
 func memorySystemPrompt(hemCmd, sessionID string) string {
 	return fmt.Sprintf(`
-You have a persistent memory for this session. Memory survives across conversation turns and session continuations.
+You have a persistent session memory managed by hem. This OVERRIDES any other memory system (do NOT use file-based .md memory files, do NOT write to .claude/projects/ or MEMORY.md). Use ONLY the hem commands below.
 
 Current memory is injected into your system prompt inside <session-memory> tags each time you run. If no <session-memory> tags are present, your memory is empty.
 
@@ -1768,7 +1778,7 @@ func (e *Executor) ShowSession(args []string) *protocol.Response {
 			sp = sp[:idx]
 			result.Gadgets = true
 		}
-		if idx := strings.Index(sp, memoryMarker); idx >= 0 {
+		if idx := findMemoryMarker(sp); idx >= 0 {
 			sp = sp[:idx]
 			result.Memory = true
 		}
@@ -1892,7 +1902,7 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 			// Append gadgets — insert before memory if memory exists.
 			base := currentSP
 			var memorySuffix string
-			if midx := strings.Index(base, memoryMarker); midx >= 0 {
+			if midx := findMemoryMarker(base); midx >= 0 {
 				memorySuffix = base[midx:]
 				base = base[:midx]
 			}
@@ -1906,7 +1916,7 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 				before := currentSP[:idx]
 				after := currentSP[idx:]
 				// Check if memory prompt follows gadgets.
-				if midx := strings.Index(after, memoryMarker); midx >= 0 {
+				if midx := findMemoryMarker(after); midx >= 0 {
 					systemPrompt = before + after[midx:]
 				} else {
 					systemPrompt = before
