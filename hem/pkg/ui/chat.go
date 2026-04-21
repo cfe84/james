@@ -2163,6 +2163,26 @@ func wordWrap(s string, width int) string {
 				result.WriteString(currentLine)
 				currentLine = indent + word
 			}
+			// Hard-break if currentLine exceeds width (e.g. long URLs or JSON blobs).
+			for lipgloss.Width(currentLine) > width {
+				if result.Len() > 0 {
+					result.WriteString("\n")
+				}
+				// Break at width boundary (rune-aware).
+				runes := []rune(currentLine)
+				cut := len(runes)
+				for c := 1; c < len(runes); c++ {
+					if lipgloss.Width(string(runes[:c])) > width {
+						cut = c - 1
+						if cut < 1 {
+							cut = 1
+						}
+						break
+					}
+				}
+				result.WriteString(string(runes[:cut]))
+				currentLine = indent + string(runes[cut:])
+			}
 		}
 		if currentLine != "" {
 			if result.Len() > 0 {

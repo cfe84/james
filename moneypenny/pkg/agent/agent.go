@@ -574,7 +574,7 @@ func fmtAgentErrorFull(err error, stderrBuf *bytes.Buffer, resultText, lastRawEv
 	parts = append(parts, fmt.Sprintf("agent process failed: %v", err))
 
 	if resultText != "" {
-		parts = append(parts, fmt.Sprintf("output: %s", truncStr(resultText, 500)))
+		parts = append(parts, fmt.Sprintf("output: %s", resultText))
 	}
 
 	stderr := strings.TrimSpace(stderrBuf.String())
@@ -586,9 +586,8 @@ func fmtAgentErrorFull(err error, stderrBuf *bytes.Buffer, resultText, lastRawEv
 		parts = append(parts, fmt.Sprintf("stderr:\n%s", strings.Join(lines, "\n")))
 	}
 
-	// If we have no other context, include the last raw event for diagnostics.
-	if resultText == "" && stderr == "" && lastRawEvent != "" {
-		parts = append(parts, fmt.Sprintf("last event: %s", truncStr(lastRawEvent, 500)))
+	if lastRawEvent != "" {
+		parts = append(parts, fmt.Sprintf("last event:\n%s", lastRawEvent))
 	}
 
 	return fmt.Errorf("%s", strings.Join(parts, "\n"))

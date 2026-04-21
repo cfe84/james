@@ -1623,6 +1623,10 @@
     html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
     // Bold: **...**
     html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    // Links: [text](url) — opens in new tab
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    // Bare URLs: https://... or http://... (not already inside a tag)
+    html = html.replace(/(^|[^"=])((https?:\/\/)[^\s<]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
     return html;
   }
 

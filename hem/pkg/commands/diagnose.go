@@ -62,14 +62,14 @@ func (e *Executor) Diagnose(args []string) *protocol.Response {
 		err     error
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer pingCancel()
 
 	pingCh := make(chan pingResult, len(mps))
 	for _, mp := range mps {
 		go func(mp *store.Moneypenny) {
 			start := time.Now()
-			resp, err := e.sendCommand(ctx, mp, "get_version", nil)
+			resp, err := e.sendCommand(pingCtx, mp, "get_version", nil)
 			elapsed := time.Since(start)
 			if err != nil {
 				pingCh <- pingResult{name: mp.Name, err: err}
@@ -91,6 +91,10 @@ func (e *Executor) Diagnose(args []string) *protocol.Response {
 	}
 
 	// For reachable moneypennies, check agents (with version gating).
+	// Use a separate context so ping latency doesn't eat into the agent check budget.
+	agentCtx, agentCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer agentCancel()
+
 	type agentResult struct {
 		name    string
 		agents  []AgentInfo
@@ -111,7 +115,7 @@ func (e *Executor) Diagnose(args []string) *protocol.Response {
 		}
 		agentCount++
 		go func(mp *store.Moneypenny) {
-			resp, err := e.sendCommand(ctx, mp, "check_agents", nil)
+			resp, err := e.sendCommand(agentCtx, mp, "check_agents", nil)
 			if err != nil {
 				errStr := err.Error()
 				if strings.Contains(errStr, "unknown method") {
