@@ -11,6 +11,10 @@ import (
 	"text/template"
 )
 
+// needsLogFileArg is false on Linux — systemd handles log redirection via
+// StandardOutput/StandardError in the unit file.
+const needsLogFileArg = false
+
 const unitName = "moneypenny.service"
 
 const unitTemplate = `[Unit]
@@ -145,7 +149,7 @@ func Uninstall(userLevel bool) error {
 // Status returns whether the service is installed and running.
 func Status(userLevel bool) (installed bool, running bool, err error) {
 	path := unitPath(userLevel)
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+	if _, err := os.Stat(path); err != nil {
 		return false, false, nil
 	}
 

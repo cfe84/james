@@ -15,10 +15,10 @@ type Config struct {
 	AutoUpdate     bool
 	UpdateInterval string // e.g. "1h", "30m"
 	DataDir        string
-	LogFile        string // path to log file
-	Local          bool   // run in local FIFO mode
-	Verbose        bool
-	UserLevel      bool // true = user-level service, false = system-level
+	LogFile string // path to log file
+	Local   bool   // run in local FIFO mode
+	Verbose         bool
+	UserLevel       bool // true = user-level service, false = system-level
 }
 
 // DefaultLogFile returns the default log file path in the data dir.
@@ -45,6 +45,9 @@ func (c *Config) BuildArgs() []string {
 	}
 	if c.Verbose {
 		args = append(args, "-v")
+	}
+	if c.LogFile != "" && needsLogFileArg {
+		args = append(args, "--log-file", c.LogFile)
 	}
 	return args
 }

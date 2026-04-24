@@ -56,7 +56,22 @@ func main() {
 	autoUpdate := flag.Bool("auto-update", false, "enable automatic updates from GitHub releases")
 	updateInterval := flag.Duration("update-interval", 1*time.Hour, "how often to check for updates")
 	verbose := flag.Bool("v", false, "verbose logging to stderr")
+	logFile := flag.String("log-file", "", "redirect stdout and stderr to a file (useful for Windows services)")
 	flag.Parse()
+
+	// Redirect stdout/stderr to log file if specified.
+	if *logFile != "" {
+		if err := os.MkdirAll(filepath.Dir(*logFile), 0755); err != nil {
+			log.Fatalf("failed to create log directory: %v", err)
+		}
+		f, err := os.OpenFile(*logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err != nil {
+			log.Fatalf("failed to open log file: %v", err)
+		}
+		os.Stdout = f
+		os.Stderr = f
+		log.SetOutput(f)
+	}
 
 	// --local is shorthand for --fifo with the default path.
 	if *local && *fifoDir == "" {

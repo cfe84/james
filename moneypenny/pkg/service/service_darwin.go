@@ -11,6 +11,10 @@ import (
 	"text/template"
 )
 
+// needsLogFileArg is false on macOS — launchd handles log redirection via
+// StandardOutPath/StandardErrorPath in the plist.
+const needsLogFileArg = false
+
 const plistLabel = "net.cingen.james.moneypenny"
 
 const plistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
@@ -152,7 +156,7 @@ func Uninstall(userLevel bool) error {
 // Status returns whether the service is installed and running.
 func Status(userLevel bool) (installed bool, running bool, err error) {
 	path := plistPath(userLevel)
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+	if _, err := os.Stat(path); err != nil {
 		return false, false, nil
 	}
 
