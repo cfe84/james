@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -374,11 +375,16 @@ func findMI6Client() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("mi6-client not found in PATH")
 	}
-	candidate := filepath.Join(filepath.Dir(exe), "mi6-client")
+	// Check next to our binary (same directory as moneypenny).
+	suffix := ""
+	if runtime.GOOS == "windows" {
+		suffix = ".exe"
+	}
+	candidate := filepath.Join(filepath.Dir(exe), "mi6-client"+suffix)
 	if _, err := os.Stat(candidate); err == nil {
 		return candidate, nil
 	}
-	return "", fmt.Errorf("mi6-client not found in PATH or next to moneypenny binary")
+	return "", fmt.Errorf("mi6-client not found in PATH or next to moneypenny binary (%s)", filepath.Dir(exe))
 }
 
 func findInPath(name string) (string, error) {

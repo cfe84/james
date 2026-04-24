@@ -174,7 +174,7 @@ func (u *Updater) cycle(ctx context.Context) {
 	u.mu.Unlock()
 
 	if err != nil {
-		u.vlog.Printf("update check failed: %v", err)
+		u.slog.Printf("update check failed: %v", err)
 		u.setError(err)
 		return
 	}
@@ -196,7 +196,7 @@ func (u *Updater) cycle(ctx context.Context) {
 	u.setStatus(StatusDownloading)
 	stagedDir, err := u.downloadAndStage(ctx, release)
 	if err != nil {
-		u.vlog.Printf("download failed: %v", err)
+		u.slog.Printf("download failed: %v", err)
 		u.setError(err)
 		return
 	}
@@ -220,7 +220,7 @@ func (u *Updater) cycle(ctx context.Context) {
 	u.slog.Printf("all sessions idle, updating to v%s and restarting", tag)
 
 	if err := u.swapAndRestart(stagedDir); err != nil {
-		u.vlog.Printf("swap failed: %v", err)
+		u.slog.Printf("swap failed: %v", err)
 		u.setError(err)
 	}
 	// If swapAndRestart succeeds, we don't return — the process is replaced.
