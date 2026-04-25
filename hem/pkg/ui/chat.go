@@ -787,6 +787,9 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 				return m, nil
 			}
 
+			// Capture previous total before updating, so we can detect new turns
+			// arrived between polls and shift the older/recent boundary correctly.
+			previousTotal := m.totalTurns
 			m.totalTurns = msg.total
 
 			// Compare with the recent portion of our conversation.
@@ -826,7 +829,25 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 				}
 
 				// Replace only the recent portion, keeping any older loaded history.
-				olderCount := len(m.conversation) - m.recentCount
+				// New turns may have arrived between polls — the boundary between
+				// "older" (manually loaded) and "recent" (latest poll) shifts by delta.
+				// Formula: olderCount = prev_server_known - polled_count + delta
+				// where delta = new_total - prev_total.
+				prevServerKnown := len(m.conversation) - len(pendingQueued)
+				delta := msg.total - previousTotal
+				if delta < 0 {
+					delta = 0 // turns shouldn't disappear; if total shrunk, treat as 0
+				}
+				olderCount := prevServerKnown - len(msg.conversation) + delta
+				if olderCount < 0 {
+					olderCount = 0
+				}
+				if olderCount > prevServerKnown {
+					// More new turns than the polled window — gap we can't recover.
+					// Refetch will catch it on next poll if window grows.
+					uilog("history merge: gap detected delta=%d polled=%d prevKnown=%d", delta, len(msg.conversation), prevServerKnown)
+					olderCount = prevServerKnown
+				}
 				if olderCount > 0 {
 					m.conversation = append(m.conversation[:olderCount], msg.conversation...)
 				} else {

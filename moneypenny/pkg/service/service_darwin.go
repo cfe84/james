@@ -25,10 +25,10 @@ const plistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
     <string>{{.Label}}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{{.BinaryPath}}</string>
-{{- range .Args}}
-        <string>{{.}}</string>
-{{- end}}
+        <string>{{.Shell}}</string>
+        <string>-l</string>
+        <string>-c</string>
+        <string>exec {{.Command}}</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -47,11 +47,11 @@ const plistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 `
 
 type plistData struct {
-	Label      string
-	BinaryPath string
-	Args       []string
-	LogFile    string
-	UserName   string
+	Label   string
+	Shell   string // user's login shell
+	Command string // quoted binary path + args
+	LogFile string
+	UserName string
 }
 
 func plistPath(userLevel bool) string {
@@ -78,11 +78,29 @@ func Install(cfg *Config) error {
 		}
 	}
 
+	// Detect user's login shell for environment loading.
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/zsh" // macOS default since Catalina
+	}
+
+	// Build the full command string for shell -l -c "exec ...".
+	// Quote the binary path in case it contains spaces.
+	cmdParts := []string{fmt.Sprintf("'%s'", cfg.BinaryPath)}
+	for _, a := range cfg.BuildArgs() {
+		// Quote args that contain spaces.
+		if strings.Contains(a, " ") {
+			cmdParts = append(cmdParts, fmt.Sprintf("'%s'", a))
+		} else {
+			cmdParts = append(cmdParts, a)
+		}
+	}
+
 	data := plistData{
-		Label:      plistLabel,
-		BinaryPath: cfg.BinaryPath,
-		Args:       cfg.BuildArgs(),
-		LogFile:    cfg.LogFile,
+		Label:   plistLabel,
+		Shell:   shell,
+		Command: strings.Join(cmdParts, " "),
+		LogFile: cfg.LogFile,
 	}
 
 	// For system-level daemons, run as the current user.

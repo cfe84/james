@@ -686,7 +686,7 @@ func (h *Handler) checkAgents(cmd *envelope.Command) *envelope.Response {
 	var agents []envelope.AgentAvailability
 	for _, name := range knownAgents {
 		a := envelope.AgentAvailability{Name: name}
-		if path, err := exec.LookPath(name); err == nil {
+		if path, err := agent.FindAgent(name); err == nil {
 			a.Found = true
 			a.Path = path
 		}

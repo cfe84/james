@@ -23,7 +23,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart={{.BinaryPath}}{{range .Args}} {{.}}{{end}}
+ExecStart={{.Shell}} -l -c "exec {{.Command}}"
 Restart=on-failure
 RestartSec=5
 StandardOutput=append:{{.LogFile}}
@@ -37,11 +37,11 @@ WantedBy={{.WantedBy}}
 `
 
 type unitData struct {
-	BinaryPath string
-	Args       []string
-	LogFile    string
-	UserName   string
-	WantedBy   string
+	Shell    string
+	Command  string
+	LogFile  string
+	UserName string
+	WantedBy string
 }
 
 func unitPath(userLevel bool) string {
@@ -68,11 +68,27 @@ func Install(cfg *Config) error {
 		}
 	}
 
+	// Detect user's login shell for environment loading.
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/bash"
+	}
+
+	// Build the full command string.
+	cmdParts := []string{fmt.Sprintf("'%s'", cfg.BinaryPath)}
+	for _, a := range cfg.BuildArgs() {
+		if strings.Contains(a, " ") {
+			cmdParts = append(cmdParts, fmt.Sprintf("'%s'", a))
+		} else {
+			cmdParts = append(cmdParts, a)
+		}
+	}
+
 	data := unitData{
-		BinaryPath: cfg.BinaryPath,
-		Args:       cfg.BuildArgs(),
-		LogFile:    cfg.LogFile,
-		WantedBy:   "default.target",
+		Shell:    shell,
+		Command:  strings.Join(cmdParts, " "),
+		LogFile:  cfg.LogFile,
+		WantedBy: "default.target",
 	}
 
 	if !cfg.UserLevel {

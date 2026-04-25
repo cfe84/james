@@ -10,12 +10,96 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
 
 	"james/moneypenny/pkg/envelope"
 )
+
+// FindAgent locates an agent binary by name. It first checks PATH via
+// exec.LookPath, then falls back to well-known installation directories
+// (e.g. ~/.claude-cli on macOS/Linux, AppData on Windows).
+func FindAgent(name string) (string, error) {
+	if path, err := exec.LookPath(name); err == nil {
+		return path, nil
+	}
+
+	home, _ := os.UserHomeDir()
+	if home == "" {
+		return "", fmt.Errorf("agent binary %q not found in PATH", name)
+	}
+
+	var candidates []string
+
+	switch name {
+	case "claude":
+		if runtime.GOOS == "windows" {
+			// npm-installed (most common): %APPDATA%\npm\claude.cmd
+			appData := os.Getenv("APPDATA")
+			if appData != "" {
+				candidates = append(candidates,
+					filepath.Join(appData, "npm", "claude.cmd"),
+					filepath.Join(appData, "npm", "claude.ps1"),
+					filepath.Join(appData, "Claude", "claude.exe"),
+				)
+			}
+			// Standalone installers
+			localAppData := os.Getenv("LOCALAPPDATA")
+			if localAppData != "" {
+				candidates = append(candidates,
+					filepath.Join(localAppData, "AnthropicClaude", "claude.exe"),
+					filepath.Join(localAppData, "Programs", "claude", "claude.exe"),
+					filepath.Join(localAppData, "Programs", "moneypenny", "claude.exe"),
+				)
+			}
+			// User-local (.claude-cli) installer
+			candidates = append(candidates,
+				filepath.Join(home, ".claude-cli", "CurrentVersion", "claude.exe"),
+				filepath.Join(home, ".claude", "local", "claude.exe"),
+			)
+		} else {
+			// macOS/Linux: standalone installer or npm global
+			candidates = append(candidates,
+				filepath.Join(home, ".claude-cli", "CurrentVersion", "claude"),
+				filepath.Join(home, ".claude", "local", "claude"),
+				filepath.Join(home, ".npm-global", "bin", "claude"),
+				"/usr/local/bin/claude",
+				"/opt/homebrew/bin/claude",
+			)
+		}
+	case "copilot":
+		if runtime.GOOS == "windows" {
+			appData := os.Getenv("APPDATA")
+			if appData != "" {
+				candidates = append(candidates,
+					filepath.Join(appData, "npm", "copilot.cmd"),
+					filepath.Join(appData, "npm", "copilot.ps1"),
+				)
+			}
+			localAppData := os.Getenv("LOCALAPPDATA")
+			if localAppData != "" {
+				candidates = append(candidates, filepath.Join(localAppData, "Programs", "copilot", "copilot.exe"))
+			}
+		} else {
+			candidates = append(candidates,
+				filepath.Join(home, ".npm-global", "bin", "copilot"),
+				"/usr/local/bin/copilot",
+				"/opt/homebrew/bin/copilot",
+			)
+		}
+	}
+
+	for _, c := range candidates {
+		if _, err := os.Stat(c); err == nil {
+			return c, nil
+		}
+	}
+
+	return "", fmt.Errorf("agent binary %q not found in PATH or well-known locations", name)
+}
 
 // Result holds the parsed result from a claude invocation.
 type Result struct {
@@ -109,9 +193,9 @@ func (r *Runner) GetActivity(sessionID string) []ActivityEvent {
 
 // Run invokes an agent with the given parameters. It blocks until the agent completes.
 func (r *Runner) Run(ctx context.Context, params RunParams) (*Result, error) {
-	agentPath, err := exec.LookPath(params.Agent)
+	agentPath, err := FindAgent(params.Agent)
 	if err != nil {
-		return nil, fmt.Errorf("agent binary %q not found: %w", params.Agent, err)
+		return nil, err
 	}
 
 	args := buildArgs(params)
