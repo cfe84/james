@@ -1526,6 +1526,18 @@ func (m chatModel) View() string {
 			}
 		case "system":
 			prefix = systemMsgStyle.Render("⚙ system")
+		case "thinking":
+			agentLabel := m.sessionName
+			if agentLabel == "" {
+				agentLabel = "agent"
+			}
+			prefix = assistantMsgStyle.Render("💭 " + agentLabel)
+		case "agent_text":
+			agentLabel := m.sessionName
+			if agentLabel == "" {
+				agentLabel = "agent"
+			}
+			prefix = assistantMsgStyle.Render("📝 " + agentLabel)
 		default:
 			agentLabel := m.sessionName
 			if agentLabel == "" {
@@ -1549,7 +1561,7 @@ func (m chatModel) View() string {
 		}
 		var rendered string
 		switch turn.Role {
-		case "assistant", "user":
+		case "assistant", "user", "thinking", "agent_text":
 			rendered = m.cachedRenderMarkdown(content, contentWidth)
 		case "system":
 			rendered = wordWrap(content, contentWidth)

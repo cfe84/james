@@ -45,9 +45,10 @@ COPY moneypenny/docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # Persistent volume mount points (owned by mp user):
-#   /home/mp/.ssh    - SSH keys (for git operations done by agents)
-#   /home/mp/.claude - Claude Code config (auth, settings, sessions)
-#   /data            - Moneypenny data (SQLite, keys, logs)
+#   /home/mp/.ssh         - SSH keys (for git operations done by agents)
+#   /home/mp/.claude      - Claude Code config (settings, sessions)
+#   /home/mp/.claude.json - Claude Code login state / API token (single file)
+#   /data                 - Moneypenny data (SQLite, keys, logs)
 VOLUME ["/home/mp/.ssh", "/home/mp/.claude", "/data"]
 
 # Configuration via environment variables.

@@ -10,6 +10,8 @@ fi
 # Ensure mounted volumes are owned by the mp user (volumes from the host
 # may be owned by a different UID).
 chown -R mp:mp /home/mp/.ssh /home/mp/.claude /data 2>/dev/null || true
+# .claude.json is a single file (login token); chown if present.
+[ -e /home/mp/.claude.json ] && chown mp:mp /home/mp/.claude.json 2>/dev/null || true
 
 # Build moneypenny args.
 MP_ARGS="--mi6 $MP_MI6_ADDRESS --data-dir /data"

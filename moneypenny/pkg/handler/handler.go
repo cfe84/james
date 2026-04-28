@@ -43,7 +43,17 @@ type resultCallback func(sessionID, response string, err error)
 
 // New creates a new Handler with the given store, runner, and version string.
 func New(s *store.Store, runner *agent.Runner, version string) *Handler {
-	return &Handler{store: s, runner: runner, version: version, vlog: func(string, ...interface{}) {}}
+	h := &Handler{store: s, runner: runner, version: version, vlog: func(string, ...interface{}) {}}
+	// Persist thinking and intermediate-text activity events as conversation
+	// turns so the train of thought survives across reloads.
+	runner.SetPersistentActivityFunc(func(sessionID, eventType, content string) {
+		role := "thinking"
+		if eventType == "text" {
+			role = "agent_text"
+		}
+		_ = s.AddConversationTurn(sessionID, role, content)
+	})
+	return h
 }
 
 // SetLogger sets a verbose logger.

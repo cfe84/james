@@ -318,7 +318,16 @@
     });
 
     for (const turn of serverTurns) {
-      const roleLabel = turn.role === 'user' ? '🧑‍💻 you' : (turn.role === 'assistant' ? '🕴️ ' + (currentSessionName || 'agent') : '⚙ system');
+      const agentName = currentSessionName || 'agent';
+      let roleLabel;
+      switch (turn.role) {
+        case 'user':       roleLabel = '🧑‍💻 you'; break;
+        case 'assistant':  roleLabel = '🕴️ ' + agentName; break;
+        case 'thinking':   roleLabel = '💭 ' + agentName; break;
+        case 'agent_text': roleLabel = '📝 ' + agentName; break;
+        case 'system':     roleLabel = '⚙ system'; break;
+        default:           roleLabel = turn.role;
+      }
       const roleClass = turn.role;
       const content = turn.content || '(empty)';
       html += `

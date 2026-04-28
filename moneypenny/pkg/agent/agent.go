@@ -155,13 +155,18 @@ type RunParams struct {
 	Resume       bool   // true for continue_session
 }
 
+// PersistentActivityFunc is called for activity events that should be persisted
+// to the conversation (thinking, intermediate text). Tool use stays ephemeral.
+type PersistentActivityFunc func(sessionID, eventType, content string)
+
 // Runner manages agent subprocess execution.
 type Runner struct {
-	mu           sync.Mutex
-	procs        map[string]*exec.Cmd      // sessionID -> running process
-	activity     map[string]*activityBuffer // sessionID -> recent activity
-	vlog         *log.Logger
-	notifyWriter *envelope.NotificationWriter
+	mu                   sync.Mutex
+	procs                map[string]*exec.Cmd       // sessionID -> running process
+	activity             map[string]*activityBuffer // sessionID -> recent activity
+	vlog                 *log.Logger
+	notifyWriter         *envelope.NotificationWriter
+	onPersistentActivity PersistentActivityFunc
 }
 
 // New creates a new Runner.
@@ -178,6 +183,23 @@ func (r *Runner) SetNotificationWriter(nw *envelope.NotificationWriter) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.notifyWriter = nw
+}
+
+// SetPersistentActivityFunc sets the callback for persisting thinking/text events.
+func (r *Runner) SetPersistentActivityFunc(f PersistentActivityFunc) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.onPersistentActivity = f
+}
+
+// emitPersistent calls the persistent activity callback if set.
+func (r *Runner) emitPersistent(sessionID, eventType, content string) {
+	r.mu.Lock()
+	cb := r.onPersistentActivity
+	r.mu.Unlock()
+	if cb != nil {
+		cb(sessionID, eventType, content)
+	}
 }
 
 // GetActivity returns recent activity events for a session.
@@ -283,14 +305,16 @@ func (r *Runner) runStreaming(cmd *exec.Cmd, buf *activityBuffer, sessionID stri
 				case "thinking":
 					thinking, _ := b["thinking"].(string)
 					if thinking != "" {
-						buf.add(ActivityEvent{Type: "thinking", Summary: truncStr(thinking, 150), Timestamp: now})
+						buf.add(ActivityEvent{Type: "thinking", Summary: thinking, Timestamp: now})
+						r.emitPersistent(sessionID, "thinking", thinking)
 					}
 				case "tool_use":
 					buf.add(ActivityEvent{Type: "tool_use", Summary: toolSummary(b), Timestamp: now})
 				case "text":
 					text, _ := b["text"].(string)
 					if text != "" {
-						buf.add(ActivityEvent{Type: "text", Summary: truncStr(text, 150), Timestamp: now})
+						buf.add(ActivityEvent{Type: "text", Summary: text, Timestamp: now})
+						r.emitPersistent(sessionID, "text", text)
 					}
 				}
 			}
@@ -379,7 +403,7 @@ func (r *Runner) runCopilotStreaming(cmd *exec.Cmd, buf *activityBuffer, session
 					len(content), data["toolRequests"] != nil)
 				if content != "" {
 					resultText = content
-					buf.add(ActivityEvent{Type: "text", Summary: truncStr(content, 150), Timestamp: now})
+					buf.add(ActivityEvent{Type: "text", Summary: content, Timestamp: now})
 				}
 				// Parse tool requests for activity.
 				if toolReqs, ok := data["toolRequests"].([]any); ok {
@@ -449,7 +473,8 @@ func (r *Runner) runCopilotStreaming(cmd *exec.Cmd, buf *activityBuffer, session
 			if data != nil {
 				content, _ := data["content"].(string)
 				if content != "" {
-					buf.add(ActivityEvent{Type: "thinking", Summary: truncStr(content, 150), Timestamp: now})
+					buf.add(ActivityEvent{Type: "thinking", Summary: content, Timestamp: now})
+					r.emitPersistent(sessionID, "thinking", content)
 					if r.notifyWriter != nil {
 						_ = r.notifyWriter.Send(envelope.EventChatActivity, sessionID, map[string]interface{}{
 							"events": buf.snapshot(),
