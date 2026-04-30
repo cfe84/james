@@ -460,6 +460,8 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.ListMoneypennies(args)
 	case "ping moneypenny":
 		return e.PingMoneypenny(args)
+	case "check update":
+		return e.CheckUpdate(args)
 	case "delete moneypenny":
 		return e.DeleteMoneypenny(args)
 	case "enable moneypenny":
@@ -1147,6 +1149,55 @@ func (e *Executor) PingMoneypenny(args []string) *protocol.Response {
 	return protocol.OKResponse(TextResult{
 		Message: fmt.Sprintf("Moneypenny %q is reachable. Version: %s", name, versionData.Version),
 	})
+}
+
+// CheckUpdate triggers an immediate update check on a moneypenny. The check
+// runs asynchronously on the moneypenny side; this command returns as soon as
+// the trigger is queued.
+func (e *Executor) CheckUpdate(args []string) *protocol.Response {
+	var name string
+	_, err := parseFlagsFromArgs("check-update", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&name, "n", "", "moneypenny name (defaults to default moneypenny)")
+		fs.StringVar(&name, "name", "", "moneypenny name")
+		fs.StringVar(&name, "m", "", "moneypenny name")
+		fs.StringVar(&name, "moneypenny", "", "moneypenny name")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if name == "" {
+		name, _ = e.store.GetDefault("moneypenny")
+	}
+	if name == "" {
+		return protocol.ErrResponse("--name / -n is required (or set a default with 'hem set-default moneypenny')")
+	}
+
+	mp, err := e.store.GetMoneypenny(name)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if mp == nil {
+		return protocol.ErrResponse(fmt.Sprintf("moneypenny %q not found", name))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	resp, err := e.sendCommand(ctx, mp, "check_update", nil)
+	if err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("check_update failed: %v", err))
+	}
+
+	var result struct {
+		Queued bool `json:"queued"`
+	}
+	_ = json.Unmarshal(resp.Data, &result)
+
+	msg := fmt.Sprintf("Update check queued on moneypenny %q.", name)
+	if !result.Queued {
+		msg = fmt.Sprintf("Update check already pending on moneypenny %q.", name)
+	}
+	return protocol.OKResponse(TextResult{Message: msg})
 }
 
 func (e *Executor) DeleteMoneypenny(args []string) *protocol.Response {

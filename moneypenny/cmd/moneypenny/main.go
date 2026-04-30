@@ -141,6 +141,7 @@ func main() {
 				Error:           info.Error,
 			}
 		})
+		h.SetTriggerUpdateFunc(u.TriggerCheck)
 		go u.Run(ctx)
 		log.Printf("auto-update enabled (check interval: %v)", *updateInterval)
 	}

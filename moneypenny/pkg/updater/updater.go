@@ -68,6 +68,11 @@ type Updater struct {
 	vlog    *log.Logger // verbose (only with -v)
 	slog    *log.Logger // standard (always visible)
 
+	// triggerCh signals the Run loop to perform an out-of-band cycle.
+	// Buffered with size 1; if a trigger is already pending, additional
+	// requests are dropped (the pending one will catch any new release).
+	triggerCh chan struct{}
+
 	// For re-exec
 	execArgs []string // os.Args
 }
@@ -98,11 +103,24 @@ func New(currentVersion, repo, dataDir string, checker SessionChecker, opts ...O
 		vlog:           log.New(io.Discard, "[updater] ", log.LstdFlags),
 		slog:           log.New(os.Stderr, "", log.LstdFlags),
 		execArgs:       os.Args,
+		triggerCh:      make(chan struct{}, 1),
 	}
 	for _, o := range opts {
 		o(u)
 	}
 	return u
+}
+
+// TriggerCheck signals the updater to run a check cycle as soon as possible.
+// Returns true if a trigger was queued, false if one was already pending.
+// Safe to call concurrently.
+func (u *Updater) TriggerCheck() bool {
+	select {
+	case u.triggerCh <- struct{}{}:
+		return true
+	default:
+		return false
+	}
 }
 
 // Status returns the current update info.
@@ -138,9 +156,10 @@ func (u *Updater) setError(err error) {
 
 // Run starts the update check loop. Blocks until ctx is cancelled.
 func (u *Updater) Run(ctx context.Context) {
-	// Do an initial check shortly after startup.
+	// Do an initial check shortly after startup (or sooner if triggered).
 	select {
 	case <-time.After(30 * time.Second):
+	case <-u.triggerCh:
 	case <-ctx.Done():
 		return
 	}
@@ -153,6 +172,8 @@ func (u *Updater) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ticker.C:
+			u.cycle(ctx)
+		case <-u.triggerCh:
 			u.cycle(ctx)
 		case <-ctx.Done():
 			return

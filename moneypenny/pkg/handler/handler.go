@@ -29,12 +29,13 @@ Use this to set reminders, check on long-running processes, or break work into t
 
 // Handler processes commands and returns responses.
 type Handler struct {
-	store            *store.Store
-	runner           *agent.Runner
-	version          string
-	vlog             func(string, ...interface{})
-	updateStatusFunc func() envelope.UpdateStatusResponse
-	notifyWriter     *envelope.NotificationWriter // for sending async notifications to hem
+	store             *store.Store
+	runner            *agent.Runner
+	version           string
+	vlog              func(string, ...interface{})
+	updateStatusFunc  func() envelope.UpdateStatusResponse
+	triggerUpdateFunc func() bool                  // returns true if check was queued
+	notifyWriter      *envelope.NotificationWriter // for sending async notifications to hem
 }
 
 // resultCallback is called when an async agent execution completes.
@@ -64,6 +65,13 @@ func (h *Handler) SetLogger(vlog func(string, ...interface{})) {
 // SetUpdateStatusFunc sets the function called to get update status from the updater.
 func (h *Handler) SetUpdateStatusFunc(f func() envelope.UpdateStatusResponse) {
 	h.updateStatusFunc = f
+}
+
+// SetTriggerUpdateFunc sets the function called to trigger an immediate update check.
+// Returns true if a check was queued, false if one was already pending or auto-update
+// is disabled.
+func (h *Handler) SetTriggerUpdateFunc(f func() bool) {
+	h.triggerUpdateFunc = f
 }
 
 // SetNotificationWriter sets the writer for sending async notifications.
@@ -153,6 +161,8 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.checkAgents(cmd)
 	case "update_status":
 		return h.updateStatus(cmd)
+	case "check_update":
+		return h.checkUpdate(cmd)
 	default:
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("unknown method: %s", cmd.Method))
 	}
@@ -713,6 +723,16 @@ func (h *Handler) updateStatus(cmd *envelope.Command) *envelope.Response {
 		})
 	}
 	return envelope.SuccessResponse(cmd.RequestID, h.updateStatusFunc())
+}
+
+func (h *Handler) checkUpdate(cmd *envelope.Command) *envelope.Response {
+	if h.triggerUpdateFunc == nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "auto-update is disabled on this moneypenny")
+	}
+	queued := h.triggerUpdateFunc()
+	return envelope.SuccessResponse(cmd.RequestID, envelope.CheckUpdateResponse{
+		Queued: queued,
+	})
 }
 
 func (h *Handler) listModels(_ context.Context, cmd *envelope.Command) *envelope.Response {
