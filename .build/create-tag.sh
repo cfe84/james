@@ -1,9 +1,12 @@
 #!/bin/sh
 
 VERSION=`cat VERSION`
-EXISTS=`git tag | grep "$VERSION"`
+TAG=`v$VERSION`
+EXISTS=`git tag | grep "$TAG"`
 
 if [ -z "$EXISTS" ]; then
-  echo "Create tag v$VERSION"
-  git tag "v$VERSION"
+  echo "Create tag $TAG"
+  git tag "$TAG"
+else
+  echo "Tag $TAG already exists"
 fi
