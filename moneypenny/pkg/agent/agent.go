@@ -624,15 +624,28 @@ func buildClaudeArgs(params RunParams) agentInvocation {
 	if params.Yolo {
 		args = append(args, "--dangerously-skip-permissions")
 	}
-	// Route long prompts via stdin. claude reads prompt from stdin when the
-	// `-p` flag has no positional value. This avoids hitting the Windows
-	// command-line length limit on long prompts.
-	if len(params.Prompt) > stdinPromptThreshold {
+	// Route via stdin when:
+	//   - the prompt is long (avoids Windows ~32KB cmdline limit), or
+	//   - the prompt starts with "-" (else claude's CLI parser treats it as a flag).
+	// claude reads the prompt from stdin when -p has no positional value.
+	if needsStdin(params.Prompt) {
 		args = append(args, "-p")
 		return agentInvocation{args: args, stdin: params.Prompt}
 	}
 	args = append(args, "-p", params.Prompt)
 	return agentInvocation{args: args}
+}
+
+// needsStdin returns true if the prompt should be routed via stdin instead of
+// as a positional CLI argument.
+func needsStdin(prompt string) bool {
+	if len(prompt) > stdinPromptThreshold {
+		return true
+	}
+	if strings.HasPrefix(prompt, "-") {
+		return true
+	}
+	return false
 }
 
 func buildCopilotArgs(params RunParams) agentInvocation {
@@ -648,7 +661,7 @@ func buildCopilotArgs(params RunParams) agentInvocation {
 	if params.Yolo {
 		args = append(args, "--yolo")
 	}
-	if len(params.Prompt) > stdinPromptThreshold {
+	if needsStdin(params.Prompt) {
 		args = append(args, "-p")
 		return agentInvocation{args: args, stdin: params.Prompt}
 	}
