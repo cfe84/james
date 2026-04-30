@@ -220,17 +220,24 @@ func (r *Runner) Run(ctx context.Context, params RunParams) (*Result, error) {
 		return nil, err
 	}
 
-	args := buildArgs(params)
+	inv := buildArgs(params)
 
-	cmd := exec.CommandContext(ctx, agentPath, args...)
+	cmd := exec.CommandContext(ctx, agentPath, inv.args...)
 	if params.Path != "" {
 		cmd.Dir = params.Path
 	}
 	cmd.Env = append(os.Environ(), "HEM_SESSION_ID="+params.SessionID)
+	if inv.stdin != "" {
+		cmd.Stdin = strings.NewReader(inv.stdin)
+	}
 	var stderrBuf bytes.Buffer
 	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
 
-	r.vlog.Printf("exec: %s %s", agentPath, strings.Join(args, " "))
+	if inv.stdin != "" {
+		r.vlog.Printf("exec: %s %s (prompt via stdin, %d bytes)", agentPath, strings.Join(inv.args, " "), len(inv.stdin))
+	} else {
+		r.vlog.Printf("exec: %s %s", agentPath, strings.Join(inv.args, " "))
+	}
 
 	buf := newActivityBuffer(30)
 	r.mu.Lock()
@@ -567,8 +574,21 @@ func toolSummary(b map[string]any) string {
 	return name
 }
 
-// buildArgs constructs the command-line arguments for the given agent.
-func buildArgs(params RunParams) []string {
+// agentInvocation describes how to run an agent: the command-line args plus
+// optional stdin content (used for long prompts to avoid Windows' ~32KB
+// command line length limit).
+type agentInvocation struct {
+	args  []string
+	stdin string
+}
+
+// stdinPromptThreshold is the prompt length above which we route the prompt
+// via stdin instead of as a -p positional argument. Chosen well below
+// Windows' command-line limit (~32KB) to leave headroom for other args.
+const stdinPromptThreshold = 4000
+
+// buildArgs constructs the command-line invocation for the given agent.
+func buildArgs(params RunParams) agentInvocation {
 	switch params.Agent {
 	case "copilot":
 		return buildCopilotArgs(params)
@@ -577,7 +597,7 @@ func buildArgs(params RunParams) []string {
 	}
 }
 
-func buildClaudeArgs(params RunParams) []string {
+func buildClaudeArgs(params RunParams) agentInvocation {
 	var args []string
 	if params.Resume {
 		args = []string{
@@ -604,11 +624,18 @@ func buildClaudeArgs(params RunParams) []string {
 	if params.Yolo {
 		args = append(args, "--dangerously-skip-permissions")
 	}
+	// Route long prompts via stdin. claude reads prompt from stdin when the
+	// `-p` flag has no positional value. This avoids hitting the Windows
+	// command-line length limit on long prompts.
+	if len(params.Prompt) > stdinPromptThreshold {
+		args = append(args, "-p")
+		return agentInvocation{args: args, stdin: params.Prompt}
+	}
 	args = append(args, "-p", params.Prompt)
-	return args
+	return agentInvocation{args: args}
 }
 
-func buildCopilotArgs(params RunParams) []string {
+func buildCopilotArgs(params RunParams) agentInvocation {
 	args := []string{
 		"--output-format", "json",
 		"--stream", "on",
@@ -621,8 +648,12 @@ func buildCopilotArgs(params RunParams) []string {
 	if params.Yolo {
 		args = append(args, "--yolo")
 	}
+	if len(params.Prompt) > stdinPromptThreshold {
+		args = append(args, "-p")
+		return agentInvocation{args: args, stdin: params.Prompt}
+	}
 	args = append(args, "-p", params.Prompt)
-	return args
+	return agentInvocation{args: args}
 }
 
 // Stop kills the subprocess for the given session.

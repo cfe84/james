@@ -319,17 +319,24 @@
 
     for (const turn of serverTurns) {
       const agentName = currentSessionName || 'agent';
+      const content = turn.content || '(empty)';
+
+      // Train-of-thought turns get a compact, indented, gray rendering with
+      // the emoji inline — no role-name header.
+      if (turn.role === 'thinking' || turn.role === 'agent_text') {
+        const icon = turn.role === 'thinking' ? '💭' : '📝';
+        html += `<div class="msg thought">${icon} ${formatContent(content)}</div>`;
+        continue;
+      }
+
       let roleLabel;
       switch (turn.role) {
         case 'user':       roleLabel = '🧑‍💻 you'; break;
         case 'assistant':  roleLabel = '🕴️ ' + agentName; break;
-        case 'thinking':   roleLabel = '💭 ' + agentName; break;
-        case 'agent_text': roleLabel = '📝 ' + agentName; break;
         case 'system':     roleLabel = '⚙ system'; break;
         default:           roleLabel = turn.role;
       }
       const roleClass = turn.role;
-      const content = turn.content || '(empty)';
       html += `
         <div class="msg">
           <div class="msg-role ${roleClass}">${roleLabel}${turn.created_at ? ` <span style="color:var(--muted);font-weight:normal">${escapeHtml(turn.created_at)}</span>` : ''}</div>

@@ -1515,7 +1515,36 @@ func (m chatModel) View() string {
 	}
 
 	systemMsgStyle := lipgloss.NewStyle().Foreground(colorMuted).Italic(true)
+	thoughtStyle := lipgloss.NewStyle().Foreground(colorMuted).Italic(true)
 	for _, turn := range m.conversation {
+		// Train-of-thought turns (thinking, agent_text) get a compact rendering:
+		// no agent-name prefix, content is indented and gray with the emoji
+		// inline at the first line.
+		if turn.Role == "thinking" || turn.Role == "agent_text" {
+			icon := "💭"
+			if turn.Role == "agent_text" {
+				icon = "📝"
+			}
+			contentWidth := m.width - 6 // account for "  {icon} " prefix (icon is 2 cols + spaces)
+			if contentWidth < 20 {
+				contentWidth = 60
+			}
+			content := turn.Content
+			if strings.TrimSpace(content) == "" {
+				content = "(empty)"
+			}
+			wrapped := wordWrap(content, contentWidth)
+			for i, line := range strings.Split(wrapped, "\n") {
+				if i == 0 {
+					msgLines = append(msgLines, thoughtStyle.Render(fmt.Sprintf("  %s %s", icon, line)))
+				} else {
+					msgLines = append(msgLines, thoughtStyle.Render("    "+line))
+				}
+			}
+			msgLines = append(msgLines, "")
+			continue
+		}
+
 		var prefix string
 		switch turn.Role {
 		case "user":
@@ -1526,18 +1555,6 @@ func (m chatModel) View() string {
 			}
 		case "system":
 			prefix = systemMsgStyle.Render("⚙ system")
-		case "thinking":
-			agentLabel := m.sessionName
-			if agentLabel == "" {
-				agentLabel = "agent"
-			}
-			prefix = assistantMsgStyle.Render("💭 " + agentLabel)
-		case "agent_text":
-			agentLabel := m.sessionName
-			if agentLabel == "" {
-				agentLabel = "agent"
-			}
-			prefix = assistantMsgStyle.Render("📝 " + agentLabel)
 		default:
 			agentLabel := m.sessionName
 			if agentLabel == "" {
@@ -1561,7 +1578,7 @@ func (m chatModel) View() string {
 		}
 		var rendered string
 		switch turn.Role {
-		case "assistant", "user", "thinking", "agent_text":
+		case "assistant", "user":
 			rendered = m.cachedRenderMarkdown(content, contentWidth)
 		case "system":
 			rendered = wordWrap(content, contentWidth)
