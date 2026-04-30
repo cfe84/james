@@ -128,8 +128,22 @@ func New(version string, opts ...UIOptions) Model {
 	}
 }
 
+// soundSettingLoadedMsg is dispatched once the sound default has been read
+// from the server at startup. It overrides the CLI --silent flag only when
+// the user has explicitly stored "off" via the in-TUI toggle.
+type soundSettingLoadedMsg struct {
+	value string
+}
+
+func (m Model) loadSoundSetting() tea.Cmd {
+	return func() tea.Msg {
+		v, _ := m.client.getDefault("sound")
+		return soundSettingLoadedMsg{value: v}
+	}
+}
+
 func (m Model) Init() tea.Cmd {
-	return m.dashboard.Init()
+	return tea.Batch(m.dashboard.Init(), m.loadSoundSetting())
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -568,6 +582,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.projectDetail, cmd = m.projectDetail.Update(msg)
 			return m, cmd
+		}
+		return m, nil
+
+	case soundSettingLoadedMsg:
+		// Honor stored "off" setting; "on" or empty leaves the CLI flag value.
+		if msg.value == "off" {
+			m.silent = true
+		} else if msg.value == "on" {
+			m.silent = false
 		}
 		return m, nil
 
@@ -1075,6 +1098,17 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.dashboard.showAll = !m.dashboard.showAll
 		m.dashboard.loading = true
 		return m, m.dashboard.loadDashboard()
+	case "b":
+		m.silent = !m.silent
+		value := "on"
+		if m.silent {
+			value = "off"
+			m.statusMsg = "Sound notifications: 🔕 off"
+		} else {
+			m.statusMsg = "Sound notifications: 🔔 on"
+		}
+		go func(v string) { _ = m.client.setDefault("sound", v) }(value)
+		return m, nil
 	case "t":
 		m.templatePicker = newTemplatePickerModel(m.client, "")
 		m.templatePicker.width = m.width
@@ -1754,11 +1788,16 @@ func (m Model) renderStatusBar() string {
 			if m.dashboard.showSubs {
 				subsLabel = " hide subs"
 			}
+			soundLabel := " 🔔 sound"
+			if m.silent {
+				soundLabel = " 🔕 sound"
+			}
 			keys = []string{
 				statusKeyStyle.Render("↵") + statusDescStyle.Render(" chat"),
 				statusKeyStyle.Render("/") + statusDescStyle.Render(" filter"),
 				statusKeyStyle.Render("a") + statusDescStyle.Render(completedLabel),
 				statusKeyStyle.Render("s") + statusDescStyle.Render(subsLabel),
+				statusKeyStyle.Render("b") + statusDescStyle.Render(soundLabel),
 				statusKeyStyle.Render("c") + statusDescStyle.Render(" complete"),
 				statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
 				statusKeyStyle.Render("e") + statusDescStyle.Render(" edit"),

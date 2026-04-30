@@ -174,8 +174,8 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidPath, fmt.Sprintf("path does not exist: %s", data.Path))
 	}
 
-	// Check agent binary exists.
-	if _, err := exec.LookPath(data.Agent); err != nil {
+	// Check agent binary exists (PATH or well-known install locations).
+	if _, err := agent.FindAgent(data.Agent); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrAgentNotFound, fmt.Sprintf("agent binary not found: %s", data.Agent))
 	}
 
@@ -766,9 +766,9 @@ func copilotModels() []envelope.ModelInfo {
 		log.Printf("copilot models: returning %d cached models (age: %v)", len(copilotModelCache), time.Since(copilotModelCacheTime))
 		return copilotModelCache
 	}
-	path, err := exec.LookPath("copilot")
+	path, err := agent.FindAgent("copilot")
 	if err != nil {
-		log.Printf("copilot models: copilot not found in PATH: %v", err)
+		log.Printf("copilot models: copilot not found: %v", err)
 		return nil
 	}
 

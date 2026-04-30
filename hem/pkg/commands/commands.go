@@ -476,7 +476,9 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.SetDefaultValue("mi6", args)
 	case "set-default download-path":
 		return e.SetDefaultValue("download-path", args)
-	case "get-default moneypenny", "get-default agent", "get-default path", "get-default mi6", "get-default download-path":
+	case "set-default sound":
+		return e.SetDefaultValue("sound", args)
+	case "get-default moneypenny", "get-default agent", "get-default path", "get-default mi6", "get-default download-path", "get-default sound":
 		return e.GetDefaultValue(noun)
 	case "list default":
 		return e.ListDefaults(args)
