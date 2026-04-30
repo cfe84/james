@@ -40,15 +40,20 @@ COPY --from=mi6-builder /build/mi6-client /usr/local/bin/mi6-client
 # uses 1000 for its built-in `node` user.
 RUN addgroup -g 1001 mp && adduser -D -u 1001 -G mp -s /bin/bash mp
 
+# Ensure HOME is set so `docker exec --user mp` finds the right home.
+ENV HOME=/home/mp
+
 # Entrypoint runs as root to fix volume ownership, then drops to the mp user.
 COPY moneypenny/docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # Persistent volume mount points (owned by mp user):
-#   /home/mp/.ssh         - SSH keys (for git operations done by agents)
-#   /home/mp/.claude      - Claude Code config (settings, sessions)
-#   /home/mp/.claude.json - Claude Code login state / API token (single file)
-#   /data                 - Moneypenny data (SQLite, keys, logs)
+#   /home/mp/.ssh    - SSH keys (for git operations done by agents)
+#   /home/mp/.claude - Claude Code config (settings, sessions)
+#   /data            - Moneypenny data (SQLite, keys, logs).
+#                      Claude's auth file lives at /data/claude.json and is
+#                      symlinked from /home/mp/.claude.json by the entrypoint
+#                      (avoids fragile single-file bind mounts).
 VOLUME ["/home/mp/.ssh", "/home/mp/.claude", "/data"]
 
 # Configuration via environment variables.

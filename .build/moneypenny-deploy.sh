@@ -17,7 +17,6 @@ docker create \
     ${MP_VERBOSE:+-e MP_VERBOSE="${MP_VERBOSE}"} \
     -v "${MP_SSH_PATH}:/home/mp/.ssh" \
     -v "${MP_CLAUDE_PATH}:/home/mp/.claude" \
-    -v "${MP_CLAUDE_JSON_PATH}:/home/mp/.claude.json" \
     -v "${MP_DATA_PATH}:/data" \
     moneypenny
 

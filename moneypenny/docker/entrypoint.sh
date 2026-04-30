@@ -10,8 +10,18 @@ fi
 # Ensure mounted volumes are owned by the mp user (volumes from the host
 # may be owned by a different UID).
 chown -R mp:mp /home/mp/.ssh /home/mp/.claude /data 2>/dev/null || true
-# .claude.json is a single file (login token); chown if present.
-[ -e /home/mp/.claude.json ] && chown mp:mp /home/mp/.claude.json 2>/dev/null || true
+
+# Claude's auth lives at ~/.claude.json. Bind-mounting a single file is fragile
+# (Docker creates a dir if the host path doesn't exist), so we keep it inside
+# the /data volume and symlink. If a stale dir/file exists at /home/mp/.claude.json,
+# remove it first.
+if [ -e /home/mp/.claude.json ] && [ ! -L /home/mp/.claude.json ]; then
+  rm -rf /home/mp/.claude.json
+fi
+touch /data/claude.json
+chown mp:mp /data/claude.json
+ln -sfn /data/claude.json /home/mp/.claude.json
+chown -h mp:mp /home/mp/.claude.json
 
 # Build moneypenny args.
 MP_ARGS="--mi6 $MP_MI6_ADDRESS --data-dir /data"
