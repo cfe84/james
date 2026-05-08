@@ -61,14 +61,12 @@ func FindAgent(name string) (string, error) {
 				filepath.Join(home, ".claude", "local", "claude.exe"),
 			)
 		} else {
-			// macOS/Linux: standalone installer or npm global
+			// macOS/Linux: standalone installer, npm global, Homebrew, version managers.
 			candidates = append(candidates,
 				filepath.Join(home, ".claude-cli", "CurrentVersion", "claude"),
 				filepath.Join(home, ".claude", "local", "claude"),
-				filepath.Join(home, ".npm-global", "bin", "claude"),
-				"/usr/local/bin/claude",
-				"/opt/homebrew/bin/claude",
 			)
+			candidates = append(candidates, unixNodeBinCandidates(home, "claude")...)
 		}
 	case "copilot":
 		if runtime.GOOS == "windows" {
@@ -84,11 +82,7 @@ func FindAgent(name string) (string, error) {
 				candidates = append(candidates, filepath.Join(localAppData, "Programs", "copilot", "copilot.exe"))
 			}
 		} else {
-			candidates = append(candidates,
-				filepath.Join(home, ".npm-global", "bin", "copilot"),
-				"/usr/local/bin/copilot",
-				"/opt/homebrew/bin/copilot",
-			)
+			candidates = append(candidates, unixNodeBinCandidates(home, "copilot")...)
 		}
 	}
 
@@ -99,6 +93,61 @@ func FindAgent(name string) (string, error) {
 	}
 
 	return "", fmt.Errorf("agent binary %q not found in PATH or well-known locations", name)
+}
+
+// prependToPath returns a copy of env with `dir` prepended to the PATH var.
+// If PATH isn't set, it's added with just `dir`.
+func prependToPath(env []string, dir string) []string {
+	out := make([]string, 0, len(env)+1)
+	found := false
+	for _, e := range env {
+		if strings.HasPrefix(e, "PATH=") {
+			existing := strings.TrimPrefix(e, "PATH=")
+			if existing == "" {
+				out = append(out, "PATH="+dir)
+			} else {
+				out = append(out, "PATH="+dir+string(os.PathListSeparator)+existing)
+			}
+			found = true
+		} else {
+			out = append(out, e)
+		}
+	}
+	if !found {
+		out = append(out, "PATH="+dir)
+	}
+	return out
+}
+
+// unixNodeBinCandidates returns common install paths for a Node-based CLI on
+// macOS/Linux, covering Homebrew, npm global, nvm, Volta, Bun, and friends.
+// nvm paths are globbed since they include a node version segment.
+func unixNodeBinCandidates(home, bin string) []string {
+	var c []string
+	// System / Homebrew
+	c = append(c,
+		"/usr/local/bin/"+bin,
+		"/opt/homebrew/bin/"+bin,
+	)
+	// User-local
+	c = append(c,
+		filepath.Join(home, ".local", "bin", bin),
+		filepath.Join(home, "bin", bin),
+		filepath.Join(home, ".npm-global", "bin", bin),
+		filepath.Join(home, ".npm", "bin", bin),
+		filepath.Join(home, ".yarn", "bin", bin),
+		filepath.Join(home, ".bun", "bin", bin),
+		filepath.Join(home, ".volta", "bin", bin),
+	)
+	// nvm: ~/.nvm/versions/node/<version>/bin/<bin> — glob to find any version.
+	if matches, err := filepath.Glob(filepath.Join(home, ".nvm", "versions", "node", "*", "bin", bin)); err == nil {
+		c = append(c, matches...)
+	}
+	// fnm (fast node manager)
+	if matches, err := filepath.Glob(filepath.Join(home, ".local", "share", "fnm", "node-versions", "*", "installation", "bin", bin)); err == nil {
+		c = append(c, matches...)
+	}
+	return c
 }
 
 // Result holds the parsed result from a claude invocation.
@@ -226,7 +275,14 @@ func (r *Runner) Run(ctx context.Context, params RunParams) (*Result, error) {
 	if params.Path != "" {
 		cmd.Dir = params.Path
 	}
-	cmd.Env = append(os.Environ(), "HEM_SESSION_ID="+params.SessionID)
+	// Build env: prepend the agent's directory to PATH so shebangs like
+	// `#!/usr/bin/env node` find `node` next to `copilot`/`claude` (e.g. for
+	// nvm-installed agents where the moneypenny service's PATH doesn't
+	// otherwise include the node version's bin dir).
+	agentDir := filepath.Dir(agentPath)
+	env := prependToPath(os.Environ(), agentDir)
+	env = append(env, "HEM_SESSION_ID="+params.SessionID)
+	cmd.Env = env
 	if inv.stdin != "" {
 		cmd.Stdin = strings.NewReader(inv.stdin)
 	}
