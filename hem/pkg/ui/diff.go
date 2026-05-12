@@ -28,7 +28,22 @@ const (
 	diffTabDiff diffTab = iota
 	diffTabLog
 	diffTabCommit // viewing a specific commit
+	diffTabFiles  // list of changed files
 )
+
+// filesAutoThreshold is the number of changed lines above which the Files tab
+// becomes the default landing tab when opening the diff view.
+const filesAutoThreshold = 400
+
+// fileEntry describes a single changed file for the Files tab.
+type fileEntry struct {
+	name     string // file path
+	added    int    // count of "+" lines
+	removed  int    // count of "-" lines
+	binary   bool   // true if binary / non-textual change
+	startSeq int    // first 1-based sequential line in m.diff for this file
+	endSeq   int    // last 1-based sequential line (inclusive)
+}
 
 // logEntry represents a parsed git log line with its commit hash.
 type logEntry struct {
@@ -102,6 +117,13 @@ type diffModel struct {
 	reviewPrompt textInput              // for overall review prompt
 	lineAction   string                 // "comment" or "delete"
 	pendingLine  int                    // line number being commented
+
+	// Files tab state.
+	fileList     []fileEntry     // parsed from lineMeta on diff load
+	fileCursor   int             // selected file index in fileList
+	fileScroll   int             // top-of-view scroll for file list
+	selectedFile string          // when non-empty, viewDiff renders only this file
+	reviewed     map[string]bool // file path -> reviewed (in-memory, view-scoped)
 }
 
 type diffLoadedMsg struct {
@@ -144,6 +166,7 @@ func newDiffModel(c *client, sessionID string) diffModel {
 		lineInput:    newTextInput(false),
 		commentInput: newTextInput(true),
 		reviewPrompt: newTextInput(true),
+		reviewed:     make(map[string]bool),
 	}
 }
 
@@ -234,6 +257,8 @@ func parseDiffMeta(diff string) []diffLineMeta {
 	var oldLine, newLine int
 
 	for i, line := range lines {
+		// Strip any trailing \r (handles CRLF-formatted files in the diff).
+		line = strings.TrimRight(line, "\r")
 		switch {
 		case strings.HasPrefix(line, "+++ b/"):
 			currentFile = strings.TrimPrefix(line, "+++ b/")
@@ -284,6 +309,83 @@ func parseDiffMeta(diff string) []diffLineMeta {
 		}
 	}
 	return meta
+}
+
+// buildFileList walks lineMeta and produces an entry per changed file in
+// order of appearance, with +/- counts and seqLine bounds for filtering.
+func buildFileList(lineMeta []diffLineMeta) []fileEntry {
+	var entries []fileEntry
+	idx := make(map[string]int) // name -> index in entries
+	for i, lm := range lineMeta {
+		if lm.file == "" {
+			continue
+		}
+		seq := i + 1
+		pos, ok := idx[lm.file]
+		if !ok {
+			idx[lm.file] = len(entries)
+			pos = len(entries)
+			entries = append(entries, fileEntry{name: lm.file, startSeq: seq})
+		}
+		e := &entries[pos]
+		if seq > e.endSeq {
+			e.endSeq = seq
+		}
+		switch lm.side {
+		case "+":
+			e.added++
+		case "-":
+			e.removed++
+		}
+	}
+	// Mark binary / mode-only changes (file present but no +/- lines).
+	for i := range entries {
+		if entries[i].added == 0 && entries[i].removed == 0 {
+			entries[i].binary = true
+		}
+	}
+	return entries
+}
+
+// totalChangedLines returns the total +/- line count across all files.
+func totalChangedLines(fileList []fileEntry) int {
+	total := 0
+	for _, e := range fileList {
+		total += e.added + e.removed
+	}
+	return total
+}
+
+// firstCommentSeqForFile returns the smallest commented seqLine within the
+// given file, or 0 if none.
+func (m diffModel) firstCommentSeqForFile(file string) int {
+	best := 0
+	for seq := range m.comments {
+		if seq < 1 || seq > len(m.lineMeta) {
+			continue
+		}
+		if m.lineMeta[seq-1].file != file {
+			continue
+		}
+		if best == 0 || seq < best {
+			best = seq
+		}
+	}
+	return best
+}
+
+// commentCountForFile counts review comments attached to the given file.
+func (m diffModel) commentCountForFile(file string) int {
+	n := 0
+	for seq := range m.comments {
+		if seq < 1 || seq > len(m.lineMeta) {
+			continue
+		}
+		if m.lineMeta[seq-1].file == file {
+			n++
+		}
+	}
+	return n
 }
 
 // parseHunkHeader parses @@ -old,count +new,count @@ and returns old/new start lines.
@@ -457,8 +559,21 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 		m.loading = false
 		m.diff = msg.diff
 		m.err = msg.err
+		m.fileList = nil
+		m.fileCursor = 0
+		m.fileScroll = 0
+		m.selectedFile = ""
 		if msg.diff != "" {
 			m.lineMeta = parseDiffMeta(msg.diff)
+			m.fileList = buildFileList(m.lineMeta)
+			// Default to Files tab for large diffs (only if user hasn't
+			// navigated away from the initial Diff tab manually). Only flips
+			// on the *initial* load; subsequent reloads (e.g. after commit)
+			// keep whatever tab the user is on.
+			if m.tab == diffTabDiff && len(m.fileList) > 1 &&
+				totalChangedLines(m.fileList) > filesAutoThreshold {
+				m.tab = diffTabFiles
+			}
 		}
 
 	case gitLogLoadedMsg:
@@ -559,24 +674,44 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 			return m, nil
 		}
 
+		// Files tab — list mode (no file selected).
+		if m.tab == diffTabFiles && m.selectedFile == "" {
+			return m.updateFilesList(msg)
+		}
+
 		halfPage := m.height / 2
 		if halfPage < 1 {
 			halfPage = 10
 		}
 
+		// "diff-like" view = either the Diff tab or a Files-tab file detail.
+		diffLike := m.tab == diffTabDiff || (m.tab == diffTabFiles && m.selectedFile != "")
+
 		switch msg.String() {
 		case "tab":
-			if m.tab == diffTabDiff {
-				m.tab = diffTabLog
-			} else {
+			// Cycle: Files → Diff → Log → Files. Leaving a file detail clears selection.
+			switch m.tab {
+			case diffTabFiles:
 				m.tab = diffTabDiff
+				m.selectedFile = ""
+			case diffTabDiff:
+				m.tab = diffTabLog
+			case diffTabLog:
+				m.tab = diffTabFiles
+				m.selectedFile = ""
+			}
+		case "f":
+			// Hotkey: jump to the Files tab.
+			if m.tab != diffTabFiles {
+				m.tab = diffTabFiles
+				m.selectedFile = ""
 			}
 		case "up", "k":
 			if m.tab == diffTabLog {
 				if m.logCursor > 0 {
 					m.logCursor--
 				}
-			} else {
+			} else if diffLike {
 				if m.scroll > 0 {
 					m.scroll--
 				}
@@ -586,7 +721,7 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 				if m.logCursor < len(m.logEntries)-1 {
 					m.logCursor++
 				}
-			} else {
+			} else if diffLike {
 				m.scroll++
 			}
 		case "pgup":
@@ -595,7 +730,7 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 				if m.logCursor < 0 {
 					m.logCursor = 0
 				}
-			} else {
+			} else if diffLike {
 				m.scroll -= 10
 				if m.scroll < 0 {
 					m.scroll = 0
@@ -610,7 +745,7 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 				if m.logCursor < 0 {
 					m.logCursor = 0
 				}
-			} else {
+			} else if diffLike {
 				m.scroll += 10
 			}
 		case "ctrl+u":
@@ -619,7 +754,7 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 				if m.logCursor < 0 {
 					m.logCursor = 0
 				}
-			} else {
+			} else if diffLike {
 				m.scroll -= halfPage
 				if m.scroll < 0 {
 					m.scroll = 0
@@ -634,7 +769,7 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 				if m.logCursor < 0 {
 					m.logCursor = 0
 				}
-			} else {
+			} else if diffLike {
 				m.scroll += halfPage
 			}
 		case "enter":
@@ -651,27 +786,25 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 					return m, m.loadGitShow(entry.hash)
 				}
 			}
-			// On diff tab with comments, enter starts submit review flow.
-			if m.tab == diffTabDiff && m.hasComments() {
+			// On a diff-like view with comments, enter starts submit review flow.
+			if diffLike && m.hasComments() {
 				m.mode = diffModeSubmitReview
 				m.reviewPrompt.Reset()
 			}
 		case "r":
-			// Start adding a review comment (diff tab only).
-			if m.tab == diffTabDiff && m.diff != "" {
+			if diffLike && m.diff != "" {
 				m.mode = diffModeLineInput
 				m.lineAction = "comment"
 				m.lineInput.Reset()
 			}
 		case "d":
-			// Start deleting a review comment (diff tab only).
-			if m.tab == diffTabDiff && m.hasComments() {
+			if diffLike && m.hasComments() {
 				m.mode = diffModeLineInput
 				m.lineAction = "delete"
 				m.lineInput.Reset()
 			}
 		case "c":
-			if m.tab == diffTabDiff && m.diff != "" {
+			if diffLike && m.diff != "" {
 				m.mode = diffModeCommitMsg
 				m.pushAfter = false
 				m.amendMode = false
@@ -679,7 +812,7 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 				m.commitErr = nil
 			}
 		case "C":
-			if m.tab == diffTabDiff && m.diff != "" {
+			if diffLike && m.diff != "" {
 				m.mode = diffModeCommitMsg
 				m.pushAfter = true
 				m.amendMode = false
@@ -687,7 +820,7 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 				m.commitErr = nil
 			}
 		case "a":
-			if m.tab == diffTabDiff {
+			if diffLike {
 				m.mode = diffModeCommitMsg
 				m.pushAfter = false
 				m.amendMode = true
@@ -695,7 +828,7 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 				m.commitErr = nil
 			}
 		case "A":
-			if m.tab == diffTabDiff {
+			if diffLike {
 				m.mode = diffModeCommitMsg
 				m.pushAfter = true
 				m.amendMode = true
@@ -711,6 +844,129 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 		}
 	}
 	return m, nil
+}
+
+// updateFilesList handles key input when on the Files tab in list mode.
+func (m diffModel) updateFilesList(msg tea.KeyMsg) (diffModel, tea.Cmd) {
+	halfPage := m.height / 2
+	if halfPage < 1 {
+		halfPage = 10
+	}
+
+	switch msg.String() {
+	case "tab":
+		m.tab = diffTabDiff
+	case "up", "k":
+		if m.fileCursor > 0 {
+			m.fileCursor--
+		}
+	case "down", "j":
+		if m.fileCursor < len(m.fileList)-1 {
+			m.fileCursor++
+		}
+	case "pgup":
+		m.fileCursor -= 10
+		if m.fileCursor < 0 {
+			m.fileCursor = 0
+		}
+	case "pgdown":
+		m.fileCursor += 10
+		if m.fileCursor >= len(m.fileList) {
+			m.fileCursor = len(m.fileList) - 1
+		}
+		if m.fileCursor < 0 {
+			m.fileCursor = 0
+		}
+	case "ctrl+u":
+		m.fileCursor -= halfPage
+		if m.fileCursor < 0 {
+			m.fileCursor = 0
+		}
+	case "ctrl+d":
+		m.fileCursor += halfPage
+		if m.fileCursor >= len(m.fileList) {
+			m.fileCursor = len(m.fileList) - 1
+		}
+		if m.fileCursor < 0 {
+			m.fileCursor = 0
+		}
+	case "enter":
+		if m.fileCursor >= 0 && m.fileCursor < len(m.fileList) {
+			f := m.fileList[m.fileCursor]
+			m.selectedFile = f.name
+			// Scroll-to-first-comment in the file (if any), else top.
+			if firstSeq := m.firstCommentSeqForFile(f.name); firstSeq > 0 {
+				m.scroll = m.scrollOffsetForSeq(f.name, firstSeq)
+			} else {
+				m.scroll = 0
+			}
+		}
+	case " ":
+		// Toggle reviewed mark on the highlighted file.
+		if m.fileCursor >= 0 && m.fileCursor < len(m.fileList) {
+			name := m.fileList[m.fileCursor].name
+			if m.reviewed[name] {
+				delete(m.reviewed, name)
+			} else {
+				m.reviewed[name] = true
+			}
+		}
+	case "c":
+		if m.diff != "" {
+			m.mode = diffModeCommitMsg
+			m.pushAfter = false
+			m.amendMode = false
+			m.commitMsg = ""
+			m.commitErr = nil
+		}
+	case "C":
+		if m.diff != "" {
+			m.mode = diffModeCommitMsg
+			m.pushAfter = true
+			m.amendMode = false
+			m.commitMsg = ""
+			m.commitErr = nil
+		}
+	case "a":
+		m.mode = diffModeCommitMsg
+		m.pushAfter = false
+		m.amendMode = true
+		m.commitMsg = ""
+		m.commitErr = nil
+	case "A":
+		m.mode = diffModeCommitMsg
+		m.pushAfter = true
+		m.amendMode = true
+		m.commitMsg = ""
+		m.commitErr = nil
+	case "p":
+		if !m.committing {
+			m.committing = true
+			m.commitErr = nil
+			return m, m.doPush()
+		}
+	}
+	return m, nil
+}
+
+// scrollOffsetForSeq approximates the scroll offset (in raw lines) so that
+// the given sequential line is visible when viewing the file-filtered diff.
+// Returns 0 if not found. This is a best-effort calculation that ignores
+// line wrapping (typical diffs don't wrap much in practice).
+func (m diffModel) scrollOffsetForSeq(file string, targetSeq int) int {
+	// Walk lineMeta; count how many filtered lines precede targetSeq.
+	count := 0
+	for i := 0; i < len(m.lineMeta) && i+1 < targetSeq; i++ {
+		if m.lineMeta[i].file == file {
+			count++
+		}
+	}
+	// Show 3 lines of context above the comment.
+	offset := count - 3
+	if offset < 0 {
+		offset = 0
+	}
+	return offset
 }
 
 // updateLineInput handles key input when entering a line number for r/d.
@@ -875,29 +1131,41 @@ func (m diffModel) View() string {
 	b.WriteString(titleStyle.Render(title))
 
 	// Tab bar.
+	filesLabel := " Files "
 	diffLabel := " Diff "
 	logLabel := " Log "
-	if m.tab == diffTabCommit {
-		// In commit detail view, show commit hash as active tab.
-		diffLabel = lipgloss.NewStyle().Foreground(colorMuted).Render(diffLabel)
-		logLabel = lipgloss.NewStyle().Foreground(colorMuted).Render(logLabel)
+	mutedStyle := lipgloss.NewStyle().Foreground(colorMuted)
+	activeStyle := lipgloss.NewStyle().Foreground(colorPrimary).Bold(true)
+	switch m.tab {
+	case diffTabCommit:
 		commitLabel := fmt.Sprintf(" %s ", truncate(m.commitHash, 10))
-		commitLabel = lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render(commitLabel)
-		b.WriteString("  " + diffLabel + " " + logLabel + " " + commitLabel)
-	} else if m.tab == diffTabDiff {
-		diffLabel = lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render(diffLabel)
-		logLabel = lipgloss.NewStyle().Foreground(colorMuted).Render(logLabel)
-		b.WriteString("  " + diffLabel + " " + logLabel)
-		// Show comment count if any.
-		if m.hasComments() {
-			count := lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B")).Render(
-				fmt.Sprintf(" [%d comment(s)]", len(m.comments)))
-			b.WriteString(count)
+		b.WriteString("  " + mutedStyle.Render(filesLabel) + " " +
+			mutedStyle.Render(diffLabel) + " " +
+			mutedStyle.Render(logLabel) + " " +
+			activeStyle.Render(commitLabel))
+	case diffTabFiles:
+		b.WriteString("  " + activeStyle.Render(filesLabel) + " " +
+			mutedStyle.Render(diffLabel) + " " +
+			mutedStyle.Render(logLabel))
+		if m.selectedFile != "" {
+			b.WriteString(" " + mutedStyle.Render("› "+m.selectedFile))
 		}
-	} else {
-		diffLabel = lipgloss.NewStyle().Foreground(colorMuted).Render(diffLabel)
-		logLabel = lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render(logLabel)
-		b.WriteString("  " + diffLabel + " " + logLabel)
+		if m.hasComments() {
+			b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B")).Render(
+				fmt.Sprintf(" [%d comment(s)]", len(m.comments))))
+		}
+	case diffTabDiff:
+		b.WriteString("  " + mutedStyle.Render(filesLabel) + " " +
+			activeStyle.Render(diffLabel) + " " +
+			mutedStyle.Render(logLabel))
+		if m.hasComments() {
+			b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B")).Render(
+				fmt.Sprintf(" [%d comment(s)]", len(m.comments))))
+		}
+	case diffTabLog:
+		b.WriteString("  " + mutedStyle.Render(filesLabel) + " " +
+			mutedStyle.Render(diffLabel) + " " +
+			activeStyle.Render(logLabel))
 	}
 	b.WriteString("\n")
 
@@ -908,6 +1176,12 @@ func (m diffModel) View() string {
 		b.WriteString(m.viewLog())
 	case diffTabCommit:
 		b.WriteString(m.viewCommit())
+	case diffTabFiles:
+		if m.selectedFile == "" {
+			b.WriteString(m.viewFilesList())
+		} else {
+			b.WriteString(m.viewDiff())
+		}
 	}
 
 	return b.String()
@@ -954,7 +1228,13 @@ func (m diffModel) viewDiff() string {
 	}
 
 	// Render diff with colors and line numbers.
+	// Strip any trailing \r so files with CRLF line endings don't get rendered
+	// as blank rows (the terminal's \r interpretation collides with the next
+	// line's output when written as part of a styled segment).
 	rawLines := strings.Split(m.diff, "\n")
+	for i, l := range rawLines {
+		rawLines[i] = strings.TrimRight(l, "\r")
+	}
 	viewHeight := m.height - 5 - bottomHeight
 	if viewHeight < 1 {
 		viewHeight = 20
@@ -969,6 +1249,8 @@ func (m diffModel) viewDiff() string {
 
 	// Build visual lines with wrapping. Each visual line tracks the original
 	// line number (seqNum). Continuation lines have seqNum = 0.
+	// When selectedFile is set (Files-tab file detail), only include lines
+	// belonging to that file (per lineMeta).
 	type visualLine struct {
 		seqNum int    // 1-based original line number; 0 for continuation
 		text   string // raw text for this segment
@@ -976,6 +1258,11 @@ func (m diffModel) viewDiff() string {
 	var vlines []visualLine
 	for i, line := range rawLines {
 		seqNum := i + 1
+		if m.selectedFile != "" {
+			if i >= len(m.lineMeta) || m.lineMeta[i].file != m.selectedFile {
+				continue
+			}
+		}
 		if len(line) <= contentWidth {
 			vlines = append(vlines, visualLine{seqNum: seqNum, text: line})
 		} else {
@@ -1064,6 +1351,111 @@ func (m diffModel) viewDiff() string {
 	}
 
 	return b.String()
+}
+
+// viewFilesList renders the Files tab in list mode.
+func (m diffModel) viewFilesList() string {
+	var b strings.Builder
+
+	if m.loading {
+		b.WriteString("\n  Loading diff...")
+		return b.String()
+	}
+	if m.err != nil {
+		b.WriteString(fmt.Sprintf("\n  Error: %v", m.err))
+		return b.String()
+	}
+	if len(m.fileList) == 0 {
+		b.WriteString("\n  No changes (working tree clean)")
+		return b.String()
+	}
+
+	viewHeight := m.height - 5
+	if viewHeight < 1 {
+		viewHeight = 20
+	}
+
+	// Auto-scroll to keep cursor visible.
+	if m.fileCursor < m.fileScroll {
+		m.fileScroll = m.fileCursor
+	}
+	if m.fileCursor >= m.fileScroll+viewHeight {
+		m.fileScroll = m.fileCursor - viewHeight + 1
+	}
+	maxScroll := len(m.fileList) - viewHeight
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if m.fileScroll > maxScroll {
+		m.fileScroll = maxScroll
+	}
+
+	end := m.fileScroll + viewHeight
+	if end > len(m.fileList) {
+		end = len(m.fileList)
+	}
+
+	selectedStyle := lipgloss.NewStyle().Background(lipgloss.Color("#333333"))
+	addedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#10B981"))
+	removedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444"))
+	mutedStyle := lipgloss.NewStyle().Foreground(colorMuted)
+	commentColor := lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B"))
+	reviewedColor := lipgloss.NewStyle().Foreground(lipgloss.Color("#10B981"))
+
+	// Compute max file-name width for alignment.
+	maxName := 0
+	for _, f := range m.fileList {
+		if len(f.name) > maxName {
+			maxName = len(f.name)
+		}
+	}
+	if maxName > 60 {
+		maxName = 60
+	}
+
+	for i := m.fileScroll; i < end; i++ {
+		f := m.fileList[i]
+		mark := "  "
+		if m.reviewed[f.name] {
+			mark = reviewedColor.Render("✔ ")
+		}
+		name := f.name
+		if len(name) > maxName {
+			name = name[:maxName-1] + "…"
+		}
+		namePad := strings.Repeat(" ", maxName-len(name))
+		var stats string
+		if f.binary {
+			stats = mutedStyle.Render("binary")
+		} else {
+			stats = addedStyle.Render(fmt.Sprintf("+%d", f.added)) + " " +
+				removedStyle.Render(fmt.Sprintf("-%d", f.removed))
+		}
+		extra := ""
+		if cc := m.commentCountForFile(f.name); cc > 0 {
+			extra = "  " + commentColor.Render(fmt.Sprintf("[%d comment%s]", cc, plural(cc)))
+		}
+		line := fmt.Sprintf(" %s%s%s   %s%s", mark, name, namePad, stats, extra)
+		if i == m.fileCursor {
+			line = selectedStyle.Render(line)
+		}
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
+
+	// Status hint.
+	b.WriteString(mutedStyle.Render(
+		fmt.Sprintf("  %d/%d  ↵=view  space=mark reviewed  tab=Diff", m.fileCursor+1, len(m.fileList))))
+	b.WriteString("\n")
+	return b.String()
+}
+
+// plural returns "s" if n != 1, else "".
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 func (m diffModel) viewLineInput() string {

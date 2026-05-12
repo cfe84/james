@@ -268,6 +268,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.diff.commitErr2 = nil
 				return m, nil
 			}
+			// Esc in Files-tab file-detail view returns to file list.
+			if m.currentView == viewDiff && m.diff.tab == diffTabFiles && m.diff.selectedFile != "" {
+				m.diff.selectedFile = ""
+				m.diff.scroll = 0
+				return m, nil
+			}
 			if m.currentView == viewDiff && m.diff.mode == diffModeCommitMsg {
 				m.diff.mode = diffModeView
 				m.diff.commitMsg = ""
@@ -2000,14 +2006,34 @@ func (m Model) renderStatusBar() string {
 			}
 		} else if m.diff.tab == diffTabDiff {
 			keys = []string{
-				statusKeyStyle.Render("tab") + statusDescStyle.Render(" log"),
+				statusKeyStyle.Render("tab") + statusDescStyle.Render(" next"),
+				statusKeyStyle.Render("f") + statusDescStyle.Render(" files"),
 				statusKeyStyle.Render("↑↓") + statusDescStyle.Render(" scroll"),
+				statusKeyStyle.Render("r") + statusDescStyle.Render(" comment"),
 				statusKeyStyle.Render("c") + statusDescStyle.Render(" commit"),
 				statusKeyStyle.Render("C") + statusDescStyle.Render(" commit+push"),
 				statusKeyStyle.Render("a") + statusDescStyle.Render(" amend"),
 				statusKeyStyle.Render("A") + statusDescStyle.Render(" amend+push"),
 				statusKeyStyle.Render("p") + statusDescStyle.Render(" push"),
 				statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
+			}
+		} else if m.diff.tab == diffTabFiles {
+			if m.diff.selectedFile == "" {
+				keys = []string{
+					statusKeyStyle.Render("↑↓") + statusDescStyle.Render(" select"),
+					statusKeyStyle.Render("↵") + statusDescStyle.Render(" view"),
+					statusKeyStyle.Render("␣") + statusDescStyle.Render(" mark reviewed"),
+					statusKeyStyle.Render("tab") + statusDescStyle.Render(" diff"),
+					statusKeyStyle.Render("c") + statusDescStyle.Render(" commit"),
+					statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
+				}
+			} else {
+				keys = []string{
+					statusKeyStyle.Render("↑↓") + statusDescStyle.Render(" scroll"),
+					statusKeyStyle.Render("r") + statusDescStyle.Render(" comment"),
+					statusKeyStyle.Render("c") + statusDescStyle.Render(" commit"),
+					statusKeyStyle.Render("esc") + statusDescStyle.Render(" back to files"),
+				}
 			}
 		} else {
 			keys = []string{
