@@ -2400,7 +2400,7 @@ func (e *Executor) CreateProject(args []string) *protocol.Response {
 	}
 
 	if agentName == "" {
-		agentName = "claude"
+		agentName = "copilot"
 	}
 
 	now := time.Now()
@@ -2599,7 +2599,7 @@ func (e *Executor) CreateTemplate(args []string) *protocol.Response {
 	_, err := parseFlagsFromArgs("create-template", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&projectNameOrID, "project", "", "project name or ID")
 		fs.StringVar(&name, "name", "", "template name")
-		fs.StringVar(&agent, "agent", "claude", "agent")
+		fs.StringVar(&agent, "agent", "copilot", "agent")
 		fs.StringVar(&pathArg, "path", "", "working directory")
 		fs.StringVar(&systemPrompt, "system-prompt", "", "system prompt")
 		fs.StringVar(&prompt, "prompt", "", "initial prompt")
@@ -2818,7 +2818,7 @@ func (e *Executor) UseTemplate(args []string) *protocol.Response {
 		agent = proj.DefaultAgent
 	}
 	if agent == "" {
-		agent = "claude"
+		agent = "copilot"
 	}
 	pathArg := t.Path
 	if pathArg == "" {
@@ -3335,7 +3335,7 @@ func (e *Executor) ListModels(args []string) *protocol.Response {
 	}
 
 	if agentName == "" {
-		agentName = "claude"
+		agentName = "copilot"
 	}
 
 	if mpName == "" {
@@ -3458,7 +3458,7 @@ func (e *Executor) ImportSession(args []string) *protocol.Response {
 		fs.StringVar(&mpName, "m", "", "moneypenny name")
 		fs.StringVar(&mpName, "moneypenny", "", "moneypenny name")
 		fs.StringVar(&sessionName, "name", "", "session name")
-		fs.StringVar(&agentName, "agent", "", "agent (default: claude)")
+		fs.StringVar(&agentName, "agent", "", "agent (default: copilot)")
 		fs.StringVar(&pathArg, "path", "", "working directory path")
 		fs.StringVar(&projectNameOrID, "project", "", "project name or ID")
 	})
@@ -3591,7 +3591,7 @@ func (e *Executor) ImportSession(args []string) *protocol.Response {
 		if v, _ := e.store.GetDefault("agent"); v != "" {
 			agentName = v
 		} else {
-			agentName = "claude"
+			agentName = "copilot"
 		}
 	}
 	if pathArg == "" {
@@ -4586,7 +4586,7 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 		if v, _ := e.store.GetDefault("agent"); v != "" {
 			agentName = v
 		} else {
-			agentName = "claude"
+			agentName = "copilot"
 		}
 	}
 

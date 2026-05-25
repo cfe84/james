@@ -803,6 +803,9 @@ func copilotModels() []envelope.ModelInfo {
 		"--output-format", "text",
 		"--available-tools", "",
 	)
+	// Prepend agent's dir to PATH so its shebang (e.g. `env node`) finds
+	// `node` in the same directory (nvm install layout).
+	cmd.Env = agent.PrependToPath(os.Environ(), filepath.Dir(path))
 	out, err := cmd.Output()
 	if err != nil {
 		log.Printf("copilot models: query failed: %v", err)

@@ -122,6 +122,24 @@ func (m editModel) Update(msg tea.Msg) (editModel, tea.Cmd) {
 		d := msg.detail
 		m.moneypenny = d.Moneypenny
 		m.agent = d.Agent
+		// Set effort options based on the session's agent. Reset value if no
+		// longer valid for this agent.
+		for i := range m.fields {
+			if m.fields[i].flag == "--effort" {
+				m.fields[i].options = effortOptions(m.agent)
+				valid := false
+				for _, o := range m.fields[i].options {
+					if o == d.Effort {
+						valid = true
+						break
+					}
+				}
+				if !valid {
+					d.Effort = ""
+				}
+				break
+			}
+		}
 		m.fields[0].value = d.Name
 		m.fields[1].value = d.Project
 		m.fields[2].value = d.Model

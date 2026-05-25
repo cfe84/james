@@ -95,9 +95,11 @@ func FindAgent(name string) (string, error) {
 	return "", fmt.Errorf("agent binary %q not found in PATH or well-known locations", name)
 }
 
-// prependToPath returns a copy of env with `dir` prepended to the PATH var.
-// If PATH isn't set, it's added with just `dir`.
-func prependToPath(env []string, dir string) []string {
+// PrependToPath returns a copy of env with `dir` prepended to the PATH var.
+// If PATH isn't set, it's added with just `dir`. Exported so handler code
+// invoking agent binaries directly (e.g. for model listing) can apply the
+// same fix.
+func PrependToPath(env []string, dir string) []string {
 	out := make([]string, 0, len(env)+1)
 	found := false
 	for _, e := range env {
@@ -280,7 +282,7 @@ func (r *Runner) Run(ctx context.Context, params RunParams) (*Result, error) {
 	// nvm-installed agents where the moneypenny service's PATH doesn't
 	// otherwise include the node version's bin dir).
 	agentDir := filepath.Dir(agentPath)
-	env := prependToPath(os.Environ(), agentDir)
+	env := PrependToPath(os.Environ(), agentDir)
 	env = append(env, "HEM_SESSION_ID="+params.SessionID)
 	cmd.Env = env
 	if inv.stdin != "" {

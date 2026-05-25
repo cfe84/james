@@ -268,24 +268,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.diff.commitErr2 = nil
 				return m, nil
 			}
-			// Esc in Files-tab file-detail view returns to file list.
-			if m.currentView == viewDiff && m.diff.tab == diffTabFiles && m.diff.selectedFile != "" {
-				m.diff.selectedFile = ""
-				m.diff.scroll = 0
-				return m, nil
-			}
 			if m.currentView == viewDiff && m.diff.mode == diffModeCommitMsg {
 				m.diff.mode = diffModeView
 				m.diff.commitMsg = ""
 				m.diff.commitErr = nil
 				return m, nil
 			}
-			// Diff review modes: esc cancels current input mode.
+			// Diff review modes: esc cancels current input mode (must run
+			// BEFORE the file-detail check so that cancelling a comment
+			// doesn't accidentally pop back to the file list).
 			if m.currentView == viewDiff && m.diff.mode != diffModeView {
 				m.diff.mode = diffModeView
 				m.diff.lineInput.Reset()
 				m.diff.commentInput.Reset()
 				m.diff.reviewPrompt.Reset()
+				return m, nil
+			}
+			// Esc in Files-tab file-detail view returns to file list.
+			if m.currentView == viewDiff && m.diff.tab == diffTabFiles && m.diff.selectedFile != "" {
+				m.diff.selectedFile = ""
+				m.diff.scroll = 0
 				return m, nil
 			}
 			// Clear dashboard/projectDetail filter on esc.
@@ -2019,14 +2021,19 @@ func (m Model) renderStatusBar() string {
 			}
 		} else if m.diff.tab == diffTabFiles {
 			if m.diff.selectedFile == "" {
-				keys = []string{
+				ks := []string{
 					statusKeyStyle.Render("↑↓") + statusDescStyle.Render(" select"),
 					statusKeyStyle.Render("↵") + statusDescStyle.Render(" view"),
 					statusKeyStyle.Render("␣") + statusDescStyle.Render(" mark reviewed"),
+					statusKeyStyle.Render("r") + statusDescStyle.Render(" comment"),
 					statusKeyStyle.Render("tab") + statusDescStyle.Render(" diff"),
 					statusKeyStyle.Render("c") + statusDescStyle.Render(" commit"),
-					statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
 				}
+				if m.diff.hasComments() {
+					ks = append(ks, statusKeyStyle.Render("S")+statusDescStyle.Render(" submit review"))
+				}
+				ks = append(ks, statusKeyStyle.Render("esc")+statusDescStyle.Render(" back"))
+				keys = ks
 			} else {
 				keys = []string{
 					statusKeyStyle.Render("↑↓") + statusDescStyle.Render(" scroll"),

@@ -856,6 +856,26 @@ func (m diffModel) updateFilesList(msg tea.KeyMsg) (diffModel, tea.Cmd) {
 	switch msg.String() {
 	case "tab":
 		m.tab = diffTabDiff
+	case "S":
+		// Submit review (only works if there are pending comments).
+		if m.hasComments() {
+			m.mode = diffModeSubmitReview
+			m.reviewPrompt.Reset()
+		}
+	case "r":
+		// Add a comment by line number (uses global sequential line numbers
+		// shown in the diff gutter; you can also enter a file and use r there).
+		if m.diff != "" {
+			m.mode = diffModeLineInput
+			m.lineAction = "comment"
+			m.lineInput.Reset()
+		}
+	case "d":
+		if m.hasComments() {
+			m.mode = diffModeLineInput
+			m.lineAction = "delete"
+			m.lineInput.Reset()
+		}
 	case "up", "k":
 		if m.fileCursor > 0 {
 			m.fileCursor--
@@ -1402,15 +1422,18 @@ func (m diffModel) viewFilesList() string {
 	commentColor := lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B"))
 	reviewedColor := lipgloss.NewStyle().Foreground(lipgloss.Color("#10B981"))
 
-	// Compute max file-name width for alignment.
+	// Compute max file-name width (in runes) for alignment.
 	maxName := 0
 	for _, f := range m.fileList {
-		if len(f.name) > maxName {
-			maxName = len(f.name)
+		if n := runeLen([]rune(f.name)); n > maxName {
+			maxName = n
 		}
 	}
 	if maxName > 60 {
 		maxName = 60
+	}
+	if maxName < 1 {
+		maxName = 1
 	}
 
 	for i := m.fileScroll; i < end; i++ {
@@ -1420,10 +1443,21 @@ func (m diffModel) viewFilesList() string {
 			mark = reviewedColor.Render("✔ ")
 		}
 		name := f.name
-		if len(name) > maxName {
-			name = name[:maxName-1] + "…"
+		// Use rune count for visual width and truncate by runes to avoid
+		// splitting multi-byte UTF-8 chars.
+		if runeLen([]rune(name)) > maxName {
+			rs := []rune(name)
+			if maxName > 1 {
+				name = string(rs[:maxName-1]) + "…"
+			} else {
+				name = "…"
+			}
 		}
-		namePad := strings.Repeat(" ", maxName-len(name))
+		pad := maxName - runeLen([]rune(name))
+		if pad < 0 {
+			pad = 0
+		}
+		namePad := strings.Repeat(" ", pad)
 		var stats string
 		if f.binary {
 			stats = mutedStyle.Render("binary")
@@ -1444,9 +1478,28 @@ func (m diffModel) viewFilesList() string {
 	}
 
 	// Status hint.
-	b.WriteString(mutedStyle.Render(
-		fmt.Sprintf("  %d/%d  ↵=view  space=mark reviewed  tab=Diff", m.fileCursor+1, len(m.fileList))))
+	hint := fmt.Sprintf("  %d/%d  ↵=view  space=mark reviewed  r=comment  tab=Diff", m.fileCursor+1, len(m.fileList))
+	if m.hasComments() {
+		hint += "  S=submit"
+	}
+	b.WriteString(mutedStyle.Render(hint))
 	b.WriteString("\n")
+
+	// Render any active modal (line input, comment editor, submit prompt,
+	// confirm-quit) so the user can see/respond to it from the file list.
+	switch m.mode {
+	case diffModeCommitMsg:
+		b.WriteString(m.viewCommitMsgInput())
+	case diffModeLineInput:
+		b.WriteString(m.viewLineInput())
+	case diffModeComment:
+		b.WriteString(m.viewCommentInput())
+	case diffModeSubmitReview:
+		b.WriteString(m.viewSubmitReview())
+	case diffModeConfirmQuit:
+		b.WriteString(m.viewConfirmQuit())
+	}
+
 	return b.String()
 }
 
@@ -1457,6 +1510,9 @@ func plural(n int) string {
 	}
 	return "s"
 }
+
+// runeLen returns the number of runes in r (counted from a []rune).
+func runeLen(r []rune) int { return len(r) }
 
 func (m diffModel) viewLineInput() string {
 	var b strings.Builder

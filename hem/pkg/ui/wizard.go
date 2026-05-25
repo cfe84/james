@@ -98,9 +98,9 @@ func newWizardModel(c *client) wizardModel {
 			{label: "Prompt", flag: "", value: ""},
 			{label: "Name", flag: "--name", value: ""},
 			{label: "Project", flag: "--project", value: ""},
-			{label: "Agent", flag: "--agent", value: "", options: []string{"", "claude", "copilot"}},
+			{label: "Agent", flag: "--agent", value: "copilot", options: []string{"", "claude", "copilot"}},
 			{label: "Model", flag: "--model", value: "", options: []string{""}},
-			{label: "Effort", flag: "--effort", value: "", options: []string{"", "low", "medium", "high"}},
+			{label: "Effort", flag: "--effort", value: "", options: effortOptions("copilot")},
 			{label: "System Prompt", flag: "--system-prompt", value: "", input: &spInput},
 			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
 			{label: "Gadgets (James tooling)", flag: "--gadgets", isBool: true, value: "false"},
@@ -117,7 +117,7 @@ func newProjectWizardModel(c *client) wizardModel {
 		forProject:  true,
 		fields: []formField{
 			{label: "Name", flag: "--name", value: ""},
-			{label: "Agent", flag: "--agent", value: "", options: []string{"", "claude", "copilot"}},
+			{label: "Agent", flag: "--agent", value: "copilot", options: []string{"", "claude", "copilot"}},
 			{label: "System Prompt", flag: "--system-prompt", value: ""},
 		},
 	}
@@ -330,7 +330,7 @@ func (m wizardModel) Update(msg tea.Msg) (wizardModel, tea.Cmd) {
 			if m.fields[i].flag == "--model" {
 				agentVal := m.currentAgent()
 				if agentVal == "" {
-					agentVal = "claude"
+					agentVal = "copilot"
 				}
 				if agentVal == msg.agent {
 					m.fields[i].options = msg.models
@@ -586,7 +586,7 @@ func (m wizardModel) updateFormStep(msg tea.KeyMsg) (wizardModel, tea.Cmd) {
 	// Detect agent change and reload models.
 	agent := m.currentAgent()
 	if agent == "" {
-		agent = "claude"
+		agent = "copilot"
 	}
 	if agent != m.lastAgent {
 		return m, m.loadModelsIfNeeded()
@@ -604,14 +604,55 @@ func (m wizardModel) currentAgent() string {
 	return ""
 }
 
+// effortOptions returns the valid --effort values for the given agent.
+// Includes a leading "" entry for "no override / default".
+func effortOptions(agent string) []string {
+	switch agent {
+	case "copilot":
+		return []string{"", "none", "low", "medium", "high", "xhigh", "max"}
+	default:
+		// Claude (and any other agent) keeps the original list.
+		return []string{"", "low", "medium", "high"}
+	}
+}
+
+// applyEffortOptions sets the Effort field's options based on the current
+// agent and clears the current value if it's no longer valid.
+func (m *wizardModel) applyEffortOptions(agent string) {
+	if agent == "" {
+		agent = "copilot"
+	}
+	opts := effortOptions(agent)
+	for i := range m.fields {
+		if m.fields[i].flag == "--effort" {
+			m.fields[i].options = opts
+			// Reset value if no longer valid.
+			valid := false
+			for _, o := range opts {
+				if o == m.fields[i].value {
+					valid = true
+					break
+				}
+			}
+			if !valid {
+				m.fields[i].value = ""
+			}
+			break
+		}
+	}
+}
+
 // loadModelsIfNeeded returns a tea.Cmd to load models for the current agent,
 // using the cache if available.
 func (m *wizardModel) loadModelsIfNeeded() tea.Cmd {
 	agent := m.currentAgent()
 	if agent == "" {
-		agent = "claude"
+		agent = "copilot"
 	}
 	m.lastAgent = agent
+
+	// Effort options vary by agent — refresh on every agent change.
+	m.applyEffortOptions(agent)
 
 	if m.modelCache != nil {
 		if cached, ok := m.modelCache[agent]; ok {
