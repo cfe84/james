@@ -204,6 +204,7 @@ type RunParams struct {
 	Yolo         bool
 	Path         string // working directory for the agent
 	Resume       bool   // true for continue_session
+	SessionDir   string // per-session persistent dir (managed by handler)
 }
 
 // PersistentActivityFunc is called for activity events that should be persisted
@@ -272,6 +273,9 @@ func (r *Runner) Run(ctx context.Context, params RunParams) (*Result, error) {
 	}
 
 	inv := buildArgs(params)
+	if inv.cleanup != nil {
+		defer inv.cleanup()
+	}
 
 	cmd := exec.CommandContext(ctx, agentPath, inv.args...)
 	if params.Path != "" {
@@ -284,6 +288,7 @@ func (r *Runner) Run(ctx context.Context, params RunParams) (*Result, error) {
 	agentDir := filepath.Dir(agentPath)
 	env := PrependToPath(os.Environ(), agentDir)
 	env = append(env, "HEM_SESSION_ID="+params.SessionID)
+	env = append(env, inv.env...)
 	cmd.Env = env
 	if inv.stdin != "" {
 		cmd.Stdin = strings.NewReader(inv.stdin)
@@ -635,10 +640,13 @@ func toolSummary(b map[string]any) string {
 
 // agentInvocation describes how to run an agent: the command-line args plus
 // optional stdin content (used for long prompts to avoid Windows' ~32KB
-// command line length limit).
+// command line length limit) plus optional extra env vars and a cleanup
+// function (e.g. to remove a temp instructions dir).
 type agentInvocation struct {
-	args  []string
-	stdin string
+	args    []string
+	stdin   string
+	env     []string     // extra env vars to merge into cmd.Env
+	cleanup func()       // optional cleanup, invoked after cmd.Wait()
 }
 
 // stdinPromptThreshold is the prompt length above which we route the prompt
@@ -730,12 +738,31 @@ func buildCopilotArgs(params RunParams) agentInvocation {
 	if params.Yolo {
 		args = append(args, "--yolo")
 	}
+
+	inv := agentInvocation{}
+	// Copilot has no --system-prompt flag. The supported mechanism is to put
+	// instructions.md in a directory pointed to by COPILOT_CUSTOM_INSTRUCTIONS_DIRS.
+	// Write the system prompt to the session's persistent dir so it survives
+	// resumes; no per-invocation cleanup needed (lifetime tied to the session).
+	if params.SystemPrompt != "" && params.SessionDir != "" {
+		instructionsDir := filepath.Join(params.SessionDir, "copilot-instructions")
+		if err := os.MkdirAll(instructionsDir, 0700); err == nil {
+			instructionsFile := filepath.Join(instructionsDir, "instructions.md")
+			if err := os.WriteFile(instructionsFile, []byte(params.SystemPrompt), 0600); err == nil {
+				inv.env = append(inv.env, "COPILOT_CUSTOM_INSTRUCTIONS_DIRS="+instructionsDir)
+			}
+		}
+	}
+
 	if needsStdin(params.Prompt) {
 		args = append(args, "-p")
-		return agentInvocation{args: args, stdin: params.Prompt}
+		inv.args = args
+		inv.stdin = params.Prompt
+		return inv
 	}
 	args = append(args, "-p", params.Prompt)
-	return agentInvocation{args: args}
+	inv.args = args
+	return inv
 }
 
 // Stop kills the subprocess for the given session.

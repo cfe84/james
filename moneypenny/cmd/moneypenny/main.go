@@ -111,7 +111,7 @@ func main() {
 	log.Printf("moneypenny v%s", Version)
 
 	runner := agent.New(vlog)
-	h := handler.New(st, runner, Version)
+	h := handler.New(st, runner, Version, *dataDir)
 	h.SetLogger(vlog.Printf)
 
 	ctx, cancel := context.WithCancel(context.Background())

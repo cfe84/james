@@ -32,6 +32,7 @@ type Handler struct {
 	store             *store.Store
 	runner            *agent.Runner
 	version           string
+	dataDir           string // moneypenny data root; used for per-session storage
 	vlog              func(string, ...interface{})
 	updateStatusFunc  func() envelope.UpdateStatusResponse
 	triggerUpdateFunc func() bool                  // returns true if check was queued
@@ -43,8 +44,10 @@ type Handler struct {
 type resultCallback func(sessionID, response string, err error)
 
 // New creates a new Handler with the given store, runner, and version string.
-func New(s *store.Store, runner *agent.Runner, version string) *Handler {
-	h := &Handler{store: s, runner: runner, version: version, vlog: func(string, ...interface{}) {}}
+// dataDir is the moneypenny data root (e.g. ~/.config/james/moneypenny) and is
+// used to allocate per-session persistent directories (sessions/<sessionID>/).
+func New(s *store.Store, runner *agent.Runner, version, dataDir string) *Handler {
+	h := &Handler{store: s, runner: runner, version: version, dataDir: dataDir, vlog: func(string, ...interface{}) {}}
 	// Persist thinking and intermediate-text activity events as conversation
 	// turns so the train of thought survives across reloads.
 	runner.SetPersistentActivityFunc(func(sessionID, eventType, content string) {
@@ -55,6 +58,21 @@ func New(s *store.Store, runner *agent.Runner, version string) *Handler {
 		_ = s.AddConversationTurn(sessionID, role, content)
 	})
 	return h
+}
+
+// sessionDir returns the per-session persistent directory under the data dir,
+// creating it if it doesn't exist. Returns "" if dataDir or sessionID is empty,
+// or if creation fails (caller should treat as "no session dir available").
+func (h *Handler) sessionDir(sessionID string) string {
+	if h.dataDir == "" || sessionID == "" {
+		return ""
+	}
+	dir := filepath.Join(h.dataDir, "sessions", sessionID)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		h.vlog("sessionDir: failed to create %s: %v", dir, err)
+		return ""
+	}
+	return dir
 }
 
 // SetLogger sets a verbose logger.
@@ -344,6 +362,12 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 		params.SystemPrompt += "\n\n<session-memory>\n" + memory + "\n</session-memory>"
 	}
 
+	// Provide the per-session persistent directory to the agent runner so it
+	// can use it for things like copilot's COPILOT_CUSTOM_INSTRUCTIONS_DIRS.
+	if params.SessionDir == "" {
+		params.SessionDir = h.sessionDir(sessionID)
+	}
+
 	ctx := context.Background()
 	result, err := h.runner.Run(ctx, params)
 	if err != nil {
@@ -596,6 +620,14 @@ func (h *Handler) deleteSession(_ context.Context, cmd *envelope.Command) *envel
 
 	if err := h.store.DeleteSession(data.SessionID); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to delete session: %v", err))
+	}
+
+	// Clean up the per-session persistent dir (best-effort).
+	if h.dataDir != "" {
+		dir := filepath.Join(h.dataDir, "sessions", data.SessionID)
+		if err := os.RemoveAll(dir); err != nil {
+			h.vlog("deleteSession: failed to remove session dir %s: %v", dir, err)
+		}
 	}
 
 	return envelope.SuccessResponse(cmd.RequestID, map[string]string{"session_id": data.SessionID})
