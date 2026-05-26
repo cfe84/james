@@ -800,6 +800,7 @@ func copilotModels() []envelope.ModelInfo {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path,
 		"-p", "List the model identifiers available for --model. One per line. No other text, no markdown formatting.",
+		"--model", "gpt-4.1",
 		"--output-format", "text",
 		"--available-tools", "",
 	)
