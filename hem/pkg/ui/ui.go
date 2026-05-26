@@ -996,6 +996,9 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.dashboard, cmd = m.dashboard.Update(msg)
 		return m, cmd
 	}
+	// Two-step delete confirmation: any key other than "d" cancels.
+	wasConfirmingDelete := m.dashboard.confirmDelete
+	m.dashboard.confirmDelete = false
 	switch msg.String() {
 	case "enter":
 		e := m.dashboard.selectedEntry()
@@ -1037,6 +1040,10 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "d":
 		e := m.dashboard.selectedEntry()
 		if e != nil {
+			if !wasConfirmingDelete {
+				m.dashboard.confirmDelete = true
+				return m, nil
+			}
 			return m, m.dashboard.deleteSession(e.SessionID)
 		}
 	case "n":
@@ -1133,6 +1140,9 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateProjects(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Two-step delete confirmation: any key other than "d" cancels.
+	wasConfirmingDelete := m.projects.confirmDelete
+	m.projects.confirmDelete = false
 	switch msg.String() {
 	case "enter":
 		p := m.projects.selectedProject()
@@ -1149,6 +1159,10 @@ func (m Model) updateProjects(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "d":
 		p := m.projects.selectedProject()
 		if p != nil {
+			if !wasConfirmingDelete {
+				m.projects.confirmDelete = true
+				return m, nil
+			}
 			return m, m.projects.deleteProject(p.ID)
 		}
 	case "e":
@@ -1182,6 +1196,9 @@ func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.projectDetail, cmd = m.projectDetail.Update(msg)
 		return m, cmd
 	}
+	// Two-step delete confirmation: any key other than "d" cancels.
+	wasConfirmingDelete := m.projectDetail.confirmDelete
+	m.projectDetail.confirmDelete = false
 	switch msg.String() {
 	case "enter":
 		e := m.projectDetail.selectedEntry()
@@ -1220,6 +1237,10 @@ func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "d":
 		e := m.projectDetail.selectedEntry()
 		if e != nil {
+			if !wasConfirmingDelete {
+				m.projectDetail.confirmDelete = true
+				return m, nil
+			}
 			return m, m.projectDetail.deleteSession(e.SessionID)
 		}
 	case "e":
@@ -1287,6 +1308,9 @@ func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateTemplatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Two-step delete confirmation: any key other than "d" cancels.
+	wasConfirmingDelete := m.templatePicker.confirmDelete
+	m.templatePicker.confirmDelete = false
 	switch msg.String() {
 	case "enter":
 		t := m.templatePicker.selectedTemplate()
@@ -1305,6 +1329,10 @@ func (m Model) updateTemplatePicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.templatePicker.projectName != "" {
 			t := m.templatePicker.selectedTemplate()
 			if t != nil {
+				if !wasConfirmingDelete {
+					m.templatePicker.confirmDelete = true
+					return m, nil
+				}
 				return m, m.templatePicker.deleteTemplate(t.ID)
 			}
 		}
@@ -1329,6 +1357,9 @@ func (m Model) updateSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.sessions, cmd = m.sessions.Update(msg)
 		return m, cmd
 	}
+	// Two-step delete confirmation: any key other than "d" cancels.
+	wasConfirmingDelete := m.sessions.confirmDelete
+	m.sessions.confirmDelete = false
 	switch msg.String() {
 	case "enter":
 		s := m.sessions.selectedSession()
@@ -1363,6 +1394,10 @@ func (m Model) updateSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "d":
 		s := m.sessions.selectedSession()
 		if s != nil {
+			if !wasConfirmingDelete {
+				m.sessions.confirmDelete = true
+				return m, nil
+			}
 			return m, m.sessions.deleteSession(s.SessionID)
 		}
 	case "s":
@@ -1597,6 +1632,9 @@ func (m Model) updateImport(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateMoneypennies(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Two-step delete confirmation: any key other than "d" cancels.
+	wasConfirmingDelete := m.moneypennies.confirmDelete
+	m.moneypennies.confirmDelete = false
 	switch msg.String() {
 	case "enter":
 		mp := m.moneypennies.selectedMoneypenny()
@@ -1608,6 +1646,10 @@ func (m Model) updateMoneypennies(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "d":
 		mp := m.moneypennies.selectedMoneypenny()
 		if mp != nil {
+			if !wasConfirmingDelete {
+				m.moneypennies.confirmDelete = true
+				return m, nil
+			}
 			return m, m.moneypennies.deleteMoneypenny(mp.Name)
 		}
 	case "s":
@@ -1787,6 +1829,11 @@ func (m Model) renderStatusBar() string {
 				statusKeyStyle.Render("↵") + statusDescStyle.Render(" apply"),
 				statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
 			}
+		} else if m.dashboard.confirmDelete {
+			keys = []string{
+				statusKeyStyle.Render("d") + statusDescStyle.Render(" confirm delete"),
+				statusKeyStyle.Render("any") + statusDescStyle.Render(" cancel"),
+			}
 		} else {
 			completedLabel := " show done"
 			if m.dashboard.showAll {
@@ -1821,13 +1868,20 @@ func (m Model) renderStatusBar() string {
 			}
 		}
 	case viewProjects:
-		keys = []string{
-			statusKeyStyle.Render("↵") + statusDescStyle.Render(" open"),
-			statusKeyStyle.Render("e") + statusDescStyle.Render(" edit"),
-			statusKeyStyle.Render("n") + statusDescStyle.Render(" new"),
-			statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
-			statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
-			statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
+		if m.projects.confirmDelete {
+			keys = []string{
+				statusKeyStyle.Render("d") + statusDescStyle.Render(" confirm delete"),
+				statusKeyStyle.Render("any") + statusDescStyle.Render(" cancel"),
+			}
+		} else {
+			keys = []string{
+				statusKeyStyle.Render("↵") + statusDescStyle.Render(" open"),
+				statusKeyStyle.Render("e") + statusDescStyle.Render(" edit"),
+				statusKeyStyle.Render("n") + statusDescStyle.Render(" new"),
+				statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
+				statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
+				statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
+			}
 		}
 	case viewEditProject:
 		keys = []string{
@@ -1841,6 +1895,11 @@ func (m Model) renderStatusBar() string {
 			keys = []string{
 				statusKeyStyle.Render("↵") + statusDescStyle.Render(" apply"),
 				statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
+			}
+		} else if m.projectDetail.confirmDelete {
+			keys = []string{
+				statusKeyStyle.Render("d") + statusDescStyle.Render(" confirm delete"),
+				statusKeyStyle.Render("any") + statusDescStyle.Render(" cancel"),
 			}
 		} else {
 			completedLabel := " show done"
@@ -1872,6 +1931,11 @@ func (m Model) renderStatusBar() string {
 			keys = []string{
 				statusKeyStyle.Render("↵") + statusDescStyle.Render(" apply"),
 				statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
+			}
+		} else if m.sessions.confirmDelete {
+			keys = []string{
+				statusKeyStyle.Render("d") + statusDescStyle.Render(" confirm delete"),
+				statusKeyStyle.Render("any") + statusDescStyle.Render(" cancel"),
 			}
 		} else {
 			keys = []string{
@@ -1971,15 +2035,22 @@ func (m Model) renderStatusBar() string {
 			statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
 		}
 	case viewMoneypennies:
-		keys = []string{
-			statusKeyStyle.Render("↵") + statusDescStyle.Render(" ping"),
-			statusKeyStyle.Render("n") + statusDescStyle.Render(" new"),
-			statusKeyStyle.Render("s") + statusDescStyle.Render(" set default"),
-			statusKeyStyle.Render("e") + statusDescStyle.Render(" enable/disable"),
-			statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
-			statusKeyStyle.Render("x") + statusDescStyle.Render(" shell"),
-			statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
-			statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
+		if m.moneypennies.confirmDelete {
+			keys = []string{
+				statusKeyStyle.Render("d") + statusDescStyle.Render(" confirm delete"),
+				statusKeyStyle.Render("any") + statusDescStyle.Render(" cancel"),
+			}
+		} else {
+			keys = []string{
+				statusKeyStyle.Render("↵") + statusDescStyle.Render(" ping"),
+				statusKeyStyle.Render("n") + statusDescStyle.Render(" new"),
+				statusKeyStyle.Render("s") + statusDescStyle.Render(" set default"),
+				statusKeyStyle.Render("e") + statusDescStyle.Render(" enable/disable"),
+				statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
+				statusKeyStyle.Render("x") + statusDescStyle.Render(" shell"),
+				statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
+				statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
+			}
 		}
 	case viewAddMoneypenny:
 		keys = []string{
@@ -2085,16 +2156,23 @@ func (m Model) renderStatusBar() string {
 			}
 		}
 	case viewTemplatePicker:
-		keys = []string{
-			statusKeyStyle.Render("↵") + statusDescStyle.Render(" use"),
+		if m.templatePicker.confirmDelete {
+			keys = []string{
+				statusKeyStyle.Render("d") + statusDescStyle.Render(" confirm delete"),
+				statusKeyStyle.Render("any") + statusDescStyle.Render(" cancel"),
+			}
+		} else {
+			keys = []string{
+				statusKeyStyle.Render("↵") + statusDescStyle.Render(" use"),
+			}
+			if m.templatePicker.projectName != "" {
+				keys = append(keys,
+					statusKeyStyle.Render("n")+statusDescStyle.Render(" new"),
+					statusKeyStyle.Render("d")+statusDescStyle.Render(" delete"),
+				)
+			}
+			keys = append(keys, statusKeyStyle.Render("esc")+statusDescStyle.Render(" back"))
 		}
-		if m.templatePicker.projectName != "" {
-			keys = append(keys,
-				statusKeyStyle.Render("n")+statusDescStyle.Render(" new"),
-				statusKeyStyle.Render("d")+statusDescStyle.Render(" delete"),
-			)
-		}
-		keys = append(keys, statusKeyStyle.Render("esc")+statusDescStyle.Render(" back"))
 	case viewCreateTemplate:
 		keys = []string{
 			statusKeyStyle.Render("↵") + statusDescStyle.Render(" create"),

@@ -297,9 +297,9 @@ func (r *Runner) Run(ctx context.Context, params RunParams) (*Result, error) {
 	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
 
 	if inv.stdin != "" {
-		r.vlog.Printf("exec: %s %s (prompt via stdin, %d bytes)", agentPath, strings.Join(inv.args, " "), len(inv.stdin))
+		r.vlog.Printf("exec: %s %s (prompt via stdin, %d bytes) extraEnv=%v", agentPath, strings.Join(inv.args, " "), len(inv.stdin), inv.env)
 	} else {
-		r.vlog.Printf("exec: %s %s", agentPath, strings.Join(inv.args, " "))
+		r.vlog.Printf("exec: %s %s extraEnv=%v", agentPath, strings.Join(inv.args, " "), inv.env)
 	}
 
 	buf := newActivityBuffer(30)
@@ -741,13 +741,13 @@ func buildCopilotArgs(params RunParams) agentInvocation {
 
 	inv := agentInvocation{}
 	// Copilot has no --system-prompt flag. The supported mechanism is to put
-	// instructions.md in a directory pointed to by COPILOT_CUSTOM_INSTRUCTIONS_DIRS.
+	// an AGENTS.md file in a directory pointed to by COPILOT_CUSTOM_INSTRUCTIONS_DIRS.
 	// Write the system prompt to the session's persistent dir so it survives
 	// resumes; no per-invocation cleanup needed (lifetime tied to the session).
 	if params.SystemPrompt != "" && params.SessionDir != "" {
 		instructionsDir := filepath.Join(params.SessionDir, "copilot-instructions")
 		if err := os.MkdirAll(instructionsDir, 0700); err == nil {
-			instructionsFile := filepath.Join(instructionsDir, "instructions.md")
+			instructionsFile := filepath.Join(instructionsDir, "AGENTS.md")
 			if err := os.WriteFile(instructionsFile, []byte(params.SystemPrompt), 0600); err == nil {
 				inv.env = append(inv.env, "COPILOT_CUSTOM_INSTRUCTIONS_DIRS="+instructionsDir)
 			}

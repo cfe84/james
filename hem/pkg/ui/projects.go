@@ -10,13 +10,14 @@ import (
 
 // projectsModel displays and manages the project list.
 type projectsModel struct {
-	projects []projectInfo
-	cursor   int
-	width    int
-	height   int
-	err      error
-	loading  bool
-	client   *client
+	projects      []projectInfo
+	cursor        int
+	width         int
+	height        int
+	err           error
+	loading       bool
+	client        *client
+	confirmDelete bool // first-press flag for two-step delete confirmation
 }
 
 type projectsLoadedMsg struct {
@@ -309,6 +310,19 @@ func (m projectsModel) View() string {
 	if len(m.projects) > maxRows {
 		b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render(
 			fmt.Sprintf("  showing %d-%d of %d", start+1, end, len(m.projects))))
+		b.WriteString("\n")
+	}
+
+	if m.confirmDelete {
+		p := m.selectedProject()
+		name := ""
+		if p != nil {
+			name = p.Name
+		}
+		warnStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444")).Bold(true)
+		hintStyle := lipgloss.NewStyle().Foreground(colorMuted)
+		b.WriteString("\n  " + warnStyle.Render(fmt.Sprintf("Delete project %q?", name)) +
+			"  " + hintStyle.Render("press d again to confirm · any other key cancels"))
 		b.WriteString("\n")
 	}
 

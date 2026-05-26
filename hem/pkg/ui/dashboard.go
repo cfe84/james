@@ -92,6 +92,7 @@ type dashboardModel struct {
 	title         string // custom title (e.g. project name)
 	filtering     bool   // true when filter input is active
 	filterText    string // current filter text (case insensitive match on name)
+	confirmDelete bool   // first-press flag for two-step delete confirmation
 }
 
 type dashboardLoadedMsg struct {
@@ -720,6 +721,20 @@ func (m dashboardModel) View() string {
 	if len(entries) > maxRows {
 		b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render(
 			fmt.Sprintf("  showing %d-%d of %d", start+1, end, len(entries))))
+		b.WriteString("\n")
+	}
+
+	// Delete confirmation prompt.
+	if m.confirmDelete {
+		e := m.selectedEntry()
+		name := ""
+		if e != nil {
+			name = e.Name
+		}
+		warnStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444")).Bold(true)
+		hintStyle := lipgloss.NewStyle().Foreground(colorMuted)
+		b.WriteString("\n  " + warnStyle.Render(fmt.Sprintf("Delete session %q?", name)) +
+			"  " + hintStyle.Render("press d again to confirm · any other key cancels"))
 		b.WriteString("\n")
 	}
 

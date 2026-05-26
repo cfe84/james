@@ -10,15 +10,16 @@ import (
 
 // sessionsModel displays and manages the session list.
 type sessionsModel struct {
-	sessions   []sessionInfo
-	cursor     int
-	width      int
-	height     int
-	err        error
-	loading    bool
-	client     *client
-	filtering  bool   // true when filter input is active
-	filterText string // current filter text (case insensitive match on name)
+	sessions      []sessionInfo
+	cursor        int
+	width         int
+	height        int
+	err           error
+	loading       bool
+	client        *client
+	filtering     bool   // true when filter input is active
+	filterText    string // current filter text (case insensitive match on name)
+	confirmDelete bool   // true when waiting for delete confirmation (press d again to confirm)
 }
 
 func newSessionsModel(c *client) sessionsModel {
@@ -258,6 +259,21 @@ func (m sessionsModel) View() string {
 	if len(sessions) > maxRows {
 		b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render(
 			fmt.Sprintf("  showing %d-%d of %d", start+1, end, len(sessions))))
+		b.WriteString("\n")
+	}
+
+	// Delete-confirmation prompt: shown after the first `d` press until the
+	// user either presses `d` again to confirm or any other key to cancel.
+	if m.confirmDelete {
+		s := m.selectedSession()
+		name := ""
+		if s != nil {
+			name = s.Name
+		}
+		warnStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444")).Bold(true)
+		hintStyle := lipgloss.NewStyle().Foreground(colorMuted)
+		b.WriteString("\n  " + warnStyle.Render(fmt.Sprintf("Delete session %q?", name)) +
+			"  " + hintStyle.Render("press d again to confirm · any other key cancels"))
 		b.WriteString("\n")
 	}
 

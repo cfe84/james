@@ -14,14 +14,15 @@ import (
 // ---------------------------------------------------------------------------
 
 type templatePickerModel struct {
-	client      *client
-	projectName string
-	templates   []templateInfo
-	cursor      int
-	loading     bool
-	err         error
-	width       int
-	height      int
+	client        *client
+	projectName   string
+	templates     []templateInfo
+	cursor        int
+	loading       bool
+	err           error
+	width         int
+	height        int
+	confirmDelete bool // first-press flag for two-step delete confirmation
 }
 
 type templatesLoadedMsg struct {
@@ -178,6 +179,19 @@ func (m templatePickerModel) View() string {
 		} else {
 			b.WriteString(sessionNormalStyle.Render(line))
 		}
+		b.WriteString("\n")
+	}
+
+	if m.confirmDelete {
+		t := m.selectedTemplate()
+		name := ""
+		if t != nil {
+			name = t.Name
+		}
+		warnStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#EF4444")).Bold(true)
+		hintStyle := lipgloss.NewStyle().Foreground(colorMuted)
+		b.WriteString("\n  " + warnStyle.Render(fmt.Sprintf("Delete template %q?", name)) +
+			"  " + hintStyle.Render("press d again to confirm · any other key cancels"))
 		b.WriteString("\n")
 	}
 

@@ -10,14 +10,15 @@ import (
 
 // moneypenniesModel displays and manages registered moneypennies.
 type moneypenniesModel struct {
-	moneypennies []moneypennyInfo
-	cursor       int
-	width        int
-	height       int
-	err          error
-	loading      bool
-	statusMsg    string
-	client       *client
+	moneypennies  []moneypennyInfo
+	cursor        int
+	width         int
+	height        int
+	err           error
+	loading       bool
+	statusMsg     string
+	client        *client
+	confirmDelete bool // first-press flag for two-step delete confirmation
 }
 
 type moneypenniesLoadedMsg struct {
@@ -216,6 +217,19 @@ func (m moneypenniesModel) View() string {
 	}
 	if m.err != nil {
 		b.WriteString("\n  " + lipgloss.NewStyle().Foreground(colorDanger).Render(m.err.Error()))
+		b.WriteString("\n")
+	}
+
+	if m.confirmDelete {
+		mp := m.selectedMoneypenny()
+		name := ""
+		if mp != nil {
+			name = mp.Name
+		}
+		warnStyle := lipgloss.NewStyle().Foreground(colorDanger).Bold(true)
+		hintStyle := lipgloss.NewStyle().Foreground(colorMuted)
+		b.WriteString("\n  " + warnStyle.Render(fmt.Sprintf("Delete moneypenny %q?", name)) +
+			"  " + hintStyle.Render("press d again to confirm · any other key cancels"))
 		b.WriteString("\n")
 	}
 
