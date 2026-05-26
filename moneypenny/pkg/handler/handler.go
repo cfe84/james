@@ -370,6 +370,14 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 	// Parse and create any <schedule> tags from agent output.
 	responseText := h.parseAndCreateSchedules(sessionID, result.Text)
 
+	// Dedupe: the streaming parser may have already saved this exact content
+	// as an intermediate `agent_text` turn (Claude and Copilot both produce a
+	// final text block that matches the result event / final message). Drop
+	// the trailing duplicate before adding the assistant turn.
+	if dropped, _ := h.store.DeleteLastTurnIfMatches(sessionID, "agent_text", responseText); dropped {
+		h.vlog("dedup: removed trailing agent_text turn matching final response for session %s", sessionID)
+	}
+
 	if err := h.store.AddConversationTurn(sessionID, "assistant", responseText); err != nil {
 		h.vlog("failed to add conversation turn for session %s: %v", sessionID, err)
 	}

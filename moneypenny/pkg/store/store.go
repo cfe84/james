@@ -370,6 +370,35 @@ func (s *Store) DeleteSession(sessionID string) error {
 }
 
 // AddConversationTurn adds a turn to the conversation history.
+// DeleteLastTurnIfMatches deletes the most recent conversation turn for the
+// session if its role and content match the given values. Used to dedupe the
+// final assistant response against the trailing intermediate-text turn the
+// streaming parser emits (which often contains the same text). Returns true
+// if a turn was deleted.
+func (s *Store) DeleteLastTurnIfMatches(sessionID, role, content string) (bool, error) {
+	var id int64
+	var foundRole, foundContent string
+	err := s.db.QueryRow(
+		`SELECT id, role, content FROM conversation_turns
+		 WHERE session_id = ?
+		 ORDER BY id DESC LIMIT 1`,
+		sessionID,
+	).Scan(&id, &foundRole, &foundContent)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("query last turn: %w", err)
+	}
+	if foundRole != role || foundContent != content {
+		return false, nil
+	}
+	if _, err := s.db.Exec(`DELETE FROM conversation_turns WHERE id = ?`, id); err != nil {
+		return false, fmt.Errorf("delete last turn: %w", err)
+	}
+	return true, nil
+}
+
 func (s *Store) AddConversationTurn(sessionID string, role string, content string) error {
 	result, err := s.db.Exec(
 		`INSERT INTO conversation_turns (session_id, role, content) VALUES (?, ?, ?)`,

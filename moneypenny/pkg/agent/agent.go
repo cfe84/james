@@ -469,6 +469,7 @@ func (r *Runner) runCopilotStreaming(cmd *exec.Cmd, buf *activityBuffer, session
 				if content != "" {
 					resultText = content
 					buf.add(ActivityEvent{Type: "text", Summary: content, Timestamp: now})
+					r.emitPersistent(sessionID, "text", content)
 				}
 				// Parse tool requests for activity.
 				if toolReqs, ok := data["toolRequests"].([]any); ok {
