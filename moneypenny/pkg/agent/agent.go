@@ -710,11 +710,21 @@ func buildCopilotArgs(params RunParams) agentInvocation {
 	args := []string{
 		"--output-format", "json",
 		"--stream", "on",
-		"--resume", params.SessionID,
 		"-s",
+	}
+	// Copilot uses --session-id to CREATE a new session and --resume to
+	// reattach to an existing one. Using --resume on a non-existent session
+	// errors out with "No session, task, or name matched ...".
+	if params.Resume {
+		args = append(args, "--resume", params.SessionID)
+	} else {
+		args = append(args, "--session-id", params.SessionID)
 	}
 	if params.Model != "" {
 		args = append(args, "--model", params.Model)
+	}
+	if params.Effort != "" {
+		args = append(args, "--effort", params.Effort)
 	}
 	if params.Yolo {
 		args = append(args, "--yolo")

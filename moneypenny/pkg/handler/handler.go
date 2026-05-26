@@ -776,7 +776,7 @@ func claudeModels() []envelope.ModelInfo {
 var (
 	copilotModelCache     []envelope.ModelInfo
 	copilotModelCacheTime time.Time
-	copilotModelCacheTTL  = 1 * time.Hour
+	copilotModelCacheTTL  = 24 * time.Hour
 )
 
 // copilotModels queries copilot for available models by running a prompt.
