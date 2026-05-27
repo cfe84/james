@@ -58,6 +58,13 @@ type wizardModel struct {
 	// Project mode
 	forProject bool
 
+	// Copy mode: when sourceSessionID is set, submit hits `hem copy session`
+	// instead of `hem create session`, and the form is pre-filled from the
+	// source. The TUI header reflects "Copy session" in this mode.
+	sourceSessionID    string
+	sourceSessionName  string
+	copyLoading        bool // true while loading source details
+
 	// Selections
 	selectedMP   string
 	selectedPath string
@@ -153,6 +160,34 @@ func (m wizardModel) loadProjectDetails() tea.Cmd {
 	}
 }
 
+// wizardSourceLoadedMsg carries the source session details for copy mode so
+// the wizard can prefill its fields before the user steps through the dialog.
+type wizardSourceLoadedMsg struct {
+	source *sessionDetail
+	err    error
+}
+
+// newWizardModelForCopy returns a wizard configured to copy an existing
+// session. The first 3 wizard steps work identically; on submit the wizard
+// calls `hem copy session SOURCE_ID ...` instead of `hem create session ...`.
+// Fields are populated from the source session's metadata in Init().
+func newWizardModelForCopy(c *client, sourceSessionID string) wizardModel {
+	m := newWizardModel(c)
+	m.sourceSessionID = sourceSessionID
+	m.copyLoading = true
+	return m
+}
+
+// loadSourceSession fetches the source session detail used by copy mode to
+// prefill the wizard's form fields and step-1 moneypenny cursor.
+func (m wizardModel) loadSourceSession() tea.Cmd {
+	id := m.sourceSessionID
+	return func() tea.Msg {
+		s, err := m.client.showSession(id)
+		return wizardSourceLoadedMsg{source: s, err: err}
+	}
+}
+
 func (m wizardModel) loadMoneypennies() tea.Cmd {
 	return func() tea.Msg {
 		mps, err := m.client.listMoneypennies()
@@ -206,8 +241,15 @@ func (m wizardModel) createProject() tea.Cmd {
 }
 
 func (m wizardModel) createSession() tea.Cmd {
+	isCopy := m.sourceSessionID != ""
+	sourceID := m.sourceSessionID
 	return func() tea.Msg {
 		var args []string
+		// Copy mode: the source session ID is the leading positional arg the
+		// hem CLI expects for `copy session SOURCE_ID ...`.
+		if isCopy {
+			args = append(args, sourceID)
+		}
 		args = append(args, "-m", m.selectedMP)
 		args = append(args, "--path", m.selectedPath)
 
@@ -229,8 +271,22 @@ func (m wizardModel) createSession() tea.Cmd {
 		if m.async {
 			args = append(args, "--async")
 		}
-		args = append(args, prompt)
-		id, resp, err := m.client.createSession(args)
+		// In copy mode the prompt field is optional; the server falls back
+		// to "acknowledge summary and await further instructions" when empty.
+		// In normal create mode an empty prompt isn't valid — let the server
+		// surface the error in both cases for consistency.
+		if prompt != "" || !isCopy {
+			args = append(args, prompt)
+		}
+		var (
+			id, resp string
+			err      error
+		)
+		if isCopy {
+			id, resp, err = m.client.copySession(args)
+		} else {
+			id, resp, err = m.client.createSession(args)
+		}
 		return sessionCreatedMsg{sessionID: id, response: resp, err: err}
 	}
 }
@@ -241,6 +297,11 @@ func (m wizardModel) Init() tea.Cmd {
 	}
 	if m.forProject {
 		return m.loadMoneypennies()
+	}
+	if m.sourceSessionID != "" {
+		// Copy mode: load source session details + moneypennies/projects so
+		// we can prefill fields and pre-select the source's moneypenny.
+		return tea.Batch(m.loadSourceSession(), m.loadMoneypennies(), m.loadProjects())
 	}
 	return tea.Batch(m.loadMoneypennies(), m.loadProjects())
 }
@@ -254,13 +315,96 @@ func (m wizardModel) Update(msg tea.Msg) (wizardModel, tea.Cmd) {
 			return m, nil
 		}
 		m.moneypennies = msg.moneypennies
-		// Pre-select the default moneypenny.
-		for i, mp := range m.moneypennies {
-			if mp.IsDefault {
-				m.mpCursor = i
-				break
+		// Pre-select the source's moneypenny in copy mode (if it loaded
+		// first); otherwise fall back to the default.
+		preselected := false
+		if m.sourceSessionID != "" {
+			// We may have stashed the source mp name in selectedMP already
+			// (set by the source-loaded handler if it arrived first).
+			if m.selectedMP != "" {
+				for i, mp := range m.moneypennies {
+					if mp.Name == m.selectedMP {
+						m.mpCursor = i
+						preselected = true
+						break
+					}
+				}
 			}
 		}
+		if !preselected {
+			for i, mp := range m.moneypennies {
+				if mp.IsDefault {
+					m.mpCursor = i
+					break
+				}
+			}
+		}
+
+	case wizardSourceLoadedMsg:
+		m.copyLoading = false
+		if msg.err != nil {
+			m.err = msg.err
+			return m, nil
+		}
+		src := msg.source
+		m.sourceSessionName = src.Name
+		// Stash the source's moneypenny so the mp-loaded handler can
+		// pre-select it; if mps already loaded, fix the cursor now.
+		m.selectedMP = src.Moneypenny
+		if len(m.moneypennies) > 0 {
+			for i, mp := range m.moneypennies {
+				if mp.Name == src.Moneypenny {
+					m.mpCursor = i
+					break
+				}
+			}
+		}
+		// Pre-fill the path browser starting directory.
+		if src.Path != "" {
+			m.currentPath = src.Path
+		}
+		// Pre-fill form fields. The user can override anything in step 3.
+		for i := range m.fields {
+			switch m.fields[i].flag {
+			case "--name":
+				name := "Copy of " + src.Name
+				m.fields[i].value = name
+				m.fields[i].cursorPos = len(name)
+			case "--agent":
+				if src.Agent != "" {
+					m.fields[i].value = src.Agent
+					m.fields[i].cursorPos = len(src.Agent)
+				}
+			case "--model":
+				if src.Model != "" {
+					m.fields[i].value = src.Model
+					m.fields[i].cursorPos = len(src.Model)
+				}
+			case "--effort":
+				if src.Effort != "" {
+					m.fields[i].value = src.Effort
+					m.fields[i].cursorPos = len(src.Effort)
+				}
+				// Sync effort options to the (possibly inherited) agent.
+				m.fields[i].options = effortOptions(src.Agent)
+			case "--system-prompt":
+				if src.SystemPrompt != "" {
+					m.fields[i].value = src.SystemPrompt
+					m.fields[i].cursorPos = len(src.SystemPrompt)
+					m.fields[i].syncToInput()
+				}
+			case "--yolo":
+				if src.Yolo {
+					m.fields[i].value = "true"
+				}
+			case "--project":
+				if src.Project != "" {
+					m.fields[i].value = src.Project
+					m.fields[i].cursorPos = len(src.Project)
+				}
+			}
+		}
+		return m, nil
 
 	case wizardProjectsLoadedMsg:
 		// Populate the Project selector options.
@@ -474,8 +618,11 @@ func (m wizardModel) updateFormStep(msg tea.KeyMsg) (wizardModel, tea.Cmd) {
 	if field.input != nil {
 		submitForm := func() (wizardModel, tea.Cmd) {
 			field.syncFromInput()
+			// Prompt is required for new sessions; copy mode lets it be
+			// empty (server falls back to "acknowledge summary and await
+			// further instructions" in that case).
 			required := m.fields[0].value
-			if strings.TrimSpace(required) != "" {
+			if strings.TrimSpace(required) != "" || m.sourceSessionID != "" {
 				m.creating = true
 				if m.forProject {
 					return m, m.createProject()
@@ -507,7 +654,9 @@ func (m wizardModel) updateFormStep(msg tea.KeyMsg) (wizardModel, tea.Cmd) {
 	switch msg.String() {
 	case "enter":
 		required := m.fields[0].value
-		if strings.TrimSpace(required) != "" {
+		// Same prompt-required rule as the textInput branch: copy mode
+		// tolerates an empty prompt; new sessions require one.
+		if strings.TrimSpace(required) != "" || m.sourceSessionID != "" {
 			m.creating = true
 			if m.forProject {
 				return m, m.createProject()
@@ -722,6 +871,13 @@ func (m wizardModel) View() string {
 	title := " New Agent "
 	if m.forProject {
 		title = " New Project "
+	}
+	if m.sourceSessionID != "" {
+		if m.sourceSessionName != "" {
+			title = fmt.Sprintf(" Copy of %s ", m.sourceSessionName)
+		} else {
+			title = " Copy Agent "
+		}
 	}
 	b.WriteString(titleStyle.Render(title) + "  " + strings.Join(stepParts, " > "))
 	b.WriteString("\n\n")

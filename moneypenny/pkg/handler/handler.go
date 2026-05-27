@@ -181,6 +181,8 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.updateStatus(cmd)
 	case "check_update":
 		return h.checkUpdate(cmd)
+	case "summarize_session":
+		return h.summarizeSession(ctx, cmd)
 	default:
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("unknown method: %s", cmd.Method))
 	}
@@ -440,6 +442,34 @@ Conversation:
 	})
 }
 
+// summarizeSession is the user-facing dispatch for summarize_session.
+// Returns the summary as a SummarizeSessionResponse. Empty summary is a
+// successful response (e.g. the session exists but has no history yet).
+func (h *Handler) summarizeSession(ctx context.Context, cmd *envelope.Command) *envelope.Response {
+	var data envelope.SummarizeSessionData
+	if err := json.Unmarshal(cmd.Data, &data); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
+	}
+	if data.SessionID == "" {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id is required")
+	}
+
+	// Bound the summarization call to a generous timeout; it spawns a one-shot
+	// agent that walks the entire transcript.
+	sumCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+
+	summary, err := h.CompactSession(sumCtx, data.SessionID)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
+	}
+
+	return envelope.SuccessResponse(cmd.RequestID, envelope.SummarizeSessionResponse{
+		SessionID: data.SessionID,
+		Summary:   summary,
+	})
+}
+
 // runAgent executes the agent in the background, updating the store when done.
 // After completion, it checks the prompt queue and auto-continues if there are queued prompts.
 func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
@@ -473,7 +503,7 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 		// Retry as a CREATE with the summary in the system prompt.
 		params.Resume = false
 		if summary != "" {
-			params.SystemPrompt += "\n\n<previous-session-summary>\n" + summary + "\n</previous-session-summary>"
+			params.SystemPrompt += "\n\n<prior-session-summary>\n" + summary + "\n</prior-session-summary>"
 		}
 		result, err = h.runner.Run(ctx, params)
 	}

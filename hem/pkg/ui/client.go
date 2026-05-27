@@ -224,6 +224,46 @@ func (c *client) createSession(args []string) (sessionID string, response string
 	return result.SessionID, result.Response, nil
 }
 
+// copySession runs `hem copy session ...` and returns the new session ID.
+// Wire-compatible with createSession so the wizard's submit step can pick
+// one or the other based on context.
+func (c *client) copySession(args []string) (sessionID string, response string, err error) {
+	resp, err := c.send("copy", "session", args...)
+	if err != nil {
+		return "", "", err
+	}
+	if resp.Status == protocol.StatusError {
+		return "", "", fmt.Errorf("%s", resp.Message)
+	}
+	var result struct {
+		SessionID string `json:"session_id"`
+		Response  string `json:"response"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return "", "", err
+	}
+	return result.SessionID, result.Response, nil
+}
+
+// summarizeSession runs `hem summarize session SESSION_ID` and returns the
+// summary text. Used by the TUI summary view.
+func (c *client) summarizeSession(sessionID string) (string, error) {
+	resp, err := c.send("summarize", "session", sessionID)
+	if err != nil {
+		return "", err
+	}
+	if resp.Status == protocol.StatusError {
+		return "", fmt.Errorf("%s", resp.Message)
+	}
+	var result struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return "", err
+	}
+	return result.Message, nil
+}
+
 type continueResult struct {
 	Response string
 	Queued   bool

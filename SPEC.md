@@ -212,6 +212,8 @@ Method: **queue_prompt**: queues a prompt for a session that is currently workin
 
 Method: **import_session**: creates a session with pre-existing conversation history without running an agent. Data: `{ "session_id": "id", "name": "name", "agent": "claude", "path": "/path", "conversation": [{"role": "user", "content": "..."}, ...] }`. Used by `hem import session`.
 
+Method: **summarize_session**: asks the moneypenny to compact the session's conversation history into a standalone summary by invoking the session's configured agent as a one-shot over the full transcript. Data: `{ "session_id": "id" }`. Returns `{ "session_id": "id", "summary": "..." }`. An empty transcript returns `summary: ""`. Used by `hem summarize session` and by `hem copy session` to bootstrap the new session's prompt. Internally reuses the same `CompactSession` helper used by the agent-side recovery path (when the upstream agent reports its session is lost).
+
 Method: **git_diff**: runs `git diff` and `git diff --cached` in a session's working directory. Data: `{ "session_id": "id" }`. Returns `{ "diff": "..." }`.
 
 Method: **git_commit**: stages all changes and commits in a session's working directory. Data: `{ "session_id": "id", "message": "commit message" }`. Runs `git add -A` then `git commit -m`. Returns `{ "output": "..." }`.
@@ -420,6 +422,29 @@ Hem manages sessions on moneypennies. It tracks which moneypenny each session li
 - Sends `import_session` to moneypenny to create the session with conversation history without running an agent.
 - Tracks the session locally in hem, optionally assigning to a project.
 - Default session name is first 40 chars of first user message.
+
+### Summarize
+
+`hem summarize session SESSION_ID [--out FILE]`
+
+- Asks the session's agent to walk its full conversation history and produce a standalone summary suitable for resuming the work elsewhere.
+- Sends `summarize_session` to the moneypenny that owns the session. The moneypenny invokes the session's configured agent as a one-shot with the entire transcript and a fixed summarization prompt (shared with the agent-side recovery path used when an upstream session is lost).
+- The summary is returned as plain text. With `--out FILE`, the summary is also written to the local filesystem (CLI side).
+- An empty transcript returns `"(no conversation history to summarize)"` rather than an error.
+
+### Copy
+
+`hem copy session SOURCE_ID [PROMPT...] [flags]`
+
+- Creates a new session bootstrapped from a summary of an existing one. Source session is preserved (no state migration, no completion).
+- All flags from `create session` apply and override the source's values: `-m/--moneypenny`, `--agent`, `--model`, `--effort`, `--name`, `--system-prompt`, `--yolo`, `--gadgets`, `--path`, `--project`, `--async`. Any flag omitted is copied from the source.
+- The target moneypenny can differ from the source's (cross-host copy). The source's conversation history stays on the source moneypenny — only the summary is transferred.
+- Source's gadgets/memory markers are stripped from the inherited system prompt to avoid double injection on the new session.
+- `--yolo` is inherited only when the flag is not mentioned on the command line; passing `--yolo=false` explicitly disables yolo even when the source had it on.
+- `--gadgets` is NOT inherited: gadgets embed the new session's ID into the system prompt, so the copy starts without gadgets unless the flag is set.
+- If summarization of the source fails (timeout, agent error), the entire copy aborts and the error is returned to the caller — no new session is created.
+- Default name is `"Copy of <source name>"`.
+- Bootstrap prompt is composed as a preamble (`"You are being created as a continuation of an existing session…"`) + the summary inside a `<prior-session-summary>` block + either the user's trailing args or, if absent, the stub `"Acknowledge the summary in one short paragraph and await further user instructions."` The agent-side recovery path (when an upstream session is lost) uses the same `<prior-session-summary>` tag so both code paths share a single bootstrap shape.
 
 ### Diff
 
@@ -665,6 +690,8 @@ The dashboard auto-refreshes every 5 seconds by polling moneypennies. When a ses
   - `g` — view git diff for session
   - `n` — create new session (opens form)
   - `x` — open remote shell for session's moneypenny+path
+  - `y` — copy session (open create wizard prefilled from the selected session; submit triggers `hem copy session`)
+  - `S` — summarize session (open the summary view; runs `hem summarize session` and renders the result with an option to save to file)
   - `m` — switch to moneypennies view
   - `p` — switch to projects view
   - `l` — switch to full session list
@@ -680,6 +707,8 @@ The dashboard auto-refreshes every 5 seconds by polling moneypennies. When a ses
 - **Project detail**: dashboard filtered to a single project.
   - Same keys as dashboard, plus `n` creates session pre-filled with project name and in async mode.
   - `x` — open remote shell for session's moneypenny+path
+  - `y` — copy session
+  - `S` — summarize session
   - `esc` — back to projects
 - **Session list**: browse all sessions with status, name, moneypenny, timestamps.
   - `Enter` — open chat for selected session
@@ -690,8 +719,14 @@ The dashboard auto-refreshes every 5 seconds by polling moneypennies. When a ses
   - `i` — import session (opens form)
   - `s` — stop a working session
   - `x` — open remote shell for session's moneypenny+path
+  - `y` — copy session (open the create wizard prefilled from this session)
+  - `S` — summarize session (open the summary view)
   - `r` — refresh list
   - `esc` — back to dashboard
+- **Summary view**: displays the result of `hem summarize session`. While the moneypenny runs the one-shot summarization the view shows a loading state; on completion the summary is rendered in a scrollable area.
+  - `↑/↓ / PgUp/PgDn` — scroll
+  - `s` — save to a local file (opens a modal prefilled with `<cwd>/<session-name>-summary.md`, user can edit before confirming with Enter; Esc cancels)
+  - `esc` — back to the previous view
 - **Chat view**: full conversation history with markdown rendering (glamour) for assistant messages. Send messages with Enter, scroll with PgUp/PgDn, supports paste. Queued messages show with ⏳ icon and `[Queued]` label; the queued indicator is preserved across poll refreshes and only cleared when an assistant response appears. System turns (e.g., schedule triggers) are rendered with a ⚙ icon in muted/italic style. Esc enters command mode; second Esc leaves chat.
   - Command mode: `c` complete, `d` delete (press twice to confirm), `e` edit, `g` git diff, `s` stop, `t` schedule (two-step: time then prompt), `x` shell, Enter resume, Esc leave.
 - **Moneypennies view**: browse registered moneypennies.

@@ -555,6 +555,10 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.PushSession(args)
 	case "import session":
 		return e.ImportSession(args)
+	case "summarize session":
+		return e.SummarizeSession(args)
+	case "copy session":
+		return e.CopySession(args)
 	case "activity session":
 		return e.ActivitySession(args)
 	case "schedule session":
@@ -3683,6 +3687,291 @@ func (e *Executor) ImportSession(args []string) *protocol.Response {
 
 	return protocol.OKResponse(TextResult{
 		Message: fmt.Sprintf("Imported session %s (%d turns) from %s", sessionID, len(conversation), filepath.Base(jsonlPath)),
+	})
+}
+
+// SummarizeSession asks the moneypenny to run the session's agent over its
+// full conversation history and return a compact, standalone summary. The
+// summary is returned as a TextResult so the CLI renders it as plain text;
+// when --out is set the summary is also written to a local file.
+func (e *Executor) SummarizeSession(args []string) *protocol.Response {
+	var sessionID, outPath string
+
+	remaining, err := parseFlagsFromArgs("summarize-session", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&sessionID, "session-id", "", "session ID")
+		fs.StringVar(&outPath, "out", "", "optional local file to also write the summary to")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if sessionID == "" {
+		if len(remaining) == 0 {
+			return protocol.ErrResponse("session_id is required")
+		}
+		sessionID = remaining[0]
+	}
+
+	mp, err := e.resolveSessionMoneypenny(sessionID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	// Use a long-lived context: summarization spins up a one-shot agent which
+	// can take a while when the transcript is large.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	resp, err := e.sendCommand(ctx, mp, "summarize_session", map[string]interface{}{
+		"session_id": sessionID,
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	var result struct {
+		SessionID string `json:"session_id"`
+		Summary   string `json:"summary"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("parsing summary: %v", err))
+	}
+
+	if outPath != "" && result.Summary != "" {
+		if err := os.WriteFile(outPath, []byte(result.Summary), 0644); err != nil {
+			return protocol.ErrResponse(fmt.Sprintf("writing summary to %s: %v", outPath, err))
+		}
+	}
+
+	if result.Summary == "" {
+		return protocol.OKResponse(TextResult{
+			Message: "(no conversation history to summarize)",
+		})
+	}
+	return protocol.OKResponse(TextResult{Message: result.Summary})
+}
+
+// CopySession creates a new session bootstrapped from a summary of an
+// existing one. Parameters default to the source session's values; any
+// supplied flag overrides. Trailing args are an optional follow-up prompt
+// that is appended to the summary block. The source session is preserved.
+func (e *Executor) CopySession(args []string) *protocol.Response {
+	var sourceSessionID, projectNameOrID string
+	params := &sessionParams{}
+
+	// Bool flags have no "unset" state once parsed, but we still need to know
+	// whether the caller explicitly touched --yolo so that `--yolo=false`
+	// genuinely overrides a yolo source. Pre-scan the args for that flag.
+	yoloExplicit := false
+	for _, a := range args {
+		if a == "--yolo" || a == "-yolo" || strings.HasPrefix(a, "--yolo=") || strings.HasPrefix(a, "-yolo=") {
+			yoloExplicit = true
+			break
+		}
+	}
+
+	remaining, err := parseFlagsFromArgs("copy-session", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&sourceSessionID, "session-id", "", "source session ID")
+		fs.StringVar(&params.MoneypennyName, "m", "", "target moneypenny name")
+		fs.StringVar(&params.MoneypennyName, "moneypenny", "", "target moneypenny name")
+		fs.StringVar(&params.Agent, "agent", "", "agent to use")
+		fs.StringVar(&params.Model, "model", "", "model to use")
+		fs.StringVar(&params.Effort, "effort", "", "reasoning effort level")
+		fs.StringVar(&params.SessionName, "name", "", "session name")
+		fs.StringVar(&params.SystemPrompt, "system-prompt", "", "system prompt")
+		fs.BoolVar(&params.Yolo, "yolo", false, "enable yolo mode")
+		fs.BoolVar(&params.Gadgets, "gadgets", false, "include James tooling in system prompt")
+		fs.StringVar(&params.Path, "path", "", "working directory path")
+		fs.BoolVar(&params.Async, "async", false, "return immediately without waiting for response")
+		fs.StringVar(&projectNameOrID, "project", "", "project name or ID")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if sourceSessionID == "" {
+		if len(remaining) == 0 {
+			return protocol.ErrResponse("source session_id is required")
+		}
+		sourceSessionID = remaining[0]
+		remaining = remaining[1:]
+	}
+
+	// Look up the source session details from its owning moneypenny.
+	sourceMP, err := e.resolveSessionMoneypenny(sourceSessionID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	ctx := context.Background()
+	getResp, err := e.sendCommand(ctx, sourceMP, "get_session", map[string]interface{}{
+		"session_id": sourceSessionID,
+	})
+	if err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("looking up source session: %v", err))
+	}
+
+	var src struct {
+		Name         string `json:"name"`
+		Agent        string `json:"agent"`
+		SystemPrompt string `json:"system_prompt"`
+		Model        string `json:"model"`
+		Effort       string `json:"effort"`
+		Yolo         bool   `json:"yolo"`
+		Path         string `json:"path"`
+	}
+	if err := json.Unmarshal(getResp.Data, &src); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("parsing source session: %v", err))
+	}
+
+	// Strip injected gadgets/memory markers from the inherited system prompt
+	// so we don't double-inject them when the new session is created.
+	sp := src.SystemPrompt
+	if idx := strings.Index(sp, gadgetsMarker); idx >= 0 {
+		sp = sp[:idx]
+	}
+	if idx := findMemoryMarker(sp); idx >= 0 {
+		sp = sp[:idx]
+	}
+
+	// Inherit values from source for any flag the user didn't explicitly set.
+	if params.MoneypennyName == "" {
+		params.MoneypennyName = sourceMP.Name
+	}
+	if params.Agent == "" {
+		params.Agent = src.Agent
+	}
+	if params.Model == "" {
+		params.Model = src.Model
+	}
+	if params.Effort == "" {
+		params.Effort = src.Effort
+	}
+	if params.SystemPrompt == "" {
+		params.SystemPrompt = sp
+	}
+	if params.Path == "" {
+		params.Path = src.Path
+	}
+	if params.SessionName == "" {
+		params.SessionName = "Copy of " + src.Name
+	}
+	// --yolo: only inherit the source's value when the caller didn't
+	// explicitly mention the flag (so `--yolo=false` actually overrides a
+	// yolo source, and omitting --yolo leaves it inherited).
+	if !yoloExplicit {
+		params.Yolo = src.Yolo
+	}
+
+	// Inherit project if user didn't specify one (looked up via hem's local
+	// tracking; the source's project lives in the hem store, not moneypenny).
+	if projectNameOrID == "" {
+		if hemSess, err := e.store.GetSession(sourceSessionID); err == nil && hemSess != nil && hemSess.ProjectID != "" {
+			if proj, err := e.store.GetProject(hemSess.ProjectID); err == nil && proj != nil {
+				projectNameOrID = proj.Name
+			}
+		}
+	}
+
+	// Apply project defaults (only fills empty fields, so user/source values win).
+	if err := e.applyProjectDefaults(params, projectNameOrID); err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	// Resolve target moneypenny.
+	targetMP, err := e.resolveMoneypennyForSession(params.MoneypennyName)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	// Now ask the source moneypenny to summarize the prior conversation.
+	// Summarization is the whole point of a copy — if it fails we surface
+	// the error and abort rather than creating a session with a degraded
+	// preamble, since that's almost never what the caller wants.
+	sumCtx, sumCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	sumResp, err := e.sendCommand(sumCtx, sourceMP, "summarize_session", map[string]interface{}{
+		"session_id": sourceSessionID,
+	})
+	sumCancel()
+	if err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("summarizing source session: %v", err))
+	}
+	var sumResult struct {
+		Summary string `json:"summary"`
+	}
+	if err := json.Unmarshal(sumResp.Data, &sumResult); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("parsing summary: %v", err))
+	}
+
+	// Build the bootstrap prompt: preamble + summary, then either the user's
+	// follow-up or an explicit "await further instructions" stub. Uses the
+	// same <prior-session-summary> tag the agent-side recovery path uses
+	// (handler.go) so anything inspecting bootstrap prompts sees one spelling.
+	followup := strings.TrimSpace(strings.Join(remaining, " "))
+	var promptB strings.Builder
+	promptB.WriteString("You are being created as a continuation of an existing session. ")
+	promptB.WriteString("Below is a summary of what was done previously; treat it as established context.\n\n")
+	promptB.WriteString("<prior-session-summary>\n")
+	if sumResult.Summary != "" {
+		promptB.WriteString(sumResult.Summary)
+	} else {
+		promptB.WriteString("(the source session had no conversation history yet)")
+	}
+	promptB.WriteString("\n</prior-session-summary>\n\n")
+	if followup != "" {
+		promptB.WriteString(followup)
+	} else {
+		promptB.WriteString("Acknowledge the summary in one short paragraph and await further user instructions.")
+	}
+	prompt := promptB.String()
+
+	// Generate a fresh session ID and apply the same memory/gadgets injection
+	// rules the regular CreateSession path uses, so behaviour stays consistent.
+	newSessionID := generateSessionID()
+	if params.Gadgets {
+		params.SystemPrompt += gadgetsSystemPrompt(e.MI6Control, newSessionID)
+	}
+	if e.MI6Control != "" {
+		hemCmd := fmt.Sprintf("hem --hem %s", e.MI6Control)
+		params.SystemPrompt += memorySystemPrompt(hemCmd, newSessionID)
+	}
+
+	cmdData := buildCreateSessionData(params, newSessionID, prompt)
+
+	// Track the new session locally on the target moneypenny.
+	if params.ProjectID != "" {
+		if err := e.store.TrackSession(newSessionID, targetMP.Name, params.ProjectID); err != nil {
+			return protocol.ErrResponse(fmt.Sprintf("tracking session: %v", err))
+		}
+	} else {
+		if err := e.store.TrackSession(newSessionID, targetMP.Name); err != nil {
+			return protocol.ErrResponse(fmt.Sprintf("tracking session: %v", err))
+		}
+	}
+
+	createCtx := context.Background()
+	if _, err := e.sendCommand(createCtx, targetMP, "create_session", cmdData); err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	e.invalidateMPCache(targetMP.Name)
+
+	if params.Async {
+		return protocol.OKResponse(SessionCreatedResult{
+			SessionID: newSessionID,
+			Async:     true,
+		})
+	}
+
+	response, err := e.pollUntilIdle(createCtx, targetMP, newSessionID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	e.invalidateMPCache(targetMP.Name)
+	_ = e.store.SetSessionReviewed(newSessionID, true)
+
+	return protocol.OKResponse(SessionCreatedResult{
+		SessionID: newSessionID,
+		Response:  response,
 	})
 }
 

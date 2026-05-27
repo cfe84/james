@@ -59,6 +59,7 @@ const (
 	viewTemplatePicker
 	viewCreateTemplate
 	viewMemory
+	viewSummary
 )
 
 // Model is the top-level bubbletea model.
@@ -82,6 +83,7 @@ type Model struct {
 	wizard         wizardModel
 	templatePicker templatePickerModel
 	createTemplate createTemplateModel
+	summary        summaryModel
 	parentChats       []chatModel       // stack for subagent navigation
 	chatDrafts        map[string]string // sessionID → unsent input text
 	width             int
@@ -182,6 +184,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.templatePicker.height = h
 		m.createTemplate.width = msg.Width
 		m.createTemplate.height = h
+		m.summary.width = msg.Width
+		m.summary.height = h
 		return m, nil
 
 	case tea.KeyMsg:
@@ -361,6 +365,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateCreateTemplate(msg)
 		case viewMemory:
 			return m.updateMemory(msg)
+		case viewSummary:
+			return m.updateSummary(msg)
 		}
 
 	case tea.MouseMsg:
@@ -429,7 +435,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.moneypennies.height = m.viewHeight()
 		return m, m.moneypennies.loadMoneypennies()
 
-	case wizardMPLoadedMsg, wizardDirLoadedMsg, wizardProjectLoadedMsg, wizardProjectsLoadedMsg, wizardModelsLoadedMsg:
+	case wizardMPLoadedMsg, wizardDirLoadedMsg, wizardProjectLoadedMsg, wizardProjectsLoadedMsg, wizardModelsLoadedMsg, wizardSourceLoadedMsg:
 		var cmd tea.Cmd
 		m.wizard, cmd = m.wizard.Update(msg)
 		return m, cmd
@@ -744,6 +750,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.memory, cmd = m.memory.Update(msg)
 		return m, cmd
 
+	case summaryLoadedMsg, summarySavedMsg:
+		var cmd tea.Cmd
+		m.summary, cmd = m.summary.Update(msg)
+		return m, cmd
+
 	case projectUpdatedMsg:
 		pm := msg
 		if pm.err != nil {
@@ -985,6 +996,21 @@ func (m Model) handleEsc() (tea.Model, tea.Cmd) {
 		m.currentView = viewChat
 		m.statusMsg = ""
 		return m, nil
+	case viewSummary:
+		prev := m.previousView
+		m.currentView = prev
+		m.statusMsg = ""
+		switch prev {
+		case viewProjectDetail:
+			m.projectDetail.loading = true
+			return m, m.projectDetail.loadDashboard()
+		case viewSessions:
+			m.sessions.loading = true
+			return m, m.sessions.loadSessions()
+		default:
+			m.dashboard.loading = true
+			return m, tea.Batch(m.dashboard.loadDashboard(), m.dashboard.dashboardPollTickAdaptive())
+		}
 	}
 	return m, nil
 }
@@ -1131,6 +1157,30 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.currentView = viewTemplatePicker
 		m.previousView = viewDashboard
 		return m, m.templatePicker.loadTemplates()
+	case "y":
+		// Copy session: open the create wizard prefilled from the selected
+		// session. Submit triggers `hem copy session` instead of create.
+		e := m.dashboard.selectedEntry()
+		if e != nil {
+			m.wizard = newWizardModelForCopy(m.client, e.SessionID)
+			m.wizard.width = m.width
+			m.wizard.height = m.viewHeight()
+			m.currentView = viewWizard
+			m.previousView = viewDashboard
+			return m, m.wizard.Init()
+		}
+	case "S":
+		// Summarize session: open the summary view, which kicks off the
+		// summarize call on the source moneypenny.
+		e := m.dashboard.selectedEntry()
+		if e != nil {
+			m.summary = newSummaryModel(m.client, e.SessionID, e.Name)
+			m.summary.width = m.width
+			m.summary.height = m.viewHeight()
+			m.currentView = viewSummary
+			m.previousView = viewDashboard
+			return m, m.summary.loadSummary()
+		}
 	default:
 		var cmd tea.Cmd
 		m.dashboard, cmd = m.dashboard.Update(msg)
@@ -1299,6 +1349,26 @@ func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.previousView = viewProjectDetail
 			return m, nil
 		}
+	case "y":
+		e := m.projectDetail.selectedEntry()
+		if e != nil {
+			m.wizard = newWizardModelForCopy(m.client, e.SessionID)
+			m.wizard.width = m.width
+			m.wizard.height = m.viewHeight()
+			m.currentView = viewWizard
+			m.previousView = viewProjectDetail
+			return m, m.wizard.Init()
+		}
+	case "S":
+		e := m.projectDetail.selectedEntry()
+		if e != nil {
+			m.summary = newSummaryModel(m.client, e.SessionID, e.Name)
+			m.summary.width = m.width
+			m.summary.height = m.viewHeight()
+			m.currentView = viewSummary
+			m.previousView = viewProjectDetail
+			return m, m.summary.loadSummary()
+		}
 	default:
 		var cmd tea.Cmd
 		m.projectDetail, cmd = m.projectDetail.Update(msg)
@@ -1430,6 +1500,26 @@ func (m Model) updateSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.currentView = viewShell
 			m.previousView = viewSessions
 			return m, nil
+		}
+	case "y":
+		s := m.sessions.selectedSession()
+		if s != nil {
+			m.wizard = newWizardModelForCopy(m.client, s.SessionID)
+			m.wizard.width = m.width
+			m.wizard.height = m.viewHeight()
+			m.currentView = viewWizard
+			m.previousView = viewSessions
+			return m, m.wizard.Init()
+		}
+	case "S":
+		s := m.sessions.selectedSession()
+		if s != nil {
+			m.summary = newSummaryModel(m.client, s.SessionID, s.Name)
+			m.summary.width = m.width
+			m.summary.height = m.viewHeight()
+			m.currentView = viewSummary
+			m.previousView = viewSessions
+			return m, m.summary.loadSummary()
 		}
 	default:
 		var cmd tea.Cmd
@@ -1625,6 +1715,12 @@ func (m Model) updateMemory(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m Model) updateSummary(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.summary, cmd = m.summary.Update(msg)
+	return m, cmd
+}
+
 func (m Model) updateImport(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.importForm, cmd = m.importForm.Update(msg)
@@ -1794,6 +1890,8 @@ func (m Model) View() string {
 		content = m.createTemplate.View()
 	case viewMemory:
 		content = m.memory.View()
+	case viewSummary:
+		content = m.summary.View()
 	}
 
 	statusBar := m.renderStatusBar()
@@ -2131,6 +2229,12 @@ func (m Model) renderStatusBar() string {
 	case viewMemory:
 		keys = []string{
 			statusKeyStyle.Render("^S") + statusDescStyle.Render(" save"),
+			statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
+		}
+	case viewSummary:
+		keys = []string{
+			statusKeyStyle.Render("↑↓") + statusDescStyle.Render(" scroll"),
+			statusKeyStyle.Render("s") + statusDescStyle.Render(" save"),
 			statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
 		}
 	case viewWizard:

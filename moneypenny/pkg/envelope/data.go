@@ -118,6 +118,19 @@ type ContinueSessionResponse struct {
 	Response  string `json:"response"`
 }
 
+// SummarizeSessionData is the data payload for summarize_session.
+// Asks the moneypenny to compact the session's conversation history into a
+// standalone summary using the session's configured agent.
+type SummarizeSessionData struct {
+	SessionID string `json:"session_id"`
+}
+
+// SummarizeSessionResponse is returned by summarize_session.
+type SummarizeSessionResponse struct {
+	SessionID string `json:"session_id"`
+	Summary   string `json:"summary"`
+}
+
 // UpdateMemoryData is the data payload for update_memory.
 type UpdateMemoryData struct {
 	SessionID string `json:"session_id"`
