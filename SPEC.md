@@ -728,7 +728,7 @@ The dashboard auto-refreshes every 5 seconds by polling moneypennies. When a ses
   - `s` — save to a local file (opens a modal prefilled with `<cwd>/<session-name>-summary.md`, user can edit before confirming with Enter; Esc cancels)
   - `esc` — back to the previous view
 - **Chat view**: full conversation history with markdown rendering (glamour) for assistant messages. Send messages with Enter, scroll with PgUp/PgDn, supports paste. Queued messages show with ⏳ icon and `[Queued]` label; the queued indicator is preserved across poll refreshes and only cleared when an assistant response appears. System turns (e.g., schedule triggers) are rendered with a ⚙ icon in muted/italic style. Esc enters command mode; second Esc leaves chat.
-  - Command mode: `c` complete, `d` delete (press twice to confirm), `e` edit, `g` git diff, `s` stop, `t` schedule (two-step: time then prompt), `x` shell, Enter resume, Esc leave.
+  - Command mode: `c` complete, `d` delete (press twice to confirm), `e` edit, `g` git diff, `m` memory, `r` refresh, `s` stop, `S` summarize, `t` schedule (two-step: time then prompt), `x` shell, Enter resume, Esc leave.
 - **Moneypennies view**: browse registered moneypennies.
   - `Enter` — ping moneypenny
   - `s` — set as default

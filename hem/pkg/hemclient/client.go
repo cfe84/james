@@ -214,6 +214,26 @@ func (s *MI6Sender) readLoop() {
 	s.mu.Unlock()
 }
 
+// responseTimeout returns how long Send should wait for the hem server's
+// reply before giving up. Most operations are quick metadata calls and use
+// the default; commands that block on an agent invocation (summarize, sync
+// create/continue/use-template/copy) need a much larger budget so the TUI
+// doesn't bail out before the server has a chance to respond.
+func responseTimeout(req *protocol.Request) time.Duration {
+	if req == nil {
+		return 60 * time.Second
+	}
+	switch req.Verb + " " + req.Noun {
+	case "summarize session",
+		"copy session",
+		"create session",
+		"continue session",
+		"use template":
+		return 15 * time.Minute
+	}
+	return 60 * time.Second
+}
+
 func (s *MI6Sender) Send(req *protocol.Request) (*protocol.Response, error) {
 	s.mu.Lock()
 	if s.stdin == nil {
@@ -258,7 +278,9 @@ func (s *MI6Sender) Send(req *protocol.Request) (*protocol.Response, error) {
 	}
 	s.mu.Unlock()
 
-	// Wait for response or timeout.
+	// Wait for response or timeout. Long-running operations (agent
+	// invocations) get a generously larger budget; see responseTimeout.
+	timeout := responseTimeout(req)
 	select {
 	case resp, ok := <-respCh:
 		if !ok {
@@ -273,11 +295,11 @@ func (s *MI6Sender) Send(req *protocol.Request) (*protocol.Response, error) {
 			return nil, fmt.Errorf("mi6-client died: %s", errMsg)
 		}
 		return nil, fmt.Errorf("mi6-client died: %v", s.waitErr)
-	case <-time.After(60 * time.Second):
+	case <-time.After(timeout):
 		s.mu.Lock()
 		delete(s.pendingResps, id)
 		s.mu.Unlock()
-		return nil, fmt.Errorf("timeout waiting for response")
+		return nil, fmt.Errorf("timeout waiting for response after %s", timeout)
 	}
 }
 

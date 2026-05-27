@@ -762,12 +762,12 @@ func buildCopilotOneShotArgs(params RunParams) agentInvocation {
 	// One-shots don't write instructions files (no session-scoped dir for an ephemeral
 	// call). System-prompt content can be prepended into the prompt itself by
 	// the caller if needed.
-	if needsStdin(params.Prompt) {
-		args = append(args, "-p")
-		inv.args = args
-		inv.stdin = params.Prompt
-		return inv
-	}
+	//
+	// Copilot's `-p, --prompt` flag requires an inline text value — there's no
+	// stdin or @file fallback (the @ prefix is treated as an attachment, not
+	// prompt text). So we always inline the prompt, even when long. On
+	// platforms with strict argv limits (Windows: ~32KB) this can fail for
+	// very large prompts; we accept that tradeoff over silently broken stdin.
 	args = append(args, "-p", params.Prompt)
 	inv.args = args
 	return inv
@@ -865,12 +865,10 @@ func buildCopilotArgs(params RunParams) agentInvocation {
 		}
 	}
 
-	if needsStdin(params.Prompt) {
-		args = append(args, "-p")
-		inv.args = args
-		inv.stdin = params.Prompt
-		return inv
-	}
+	// Copilot's -p requires an inline text value (no stdin / @file fallback).
+	// Always pass the prompt inline; on Windows this can fail for very large
+	// prompts due to argv limits but the alternative (silent stdin no-op)
+	// is worse.
 	args = append(args, "-p", params.Prompt)
 	inv.args = args
 	return inv

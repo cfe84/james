@@ -1007,6 +1007,9 @@ func (m Model) handleEsc() (tea.Model, tea.Cmd) {
 		case viewSessions:
 			m.sessions.loading = true
 			return m, m.sessions.loadSessions()
+		case viewChat:
+			// Chat state is preserved across the round trip; no reload.
+			return m, nil
 		default:
 			m.dashboard.loading = true
 			return m, tea.Batch(m.dashboard.loadDashboard(), m.dashboard.dashboardPollTickAdaptive())
@@ -1627,6 +1630,17 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.currentView = viewMemory
 			m.previousView = viewChat
 			return m, m.memory.loadMemory()
+		case "S":
+			// Summarize: run `hem summarize session` and show the result.
+			// Uppercase to avoid the lowercase `s`=stop binding above.
+			m.chat.confirmDelete = false
+			m.chat.commandMode = false
+			m.summary = newSummaryModel(m.client, m.chat.sessionID, m.chat.sessionName)
+			m.summary.width = m.width
+			m.summary.height = m.viewHeight()
+			m.currentView = viewSummary
+			m.previousView = viewChat
+			return m, m.summary.loadSummary()
 		case "f":
 			m.chat.confirmDelete = false
 			m.chat.browsingFiles = true
@@ -2088,10 +2102,11 @@ func (m Model) renderStatusBar() string {
 				statusKeyStyle.Render("e") + statusDescStyle.Render(" edit"),
 				statusKeyStyle.Render("g") + statusDescStyle.Render(" git diff"),
 				statusKeyStyle.Render("s") + statusDescStyle.Render(" stop"),
+				statusKeyStyle.Render("S") + statusDescStyle.Render(" summarize"),
 				statusKeyStyle.Render("t") + statusDescStyle.Render(" schedule"),
 				statusKeyStyle.Render("f") + statusDescStyle.Render(" files"),
 				statusKeyStyle.Render("m") + statusDescStyle.Render(" memory"),
-			statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
+				statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
 				statusKeyStyle.Render("x") + statusDescStyle.Render(" shell"),
 				statusKeyStyle.Render("1-9") + statusDescStyle.Render(" sub#"),
 				statusKeyStyle.Render("↵") + statusDescStyle.Render(" resume"),
