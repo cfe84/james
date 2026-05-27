@@ -103,12 +103,18 @@ func PrependToPath(env []string, dir string) []string {
 	out := make([]string, 0, len(env)+1)
 	found := false
 	for _, e := range env {
-		if strings.HasPrefix(e, "PATH=") {
-			existing := strings.TrimPrefix(e, "PATH=")
+		// Match PATH case-insensitively: Windows uses "Path", *nix uses "PATH".
+		// We MUST preserve the original key casing — having both "Path=..."
+		// and "PATH=..." in the same env block leads to undefined behavior on
+		// Windows (CreateProcess receives duplicates, and one may shadow the
+		// other depending on alphabetical ordering).
+		if eq := strings.Index(e, "="); eq > 0 && strings.EqualFold(e[:eq], "PATH") {
+			key := e[:eq]
+			existing := e[eq+1:]
 			if existing == "" {
-				out = append(out, "PATH="+dir)
+				out = append(out, key+"="+dir)
 			} else {
-				out = append(out, "PATH="+dir+string(os.PathListSeparator)+existing)
+				out = append(out, key+"="+dir+string(os.PathListSeparator)+existing)
 			}
 			found = true
 		} else {
@@ -263,6 +269,46 @@ func (r *Runner) GetActivity(sessionID string) []ActivityEvent {
 		return nil
 	}
 	return buf.snapshot()
+}
+
+// RunOneShot invokes an agent for a single prompt without any session
+// management. No --session-id, no --resume, no streaming, no activity buffer,
+// no persistent state. Returns the agent's final text response.
+//
+// Reusable for things like compacting a conversation summary or asking an
+// agent a side question. The agent's `params.Path` (cwd) is honored so the
+// agent has the same project context.
+func (r *Runner) RunOneShot(ctx context.Context, params RunParams) (string, error) {
+	agentPath, err := FindAgent(params.Agent)
+	if err != nil {
+		return "", err
+	}
+
+	inv := buildOneShotArgs(params)
+	if inv.cleanup != nil {
+		defer inv.cleanup()
+	}
+
+	cmd := exec.CommandContext(ctx, agentPath, inv.args...)
+	if params.Path != "" {
+		cmd.Dir = params.Path
+	}
+	env := PrependToPath(os.Environ(), filepath.Dir(agentPath))
+	env = append(env, inv.env...)
+	cmd.Env = env
+	if inv.stdin != "" {
+		cmd.Stdin = strings.NewReader(inv.stdin)
+	}
+	var stderrBuf bytes.Buffer
+	cmd.Stderr = &stderrBuf
+
+	r.vlog.Printf("oneshot exec: %s %s", agentPath, strings.Join(inv.args, " "))
+
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("agent oneshot failed: %w (stderr: %s)", err, strings.TrimSpace(stderrBuf.String()))
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // Run invokes an agent with the given parameters. It blocks until the agent completes.
@@ -662,6 +708,69 @@ func buildArgs(params RunParams) agentInvocation {
 	default:
 		return buildClaudeArgs(params)
 	}
+}
+
+// buildOneShotArgs constructs args for a single-shot invocation (no session
+// state, plain-text output).
+func buildOneShotArgs(params RunParams) agentInvocation {
+	switch params.Agent {
+	case "copilot":
+		return buildCopilotOneShotArgs(params)
+	default:
+		return buildClaudeOneShotArgs(params)
+	}
+}
+
+func buildClaudeOneShotArgs(params RunParams) agentInvocation {
+	args := []string{"--output-format", "text"}
+	if params.SystemPrompt != "" {
+		args = append(args, "--system-prompt", params.SystemPrompt)
+	}
+	if params.Model != "" {
+		args = append(args, "--model", params.Model)
+	}
+	if params.Effort != "" {
+		args = append(args, "--effort", params.Effort)
+	}
+	if params.Yolo {
+		args = append(args, "--dangerously-skip-permissions")
+	}
+	inv := agentInvocation{}
+	if needsStdin(params.Prompt) {
+		args = append(args, "-p")
+		inv.args = args
+		inv.stdin = params.Prompt
+		return inv
+	}
+	args = append(args, "-p", params.Prompt)
+	inv.args = args
+	return inv
+}
+
+func buildCopilotOneShotArgs(params RunParams) agentInvocation {
+	args := []string{"--output-format", "text"}
+	if params.Model != "" {
+		args = append(args, "--model", params.Model)
+	}
+	if params.Effort != "" {
+		args = append(args, "--effort", params.Effort)
+	}
+	if params.Yolo {
+		args = append(args, "--yolo")
+	}
+	inv := agentInvocation{}
+	// One-shots don't write AGENTS.md (no session-scoped dir for an ephemeral
+	// call). System-prompt content can be prepended into the prompt itself by
+	// the caller if needed.
+	if needsStdin(params.Prompt) {
+		args = append(args, "-p")
+		inv.args = args
+		inv.stdin = params.Prompt
+		return inv
+	}
+	args = append(args, "-p", params.Prompt)
+	inv.args = args
+	return inv
 }
 
 func buildClaudeArgs(params RunParams) agentInvocation {

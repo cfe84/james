@@ -353,6 +353,93 @@ func (h *Handler) queuePrompt(_ context.Context, cmd *envelope.Command) *envelop
 	})
 }
 
+// isSessionNotFoundErr returns true if the agent error indicates that the
+// underlying agent-side session was lost / never existed (so we should
+// compact our history and start fresh on the agent side).
+func isSessionNotFoundErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	for _, needle := range []string{
+		"No conversation found with session ID",
+		"No session, task, or name matched",
+		"session not found",
+	} {
+		if strings.Contains(s, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+// CompactSession asks the session's configured agent to produce a summary of
+// the conversation history stored in moneypenny. Reusable for recovery (when
+// the agent-side session is gone) and future uses (e.g. explicit user-driven
+// compaction). Returns "" if there's no history to compact.
+func (h *Handler) CompactSession(ctx context.Context, sessionID string) (string, error) {
+	sess, err := h.store.GetSession(sessionID)
+	if err != nil {
+		return "", fmt.Errorf("get session: %w", err)
+	}
+	if sess == nil {
+		return "", fmt.Errorf("session not found: %s", sessionID)
+	}
+	turns, err := h.store.GetConversation(sessionID)
+	if err != nil {
+		return "", fmt.Errorf("get conversation: %w", err)
+	}
+	if len(turns) == 0 {
+		return "", nil
+	}
+
+	// Build a clean transcript. Skip thinking/agent_text noise — keep only
+	// user, assistant, and system role turns.
+	var transcript strings.Builder
+	for _, t := range turns {
+		switch t.Role {
+		case "user":
+			transcript.WriteString("USER: ")
+		case "assistant":
+			transcript.WriteString("ASSISTANT: ")
+		case "system":
+			transcript.WriteString("SYSTEM: ")
+		default:
+			continue
+		}
+		transcript.WriteString(strings.TrimSpace(t.Content))
+		transcript.WriteString("\n\n")
+	}
+
+	prompt := fmt.Sprintf(`Below is the full history of a prior conversation. Provide a comprehensive summary that captures:
+- The original task or question
+- Key decisions made and their rationale
+- Important context: file paths, names, conventions, learnings
+- Current state — what was being worked on at the end
+- Any pending actions or unresolved questions
+
+Be detailed enough that the conversation can be RESUMED with this summary alone as context. Output ONLY the summary text, no preamble or meta-commentary.
+
+Conversation:
+%s`, transcript.String())
+
+	// For copilot, system-prompt-via-AGENTS.md isn't available for one-shots,
+	// so prepend any system prompt directly into the user prompt.
+	if sess.Agent == "copilot" && sess.SystemPrompt != "" {
+		prompt = "Context for this task:\n" + sess.SystemPrompt + "\n\n---\n\n" + prompt
+	}
+
+	return h.runner.RunOneShot(ctx, agent.RunParams{
+		Agent:        sess.Agent,
+		Model:        sess.Model,
+		Effort:       sess.Effort,
+		Yolo:         sess.Yolo,
+		Path:         sess.Path,
+		Prompt:       prompt,
+		SystemPrompt: sess.SystemPrompt, // used by claude one-shot
+	})
+}
+
 // runAgent executes the agent in the background, updating the store when done.
 // After completion, it checks the prompt queue and auto-continues if there are queued prompts.
 func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
@@ -370,6 +457,26 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 
 	ctx := context.Background()
 	result, err := h.runner.Run(ctx, params)
+
+	// Recovery: if the agent reports its session is gone, compact our history
+	// and retry as a fresh agent-side session with the summary as context.
+	if err != nil && isSessionNotFoundErr(err) {
+		h.vlog("session %s gone on agent side; compacting history and retrying", sessionID)
+		_ = h.store.AddConversationTurn(sessionID, "system",
+			"Underlying agent session was lost. Compacting prior conversation and starting fresh…")
+		compactCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		summary, sumErr := h.CompactSession(compactCtx, sessionID)
+		cancel()
+		if sumErr != nil {
+			h.vlog("compaction failed for session %s: %v", sessionID, sumErr)
+		}
+		// Retry as a CREATE with the summary in the system prompt.
+		params.Resume = false
+		if summary != "" {
+			params.SystemPrompt += "\n\n<previous-session-summary>\n" + summary + "\n</previous-session-summary>"
+		}
+		result, err = h.runner.Run(ctx, params)
+	}
 	if err != nil {
 		h.vlog("agent error for session %s: %v", sessionID, err)
 		// Surface the error as a conversation turn so the user can see it.
