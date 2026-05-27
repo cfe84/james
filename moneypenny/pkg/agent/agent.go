@@ -759,7 +759,7 @@ func buildCopilotOneShotArgs(params RunParams) agentInvocation {
 		args = append(args, "--yolo")
 	}
 	inv := agentInvocation{}
-	// One-shots don't write AGENTS.md (no session-scoped dir for an ephemeral
+	// One-shots don't write instructions files (no session-scoped dir for an ephemeral
 	// call). System-prompt content can be prepended into the prompt itself by
 	// the caller if needed.
 	if needsStdin(params.Prompt) {
@@ -849,14 +849,16 @@ func buildCopilotArgs(params RunParams) agentInvocation {
 	}
 
 	inv := agentInvocation{}
-	// Copilot has no --system-prompt flag. The supported mechanism is to put
-	// an AGENTS.md file in a directory pointed to by COPILOT_CUSTOM_INSTRUCTIONS_DIRS.
+	// Copilot has no --system-prompt flag. The supported mechanism is to place
+	// an instructions file at .github/instructions/system.instructions.md inside
+	// a directory pointed to by COPILOT_CUSTOM_INSTRUCTIONS_DIRS.
 	// Write the system prompt to the session's persistent dir so it survives
 	// resumes; no per-invocation cleanup needed (lifetime tied to the session).
 	if params.SystemPrompt != "" && params.SessionDir != "" {
 		instructionsDir := filepath.Join(params.SessionDir, "copilot-instructions")
-		if err := os.MkdirAll(instructionsDir, 0700); err == nil {
-			instructionsFile := filepath.Join(instructionsDir, "AGENTS.md")
+		instructionsSubDir := filepath.Join(instructionsDir, ".github", "instructions")
+		if err := os.MkdirAll(instructionsSubDir, 0700); err == nil {
+			instructionsFile := filepath.Join(instructionsSubDir, "system.instructions.md")
 			if err := os.WriteFile(instructionsFile, []byte(params.SystemPrompt), 0600); err == nil {
 				inv.env = append(inv.env, "COPILOT_CUSTOM_INSTRUCTIONS_DIRS="+instructionsDir)
 			}

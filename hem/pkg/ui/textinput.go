@@ -6,6 +6,31 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// isMouseEscapeRemnant detects KeyRunes content that looks like the body of
+// an SGR mouse escape sequence (CSI `<` button;x;y M/m). Some terminals or
+// bubbletea edge cases let this leak through as text runes after the leading
+// ESC is consumed; filtering it here prevents garbage in text inputs.
+func isMouseEscapeRemnant(s string) bool {
+	// Examples we want to drop: "[<65;85;42M", "[<35;120;5m"
+	if len(s) < 5 {
+		return false
+	}
+	if s[0] != '[' || s[1] != '<' {
+		return false
+	}
+	last := s[len(s)-1]
+	if last != 'M' && last != 'm' {
+		return false
+	}
+	for i := 2; i < len(s)-1; i++ {
+		c := s[i]
+		if (c < '0' || c > '9') && c != ';' {
+			return false
+		}
+	}
+	return true
+}
+
 // textInput is a reusable text input widget with cursor navigation,
 // word movement (ctrl+b/f, alt+left/right), and optional multiline support.
 // In multiline mode, ctrl+j / shift+enter inserts newlines and enter submits.
@@ -107,6 +132,11 @@ func (t *textInput) HandleKey(msg tea.KeyMsg) (handled, submitted bool) {
 	default:
 		if msg.Type == tea.KeyRunes {
 			s := string(msg.Runes)
+			// Filter SGR mouse escape sequence remnants that some terminals
+			// leak through as text after the ESC byte is consumed.
+			if isMouseEscapeRemnant(s) {
+				return true, false
+			}
 			t.text = t.text[:t.cursorPos] + s + t.text[t.cursorPos:]
 			t.cursorPos += len(s)
 			return true, false

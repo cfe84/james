@@ -2186,6 +2186,10 @@ func wordWrap(s string, width int) string {
 
 	var result strings.Builder
 	for _, line := range strings.Split(s, "\n") {
+		// Strip trailing \r so CRLF-formatted content (e.g. stderr from
+		// Windows cmd.exe) doesn't cause the terminal cursor to return mid-
+		// line and visually erase the rendered text.
+		line = strings.TrimRight(line, "\r")
 		if lipgloss.Width(line) <= width {
 			if result.Len() > 0 {
 				result.WriteString("\n")
