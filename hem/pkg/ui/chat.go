@@ -1516,7 +1516,18 @@ func (m chatModel) View() string {
 
 	systemMsgStyle := lipgloss.NewStyle().Foreground(colorMuted).Italic(true)
 	thoughtStyle := lipgloss.NewStyle().Foreground(colorMuted).Italic(true)
-	for _, turn := range m.conversation {
+	for i, turn := range m.conversation {
+		// Skip empty assistant turns that immediately follow a chain-of-thought
+		// turn: when the agent ends with a tool call (no final text), the
+		// stored assistant turn is empty and the agent_text turns above
+		// already capture the content. Old conversations may still contain
+		// these empties; new ones avoid storing them at all (handler.go).
+		if turn.Role == "assistant" && strings.TrimSpace(turn.Content) == "" && i > 0 {
+			prev := m.conversation[i-1].Role
+			if prev == "agent_text" || prev == "thinking" {
+				continue
+			}
+		}
 		// Train-of-thought turns (thinking, agent_text) get a compact rendering:
 		// no agent-name prefix, content is indented and gray with the emoji
 		// inline at the first line.

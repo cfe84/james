@@ -539,8 +539,17 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 		h.vlog("dedup: removed trailing agent_text turn matching final response for session %s", sessionID)
 	}
 
-	if err := h.store.AddConversationTurn(sessionID, "assistant", responseText); err != nil {
-		h.vlog("failed to add conversation turn for session %s: %v", sessionID, err)
+	// Skip storing an empty assistant turn: when the agent's last action is
+	// a tool call (or it otherwise finishes without producing a final text
+	// block), result.Text is empty. The chain-of-thought already captured
+	// whatever the agent produced via agent_text turns, so an empty
+	// assistant turn would just render as "(empty)" in the chat.
+	if strings.TrimSpace(responseText) != "" {
+		if err := h.store.AddConversationTurn(sessionID, "assistant", responseText); err != nil {
+			h.vlog("failed to add conversation turn for session %s: %v", sessionID, err)
+		}
+	} else {
+		h.vlog("skipping empty assistant turn for session %s (agent produced no final text)", sessionID)
 	}
 
 	h.vlog("agent completed for session %s", sessionID)
