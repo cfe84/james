@@ -132,6 +132,34 @@ func statusBadge(status string) string {
 	}
 }
 
+// agentColor returns the brand color for a known agent.
+func agentColor(agent string) lipgloss.Color {
+	switch agent {
+	case "copilot":
+		return colorPrimary // orange
+	case "claude":
+		return lipgloss.Color("#A78BFA") // violet
+	default:
+		return colorMuted
+	}
+}
+
+// agentPlain returns a plain-text agent label (no ANSI), for use in selected rows.
+func agentPlain(agent string) string {
+	if agent == "" {
+		return "-"
+	}
+	return agent
+}
+
+// agentBadge returns a colored agent label.
+func agentBadge(agent string) string {
+	if agent == "" {
+		return lipgloss.NewStyle().Foreground(colorMuted).Render("-")
+	}
+	return lipgloss.NewStyle().Foreground(agentColor(agent)).Render(agent)
+}
+
 // padRight pads a (possibly styled) string to a fixed visual width.
 func padRight(s string, width int) string {
 	w := lipgloss.Width(s)

@@ -623,6 +623,7 @@ func (h *Handler) listSessions(_ context.Context, cmd *envelope.Command) *envelo
 			SessionID: s.SessionID,
 			Name:      s.Name,
 			Status:    s.Status,
+			Agent:     s.Agent,
 			CreatedAt: s.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		}
 		// Use the last conversation turn as last_accessed, falling back to

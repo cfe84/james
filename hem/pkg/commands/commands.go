@@ -70,6 +70,7 @@ IMPORTANT: When creating a session or subagent that needs to modify the filesyst
 type mpSessionInfo struct {
 	Status       string `json:"status"`
 	Name         string `json:"name"`
+	Agent        string `json:"agent"`
 	SessionID    string `json:"session_id"`
 	CreatedAt    string `json:"created_at"`
 	LastAccessed string `json:"last_accessed"`
@@ -447,6 +448,9 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 	}
 	if verb == "list-models" {
 		return e.ListModels(args)
+	}
+	if verb == "refresh-models" {
+		return e.RefreshModels(args)
 	}
 	if verb == "transfer-file" {
 		return e.TransferFile(noun, args)
@@ -1467,6 +1471,10 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 		return protocol.ErrResponse(err.Error())
 	}
 	e.invalidateMPCache(mp.Name)
+	// Warm the model cache for this (mp, agent) so the next wizard open is
+	// instant. Honors the refresh floor so back-to-back creates don't
+	// hammer the slow copilot model query.
+	e.asyncRefreshModelCache(mp, params.Agent)
 
 	if params.Async {
 		return protocol.OKResponse(SessionCreatedResult{
@@ -2898,6 +2906,7 @@ func (e *Executor) UseTemplate(args []string) *protocol.Response {
 		return protocol.ErrResponse(err.Error())
 	}
 	e.invalidateMPCache(mp.Name)
+	e.asyncRefreshModelCache(mp, agent)
 
 	if async {
 		return protocol.OKResponse(SessionCreatedResult{
@@ -3317,8 +3326,17 @@ func (e *Executor) ListDirectory(noun string, args []string) *protocol.Response 
 
 // ListModelsResult is returned by ListModels.
 type ListModelsResult struct {
-	Agent  string          `json:"agent"`
-	Models []ModelOption   `json:"models"`
+	Agent  string        `json:"agent"`
+	Models []ModelOption `json:"models"`
+	// CachedAt is the RFC3339 timestamp of when this list was last written.
+	// Always populated on success so JSON consumers can reason about
+	// freshness without checking for field presence.
+	CachedAt string `json:"cached_at,omitempty"`
+	// Cached is true when the list came from hem's persistent cache rather
+	// than from a live moneypenny query. NOT omitempty: consumers want
+	// to detect "is this fresh?" with `result.cached === false`, which
+	// requires the field to always be serialized.
+	Cached bool `json:"cached"`
 }
 
 type ModelOption struct {
@@ -3326,13 +3344,93 @@ type ModelOption struct {
 	Value string `json:"value,omitempty"`
 }
 
+// fetchModelsFromMoneypenny queries a moneypenny for its agent's model list
+// and persists the result in hem's model_cache table.
+//
+// allowEmpty controls behaviour when the moneypenny responds successfully
+// with zero models:
+//   - false (background warmup, cache-miss-via-list): treat as a transient
+//     failure and skip the cache write so a previously good list survives.
+//   - true (--refresh / refresh-models): overwrite even with an empty list,
+//     so the user can recover from a permanently revoked/changed source by
+//     forcing a refresh. Without this escape hatch a stale row would live
+//     forever (no TTL).
+func (e *Executor) fetchModelsFromMoneypenny(ctx context.Context, mp *store.Moneypenny, agentName string, allowEmpty bool) (ListModelsResult, error) {
+	resp, err := e.sendCommand(ctx, mp, "list_models", map[string]interface{}{
+		"agent": agentName,
+	})
+	if err != nil {
+		return ListModelsResult{}, err
+	}
+	var fresh ListModelsResult
+	if err := json.Unmarshal(resp.Data, &fresh); err != nil {
+		return ListModelsResult{}, fmt.Errorf("parsing result: %v", err)
+	}
+	if len(fresh.Models) > 0 || allowEmpty {
+		cacheEntries := make([]store.CachedModelEntry, 0, len(fresh.Models))
+		for _, m := range fresh.Models {
+			cacheEntries = append(cacheEntries, store.CachedModelEntry{Name: m.Name, Value: m.Value})
+		}
+		if cacheErr := e.store.SetCachedModels(mp.Name, agentName, cacheEntries); cacheErr != nil {
+			log.Printf("model cache: failed to persist %s/%s: %v", mp.Name, agentName, cacheErr)
+		}
+	}
+	return fresh, nil
+}
+
+// modelCacheRefreshFloor is the minimum age a cache entry must reach before
+// we'll fire an opportunistic background refresh on top of a cache hit.
+// Tuned to dampen repeated wizard opens without leaving the cache stale.
+const modelCacheRefreshFloor = 60 * time.Second
+
+// modelRefreshInflight de-duplicates concurrent background refreshes for the
+// same (moneypenny, agent) pair. The 60s floor on its own is TOCTOU: between
+// the floor check and the cache write, N goroutines can all pass the check
+// and all hit the slow copilot query. With this map, the first goroutine
+// wins, subsequent calls within the same window become no-ops.
+var modelRefreshInflight sync.Map
+
+// asyncRefreshModelCache fires a non-blocking refresh of the model cache for
+// the given (mp, agent). Used by the wizard "warmup" path and after every
+// session-creation verb so the next wizard open sees fresh data without
+// paying the slow query cost. Honors both the refresh floor (skip if cache
+// is fresh) and an in-flight de-dupe (skip if another refresh is running).
+func (e *Executor) asyncRefreshModelCache(mp *store.Moneypenny, agentName string) {
+	if mp == nil || agentName == "" {
+		return
+	}
+	key := mp.Name + "|" + agentName
+	if _, loaded := modelRefreshInflight.LoadOrStore(key, struct{}{}); loaded {
+		// Another goroutine is already refreshing this pair.
+		return
+	}
+	go func() {
+		defer modelRefreshInflight.Delete(key)
+		// Skip if a refresh just happened — protects copilot from being
+		// hammered when the wizard is opened repeatedly.
+		if _, cachedAt, _ := e.store.GetCachedModels(mp.Name, agentName); !cachedAt.IsZero() && time.Since(cachedAt) < modelCacheRefreshFloor {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+		defer cancel()
+		// Background refreshes are conservative: an empty response is
+		// treated as a transient failure and does NOT overwrite a previously
+		// good cache row. Users can `hem refresh-models` to force.
+		if _, err := e.fetchModelsFromMoneypenny(ctx, mp, agentName, false); err != nil {
+			log.Printf("model cache: background refresh for %s/%s failed: %v", mp.Name, agentName, err)
+		}
+	}()
+}
+
 func (e *Executor) ListModels(args []string) *protocol.Response {
 	var mpName, agentName string
+	var refresh bool
 
 	_, err := parseFlagsFromArgs("list-models", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&mpName, "m", "", "moneypenny name")
 		fs.StringVar(&mpName, "moneypenny", "", "moneypenny name")
 		fs.StringVar(&agentName, "agent", "", "agent type (claude, copilot)")
+		fs.BoolVar(&refresh, "refresh", false, "bypass the cache and query the moneypenny directly")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -3357,20 +3455,89 @@ func (e *Executor) ListModels(args []string) *protocol.Response {
 		return protocol.ErrResponse(fmt.Sprintf("moneypenny %q not found", mpName))
 	}
 
+	// Cache-first path: return the persisted list immediately when present,
+	// and opportunistically kick off a background refresh so the next call
+	// sees fresh data. --refresh bypasses both the cache read and the
+	// dampening floor.
+	if !refresh {
+		if entries, cachedAt, _ := e.store.GetCachedModels(mp.Name, agentName); len(entries) > 0 {
+			result := ListModelsResult{
+				Agent:    agentName,
+				Cached:   true,
+				CachedAt: cachedAt.UTC().Format(time.RFC3339),
+			}
+			for _, en := range entries {
+				result.Models = append(result.Models, ModelOption{Name: en.Name, Value: en.Value})
+			}
+			// Best-effort warmup; honors the refresh floor.
+			e.asyncRefreshModelCache(mp, agentName)
+			return protocol.OKResponse(result)
+		}
+	}
+
+	// Cache miss (or forced refresh): hit the moneypenny synchronously.
+	// --refresh is "user explicitly asked for the current state" so we
+	// honour an empty response (allows recovery from a permanently revoked
+	// access state). A cache miss without --refresh stays conservative:
+	// transient empties don't pollute a cold cache.
 	ctx := context.Background()
-	resp, err := e.sendCommand(ctx, mp, "list_models", map[string]interface{}{
-		"agent": agentName,
+	fresh, err := e.fetchModelsFromMoneypenny(ctx, mp, agentName, refresh)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	// Surface the fresh-from-moneypenny timestamp so JSON consumers can
+	// distinguish a forced refresh from a cache hit.
+	fresh.CachedAt = time.Now().UTC().Format(time.RFC3339)
+	fresh.Cached = false
+	return protocol.OKResponse(fresh)
+}
+
+// RefreshModels forces a moneypenny model-list query, bypassing the cache,
+// and updates hem's persistent cache. Equivalent to `list models --refresh`
+// but exposed as its own verb so users can warm the cache without printing
+// a list — the response is a short confirmation, not a model dump. JSON
+// consumers needing the full list should call `list-models --refresh`.
+func (e *Executor) RefreshModels(args []string) *protocol.Response {
+	var mpName, agentName string
+
+	_, err := parseFlagsFromArgs("refresh-models", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&mpName, "m", "", "moneypenny name")
+		fs.StringVar(&mpName, "moneypenny", "", "moneypenny name")
+		fs.StringVar(&agentName, "agent", "", "agent type (claude, copilot)")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
 
-	var result ListModelsResult
-	if err := json.Unmarshal(resp.Data, &result); err != nil {
-		return protocol.ErrResponse(fmt.Sprintf("parsing result: %v", err))
+	if agentName == "" {
+		agentName = "copilot"
+	}
+	if mpName == "" {
+		mpName, _ = e.store.GetDefault("moneypenny")
+	}
+	if mpName == "" {
+		return protocol.ErrResponse("moneypenny is required (use -m or set a default)")
 	}
 
-	return protocol.OKResponse(result)
+	mp, err := e.store.GetMoneypenny(mpName)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if mp == nil {
+		return protocol.ErrResponse(fmt.Sprintf("moneypenny %q not found", mpName))
+	}
+
+	// Explicit refresh: write the result even if empty (lets users recover
+	// from a permanently revoked source — without this, a stale row would
+	// outlive the underlying access).
+	ctx := context.Background()
+	fresh, err := e.fetchModelsFromMoneypenny(ctx, mp, agentName, true)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	return protocol.OKResponse(TextResult{
+		Message: fmt.Sprintf("Refreshed model cache for %s/%s: %d models", mp.Name, agentName, len(fresh.Models)),
+	})
 }
 
 // TransferFileResult is returned by TransferFile.
@@ -3954,6 +4121,7 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 		return protocol.ErrResponse(err.Error())
 	}
 	e.invalidateMPCache(targetMP.Name)
+	e.asyncRefreshModelCache(targetMP, params.Agent)
 
 	if params.Async {
 		return protocol.OKResponse(SessionCreatedResult{
@@ -4018,6 +4186,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 		SessionID       string
 		Name            string
 		Project         string
+		Agent           string
 		MPStatus        string // moneypenny status (idle/working)
 		HemStatus       string // active/completed
 		Moneypenny      string
@@ -4094,7 +4263,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 	var entries []dashboardEntry
 
 	for _, sess := range filteredSessions {
-		var mpStatus, sessionName, createdAt, lastAccessed string
+		var mpStatus, sessionName, createdAt, lastAccessed, agentName string
 
 		if mpSessions, ok := mpData[sess.MoneypennyName]; ok {
 			if info, found := mpSessions[sess.SessionID]; found {
@@ -4102,6 +4271,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 				sessionName = info.Name
 				createdAt = info.CreatedAt
 				lastAccessed = info.LastAccessed
+				agentName = info.Agent
 			} else {
 				mpStatus = "unknown"
 				log.Printf("dashboard: session %s not found on moneypenny %q (mp has %d sessions)",
@@ -4175,6 +4345,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 			SessionID:    sess.SessionID,
 			Name:         displayName,
 			Project:      projectName,
+			Agent:        agentName,
 			MPStatus:     displayStatus,
 			HemStatus:    sess.HemStatus,
 			Moneypenny:   sess.MoneypennyName,
@@ -4190,13 +4361,14 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 			if sub.HemStatus == "completed" && !showSubs {
 				continue
 			}
-			var subMPStatus, subName, subCreated, subLastAccessed string
+			var subMPStatus, subName, subCreated, subLastAccessed, subAgent string
 			if mpSessions, ok := mpData[sub.MoneypennyName]; ok {
 				if info, found := mpSessions[sub.SessionID]; found {
 					subMPStatus = info.Status
 					subName = info.Name
 					subCreated = info.CreatedAt
 					subLastAccessed = info.LastAccessed
+					subAgent = info.Agent
 				}
 			}
 			subDisplayStatus := subMPStatus
@@ -4218,6 +4390,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 				SessionID:       sub.SessionID,
 				Name:            "↳ " + subName,
 				Project:         projectName,
+				Agent:           subAgent,
 				MPStatus:        subDisplayStatus,
 				HemStatus:       sub.HemStatus,
 				Moneypenny:      sub.MoneypennyName,
@@ -4285,7 +4458,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 	}
 
 	result := TableResult{
-		Headers: []string{"SessionID", "Name", "Project", "Status", "Moneypenny", "Created", "Last Activity", "ParentSessionID"},
+		Headers: []string{"SessionID", "Name", "Project", "Status", "Moneypenny", "Created", "Last Activity", "ParentSessionID", "Agent"},
 	}
 	for _, entry := range entries {
 		status := entry.MPStatus + " (" + entry.HemStatus + ")"
@@ -4321,7 +4494,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 		}
 
 		result.Rows = append(result.Rows, []string{
-			entry.SessionID, entry.Name, entry.Project, status, entry.Moneypenny, entry.CreatedAt, entry.LastActive, entry.ParentSessionID,
+			entry.SessionID, entry.Name, entry.Project, status, entry.Moneypenny, entry.CreatedAt, entry.LastActive, entry.ParentSessionID, entry.Agent,
 		})
 	}
 
@@ -4978,6 +5151,7 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 		return protocol.ErrResponse(err.Error())
 	}
 	e.invalidateMPCache(mp.Name)
+	e.asyncRefreshModelCache(mp, agentName)
 
 	if async {
 		return protocol.OKResponse(SessionCreatedResult{

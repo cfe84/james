@@ -105,7 +105,7 @@ moneypenny/
 
 - `create_session` - Create new session, run initial prompt, store result
 - `continue_session` - Send new prompt to existing idle session
-- `list_sessions` - List all sessions with status
+- `list_sessions` - List all sessions with status and agent
 - `get_session` - Full session detail with conversation history
 - `update_session` - Update session parameters (name, system_prompt, yolo, path)
 - `delete_session` - Kill agent if running, remove session
@@ -241,6 +241,14 @@ hem/
 32. **Diagnostics**: `hem diagnose` uses a two-phase client-side architecture for streaming output. Phase 1 runs local checks (data directory, SSH keys, database) without a server connection, printing results immediately. Phase 2 sends a single `diagnose` command to the server, which pings all moneypennies in parallel, checks agent availability via `check_agents`, and collects cache/session stats. The CLI unpacks the structured `DiagnoseResult` and prints each section as it goes. JSON mode (`-o json`) buffers all checks and outputs a single JSON array at the end. Agent binary detection uses `exec.LookPath()` for cross-platform support (Windows, macOS, Linux). The `check_agents` moneypenny command is version-gated (≥1.0.0) for retrocompatibility with older moneypenny instances.
 
 33. **Session summarization and copying**: `hem summarize session` exposes the existing `CompactSession` helper to users so they can produce a standalone summary of a session's history on demand (originally written for the agent-side recovery path when an upstream agent's session is lost). `hem copy session SOURCE_ID` builds on top: it fetches the source session detail via `get_session`, asks the source moneypenny for a summary via `summarize_session`, then runs the regular `create_session` path on the target moneypenny (which can differ from the source). Parameters default to the source's values and are overridden by any explicit flag, including `-m` for cross-host copies. The summary is wrapped in `<prior-session-summary>` tags inside a preamble that explains the new session is a continuation; trailing args (if any) are appended as the actual user follow-up, otherwise a stub "acknowledge and await further instructions" is inserted. Source session is preserved. The TUI surfaces this via `y` (open the create wizard prefilled from the selected session; submit triggers `copySession` instead of `createSession`) and `S` (open the summary view, which renders the summary and offers a save-to-file modal prefilled with `<cwd>/<session-name>-summary.md`).
+
+34. **Persistent model cache**: `list_models` against copilot shells out to `copilot -p` which takes 10-20s. Moneypenny memoizes the result in-process (24h TTL) but loses it on every restart. Hem persists the same result in its SQLite (`model_cache` table, keyed by moneypenny+agent). `hem list-models` is now cache-first: a cache hit returns immediately, a cache miss queries the moneypenny synchronously and writes the result. Every session-creation verb (`create session`, `create subsession`, `copy session`, `use template`) fires `asyncRefreshModelCache(mp, agent)` after the moneypenny accepts the create, so the cache stays warm without paying latency on the user's path. ContinueSession deliberately doesn't warm — the session row doesn't carry the agent, and continuing isn't a wizard entry point.
+
+    Hammering protection is layered: a 60s freshness floor skips refreshes when the cache row is younger than a minute, AND a `sync.Map` of in-flight refreshes ensures only one goroutine per `(mp, agent)` runs at a time. The floor alone would be TOCTOU under burst creates (multiple goroutines pass the check before any writes); the in-flight map closes that race.
+
+    Empty-response handling is split by caller: background warmup and cache-miss paths treat empty as transient (preserve any existing good row), while `--refresh` and `refresh-models` write through (lets users recover from a permanently revoked source — without this, a stale row would outlive the access). `RefreshModels` returns a short confirmation instead of the model list to keep the verb's output focused.
+
+    Cache rows are dropped when a moneypenny is deleted so re-adding the same name doesn't surface a stale list. The TUI's wizard automatically benefits — `listModels` goes through this cache-first path with no client-side change.
 
 ### Hem Command Layer Refactoring (v0.11.0+)
 

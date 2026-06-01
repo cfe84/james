@@ -73,6 +73,7 @@ type SessionInfo struct {
 	SessionID    string `json:"session_id"`
 	Name         string `json:"name"`
 	Status       string `json:"status"`
+	Agent        string `json:"agent,omitempty"`
 	CreatedAt    string `json:"created_at,omitempty"`
 	LastAccessed string `json:"last_accessed,omitempty"`
 }

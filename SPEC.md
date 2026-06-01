@@ -230,7 +230,7 @@ Method: **list_schedules**: lists pending schedules for a session. Data: `{ "ses
 
 Method: **cancel_schedule**: cancels a pending schedule. Data: `{ "session_id": "id", "schedule_id": "id" }`. Returns success if the schedule existed and was removed. Returns `INVALID_REQUEST` if the schedule_id is not found.
 
-Method: **list_models**: returns available models for a given agent type. Data: `{ "agent": "claude" }`. Returns `{ "agent": "claude", "models": [{ "name": "sonnet", "value": "sonnet" }, ...] }`. For Claude, returns hardcoded known aliases (sonnet, opus, haiku). For Copilot, parses `copilot --help` to extract model choices. The `value` field is the CLI parameter to pass to `--model`; if empty, `name` is used.
+Method: **list_models**: returns available models for a given agent type. Data: `{ "agent": "claude" }`. Returns `{ "agent": "claude", "models": [{ "name": "sonnet", "value": "sonnet" }, ...] }`. For Claude, returns hardcoded known aliases (sonnet, opus, haiku). For Copilot, runs a one-shot agent query (`copilot -p "list model identifiers"`) — slow (~10-20s), so the result is memoized inside moneypenny for 24h. Hem caches the response persistently on top of this; see [Model cache](#model-cache). The `value` field is the CLI parameter to pass to `--model`; if empty, `name` is used.
 
 Method: **list_directory**: lists entries in a directory. Data: `{ "path": "/some/path" }`. Returns `{ "path": "/some/path", "entries": [{ "name": "foo", "is_dir": true }, ...] }`. Hidden files (starting with `.`) are excluded. Defaults to `/` if path is empty.
 
@@ -349,6 +349,56 @@ Moneypenny can self-update from GitHub releases when started with `--auto-update
 ### Protocol
 
 Method: **update_status**: returns the current auto-update state. Data: `{}`. Returns `{ "current_version": "0.10.3", "latest_version": "0.10.3", "update_available": false, "status": "up_to_date|checking|downloading|staged|waiting_idle|restarting|error|disabled", "last_checked": "2026-03-19T12:00:00Z", "error": "" }`. Returns `status: "disabled"` when `--auto-update` is not enabled.
+
+## Model cache
+
+`hem list_models` against copilot is slow (~10-20s) because moneypenny shells out to `copilot -p` to enumerate models. Hem persists the result in its SQLite to make subsequent calls instant.
+
+Schema (`model_cache` table):
+
+| column        | description                                            |
+|---------------|--------------------------------------------------------|
+| `moneypenny`  | Moneypenny name (separate cache per host)              |
+| `agent`       | `claude` or `copilot`                                  |
+| `models_json` | JSON-encoded `[]{ "name", "value" }`                   |
+| `cached_at`   | timestamp of last refresh                              |
+| PRIMARY KEY   | (moneypenny, agent)                                    |
+
+### `hem list-models [-m MP] [--agent AGENT] [--refresh]`
+
+- Default (no `--refresh`): if a cache row exists, returns it immediately and fires an opportunistic background refresh (rate-limited; see below). If no row exists, queries the moneypenny synchronously and writes the result.
+- `--refresh`: bypasses the cache read and the rate limit. Always queries the moneypenny.
+- JSON output (`-o json`) carries `cached` (bool) and `cached_at` (RFC3339) so consumers can distinguish fresh vs cached responses.
+
+### `hem refresh-models [-m MP] [--agent AGENT]`
+
+Forces a moneypenny query and overwrites the cache. Returns a short confirmation (`Refreshed model cache for MP/AGENT: N models`) — call `hem list-models --refresh -o json` if you need the full list. Unlike the cache-miss path of `list-models`, this verb writes the result even when empty, so users can recover from a permanently revoked source.
+
+### Background warmup
+
+Every successful session-creation verb (`create session`, `create subsession`, `copy session`, `use template`) kicks off an asynchronous `asyncRefreshModelCache(mp, agent)` after the moneypenny accepts the create. This keeps the cache warm without paying the latency on the user's critical path. `continue session` does NOT warm the cache (it doesn't know the agent from the session ID alone); users who only continue sessions for an extended period will still pay the cold-query cost the next time they open the wizard.
+
+### Refresh floor and in-flight de-duplication
+
+Two protections keep the slow copilot query from being hammered:
+
+- **60s floor**: a background refresh is a no-op if the cache row is younger than 60 seconds.
+- **In-flight de-dupe**: a `sync.Map` tracks active refreshes per `(moneypenny, agent)` pair. If a refresh is already running, subsequent calls in the same window are skipped entirely (rather than racing on the floor check and all firing concurrent slow queries).
+
+`--refresh` and `refresh-models` bypass both protections.
+
+### Empty-response handling
+
+`fetchModelsFromMoneypenny` returns the raw moneypenny response. Whether the empty result is persisted depends on the call site:
+
+- **Background warmup**: empty is treated as a transient failure; the previous cache row survives.
+- **`list-models` cache miss (no `--refresh`)**: same — empty isn't written, next call retries the moneypenny.
+- **`list-models --refresh`** / **`refresh-models`**: empty IS written. The user explicitly asked for the current state; if access has been revoked, the cache should reflect that.
+
+### Invalidation
+
+- Cache rows are dropped when a moneypenny is deleted (`DeleteMoneypenny`).
+- No TTL — rows live until explicitly refreshed or the moneypenny is removed. The background warmup keeps them current.
 
 ## Sessions
 
@@ -673,6 +723,8 @@ Groups sessions by state:
 
 The "reviewed" flag tracks whether the user has seen the latest agent response. A session becomes unreviewed when `continue_session` is called. It becomes reviewed when the user views the conversation history and the last turn is from the assistant (i.e., the agent has finished). This prevents the chat view's polling from prematurely marking a session as reviewed while the agent is still working.
 
+Each session row also shows which agent it runs (`claude` or `copilot`). The agent is reported by the moneypenny in its `list_sessions` response and rendered as a colored label in the TUI dashboard (orange for copilot, violet for claude). Sessions on offline/unknown moneypennies show `-`.
+
 The dashboard auto-refreshes every 5 seconds by polling moneypennies. When a session transitions from WORKING to READY, a notification sound is played client-side. In the TUI, the embedded WAV file is played via `afplay` (macOS) or `aplay` (Linux). In Qew, a Web Audio API chime is played and a slide-in pop-over notification is shown. Both clients support disabling sound: `--silent` flag for `hem ui`, and a toggle button in Qew's header. This works regardless of which view is active, as the dashboard polling runs in the background.
 
 ### Chat
@@ -681,7 +733,7 @@ The dashboard auto-refreshes every 5 seconds by polling moneypennies. When a ses
 
 `hem ui` — launches an interactive terminal UI (TUI) built with bubbletea + lipgloss.
 
-- **Dashboard** (default view): attention-based grouped view of sessions (READY, WORKING, IDLE, COMPLETED). Shows project name alongside sessions when any have a project assigned. Uses a shared moneypenny session cache for instant rendering — moneypenny data refreshes in the background (10s timeout) so the dashboard never blocks. When connected via MI6, the server pushes broadcast updates as each moneypenny responds, so the dashboard updates incrementally without waiting for slow/offline moneypennies.
+- **Dashboard** (default view): attention-based grouped view of sessions (READY, WORKING, IDLE, COMPLETED). Shows project name and agent (claude/copilot) alongside sessions; the project column appears when any session has a project assigned. Uses a shared moneypenny session cache for instant rendering — moneypenny data refreshes in the background (10s timeout) so the dashboard never blocks. When connected via MI6, the server pushes broadcast updates as each moneypenny responds, so the dashboard updates incrementally without waiting for slow/offline moneypennies.
   - `Enter` — open chat for selected session
   - `a` — toggle show/hide completed sessions
   - `c` — mark session as completed

@@ -66,6 +66,7 @@ type dashboardEntry struct {
 	SessionID       string
 	Name            string
 	Project         string
+	Agent           string
 	MPStatus        string // ready/idle/working/offline
 	HemStatus       string // active/completed
 	SubInfo         string // e.g. "[3 subs, 1 ready]"
@@ -181,6 +182,9 @@ func (m dashboardModel) loadDashboard() tea.Cmd {
 			}
 			if len(row) > 7 {
 				e.ParentSessionID = row[7]
+			}
+			if len(row) > 8 {
+				e.Agent = row[8]
 			}
 
 			// Determine category from parsed status.
@@ -624,7 +628,8 @@ func (m dashboardModel) View() string {
 	if w < 80 {
 		w = 80
 	}
-	fixedWidth := 2 + statusWidth + 14 + 8 // indent + status + lastActive + gaps
+	agentWidth := 9 // "copilot" + gap
+	fixedWidth := 2 + statusWidth + 14 + 8 + agentWidth // indent + status + lastActive + gaps + agent
 	if showProject {
 		fixedWidth += 14 // project column + gap
 	}
@@ -670,6 +675,8 @@ func (m dashboardModel) View() string {
 
 		nameFmt := fmt.Sprintf("%%-%ds", nameWidth+2)
 		mpFmt := fmt.Sprintf("%%-%ds", mpWidth+2)
+		agentFmt := fmt.Sprintf("%%-%ds", agentWidth)
+		agentLabel := truncate(e.Agent, agentWidth-1)
 		statusText := statusPlain(e.MPStatus)
 		if e.SubInfo != "" {
 			statusText += " " + e.SubInfo
@@ -685,9 +692,9 @@ func (m dashboardModel) View() string {
 				project = "-"
 			}
 			projFmt := fmt.Sprintf("%%-%ds", projWidth+2)
-			line = fmt.Sprintf("  "+nameFmt+projFmt+statusFmt+" "+mpFmt+"%s", name, project, statusText, mp, lastActive)
+			line = fmt.Sprintf("  "+nameFmt+projFmt+statusFmt+" "+mpFmt+agentFmt+"%s", name, project, statusText, mp, agentPlain(agentLabel), lastActive)
 		} else {
-			line = fmt.Sprintf("  "+nameFmt+statusFmt+" "+mpFmt+"%s", name, statusText, mp, lastActive)
+			line = fmt.Sprintf("  "+nameFmt+statusFmt+" "+mpFmt+agentFmt+"%s", name, statusText, mp, agentPlain(agentLabel), lastActive)
 		}
 
 		if selected {
@@ -703,15 +710,16 @@ func (m dashboardModel) View() string {
 				status += " " + lipgloss.NewStyle().Foreground(colorMuted).Render(e.SubInfo)
 			}
 			statusPad := padRight(status, statusWidth)
+			agentPad := padRight(agentBadge(agentLabel), agentWidth)
 			if showProject {
 				project := truncate(e.Project, projWidth)
 				if project == "" {
 					project = "-"
 				}
 				projFmt := fmt.Sprintf("%%-%ds", projWidth+2)
-				line = fmt.Sprintf("  "+nameFmt+projFmt+"%s "+mpFmt+"%s", name, project, statusPad, mp, lastActive)
+				line = fmt.Sprintf("  "+nameFmt+projFmt+"%s "+mpFmt+"%s%s", name, project, statusPad, mp, agentPad, lastActive)
 			} else {
-				line = fmt.Sprintf("  "+nameFmt+"%s "+mpFmt+"%s", name, statusPad, mp, lastActive)
+				line = fmt.Sprintf("  "+nameFmt+"%s "+mpFmt+"%s%s", name, statusPad, mp, agentPad, lastActive)
 			}
 			b.WriteString(sessionNormalStyle.Render(line))
 		}

@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -139,6 +140,14 @@ CREATE TABLE IF NOT EXISTS agent_templates (
     prompt TEXT NOT NULL DEFAULT '',
     yolo INTEGER NOT NULL DEFAULT 0,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS model_cache (
+    moneypenny  TEXT NOT NULL,
+    agent       TEXT NOT NULL,
+    models_json TEXT NOT NULL,
+    cached_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (moneypenny, agent)
 );`
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
@@ -215,11 +224,67 @@ func (s *Store) ListMoneypennies() ([]*Moneypenny, error) {
 	return result, rows.Err()
 }
 
-// DeleteMoneypenny removes a moneypenny by name.
+// DeleteMoneypenny removes a moneypenny by name. Also drops the model cache
+// rows for that moneypenny so a re-add with the same name doesn't surface
+// stale model lists.
 func (s *Store) DeleteMoneypenny(name string) error {
+	if _, err := s.db.Exec(`DELETE FROM model_cache WHERE moneypenny = ?`, name); err != nil {
+		return fmt.Errorf("delete model_cache for %q: %w", name, err)
+	}
 	_, err := s.db.Exec(`DELETE FROM moneypennies WHERE name = ?`, name)
 	if err != nil {
 		return fmt.Errorf("delete moneypenny %q: %w", name, err)
+	}
+	return nil
+}
+
+// CachedModelEntry pairs a cached model identifier with its display name.
+// Mirrors the moneypenny ModelInfo shape so the cache can round-trip without
+// loss when populated from list_models responses.
+type CachedModelEntry struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// GetCachedModels returns the cached model list for a (moneypenny, agent)
+// pair plus the time it was last refreshed. Returns nil, zero-time, nil if
+// no row exists (callers treat that as a cache miss).
+func (s *Store) GetCachedModels(moneypenny, agent string) ([]CachedModelEntry, time.Time, error) {
+	var jsonStr string
+	var cachedAt time.Time
+	err := s.db.QueryRow(`SELECT models_json, cached_at FROM model_cache WHERE moneypenny = ? AND agent = ?`,
+		moneypenny, agent).Scan(&jsonStr, &cachedAt)
+	if err == sql.ErrNoRows {
+		return nil, time.Time{}, nil
+	}
+	if err != nil {
+		return nil, time.Time{}, fmt.Errorf("get cached models for %q/%q: %w", moneypenny, agent, err)
+	}
+	var entries []CachedModelEntry
+	if err := json.Unmarshal([]byte(jsonStr), &entries); err != nil {
+		// Treat a parse failure as a cache miss; the next refresh will heal it.
+		return nil, time.Time{}, nil
+	}
+	return entries, cachedAt, nil
+}
+
+// SetCachedModels upserts the cached model list for a (moneypenny, agent)
+// pair and stamps cached_at to now. Empty model lists are accepted but
+// effectively useless; callers should only write meaningful results.
+func (s *Store) SetCachedModels(moneypenny, agent string, models []CachedModelEntry) error {
+	data, err := json.Marshal(models)
+	if err != nil {
+		return fmt.Errorf("marshal models: %w", err)
+	}
+	_, err = s.db.Exec(`
+		INSERT INTO model_cache (moneypenny, agent, models_json, cached_at)
+		VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(moneypenny, agent) DO UPDATE SET
+			models_json = excluded.models_json,
+			cached_at   = excluded.cached_at`,
+		moneypenny, agent, string(data))
+	if err != nil {
+		return fmt.Errorf("upsert cached models for %q/%q: %w", moneypenny, agent, err)
 	}
 	return nil
 }

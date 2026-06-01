@@ -38,6 +38,8 @@ var noNounVerbs = map[string]bool{
 	"ui":              true,
 	"dashboard":       true,
 	"diagnose":        true,
+	"list-models":     true,
+	"refresh-models":  true,
 }
 
 // Parse parses os.Args[1:] into a Command.
