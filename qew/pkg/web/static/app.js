@@ -75,6 +75,51 @@
     } catch (e) { /* ignore */ }
   }
 
+  // effortOptions mirrors hem's effortOptions(): the valid --effort values for
+  // an agent, with a leading "" entry meaning "no override / default".
+  function effortOptions(agent) {
+    if (agent === 'copilot') return ['', 'none', 'low', 'medium', 'high', 'xhigh', 'max'];
+    return ['', 'low', 'medium', 'high'];
+  }
+
+  // effortOptionsHtml builds <option> markup for an effort dropdown.
+  function effortOptionsHtml(agent, selected) {
+    return effortOptions(agent).map(o => {
+      const label = o === '' ? '(default)' : o;
+      return `<option value="${escapeAttr(o)}"${o === (selected || '') ? ' selected' : ''}>${escapeHtml(label)}</option>`;
+    }).join('');
+  }
+
+  // modelOptionsHtml builds <option> markup for a model dropdown. A previously
+  // selected model that's no longer in the fetched list is preserved so editing
+  // an existing session never silently drops its model.
+  function modelOptionsHtml(models, selected) {
+    let opts = '<option value="">(default)</option>';
+    let found = false;
+    for (const m of models) {
+      if (m === selected) found = true;
+      opts += `<option value="${escapeAttr(m)}"${m === (selected || '') ? ' selected' : ''}>${escapeHtml(m)}</option>`;
+    }
+    if (selected && !found) {
+      opts += `<option value="${escapeAttr(selected)}" selected>${escapeHtml(selected)} (current)</option>`;
+    }
+    return opts;
+  }
+
+  // loadModels fetches the model list for a moneypenny+agent via `list-models`.
+  // Returns model value strings (no leading blank). Returns [] on any error so
+  // callers fall back to a default-only dropdown.
+  async function loadModels(moneypenny, agent) {
+    try {
+      const args = [];
+      if (moneypenny) args.push('-m', moneypenny);
+      if (agent) args.push('--agent', agent);
+      const resp = await apiCall('list-models', '', args);
+      if (resp.status !== 'ok' || !resp.data || !Array.isArray(resp.data.models)) return [];
+      return resp.data.models.map(m => m.value || m.name).filter(Boolean);
+    } catch (e) { return []; }
+  }
+
   // --- Dashboard ---
 
   async function loadDashboard() {
@@ -560,7 +605,14 @@
       <label for="wiz-project">Project</label>
       <select id="wiz-project"><option value="">(none)</option>${projectOpts}</select>
       <label for="wiz-agent">Agent</label>
-      <input id="wiz-agent" type="text" placeholder="claude" value="claude">
+      <select id="wiz-agent">
+        <option value="copilot" selected>copilot</option>
+        <option value="claude">claude</option>
+      </select>
+      <label for="wiz-model">Model</label>
+      <select id="wiz-model"><option value="">(default)</option></select>
+      <label for="wiz-effort">Effort</label>
+      <select id="wiz-effort">${effortOptionsHtml('copilot', '')}</select>
       <label for="wiz-sysprompt">System Prompt (optional)</label>
       <textarea id="wiz-sysprompt" rows="2" placeholder=""></textarea>
       <div class="toggle-row">
@@ -586,6 +638,32 @@
     }
 
     document.getElementById('wiz-submit').addEventListener('click', submitCreateSession);
+    document.getElementById('wiz-agent').addEventListener('change', syncWizardAgentDeps);
+    syncWizardAgentDeps();
+  }
+
+  // syncWizardAgentDeps repopulates the model and effort dropdowns to match the
+  // currently selected agent (effort lists differ per agent; models are fetched
+  // from the selected moneypenny).
+  async function syncWizardAgentDeps() {
+    const agentSel = document.getElementById('wiz-agent');
+    if (!agentSel) return;
+    const agent = agentSel.value;
+    const effortSel = document.getElementById('wiz-effort');
+    if (effortSel) effortSel.innerHTML = effortOptionsHtml(agent, effortSel.value);
+    const modelSel = document.getElementById('wiz-model');
+    if (modelSel) {
+      const cur = modelSel.value;
+      modelSel.innerHTML = '<option value="">(loading…)</option>';
+      const models = await loadModels(wizardState.selectedMP, agent);
+      // Guard against a stale fetch if the agent changed again meanwhile.
+      if (agentSel.value !== agent) return;
+      // Drop a previously-picked model that isn't valid for the new agent so
+      // we never submit e.g. a copilot model with --agent claude. (Unlike the
+      // edit dialog, there's no pre-existing session model worth preserving.)
+      const keep = models.includes(cur) ? cur : '';
+      modelSel.innerHTML = modelOptionsHtml(models, keep);
+    }
   }
 
   async function submitCreateSession() {
@@ -602,6 +680,10 @@
     if (project) args.push('--project', project);
     const agent = document.getElementById('wiz-agent').value.trim();
     if (agent) args.push('--agent', agent);
+    const model = document.getElementById('wiz-model').value;
+    if (model) args.push('--model', model);
+    const effort = document.getElementById('wiz-effort').value;
+    if (effort) args.push('--effort', effort);
     const sysprompt = document.getElementById('wiz-sysprompt').value.trim();
     if (sysprompt) args.push('--system-prompt', sysprompt);
     if (document.getElementById('wiz-yolo').checked) args.push('--yolo');
@@ -958,6 +1040,10 @@
         <input id="es-name" type="text" value="${escapeAttr(s.name || '')}">
         <label for="es-project">Project</label>
         <select id="es-project"><option value="">(none)</option>${projectOpts}</select>
+        <label for="es-model">Model</label>
+        <select id="es-model"><option value="">(loading…)</option></select>
+        <label for="es-effort">Effort</label>
+        <select id="es-effort">${effortOptionsHtml(s.agent || 'copilot', s.effort || '')}</select>
         <label for="es-sysprompt">System Prompt</label>
         <textarea id="es-sysprompt" rows="2">${escapeHtml(s.system_prompt || '')}</textarea>
         <div class="toggle-row">
@@ -973,12 +1059,26 @@
         </div>
       `);
 
+      // Populate the model dropdown asynchronously from the session's
+      // moneypenny + agent, preserving the session's current model.
+      (async () => {
+        const models = await loadModels(s.moneypenny, s.agent);
+        const sel = document.getElementById('es-model');
+        if (sel) sel.innerHTML = modelOptionsHtml(models, s.model || '');
+      })();
+
       document.getElementById('es-submit').addEventListener('click', async () => {
         const args = [currentSession];
         const name = document.getElementById('es-name').value.trim();
         if (name && name !== (s.name || '')) args.push('--name', name);
         const project = document.getElementById('es-project').value;
         if (project !== (s.project || '')) args.push('--project', project);
+        const model = document.getElementById('es-model').value;
+        if (model && model !== (s.model || '')) args.push('--model', model);
+        const effort = document.getElementById('es-effort').value;
+        // Empty selection clears any override; the backend uses "none" as the
+        // clear sentinel (an empty value is treated as "unchanged").
+        if (effort !== (s.effort || '')) args.push('--effort', effort === '' ? 'none' : effort);
         const sysprompt = document.getElementById('es-sysprompt').value.trim();
         if (sysprompt !== (s.system_prompt || '')) args.push('--system-prompt', sysprompt);
         const yolo = document.getElementById('es-yolo').checked;

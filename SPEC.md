@@ -890,6 +890,7 @@ qew --development --listen 127.0.0.1:8077
 
 - **Dashboard**: Groups sessions by state (READY, WORKING, IDLE, COMPLETED), same as TUI dashboard. Polls every 5 seconds.
 - **Chat**: View conversation history and send messages. Polls every 3 seconds. Shows optimistic message display. Markdown rendering (headings, code blocks, tables, bold, inline code).
+- **Create/edit agent dialogs**: The create wizard's final step and the edit-session dialog expose **Agent** (dropdown: copilot — the default — or claude; create only, since an existing session's agent is fixed), **Model** (dropdown populated from the selected moneypenny via `list-models`, with a `(default)` option), and **Effort** (dropdown whose options track the agent: copilot adds `none/xhigh/max`). Changing the agent in the wizard repopulates the model and effort dropdowns. On edit, clearing the effort sends the `none` sentinel; an unknown stored model is preserved as a `(current)` option.
 - **API proxy**: `POST /api` proxies JSON requests to Hem.
 - **WebSocket**: `/ws` for real-time updates.
 - **SSH key management**: Auto-generates ECDSA key on first run (MI6 mode only).
