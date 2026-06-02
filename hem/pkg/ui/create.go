@@ -25,6 +25,7 @@ type formField struct {
 	value     string
 	flag      string // CLI flag name
 	isBool    bool
+	traitID   string // if set, this bool field represents a trait toggle
 	options   []string // if set, field is a selector (cycle with Space)
 	cursorPos int
 	input     *textInput // if set, delegates key handling and rendering to textInput
@@ -85,8 +86,15 @@ type sessionCreatedMsg struct {
 func (m createModel) createSession() tea.Cmd {
 	return func() tea.Msg {
 		var args []string
+		var traitIDs []string
 		prompt := ""
 		for _, f := range m.fields {
+			if f.traitID != "" {
+				if f.value == "true" {
+					traitIDs = append(traitIDs, f.traitID)
+				}
+				continue
+			}
 			if f.flag == "" {
 				prompt = f.value
 				continue
@@ -99,6 +107,9 @@ func (m createModel) createSession() tea.Cmd {
 			} else {
 				args = append(args, f.flag, f.value)
 			}
+		}
+		if len(traitIDs) > 0 {
+			args = append(args, "--traits", strings.Join(traitIDs, ","))
 		}
 		if m.async {
 			args = append(args, "--async")

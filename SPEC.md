@@ -17,7 +17,7 @@ graph TB
 
     subgraph "Hem Server"
         SERVER["Hem Server<br/>(Unix socket daemon)"]
-        SQLITE_HEM["SQLite Store<br/>(moneypenny registry,<br/>sessions, projects,<br/>templates, settings)"]
+        SQLITE_HEM["SQLite Store<br/>(moneypenny registry,<br/>sessions, projects,<br/>traits, settings)"]
     end
 
     CLI -->|"JSON over Unix socket"| SERVER
@@ -58,11 +58,9 @@ graph TB
 ```mermaid
 erDiagram
     PROJECT ||--o{ SESSION : "groups"
-    PROJECT ||--o{ TEMPLATE : "has"
     SESSION }o--|| MONEYPENNY : "runs on"
     SESSION ||--o{ CONVERSATION_TURN : "contains"
     SESSION ||--o{ SCHEDULE : "has"
-    TEMPLATE }o--|| PROJECT : "belongs to"
 
     MONEYPENNY {
         string name "unique identifier"
@@ -91,16 +89,6 @@ erDiagram
         string status "idle, working"
         string hem_status "active, completed"
         bool reviewed "user has seen response"
-    }
-
-    TEMPLATE {
-        string id "UUID"
-        string name "template name"
-        string agent "agent to use"
-        string path "working directory"
-        string prompt "initial prompt"
-        string system_prompt "agent instructions"
-        bool yolo "skip permissions"
     }
 
     CONVERSATION_TURN {
@@ -376,7 +364,7 @@ Forces a moneypenny query and overwrites the cache. Returns a short confirmation
 
 ### Background warmup
 
-Every successful session-creation verb (`create session`, `create subsession`, `copy session`, `use template`) kicks off an asynchronous `asyncRefreshModelCache(mp, agent)` after the moneypenny accepts the create. This keeps the cache warm without paying the latency on the user's critical path. `continue session` does NOT warm the cache (it doesn't know the agent from the session ID alone); users who only continue sessions for an extended period will still pay the cold-query cost the next time they open the wizard.
+Every successful session-creation verb (`create session`, `create subsession`, `copy session`) kicks off an asynchronous `asyncRefreshModelCache(mp, agent)` after the moneypenny accepts the create. This keeps the cache warm without paying the latency on the user's critical path. `continue session` does NOT warm the cache (it doesn't know the agent from the session ID alone); users who only continue sessions for an extended period will still pay the cold-query cost the next time they open the wizard.
 
 ### Refresh floor and in-flight de-duplication
 
@@ -412,8 +400,8 @@ Hem manages sessions on moneypennies. It tracks which moneypenny each session li
 - Hem generates a session_id (UUID) and sends `create_session` to the moneypenny.
 - By default: waits for the agent to complete, prints the session_id and the response.
 - With `--async`: prints the session_id and returns immediately without waiting.
-- Flags: `--agent NAME` (default "claude"), `--name NAME` (session name, default empty), `--system-prompt TEXT`, `--yolo` (skip permissions), `--path PATH` (working directory for the agent), `--gadgets` (include James tooling instructions in system prompt).
-- `--gadgets`: Appends instructions telling the agent about `hem` CLI access and scheduling. For MI6-connected moneypennies, includes the MI6 server address so the agent can connect back. Templates always include gadgets.
+- Flags: `--agent NAME` (default "claude"), `--name NAME` (session name, default empty), `--system-prompt TEXT`, `--traits ID1,ID2` (apply reusable traits, see Traits), `--yolo` (skip permissions), `--path PATH` (working directory for the agent), `--gadgets` (include James tooling instructions in system prompt).
+- `--gadgets`: Appends instructions telling the agent about `hem` CLI access and scheduling. For MI6-connected moneypennies, includes the MI6 server address so the agent can connect back.
 
 ### Continue
 
@@ -442,11 +430,11 @@ Hem manages sessions on moneypennies. It tracks which moneypenny each session li
 
 ### Show
 
-`hem show session SESSION_ID` — shows session parameters (agent, system_prompt, yolo, path, name, status).
+`hem show session SESSION_ID` — shows session parameters (agent, system_prompt, yolo, path, name, status, traits).
 
 ### Update
 
-`hem update session SESSION_ID [--name NAME] [--system-prompt TEXT] [--yolo true/false] [--path PATH] [--project NAME_OR_ID]` — updates session parameters. Only specified fields are changed. `--project` moves the session to a project (hem-local operation, not sent to moneypenny).
+`hem update session SESSION_ID [--name NAME] [--system-prompt TEXT] [--traits ID1,ID2] [--gadgets true/false] [--yolo true/false] [--path PATH] [--project NAME_OR_ID]` — updates session parameters. Only specified fields are changed. `--project` moves the session to a project (hem-local operation, not sent to moneypenny). `--traits` recomposes the session's system prompt (empty value clears all traits).
 
 ### History / Log
 
@@ -487,7 +475,7 @@ Hem manages sessions on moneypennies. It tracks which moneypenny each session li
 `hem copy session SOURCE_ID [PROMPT...] [flags]`
 
 - Creates a new session bootstrapped from a summary of an existing one. Source session is preserved (no state migration, no completion).
-- All flags from `create session` apply and override the source's values: `-m/--moneypenny`, `--agent`, `--model`, `--effort`, `--name`, `--system-prompt`, `--yolo`, `--gadgets`, `--path`, `--project`, `--async`. Any flag omitted is copied from the source.
+- All flags from `create session` apply and override the source's values: `-m/--moneypenny`, `--agent`, `--model`, `--effort`, `--name`, `--system-prompt`, `--traits`, `--yolo`, `--gadgets`, `--path`, `--project`, `--async`. Any flag omitted is copied from the source (traits are inherited from the source unless `--traits` is given).
 - The target moneypenny can differ from the source's (cross-host copy). The source's conversation history stays on the source moneypenny — only the summary is transferred.
 - Source's gadgets/memory markers are stripped from the inherited system prompt to avoid double injection on the new session.
 - `--yolo` is inherited only when the flag is not mentioned on the command line; passing `--yolo=false` explicitly disables yolo even when the source had it on.
@@ -693,6 +681,40 @@ Projects provide context for organizing sessions — a project groups related se
 ### Delete
 
 `hem delete project NAME_OR_ID` — deletes a project. Sessions linked to it are unlinked but kept.
+
+## Traits
+
+Traits are reusable, hem-level system-prompt snippets that can be toggled on/off per session. A trait has an `id`, a `name`, and a `prompt` (the snippet text). Selected traits are composed into the agent's system prompt, letting you maintain a shared library of behaviours (e.g. "concise commits", "design-first", "thorough testing") and mix them per agent.
+
+Traits are a hem-level concept (like projects); moneypenny is unaware of them. The selected trait IDs for a session are persisted in hem's SQLite (`session_traits` table). The composed snippet is written into the session's system prompt at create/update time (compose-at-write).
+
+### Create
+
+`hem create trait --name NAME [--prompt TEXT | TEXT...]` — creates a trait. Name must be unique. The prompt may be passed via `--prompt` or as trailing positional args.
+
+### List
+
+`hem list traits` — lists all traits with a one-line prompt preview.
+
+### Show
+
+`hem show trait NAME_OR_ID` — shows a trait's full name and prompt.
+
+### Update
+
+`hem update trait NAME_OR_ID [--name NAME] [--prompt TEXT]` — updates a trait. Editing a trait definition does **not** retroactively rewrite existing sessions; the new text applies to sessions created or re-applied afterwards.
+
+### Delete
+
+`hem delete trait NAME_OR_ID` — deletes a trait and removes it from any sessions referencing it.
+
+### Applying traits to sessions
+
+- On `create session`, `copy session`, and `update session`, the `--traits ID1,ID2` flag selects traits by ID or name (comma-separated). Unknown traits are an error.
+- On `update session`, passing `--traits` with an empty value clears all traits. The session's stored system prompt is recomposed: the existing traits block is stripped and the new one inserted, preserving gadgets/memory. This means subsequent chat messages use the updated traits.
+- On `copy session`, traits are inherited from the source unless `--traits` is given.
+- **System prompt composition order:** base → traits → gadgets → memory. The traits block is wrapped in `<!--james:traits:begin-->` / `<!--james:traits:end-->` sentinel markers so it can be stripped and recomposed regardless of its (arbitrary) content.
+- TUI: a dedicated traits management view (dashboard key `T`) lists traits with new/edit/delete. Trait checkboxes appear in the create wizard and the edit-session form. Qew exposes the same via a **Traits** nav button and checkboxes in the create/edit dialogs.
 
 ## Settings
 

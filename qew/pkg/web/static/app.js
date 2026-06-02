@@ -17,6 +17,7 @@
   let soundEnabled = true;
   let projectFilter = ''; // current project filter
   let projectsCache = []; // cached project list
+  let traitsCache = []; // cached trait list [{id,name,preview}]
   let chatInputCache = {}; // sessionId → draft text
 
   // --- API ---
@@ -61,6 +62,17 @@
       select.appendChild(opt);
     }
     select.value = current || '';
+  }
+
+  // --- Traits ---
+
+  async function loadTraitsCache() {
+    try {
+      const resp = await apiCall('list', 'trait', []);
+      if (resp.status === 'ok' && resp.data && resp.data.rows) {
+        traitsCache = resp.data.rows.map(r => ({ id: r[0], name: r[1], preview: r[2] }));
+      }
+    } catch (e) { /* ignore */ }
   }
 
   // --- Dashboard ---
@@ -195,6 +207,7 @@
     document.getElementById('dashboard-view').style.display = 'none';
     document.getElementById('moneypennies-view').style.display = 'none';
     document.getElementById('projects-view').style.display = 'none';
+    document.getElementById('traits-view').style.display = 'none';
     document.getElementById('chat-view').style.display = 'flex';
     document.getElementById('chat-title').textContent = (parentSessionStack.length > 0 ? 'Subagent: ' : '') + currentSessionName;
     document.getElementById('chat-mp').textContent = currentSessionMP ? '@ ' + currentSessionMP : '';
@@ -419,6 +432,7 @@
 
   async function openCreateWizard() {
     wizardState = { step: 1, moneypennies: [], selectedMP: '', currentPath: '', projects: projectsCache };
+    if (traitsCache.length === 0) await loadTraitsCache();
     showWizardStep1();
   }
 
@@ -557,6 +571,9 @@
         <input type="checkbox" id="wiz-gadgets">
         <label for="wiz-gadgets" style="margin:0;color:var(--text)">Gadgets (include James tooling in system prompt)</label>
       </div>
+      ${traitsCache.length ? `<label>Traits</label><div id="wiz-traits" style="display:flex;flex-direction:column;gap:4px">` +
+        traitsCache.map(t => `<div class="toggle-row"><input type="checkbox" class="wiz-trait" id="wiz-trait-${escapeAttr(t.id)}" value="${escapeAttr(t.id)}"><label for="wiz-trait-${escapeAttr(t.id)}" style="margin:0;color:var(--text)" title="${escapeAttr(t.preview)}">${escapeHtml(t.name)}</label></div>`).join('') +
+        `</div>` : ''}
       <div class="modal-actions">
         <button class="btn-muted" onclick="window._qewWizardBackToPath()">Back</button>
         <button class="btn" id="wiz-submit">Deploy Agent</button>
@@ -589,6 +606,8 @@
     if (sysprompt) args.push('--system-prompt', sysprompt);
     if (document.getElementById('wiz-yolo').checked) args.push('--yolo');
     if (document.getElementById('wiz-gadgets').checked) args.push('--gadgets');
+    const selTraits = Array.from(document.querySelectorAll('.wiz-trait:checked')).map(c => c.value);
+    if (selTraits.length) args.push('--traits', selTraits.join(','));
     args.push(prompt);
 
     document.getElementById('wiz-submit').disabled = true;
@@ -913,6 +932,7 @@
 
   async function showEditSessionModal() {
     if (!currentSession) return;
+    if (traitsCache.length === 0) await loadTraitsCache();
     // Fetch current session details.
     renderWizardModal(`
       <h3>Edit Session</h3>
@@ -926,6 +946,7 @@
         return;
       }
       const s = resp.data || {};
+      const selectedTraits = Array.isArray(s.traits) ? s.traits : [];
       const projectOpts = projectsCache.filter(p => p.status !== 'done')
         .map(p => `<option value="${escapeAttr(p.name)}"${p.name === (s.project || '') ? ' selected' : ''}>${escapeHtml(p.name)}</option>`).join('');
 
@@ -941,6 +962,9 @@
           <input type="checkbox" id="es-yolo" ${s.yolo ? 'checked' : ''}>
           <label for="es-yolo" style="margin:0;color:var(--text)">License to Kill</label>
         </div>
+        ${traitsCache.length ? `<label>Traits</label><div id="es-traits" style="display:flex;flex-direction:column;gap:4px">` +
+          traitsCache.map(t => `<div class="toggle-row"><input type="checkbox" class="es-trait" id="es-trait-${escapeAttr(t.id)}" value="${escapeAttr(t.id)}"${selectedTraits.includes(t.id) ? ' checked' : ''}><label for="es-trait-${escapeAttr(t.id)}" style="margin:0;color:var(--text)" title="${escapeAttr(t.preview)}">${escapeHtml(t.name)}</label></div>`).join('') +
+          `</div>` : ''}
         <div class="modal-actions">
           <button class="btn-muted" onclick="window._qewCloseWizard()">Cancel</button>
           <button class="btn" id="es-submit">Save</button>
@@ -957,6 +981,11 @@
         if (sysprompt !== (s.system_prompt || '')) args.push('--system-prompt', sysprompt);
         const yolo = document.getElementById('es-yolo').checked;
         if (yolo !== !!s.yolo) args.push('--yolo', yolo ? 'true' : 'false');
+        // Traits: emit --traits (possibly empty) only when the selection changed.
+        const newTraits = Array.from(document.querySelectorAll('.es-trait:checked')).map(c => c.value);
+        const origSorted = [...selectedTraits].sort().join(',');
+        const newSorted = [...newTraits].sort().join(',');
+        if (origSorted !== newSorted) args.push('--traits', newTraits.join(','));
 
         if (args.length <= 1) { closeWizard(); return; }
 
@@ -1551,6 +1580,163 @@
     }
   }
 
+  // --- Traits Management ---
+
+  function showTraitsView() {
+    document.getElementById('dashboard-view').style.display = 'none';
+    document.getElementById('traits-view').style.display = 'flex';
+    stopDashboardPoll();
+    loadTraitsList();
+  }
+
+  function hideTraitsView() {
+    document.getElementById('traits-view').style.display = 'none';
+    document.getElementById('dashboard-view').style.display = 'flex';
+    loadTraitsCache(); // refresh cache
+    loadDashboard();
+    startDashboardPoll();
+  }
+
+  async function loadTraitsList() {
+    const container = document.getElementById('trait-content');
+    container.innerHTML = '<div class="loading">Loading...</div>';
+    try {
+      const resp = await apiCall('list', 'trait', []);
+      if (resp.status === 'error') {
+        container.innerHTML = `<div class="empty-state">Error: ${escapeHtml(resp.message)}</div>`;
+        return;
+      }
+      const rows = (resp.data && resp.data.rows) || [];
+      traitsCache = rows.map(r => ({ id: r[0], name: r[1], preview: r[2] }));
+      if (rows.length === 0) {
+        container.innerHTML = '<div class="empty-state">No traits. Create one to get started.</div>';
+        return;
+      }
+      let html = '';
+      for (const r of rows) {
+        const id = r[0], name = r[1], preview = r[2];
+        html += `
+          <div class="mgmt-row">
+            <span class="mgmt-name">${escapeHtml(name)}</span>
+            <span class="mgmt-detail" style="flex:1">${escapeHtml(preview)}</span>
+            <span class="mgmt-actions">
+              <button data-trait-id="${escapeAttr(id)}" data-action="edit">Edit</button>
+              <button data-trait-id="${escapeAttr(id)}" data-trait-name="${escapeAttr(name)}" data-action="delete" class="danger">Delete</button>
+            </span>
+          </div>`;
+      }
+      container.innerHTML = html;
+      container.querySelectorAll('.mgmt-actions button').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const id = btn.dataset.traitId;
+          const action = btn.dataset.action;
+          if (action === 'edit') showEditTraitModal(id);
+          else if (action === 'delete') deleteTrait(id, btn.dataset.traitName);
+        });
+      });
+    } catch (e) {
+      container.innerHTML = `<div class="empty-state">Error: ${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  async function deleteTrait(id, name) {
+    if (!confirm('Delete trait "' + (name || id) + '"?')) return;
+    try {
+      const resp = await apiCall('delete', 'trait', [id]);
+      if (resp.status === 'error') alert('Error: ' + resp.message);
+      else loadTraitsList();
+    } catch (e) { alert('Error: ' + e.message); }
+  }
+
+  function showCreateTraitModal() {
+    renderWizardModal(`
+      <h3>New Trait</h3>
+      <label for="trait-name">Name *</label>
+      <input id="trait-name" type="text" placeholder="e.g. Concise commits">
+      <label for="trait-prompt">Prompt</label>
+      <textarea id="trait-prompt" rows="6" placeholder="System-prompt snippet describing how the agent should behave..."></textarea>
+      <div class="modal-actions">
+        <button class="btn-muted" onclick="window._qewCloseWizard()">Cancel</button>
+        <button class="btn" id="trait-submit">Create</button>
+      </div>
+    `);
+    document.getElementById('trait-submit').addEventListener('click', async () => {
+      const name = document.getElementById('trait-name').value.trim();
+      if (!name) { alert('Name is required'); return; }
+      const prompt = document.getElementById('trait-prompt').value;
+      const btn = document.getElementById('trait-submit');
+      btn.disabled = true; btn.textContent = 'Creating...';
+      try {
+        const resp = await apiCall('create', 'trait', ['--name', name, '--prompt', prompt]);
+        if (resp.status === 'error') {
+          alert('Error: ' + resp.message);
+          btn.disabled = false; btn.textContent = 'Create';
+          return;
+        }
+        closeWizard();
+        await loadTraitsCache();
+        loadTraitsList();
+      } catch (e) {
+        alert('Error: ' + e.message);
+        btn.disabled = false; btn.textContent = 'Create';
+      }
+    });
+  }
+
+  async function showEditTraitModal(id) {
+    renderWizardModal(`<h3>Edit Trait</h3><div class="loading">Loading...</div>`);
+    let t;
+    try {
+      const resp = await apiCall('show', 'trait', [id]);
+      if (resp.status === 'error') {
+        renderWizardModal(`<h3>Edit Trait</h3><div class="empty-state">Error: ${escapeHtml(resp.message)}</div>
+          <div class="modal-actions"><button class="btn-muted" onclick="window._qewCloseWizard()">Close</button></div>`);
+        return;
+      }
+      t = resp.data || {};
+    } catch (e) {
+      renderWizardModal(`<h3>Edit Trait</h3><div class="empty-state">Error: ${escapeHtml(e.message)}</div>
+        <div class="modal-actions"><button class="btn-muted" onclick="window._qewCloseWizard()">Close</button></div>`);
+      return;
+    }
+    renderWizardModal(`
+      <h3>Edit Trait</h3>
+      <label for="trait-name">Name</label>
+      <input id="trait-name" type="text" value="${escapeAttr(t.name || '')}">
+      <label for="trait-prompt">Prompt</label>
+      <textarea id="trait-prompt" rows="6">${escapeHtml(t.prompt || '')}</textarea>
+      <div class="modal-actions">
+        <button class="btn-muted" onclick="window._qewCloseWizard()">Cancel</button>
+        <button class="btn" id="trait-submit">Save</button>
+      </div>
+    `);
+    document.getElementById('trait-submit').addEventListener('click', async () => {
+      const args = [id];
+      const name = document.getElementById('trait-name').value.trim();
+      if (name !== (t.name || '')) args.push('--name', name);
+      const prompt = document.getElementById('trait-prompt').value;
+      if (prompt !== (t.prompt || '')) args.push('--prompt', prompt);
+      if (args.length <= 1) { closeWizard(); return; }
+      const btn = document.getElementById('trait-submit');
+      btn.disabled = true; btn.textContent = 'Saving...';
+      try {
+        const resp = await apiCall('update', 'trait', args);
+        if (resp.status === 'error') {
+          alert('Error: ' + resp.message);
+          btn.disabled = false; btn.textContent = 'Save';
+          return;
+        }
+        closeWizard();
+        await loadTraitsCache();
+        loadTraitsList();
+      } catch (e) {
+        alert('Error: ' + e.message);
+        btn.disabled = false; btn.textContent = 'Save';
+      }
+    });
+  }
+
   // --- Polling ---
 
   function startDashboardPoll() {
@@ -1703,10 +1889,13 @@
   document.getElementById('new-session-btn').addEventListener('click', openCreateWizard);
   document.getElementById('nav-moneypennies-btn').addEventListener('click', showMoneypenniesView);
   document.getElementById('nav-projects-btn').addEventListener('click', showProjectsView);
+  document.getElementById('nav-traits-btn').addEventListener('click', showTraitsView);
   document.getElementById('mp-back-btn').addEventListener('click', hideMoneypenniesView);
   document.getElementById('mp-add-btn').addEventListener('click', showAddMoneypennyModal);
   document.getElementById('proj-back-btn').addEventListener('click', hideProjectsView);
   document.getElementById('proj-add-btn').addEventListener('click', showCreateProjectModal);
+  document.getElementById('trait-back-btn').addEventListener('click', hideTraitsView);
+  document.getElementById('trait-add-btn').addEventListener('click', showCreateTraitModal);
 
   // Actions dropdown menu.
   const menuBtn = document.getElementById('chat-menu-btn');
@@ -1767,7 +1956,7 @@
   window.addEventListener('hashchange', handleRoute);
 
   // Initial load.
-  Promise.all([loadProjects(), loadDashboard()]).then(() => {
+  Promise.all([loadProjects(), loadTraitsCache(), loadDashboard()]).then(() => {
     document.getElementById('conn-status').innerHTML =
       '<span class="status-dot connected"></span>Connected';
     startDashboardPoll();

@@ -323,20 +323,15 @@ func (m chatModel) buildFileReviewPrompt(overallComment string) string {
 	b.WriteString("If comments are unclear, or shouldn't be integrated, ask for feedback and confirmation. ")
 	b.WriteString("Else integrate the comments.\n")
 
+	n := 0
 	for _, lineNum := range m.sortedFileCommentLines() {
 		c := m.viewFileComments[lineNum]
-		b.WriteString(fmt.Sprintf("\n### Line %d\n", lineNum))
-		// Include the code at that line for context.
+		code := ""
 		if lineNum > 0 && lineNum <= len(m.viewFileLines) {
-			code := m.viewFileLines[lineNum-1]
-			if strings.TrimSpace(code) != "" {
-				b.WriteString("```\n")
-				b.WriteString(code)
-				b.WriteString("\n```\n")
-			}
+			code = m.viewFileLines[lineNum-1]
 		}
-		b.WriteString("> " + strings.ReplaceAll(c.comment, "\n", "\n> "))
-		b.WriteString("\n")
+		n++
+		b.WriteString(formatReviewComment(n, m.viewFileRemotePath, lineNum, code, c.comment))
 	}
 
 	return b.String()

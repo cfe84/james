@@ -531,15 +531,17 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 	case "delete project":
 		return e.DeleteProject(args)
 
-	// Template commands
-	case "create template":
-		return e.CreateTemplate(args)
-	case "list template":
-		return e.ListTemplates(args)
-	case "delete template":
-		return e.DeleteTemplate(args)
-	case "use template":
-		return e.UseTemplate(args)
+	// Trait commands
+	case "create trait":
+		return e.CreateTrait(args)
+	case "list trait":
+		return e.ListTraits(args)
+	case "show trait":
+		return e.ShowTrait(args)
+	case "update trait":
+		return e.UpdateTrait(args)
+	case "delete trait":
+		return e.DeleteTrait(args)
 
 	case "complete session":
 		return e.CompleteSession(args)
@@ -886,6 +888,7 @@ type SessionShowResult struct {
 	Path         string `json:"path"`
 	Status       string `json:"status"`
 	Project      string `json:"project,omitempty"`
+	Traits       []string `json:"traits"`
 }
 
 const gadgetsMarker = "\nYou have access to agent orchestration using the"
@@ -920,6 +923,101 @@ Use memory to track:
 - Anything you would want to remember if the conversation continues later`, hemCmd, sessionID, hemCmd, sessionID)
 }
 
+// Traits are reusable, hem-level system-prompt snippets composed into the
+// agent's system prompt. The block is wrapped in sentinel markers so it can be
+// stripped and recomposed regardless of the (arbitrary) trait content. The
+// canonical system-prompt order is: base → traits → gadgets → memory.
+const traitsBeginMarker = "\n<!--james:traits:begin-->"
+const traitsEndMarker = "\n<!--james:traits:end-->"
+
+// traitsSystemPrompt renders the traits block for the given traits. Returns ""
+// when no traits are supplied.
+func traitsSystemPrompt(traits []*store.Trait) string {
+	if len(traits) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(traitsBeginMarker)
+	b.WriteString("\n\nThe following traits describe how you should approach your work:\n")
+	// Strip our sentinel markers from arbitrary trait content so a trait whose
+	// text happens to contain a marker can't truncate the block on later strips.
+	sanitize := func(s string) string {
+		s = strings.ReplaceAll(s, traitsBeginMarker, "")
+		s = strings.ReplaceAll(s, traitsEndMarker, "")
+		return s
+	}
+	for _, t := range traits {
+		b.WriteString("\n## ")
+		b.WriteString(sanitize(t.Name))
+		b.WriteString("\n")
+		b.WriteString(sanitize(t.Prompt))
+		b.WriteString("\n")
+	}
+	b.WriteString(traitsEndMarker)
+	return b.String()
+}
+
+// stripTraitsBlock removes the traits block (markers inclusive) from a system
+// prompt. Returns the prompt unchanged if no complete block is present.
+func stripTraitsBlock(sp string) string {
+	bi := strings.Index(sp, traitsBeginMarker)
+	if bi < 0 {
+		return sp
+	}
+	ei := strings.Index(sp[bi:], traitsEndMarker)
+	if ei < 0 {
+		return sp
+	}
+	end := bi + ei + len(traitsEndMarker)
+	return sp[:bi] + sp[end:]
+}
+
+// insertTraitsBlock inserts a traits block after the base prompt but before any
+// gadgets or memory blocks, preserving the canonical ordering.
+func insertTraitsBlock(sp, block string) string {
+	if block == "" {
+		return sp
+	}
+	insertAt := len(sp)
+	if gi := strings.Index(sp, gadgetsMarker); gi >= 0 && gi < insertAt {
+		insertAt = gi
+	}
+	if mi := findMemoryMarker(sp); mi >= 0 && mi < insertAt {
+		insertAt = mi
+	}
+	return sp[:insertAt] + block + sp[insertAt:]
+}
+
+// resolveTraits resolves a comma-separated list of trait IDs or names into
+// Trait records, preserving order and de-duplicating. Unknown traits error.
+func (e *Executor) resolveTraits(spec string) ([]*store.Trait, error) {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return nil, nil
+	}
+	var out []*store.Trait
+	seen := map[string]bool{}
+	for _, part := range strings.Split(spec, ",") {
+		ref := strings.TrimSpace(part)
+		if ref == "" {
+			continue
+		}
+		t, err := e.store.GetTrait(ref)
+		if err != nil {
+			return nil, err
+		}
+		if t == nil {
+			return nil, fmt.Errorf("trait %q not found", ref)
+		}
+		if seen[t.ID] {
+			continue
+		}
+		seen[t.ID] = true
+		out = append(out, t)
+	}
+	return out, nil
+}
+
 type ConversationTurn struct {
 	Role      string `json:"role"`
 	Content   string `json:"content"`
@@ -940,6 +1038,12 @@ type ProjectResult struct {
 	Paths               string `json:"paths"`
 	DefaultAgent        string `json:"default_agent"`
 	DefaultSystemPrompt string `json:"default_system_prompt"`
+}
+
+type TraitResult struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Prompt string `json:"prompt"`
 }
 
 // CommandResult is returned by the run command.
@@ -1410,6 +1514,7 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 		fs.StringVar(&params.Path, "path", "", "working directory path")
 		fs.BoolVar(&params.Async, "async", false, "return immediately without waiting for response")
 		fs.StringVar(&projectNameOrID, "project", "", "project name or ID")
+		fs.StringVar(&params.TraitsSpec, "traits", "", "comma-separated trait IDs/names to apply")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -1437,6 +1542,17 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 
 	sessionID := generateSessionID()
 	params.SessionName = generateSessionName(prompt, params.SessionName)
+
+	// Resolve and append traits (reusable system-prompt snippets) first, so the
+	// canonical order is base → traits → gadgets → memory.
+	traits, err := e.resolveTraits(params.TraitsSpec)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	for _, t := range traits {
+		params.TraitIDs = append(params.TraitIDs, t.ID)
+	}
+	params.SystemPrompt += traitsSystemPrompt(traits)
 
 	// Append gadgets (James tooling instructions) to system prompt when enabled.
 	if params.Gadgets {
@@ -1469,6 +1585,13 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 	_, err = e.sendCommand(ctx, mp, "create_session", cmdData)
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
+	}
+	// Persist the selected traits mapping after the create succeeds, so a
+	// failed create doesn't leave an orphaned mapping.
+	if len(params.TraitIDs) > 0 {
+		if err := e.store.SetSessionTraits(sessionID, params.TraitIDs); err != nil {
+			return protocol.ErrResponse(fmt.Sprintf("persisting session traits: %v", err))
+		}
 	}
 	e.invalidateMPCache(mp.Name)
 	// Warm the model cache for this (mp, agent) so the next wizard open is
@@ -1839,6 +1962,7 @@ func (e *Executor) ShowSession(args []string) *protocol.Response {
 	}
 	if v, ok := raw["system_prompt"].(string); ok {
 		sp := v
+		sp = stripTraitsBlock(sp)
 		if idx := strings.Index(sp, gadgetsMarker); idx >= 0 {
 			sp = sp[:idx]
 			result.Gadgets = true
@@ -1875,12 +1999,27 @@ func (e *Executor) ShowSession(args []string) *protocol.Response {
 		}
 	}
 
+	// Look up the traits mapped to this session from hem's local store.
+	if ids, err := e.store.GetSessionTraits(sessionID); err == nil {
+		result.Traits = ids
+	}
+
 	return protocol.OKResponse(result)
 }
 
 func (e *Executor) UpdateSession(args []string) *protocol.Response {
 	var sessionID, name, systemPrompt, pathArg, modelStr, effortStr string
-	var yoloStr, projectNameOrID, gadgetsStr string
+	var yoloStr, projectNameOrID, gadgetsStr, traitsStr string
+
+	// Detect whether --traits was explicitly provided so an empty value can
+	// clear all traits (vs. "not specified" which leaves them untouched).
+	traitsExplicit := false
+	for _, a := range args {
+		if a == "--traits" || a == "-traits" || strings.HasPrefix(a, "--traits=") || strings.HasPrefix(a, "-traits=") {
+			traitsExplicit = true
+			break
+		}
+	}
 
 	remaining, err := parseFlagsFromArgs("update-session", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&sessionID, "session-id", "", "session ID")
@@ -1892,6 +2031,7 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 		fs.StringVar(&pathArg, "path", "", "working directory path")
 		fs.StringVar(&projectNameOrID, "project", "", "move to project (name or ID)")
 		fs.StringVar(&gadgetsStr, "gadgets", "", "enable/disable gadgets (true/false)")
+		fs.StringVar(&traitsStr, "traits", "", "comma-separated trait IDs/names (empty clears all)")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -1915,6 +2055,9 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 	}
 
 	hasUpdate := false
+	// spChanged tracks whether the system prompt was recomposed (by traits or
+	// gadgets), so we still send it even when it recomposes to an empty string.
+	spChanged := false
 	if name != "" {
 		cmdData["name"] = name
 		hasUpdate = true
@@ -1922,6 +2065,7 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 	if systemPrompt != "" {
 		cmdData["system_prompt"] = systemPrompt
 		hasUpdate = true
+		spChanged = true
 	}
 	if modelStr != "" {
 		cmdData["model"] = modelStr
@@ -1944,23 +2088,74 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 		hasUpdate = true
 	}
 
-	// Handle gadgets toggle — append or strip the gadgets system prompt.
-	if gadgetsStr != "" {
-		// Fetch current session to get system prompt.
+	// Lazily fetch (and cache) the current system prompt; shared by the traits
+	// and gadgets recomposition so they operate on the same evolving string.
+	var fetchedSP string
+	var spFetched bool
+	getCurrentSP := func() (string, error) {
+		if spFetched {
+			return fetchedSP, nil
+		}
+		// If the caller supplied an explicit --system-prompt in this same
+		// update, recompose traits/gadgets on top of it rather than the stale
+		// prompt stored on the moneypenny.
+		if systemPrompt != "" {
+			fetchedSP = systemPrompt
+			spFetched = true
+			return fetchedSP, nil
+		}
 		ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel2()
 		sessResp, err := e.sendCommand(ctx2, mp, "get_session", map[string]interface{}{"session_id": sessionID})
 		if err != nil {
-			return protocol.ErrResponse(fmt.Sprintf("failed to get session for gadgets toggle: %v", err))
+			return "", err
 		}
-		var sessData struct {
+		var sd struct {
 			SystemPrompt string `json:"system_prompt"`
 		}
-		if err := json.Unmarshal(sessResp.Data, &sessData); err != nil {
-			return protocol.ErrResponse(fmt.Sprintf("parsing session for gadgets: %v", err))
+		if err := json.Unmarshal(sessResp.Data, &sd); err != nil {
+			return "", err
 		}
+		fetchedSP = sd.SystemPrompt
+		spFetched = true
+		return fetchedSP, nil
+	}
 
-		currentSP := sessData.SystemPrompt
+	// Handle traits change — strip the old traits block and insert the new one,
+	// preserving gadgets/memory. The mapping is persisted only after the
+	// moneypenny accepts the prompt update (below), so a failed remote update
+	// doesn't leave hem reporting traits that aren't actually applied.
+	var pendingTraitIDs []string
+	traitsChanged := false
+	if traitsExplicit {
+		cur, err := getCurrentSP()
+		if err != nil {
+			return protocol.ErrResponse(fmt.Sprintf("failed to get session for traits update: %v", err))
+		}
+		traits, err := e.resolveTraits(traitsStr)
+		if err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		cur = stripTraitsBlock(cur)
+		cur = insertTraitsBlock(cur, traitsSystemPrompt(traits))
+		fetchedSP = cur // keep cache current for the gadgets block below
+		systemPrompt = cur
+		cmdData["system_prompt"] = systemPrompt
+		hasUpdate = true
+		spChanged = true
+
+		for _, t := range traits {
+			pendingTraitIDs = append(pendingTraitIDs, t.ID)
+		}
+		traitsChanged = true
+	}
+
+	// Handle gadgets toggle — append or strip the gadgets system prompt.
+	if gadgetsStr != "" {
+		currentSP, err := getCurrentSP()
+		if err != nil {
+			return protocol.ErrResponse(fmt.Sprintf("failed to get session for gadgets toggle: %v", err))
+		}
 		hasGadgets := strings.Contains(currentSP, gadgetsMarker[1:]) // skip leading newline
 
 		if gadgetsStr == "true" && !hasGadgets {
@@ -1974,6 +2169,7 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 			systemPrompt = base + gadgetsSystemPrompt(e.MI6Control, sessionID) + memorySuffix
 			cmdData["system_prompt"] = systemPrompt
 			hasUpdate = true
+			spChanged = true
 		} else if gadgetsStr == "false" && hasGadgets {
 			// Strip gadgets — preserve memory if present.
 			idx := strings.Index(currentSP, gadgetsMarker)
@@ -1991,6 +2187,7 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 			}
 			cmdData["system_prompt"] = systemPrompt
 			hasUpdate = true
+			spChanged = true
 		}
 	}
 
@@ -2010,13 +2207,20 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 	}
 
 	if !hasUpdate {
-		return protocol.ErrResponse("no fields to update (use --name, --system-prompt, --yolo, --path, --project, --gadgets)")
+		return protocol.ErrResponse("no fields to update (use --name, --system-prompt, --yolo, --path, --project, --gadgets, --traits)")
 	}
 
 	// Only send to moneypenny if there are moneypenny-level fields to update.
-	if name != "" || systemPrompt != "" || modelStr != "" || effortStr != "" || pathArg != "" || yoloStr != "" {
+	if name != "" || spChanged || modelStr != "" || effortStr != "" || pathArg != "" || yoloStr != "" {
 		ctx := context.Background()
 		if _, err := e.sendCommand(ctx, mp, "update_session", cmdData); err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+	}
+
+	// Persist the trait mapping only after the moneypenny prompt update landed.
+	if traitsChanged {
+		if err := e.store.SetSessionTraits(sessionID, pendingTraitIDs); err != nil {
 			return protocol.ErrResponse(err.Error())
 		}
 	}
@@ -2601,330 +2805,170 @@ func (e *Executor) DeleteProject(args []string) *protocol.Response {
 }
 
 // ---------------------------------------------------------------------------
-// Template commands
+// Trait commands
 // ---------------------------------------------------------------------------
 
-func (e *Executor) CreateTemplate(args []string) *protocol.Response {
-	var projectNameOrID, name, agent, pathArg, systemPrompt, prompt string
-	var yolo bool
+func (e *Executor) CreateTrait(args []string) *protocol.Response {
+	var name, prompt string
 
-	_, err := parseFlagsFromArgs("create-template", args, func(fs *flag.FlagSet) {
-		fs.StringVar(&projectNameOrID, "project", "", "project name or ID")
-		fs.StringVar(&name, "name", "", "template name")
-		fs.StringVar(&agent, "agent", "copilot", "agent")
-		fs.StringVar(&pathArg, "path", "", "working directory")
-		fs.StringVar(&systemPrompt, "system-prompt", "", "system prompt")
-		fs.StringVar(&prompt, "prompt", "", "initial prompt")
-		fs.BoolVar(&yolo, "yolo", false, "enable yolo mode")
+	remaining, err := parseFlagsFromArgs("create-trait", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&name, "name", "", "trait name")
+		fs.StringVar(&prompt, "prompt", "", "trait system-prompt text")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
 
-	if projectNameOrID == "" {
-		return protocol.ErrResponse("--project is required")
-	}
 	if name == "" {
 		return protocol.ErrResponse("--name is required")
 	}
-
-	proj, err := e.store.GetProject(projectNameOrID)
-	if err != nil {
-		return protocol.ErrResponse(err.Error())
-	}
-	if proj == nil {
-		return protocol.ErrResponse(fmt.Sprintf("project %q not found", projectNameOrID))
+	// Allow the prompt to be provided as trailing positional args too.
+	if prompt == "" {
+		prompt = strings.TrimSpace(strings.Join(remaining, " "))
 	}
 
-	t := &store.AgentTemplate{
-		ID:           generateSessionID(),
-		ProjectID:    proj.ID,
-		Name:         name,
-		Agent:        agent,
-		Path:         pathArg,
-		SystemPrompt: systemPrompt,
-		Prompt:       prompt,
-		Yolo:         yolo,
-		CreatedAt:    time.Now(),
+	now := time.Now()
+	t := &store.Trait{
+		ID:        generateSessionID(),
+		Name:      name,
+		Prompt:    prompt,
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
-
-	if err := e.store.CreateTemplate(t); err != nil {
-		return protocol.ErrResponse(err.Error())
+	if err := e.store.CreateTrait(t); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("creating trait: %v", err))
 	}
 
 	return protocol.OKResponse(TextResult{
-		Message: fmt.Sprintf("Created template %q in project %q.", name, proj.Name),
+		Message: fmt.Sprintf("Created trait %q (id: %s).", name, t.ID),
 	})
 }
 
-func (e *Executor) ListTemplates(args []string) *protocol.Response {
-	var projectNameOrID string
-
-	_, err := parseFlagsFromArgs("list-templates", args, func(fs *flag.FlagSet) {
-		fs.StringVar(&projectNameOrID, "project", "", "project name or ID")
-	})
-	if err != nil {
-		return protocol.ErrResponse(err.Error())
-	}
-
-	if projectNameOrID == "" {
-		// List all templates across all projects.
-		templates, projectNames, err := e.store.ListAllTemplates()
-		if err != nil {
-			return protocol.ErrResponse(err.Error())
-		}
-		result := TableResult{
-			Headers: []string{"ID", "Name", "Project", "Agent", "Path", "Prompt", "Yolo"},
-		}
-		for _, t := range templates {
-			prompt := t.Prompt
-			if len(prompt) > 50 {
-				prompt = prompt[:50] + "..."
-			}
-			yolo := "false"
-			if t.Yolo {
-				yolo = "true"
-			}
-			result.Rows = append(result.Rows, []string{t.ID, t.Name, projectNames[t.ID], t.Agent, t.Path, prompt, yolo})
-		}
-		return protocol.OKResponse(result)
-	}
-
-	proj, err := e.store.GetProject(projectNameOrID)
-	if err != nil {
-		return protocol.ErrResponse(err.Error())
-	}
-	if proj == nil {
-		return protocol.ErrResponse(fmt.Sprintf("project %q not found", projectNameOrID))
-	}
-
-	templates, err := e.store.ListTemplates(proj.ID)
+func (e *Executor) ListTraits(args []string) *protocol.Response {
+	traits, err := e.store.ListTraits()
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
 
 	result := TableResult{
-		Headers: []string{"ID", "Name", "Agent", "Path", "Prompt", "Yolo"},
+		Headers: []string{"ID", "Name", "Prompt"},
 	}
-	for _, t := range templates {
-		prompt := t.Prompt
-		if len(prompt) > 50 {
-			prompt = prompt[:50] + "..."
+	for _, t := range traits {
+		preview := strings.ReplaceAll(t.Prompt, "\n", " ")
+		if len(preview) > 60 {
+			preview = preview[:60] + "…"
 		}
-		yolo := "false"
-		if t.Yolo {
-			yolo = "true"
-		}
-		result.Rows = append(result.Rows, []string{t.ID, t.Name, t.Agent, t.Path, prompt, yolo})
+		result.Rows = append(result.Rows, []string{t.ID, t.Name, preview})
 	}
 	return protocol.OKResponse(result)
 }
 
-func (e *Executor) DeleteTemplate(args []string) *protocol.Response {
-	var projectNameOrID string
+func (e *Executor) ShowTrait(args []string) *protocol.Response {
+	var name string
+	remaining, err := parseFlagsFromArgs("show-trait", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&name, "name", "", "trait name or ID")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if name == "" {
+		if len(remaining) == 0 {
+			return protocol.ErrResponse("trait name or ID is required")
+		}
+		name = remaining[0]
+	}
 
-	remaining, err := parseFlagsFromArgs("delete-template", args, func(fs *flag.FlagSet) {
-		fs.StringVar(&projectNameOrID, "project", "", "project name or ID")
+	t, err := e.store.GetTrait(name)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if t == nil {
+		return protocol.ErrResponse(fmt.Sprintf("trait %q not found", name))
+	}
+
+	return protocol.OKResponse(TraitResult{
+		ID:     t.ID,
+		Name:   t.Name,
+		Prompt: t.Prompt,
+	})
+}
+
+func (e *Executor) UpdateTrait(args []string) *protocol.Response {
+	var nameFlag, promptFlag string
+
+	// Detect explicit --prompt so an empty value can clear the prompt text.
+	promptExplicit := false
+	for _, a := range args {
+		if a == "--prompt" || a == "-prompt" || strings.HasPrefix(a, "--prompt=") || strings.HasPrefix(a, "-prompt=") {
+			promptExplicit = true
+			break
+		}
+	}
+
+	remaining, err := parseFlagsFromArgs("update-trait", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&nameFlag, "name", "", "new trait name")
+		fs.StringVar(&promptFlag, "prompt", "", "new trait system-prompt text")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
 
-	nameOrID := ""
-	if len(remaining) > 0 {
-		nameOrID = remaining[0]
+	if len(remaining) == 0 {
+		return protocol.ErrResponse("trait name or ID is required as positional argument")
 	}
-	if nameOrID == "" {
-		return protocol.ErrResponse("template name or ID is required")
-	}
+	nameOrID := remaining[0]
 
-	// Resolve project for name lookup.
-	var projectID string
-	if projectNameOrID != "" {
-		proj, err := e.store.GetProject(projectNameOrID)
-		if err != nil {
-			return protocol.ErrResponse(err.Error())
-		}
-		if proj == nil {
-			return protocol.ErrResponse(fmt.Sprintf("project %q not found", projectNameOrID))
-		}
-		projectID = proj.ID
-	}
-
-	t, err := e.store.GetTemplate(nameOrID, projectID)
+	t, err := e.store.GetTrait(nameOrID)
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
 	if t == nil {
-		return protocol.ErrResponse(fmt.Sprintf("template %q not found", nameOrID))
+		return protocol.ErrResponse(fmt.Sprintf("trait %q not found", nameOrID))
 	}
 
-	if err := e.store.DeleteTemplate(t.ID); err != nil {
+	var pName, pPrompt *string
+	if nameFlag != "" {
+		pName = &nameFlag
+	}
+	if promptExplicit {
+		pPrompt = &promptFlag
+	}
+	if pName == nil && pPrompt == nil {
+		return protocol.ErrResponse("no fields to update (use --name, --prompt)")
+	}
+
+	if err := e.store.UpdateTrait(t.ID, pName, pPrompt); err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
 
 	return protocol.OKResponse(TextResult{
-		Message: fmt.Sprintf("Deleted template %q.", t.Name),
+		Message: fmt.Sprintf("Trait %q updated.", nameOrID),
 	})
 }
 
-// UseTemplate creates a session from a template.
-func (e *Executor) UseTemplate(args []string) *protocol.Response {
-	var projectNameOrID string
-	var async bool
-
-	remaining, err := parseFlagsFromArgs("use-template", args, func(fs *flag.FlagSet) {
-		fs.StringVar(&projectNameOrID, "project", "", "project name or ID")
-		fs.BoolVar(&async, "async", true, "return immediately")
-	})
-	if err != nil {
-		return protocol.ErrResponse(err.Error())
-	}
-
+func (e *Executor) DeleteTrait(args []string) *protocol.Response {
 	nameOrID := ""
-	if len(remaining) > 0 {
-		nameOrID = remaining[0]
+	if len(args) > 0 {
+		nameOrID = args[0]
 	}
 	if nameOrID == "" {
-		return protocol.ErrResponse("template name or ID is required")
+		return protocol.ErrResponse("trait name or ID is required")
 	}
 
-	// Resolve project.
-	var projectID string
-	var proj *store.Project
-	if projectNameOrID != "" {
-		proj, err = e.store.GetProject(projectNameOrID)
-		if err != nil {
-			return protocol.ErrResponse(err.Error())
-		}
-		if proj == nil {
-			return protocol.ErrResponse(fmt.Sprintf("project %q not found", projectNameOrID))
-		}
-		projectID = proj.ID
-	}
-
-	t, err := e.store.GetTemplate(nameOrID, projectID)
+	t, err := e.store.GetTrait(nameOrID)
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
 	if t == nil {
-		return protocol.ErrResponse(fmt.Sprintf("template %q not found", nameOrID))
+		return protocol.ErrResponse(fmt.Sprintf("trait %q not found", nameOrID))
 	}
 
-	// Resolve project from template if not provided.
-	if proj == nil {
-		proj, err = e.store.GetProject(t.ProjectID)
-		if err != nil {
-			return protocol.ErrResponse(err.Error())
-		}
-		if proj == nil {
-			return protocol.ErrResponse("template's project not found")
-		}
-		projectID = proj.ID
-	}
-
-	// Resolve moneypenny from project.
-	mpName := proj.Moneypenny
-	agent := t.Agent
-	if agent == "" {
-		agent = proj.DefaultAgent
-	}
-	if agent == "" {
-		agent = "copilot"
-	}
-	pathArg := t.Path
-	if pathArg == "" {
-		var paths []string
-		if json.Unmarshal([]byte(proj.Paths), &paths) == nil && len(paths) > 0 {
-			pathArg = paths[0]
-		}
-	}
-	if pathArg == "" {
-		pathArg = "."
-	}
-	systemPrompt := t.SystemPrompt
-	if systemPrompt == "" {
-		systemPrompt = proj.DefaultSystemPrompt
-	}
-	prompt := t.Prompt
-	if prompt == "" {
-		prompt = "Be ready"
-	}
-
-	var mp *store.Moneypenny
-	if mpName != "" {
-		mp, err = e.store.GetMoneypenny(mpName)
-		if err != nil {
-			return protocol.ErrResponse(err.Error())
-		}
-		if mp == nil {
-			return protocol.ErrResponse(fmt.Sprintf("moneypenny %q not found", mpName))
-		}
-	} else {
-		mp, err = e.store.GetDefaultMoneypenny()
-		if err != nil {
-			return protocol.ErrResponse(err.Error())
-		}
-		if mp == nil {
-			return protocol.ErrResponse("no moneypenny specified and no default set")
-		}
-	}
-
-	sessionID := generateSessionID()
-	sessionName := t.Name
-
-	// Templates always include gadgets (James tooling).
-	systemPrompt += gadgetsSystemPrompt(e.MI6Control, sessionID)
-	if e.MI6Control != "" {
-		hemCmd := fmt.Sprintf("hem --hem %s", e.MI6Control)
-		systemPrompt += memorySystemPrompt(hemCmd, sessionID)
-	}
-
-	cmdData := map[string]interface{}{
-		"agent":      agent,
-		"session_id": sessionID,
-		"name":       sessionName,
-		"path":       pathArg,
-	}
-	if prompt != "" {
-		cmdData["prompt"] = prompt
-	}
-	if systemPrompt != "" {
-		cmdData["system_prompt"] = systemPrompt
-	}
-	if t.Yolo {
-		cmdData["yolo"] = true
-	}
-
-	if err := e.store.TrackSession(sessionID, mp.Name, projectID); err != nil {
-		return protocol.ErrResponse(fmt.Sprintf("tracking session: %v", err))
-	}
-
-	ctx := context.Background()
-	_, err = e.sendCommand(ctx, mp, "create_session", cmdData)
-	if err != nil {
+	if err := e.store.DeleteTrait(t.ID); err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
-	e.invalidateMPCache(mp.Name)
-	e.asyncRefreshModelCache(mp, agent)
 
-	if async {
-		return protocol.OKResponse(SessionCreatedResult{
-			SessionID: sessionID,
-			Async:     true,
-		})
-	}
-
-	response, pollErr := e.pollUntilIdle(ctx, mp, sessionID)
-	if pollErr != nil {
-		return protocol.ErrResponse(pollErr.Error())
-	}
-	e.invalidateMPCache(mp.Name)
-	_ = e.store.SetSessionReviewed(sessionID, true)
-
-	return protocol.OKResponse(SessionCreatedResult{
-		SessionID: sessionID,
-		Response:  response,
+	return protocol.OKResponse(TextResult{
+		Message: fmt.Sprintf("Deleted trait %q.", t.Name),
 	})
 }
 
@@ -3951,9 +3995,20 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 		fs.StringVar(&params.Path, "path", "", "working directory path")
 		fs.BoolVar(&params.Async, "async", false, "return immediately without waiting for response")
 		fs.StringVar(&projectNameOrID, "project", "", "project name or ID")
+		fs.StringVar(&params.TraitsSpec, "traits", "", "comma-separated trait IDs/names (defaults to source session's traits)")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
+	}
+
+	// Detect an explicit --traits (even empty) so a caller can clear traits on
+	// copy (vs. omitting the flag, which inherits the source's traits).
+	traitsExplicit := false
+	for _, a := range args {
+		if a == "--traits" || a == "-traits" || strings.HasPrefix(a, "--traits=") || strings.HasPrefix(a, "-traits=") {
+			traitsExplicit = true
+			break
+		}
 	}
 
 	if sourceSessionID == "" {
@@ -3994,6 +4049,7 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	// Strip injected gadgets/memory markers from the inherited system prompt
 	// so we don't double-inject them when the new session is created.
 	sp := src.SystemPrompt
+	sp = stripTraitsBlock(sp)
 	if idx := strings.Index(sp, gadgetsMarker); idx >= 0 {
 		sp = sp[:idx]
 	}
@@ -4001,7 +4057,13 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 		sp = sp[:idx]
 	}
 
-	// Inherit values from source for any flag the user didn't explicitly set.
+	// Inherit the source session's traits unless the caller specified --traits.
+	if !traitsExplicit {
+		if ids, err := e.store.GetSessionTraits(sourceSessionID); err == nil && len(ids) > 0 {
+			params.TraitsSpec = strings.Join(ids, ",")
+		}
+	}
+
 	if params.MoneypennyName == "" {
 		params.MoneypennyName = sourceMP.Name
 	}
@@ -4092,9 +4154,18 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	}
 	prompt := promptB.String()
 
-	// Generate a fresh session ID and apply the same memory/gadgets injection
-	// rules the regular CreateSession path uses, so behaviour stays consistent.
+	// Generate a fresh session ID and apply the same traits/memory/gadgets
+	// injection rules the regular CreateSession path uses, so behaviour stays
+	// consistent. Order: base → traits → gadgets → memory.
 	newSessionID := generateSessionID()
+	traits, err := e.resolveTraits(params.TraitsSpec)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	for _, t := range traits {
+		params.TraitIDs = append(params.TraitIDs, t.ID)
+	}
+	params.SystemPrompt += traitsSystemPrompt(traits)
 	if params.Gadgets {
 		params.SystemPrompt += gadgetsSystemPrompt(e.MI6Control, newSessionID)
 	}
@@ -4116,9 +4187,16 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 		}
 	}
 
+	// Persist the selected traits mapping after the moneypenny accepts the
+	// create, so a failed create doesn't leave an orphaned mapping.
 	createCtx := context.Background()
 	if _, err := e.sendCommand(createCtx, targetMP, "create_session", cmdData); err != nil {
 		return protocol.ErrResponse(err.Error())
+	}
+	if len(params.TraitIDs) > 0 {
+		if err := e.store.SetSessionTraits(newSessionID, params.TraitIDs); err != nil {
+			return protocol.ErrResponse(fmt.Sprintf("persisting session traits: %v", err))
+		}
 	}
 	e.invalidateMPCache(targetMP.Name)
 	e.asyncRefreshModelCache(targetMP, params.Agent)

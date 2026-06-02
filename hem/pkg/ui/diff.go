@@ -419,6 +419,33 @@ func parseHunkHeader(line string) (oldStart, newStart int) {
 	return
 }
 
+// formatReviewComment renders a single review comment as a flat, self-contained
+// record so the agent never loses the association between file, line, code and
+// comment. n is the 1-based comment index.
+func formatReviewComment(n int, file string, lineNum int, code, comment string) string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("\n_Comment %d_\n\n", n))
+	if file != "" {
+		b.WriteString(fmt.Sprintf("- Filename: %s\n", file))
+	}
+	if lineNum > 0 {
+		b.WriteString(fmt.Sprintf("- Line number: %d\n", lineNum))
+	} else {
+		b.WriteString("- Line number: (file header)\n")
+	}
+	if strings.TrimSpace(code) != "" {
+		if strings.ContainsAny(code, "\n`") {
+			b.WriteString("- Code:\n```\n")
+			b.WriteString(code)
+			b.WriteString("\n```\n")
+		} else {
+			b.WriteString(fmt.Sprintf("- Code: `%s`\n", code))
+		}
+	}
+	b.WriteString(fmt.Sprintf("- Comment: %s\n", strings.TrimRight(comment, "\n")))
+	return b.String()
+}
+
 // buildReviewPrompt generates the review prompt from comments.
 func (m diffModel) buildReviewPrompt(overallComment string) string {
 	var b strings.Builder
@@ -463,24 +490,8 @@ func (m diffModel) buildReviewPrompt(overallComment string) string {
 		return grouped[i].lineNum < grouped[j].lineNum
 	})
 
-	currentFile := ""
-	for _, fc := range grouped {
-		if fc.file != currentFile {
-			currentFile = fc.file
-			b.WriteString(fmt.Sprintf("\n## %s\n", currentFile))
-		}
-		if fc.lineNum > 0 {
-			b.WriteString(fmt.Sprintf("\n### Line %d\n", fc.lineNum))
-		} else {
-			b.WriteString("\n### (header)\n")
-		}
-		if fc.code != "" {
-			b.WriteString("```\n")
-			b.WriteString(fc.code)
-			b.WriteString("\n```\n")
-		}
-		b.WriteString("> " + strings.ReplaceAll(fc.comment, "\n", "\n> "))
-		b.WriteString("\n")
+	for i, fc := range grouped {
+		b.WriteString(formatReviewComment(i+1, fc.file, fc.lineNum, fc.code, fc.comment))
 	}
 
 	return b.String()

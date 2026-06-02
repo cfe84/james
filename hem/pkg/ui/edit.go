@@ -23,6 +23,11 @@ type editModel struct {
 	saving     bool
 	loading    bool
 	client     *client
+
+	// Traits
+	selectedTraits []string // IDs selected on the session (from detail)
+	traitsLoaded   bool
+	traitsApplied  bool
 }
 
 type sessionUpdatedMsg struct {
@@ -40,6 +45,10 @@ type editProjectsLoadedMsg struct {
 
 type editModelsLoadedMsg struct {
 	models []string
+}
+
+type editTraitsLoadedMsg struct {
+	traits []traitInfo
 }
 
 func newEditModel(c *client, sessionID string) editModel {
@@ -68,6 +77,36 @@ func (m editModel) loadProjects() tea.Cmd {
 	}
 }
 
+func (m editModel) loadTraits() tea.Cmd {
+	return func() tea.Msg {
+		traits, _ := m.client.listTraits()
+		return editTraitsLoadedMsg{traits: traits}
+	}
+}
+
+// applyTraitSelection sets trait field values to match the selected IDs and
+// updates the corresponding original[] entries so change detection is correct.
+func (m *editModel) applyTraitSelection() {
+	set := make(map[string]bool, len(m.selectedTraits))
+	for _, id := range m.selectedTraits {
+		set[id] = true
+	}
+	for i := range m.fields {
+		if m.fields[i].traitID == "" {
+			continue
+		}
+		v := "false"
+		if set[m.fields[i].traitID] {
+			v = "true"
+		}
+		m.fields[i].value = v
+		if i < len(m.original) {
+			m.original[i] = v
+		}
+	}
+	m.traitsApplied = true
+}
+
 func (m editModel) loadModels() tea.Cmd {
 	mp := m.moneypenny
 	agent := m.agent
@@ -90,7 +129,18 @@ func (m editModel) loadDetail() tea.Cmd {
 func (m editModel) save() tea.Cmd {
 	return func() tea.Msg {
 		fields := make(map[string]string)
+		var selectedTraits []string
+		traitsChanged := false
 		for i, f := range m.fields {
+			if f.traitID != "" {
+				if f.value == "true" {
+					selectedTraits = append(selectedTraits, f.traitID)
+				}
+				if i < len(m.original) && f.value != m.original[i] {
+					traitsChanged = true
+				}
+				continue
+			}
 			if f.value != m.original[i] {
 				fields[f.flag] = f.value
 			}
@@ -102,6 +152,10 @@ func (m editModel) save() tea.Cmd {
 		// If gadgets changed, don't also send system-prompt (the server handles it).
 		if _, ok := fields["--gadgets"]; ok {
 			delete(fields, "--system-prompt")
+		}
+		// Emit --traits (possibly empty to clear) only when the selection changed.
+		if traitsChanged {
+			fields["--traits"] = strings.Join(selectedTraits, ",")
 		}
 		if len(fields) == 0 {
 			return sessionUpdatedMsg{err: nil}
@@ -122,6 +176,7 @@ func (m editModel) Update(msg tea.Msg) (editModel, tea.Cmd) {
 		d := msg.detail
 		m.moneypenny = d.Moneypenny
 		m.agent = d.Agent
+		m.selectedTraits = d.Traits
 		// Set effort options based on the session's agent. Reset value if no
 		// longer valid for this agent.
 		for i := range m.fields {
@@ -165,10 +220,33 @@ func (m editModel) Update(msg tea.Msg) (editModel, tea.Cmd) {
 		for i, f := range m.fields {
 			m.original[i] = f.value
 		}
+		// If trait fields already loaded, apply the session's selection now.
+		if m.traitsLoaded && !m.traitsApplied {
+			m.applyTraitSelection()
+		}
 		// Load available models for this agent type.
 		if m.moneypenny != "" {
 			return m, m.loadModels()
 		}
+
+	case editTraitsLoadedMsg:
+		m.traitsLoaded = true
+		for _, t := range msg.traits {
+			m.fields = append(m.fields, formField{
+				label:   "Trait: " + t.Name,
+				isBool:  true,
+				value:   "false",
+				traitID: t.ID,
+			})
+			if m.original != nil {
+				m.original = append(m.original, "false")
+			}
+		}
+		// Apply the session's selection if the detail already loaded.
+		if !m.loading && !m.traitsApplied {
+			m.applyTraitSelection()
+		}
+		return m, nil
 
 	case editModelsLoadedMsg:
 		for i := range m.fields {

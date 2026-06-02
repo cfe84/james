@@ -217,7 +217,7 @@ func (s *MI6Sender) readLoop() {
 // responseTimeout returns how long Send should wait for the hem server's
 // reply before giving up. Most operations are quick metadata calls and use
 // the default; commands that block on an agent invocation (summarize, sync
-// create/continue/use-template/copy) need a much larger budget so the TUI
+// create/continue/copy) need a much larger budget so the TUI
 // doesn't bail out before the server has a chance to respond.
 func responseTimeout(req *protocol.Request) time.Duration {
 	if req == nil {
@@ -227,8 +227,7 @@ func responseTimeout(req *protocol.Request) time.Duration {
 	case "summarize session",
 		"copy session",
 		"create session",
-		"continue session",
-		"use template":
+		"continue session":
 		return 15 * time.Minute
 	}
 	return 60 * time.Second

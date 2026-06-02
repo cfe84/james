@@ -72,6 +72,10 @@ type wizardModel struct {
 	// Model cache: agent name → []string options
 	modelCache map[string][]string
 	lastAgent  string // tracks agent value to detect changes
+
+	// Traits: selected IDs to pre-check once trait fields load (copy mode).
+	preselectedTraits []string
+	traitsLoaded      bool
 }
 
 type wizardMPLoadedMsg struct {
@@ -91,6 +95,10 @@ type wizardDirLoadedMsg struct {
 type wizardModelsLoadedMsg struct {
 	models []string // option names including "" for default
 	agent  string
+}
+
+type wizardTraitsLoadedMsg struct {
+	traits []traitInfo
 }
 
 func newWizardModel(c *client) wizardModel {
@@ -202,6 +210,30 @@ func (m wizardModel) loadProjects() tea.Cmd {
 	}
 }
 
+func (m wizardModel) loadTraits() tea.Cmd {
+	return func() tea.Msg {
+		traits, _ := m.client.listTraits()
+		return wizardTraitsLoadedMsg{traits: traits}
+	}
+}
+
+// applyTraitSelection marks trait fields whose ID is in selected as checked.
+func (m *wizardModel) applyTraitSelection(selected []string) {
+	set := make(map[string]bool, len(selected))
+	for _, id := range selected {
+		set[id] = true
+	}
+	for i := range m.fields {
+		if m.fields[i].traitID != "" {
+			if set[m.fields[i].traitID] {
+				m.fields[i].value = "true"
+			} else {
+				m.fields[i].value = "false"
+			}
+		}
+	}
+}
+
 func (m wizardModel) loadDirectory() tea.Cmd {
 	mp := m.selectedMP
 	path := m.currentPath
@@ -254,7 +286,14 @@ func (m wizardModel) createSession() tea.Cmd {
 		args = append(args, "--path", m.selectedPath)
 
 		prompt := ""
+		var traitIDs []string
 		for _, f := range m.fields {
+			if f.traitID != "" {
+				if f.value == "true" {
+					traitIDs = append(traitIDs, f.traitID)
+				}
+				continue
+			}
 			if f.flag == "" {
 				prompt = f.value
 				continue
@@ -267,6 +306,14 @@ func (m wizardModel) createSession() tea.Cmd {
 			} else {
 				args = append(args, f.flag, f.value)
 			}
+		}
+		// In copy mode, always emit --traits (even empty) so the selection is
+		// explicit; otherwise copy inherits the source's traits. In create
+		// mode only emit when at least one trait is selected.
+		if isCopy {
+			args = append(args, "--traits", strings.Join(traitIDs, ","))
+		} else if len(traitIDs) > 0 {
+			args = append(args, "--traits", strings.Join(traitIDs, ","))
 		}
 		if m.async {
 			args = append(args, "--async")
@@ -301,9 +348,9 @@ func (m wizardModel) Init() tea.Cmd {
 	if m.sourceSessionID != "" {
 		// Copy mode: load source session details + moneypennies/projects so
 		// we can prefill fields and pre-select the source's moneypenny.
-		return tea.Batch(m.loadSourceSession(), m.loadMoneypennies(), m.loadProjects())
+		return tea.Batch(m.loadSourceSession(), m.loadMoneypennies(), m.loadProjects(), m.loadTraits())
 	}
-	return tea.Batch(m.loadMoneypennies(), m.loadProjects())
+	return tea.Batch(m.loadMoneypennies(), m.loadProjects(), m.loadTraits())
 }
 
 func (m wizardModel) Update(msg tea.Msg) (wizardModel, tea.Cmd) {
@@ -403,6 +450,29 @@ func (m wizardModel) Update(msg tea.Msg) (wizardModel, tea.Cmd) {
 					m.fields[i].cursorPos = len(src.Project)
 				}
 			}
+		}
+		// Pre-select the source's traits once trait fields load (or now).
+		m.preselectedTraits = src.Traits
+		if m.traitsLoaded {
+			m.applyTraitSelection(src.Traits)
+		}
+		return m, nil
+
+	case wizardTraitsLoadedMsg:
+		m.traitsLoaded = true
+		// Append a bool checkbox field per trait at the end of the form.
+		for _, t := range msg.traits {
+			label := "Trait: " + t.Name
+			m.fields = append(m.fields, formField{
+				label:   label,
+				isBool:  true,
+				value:   "false",
+				traitID: t.ID,
+			})
+		}
+		// Copy mode: apply the source's selection if it already loaded.
+		if len(m.preselectedTraits) > 0 {
+			m.applyTraitSelection(m.preselectedTraits)
 		}
 		return m, nil
 

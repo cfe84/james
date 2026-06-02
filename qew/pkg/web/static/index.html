@@ -287,10 +287,20 @@ header h1 span { color: var(--primary); }
       <div class="spacer"></div>
       <button class="btn-muted" id="nav-moneypennies-btn">Moneypennies</button>
       <button class="btn-muted" id="nav-projects-btn">Projects</button>
+      <button class="btn-muted" id="nav-traits-btn">Traits</button>
       <button class="btn" id="new-session-btn">+ New Agent</button>
     </div>
     <div class="loading" id="dash-loading">Loading dashboard...</div>
     <div id="dash-content" style="flex:1;overflow-y:auto"></div>
+  </div>
+
+  <div id="traits-view" style="display:none;flex:1;overflow-y:auto;flex-direction:column">
+    <div class="dash-toolbar">
+      <button class="btn-muted" id="trait-back-btn">← Dashboard</button>
+      <div class="spacer"></div>
+      <button class="btn" id="trait-add-btn">+ New Trait</button>
+    </div>
+    <div id="trait-content"></div>
   </div>
 
   <div id="moneypennies-view" style="display:none;flex:1;overflow-y:auto;flex-direction:column">

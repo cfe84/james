@@ -53,17 +53,15 @@ type Project struct {
 	UpdatedAt           time.Time
 }
 
-// AgentTemplate is a reusable session template attached to a project.
-type AgentTemplate struct {
-	ID           string
-	ProjectID    string
-	Name         string
-	Agent        string
-	Path         string
-	SystemPrompt string
-	Prompt       string
-	Yolo         bool
-	CreatedAt    time.Time
+// Trait is a reusable, hem-level system-prompt snippet that can be toggled
+// on/off per session. Selected traits are composed into the agent's system
+// prompt at session create/update time.
+type Trait struct {
+	ID        string
+	Name      string
+	Prompt    string
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // Store manages Hem's SQLite database.
@@ -130,24 +128,26 @@ CREATE TABLE IF NOT EXISTS defaults (
     value TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS agent_templates (
-    id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    name TEXT NOT NULL,
-    agent TEXT NOT NULL DEFAULT 'claude',
-    path TEXT NOT NULL DEFAULT '',
-    system_prompt TEXT NOT NULL DEFAULT '',
-    prompt TEXT NOT NULL DEFAULT '',
-    yolo INTEGER NOT NULL DEFAULT 0,
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
 CREATE TABLE IF NOT EXISTS model_cache (
     moneypenny  TEXT NOT NULL,
     agent       TEXT NOT NULL,
     models_json TEXT NOT NULL,
     cached_at   DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (moneypenny, agent)
+);
+
+CREATE TABLE IF NOT EXISTS traits (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    prompt TEXT NOT NULL DEFAULT '',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS session_traits (
+    session_id TEXT NOT NULL,
+    trait_id TEXT NOT NULL,
+    PRIMARY KEY (session_id, trait_id)
 );`
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
@@ -487,13 +487,21 @@ func (s *Store) GetSession(sessionID string) (*Session, error) {
 // DeleteTrackedSession removes a tracked session by ID, including all sub-sessions.
 func (s *Store) DeleteTrackedSession(sessionID string) error {
 	// Cascade: delete sub-sessions first.
-	_, err := s.db.Exec(`DELETE FROM sessions WHERE parent_session_id = ?`, sessionID)
+	_, err := s.db.Exec(`DELETE FROM session_traits WHERE session_id IN (SELECT session_id FROM sessions WHERE parent_session_id = ?)`, sessionID)
+	if err != nil {
+		return fmt.Errorf("delete sub-session traits of %q: %w", sessionID, err)
+	}
+	_, err = s.db.Exec(`DELETE FROM sessions WHERE parent_session_id = ?`, sessionID)
 	if err != nil {
 		return fmt.Errorf("delete sub-sessions of %q: %w", sessionID, err)
 	}
 	_, err = s.db.Exec(`DELETE FROM sessions WHERE session_id = ?`, sessionID)
 	if err != nil {
 		return fmt.Errorf("delete session %q: %w", sessionID, err)
+	}
+	// Clear any trait selections for the deleted session so rows don't orphan.
+	if _, err := s.db.Exec(`DELETE FROM session_traits WHERE session_id = ?`, sessionID); err != nil {
+		return fmt.Errorf("delete session_traits of %q: %w", sessionID, err)
 	}
 	return nil
 }
@@ -782,112 +790,170 @@ func scanProject(row *sql.Row) (*Project, error) {
 }
 
 // ---------------------------------------------------------------------------
-// AgentTemplate methods
+// Trait methods
 // ---------------------------------------------------------------------------
 
-// CreateTemplate inserts a new agent template.
-func (s *Store) CreateTemplate(t *AgentTemplate) error {
+// CreateTrait inserts a new trait.
+func (s *Store) CreateTrait(t *Trait) error {
 	_, err := s.db.Exec(
-		`INSERT INTO agent_templates (id, project_id, name, agent, path, system_prompt, prompt, yolo, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.ProjectID, t.Name, t.Agent, t.Path, t.SystemPrompt, t.Prompt, boolToInt(t.Yolo), t.CreatedAt,
+		`INSERT INTO traits (id, name, prompt, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?)`,
+		t.ID, t.Name, t.Prompt, t.CreatedAt, t.UpdatedAt,
 	)
 	if err != nil {
-		return fmt.Errorf("create template %q: %w", t.Name, err)
+		return fmt.Errorf("create trait %q: %w", t.Name, err)
 	}
 	return nil
 }
 
-// GetTemplate retrieves a template by ID first, then by name within a project.
-func (s *Store) GetTemplate(nameOrID string, projectID string) (*AgentTemplate, error) {
-	var t AgentTemplate
-	var yolo int
-	err := s.db.QueryRow(
-		`SELECT id, project_id, name, agent, path, system_prompt, prompt, yolo, created_at
-		 FROM agent_templates WHERE id = ?`, nameOrID,
-	).Scan(&t.ID, &t.ProjectID, &t.Name, &t.Agent, &t.Path, &t.SystemPrompt, &t.Prompt, &yolo, &t.CreatedAt)
+// GetTrait retrieves a trait by ID first, then by name. Returns nil, nil if not found.
+func (s *Store) GetTrait(nameOrID string) (*Trait, error) {
+	row := s.db.QueryRow(
+		`SELECT id, name, prompt, created_at, updated_at FROM traits WHERE id = ?`, nameOrID,
+	)
+	t, err := scanTrait(row)
 	if err == nil {
-		t.Yolo = yolo != 0
-		return &t, nil
+		return t, nil
 	}
 	if err != sql.ErrNoRows {
-		return nil, fmt.Errorf("get template %q: %w", nameOrID, err)
+		return nil, fmt.Errorf("get trait %q: %w", nameOrID, err)
 	}
-	// Try by name within project.
-	err = s.db.QueryRow(
-		`SELECT id, project_id, name, agent, path, system_prompt, prompt, yolo, created_at
-		 FROM agent_templates WHERE name = ? AND project_id = ?`, nameOrID, projectID,
-	).Scan(&t.ID, &t.ProjectID, &t.Name, &t.Agent, &t.Path, &t.SystemPrompt, &t.Prompt, &yolo, &t.CreatedAt)
+
+	row = s.db.QueryRow(
+		`SELECT id, name, prompt, created_at, updated_at FROM traits WHERE name = ?`, nameOrID,
+	)
+	t, err = scanTrait(row)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("get template %q: %w", nameOrID, err)
+		return nil, fmt.Errorf("get trait %q: %w", nameOrID, err)
 	}
-	t.Yolo = yolo != 0
-	return &t, nil
+	return t, nil
 }
 
-// ListTemplates returns all templates for a project.
-func (s *Store) ListTemplates(projectID string) ([]*AgentTemplate, error) {
+// ListTraits returns all traits ordered by name.
+func (s *Store) ListTraits() ([]*Trait, error) {
 	rows, err := s.db.Query(
-		`SELECT id, project_id, name, agent, path, system_prompt, prompt, yolo, created_at
-		 FROM agent_templates WHERE project_id = ? ORDER BY name`, projectID,
+		`SELECT id, name, prompt, created_at, updated_at FROM traits ORDER BY name`,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("list templates: %w", err)
+		return nil, fmt.Errorf("list traits: %w", err)
 	}
 	defer rows.Close()
-	var result []*AgentTemplate
+
+	var result []*Trait
 	for rows.Next() {
-		var t AgentTemplate
-		var yolo int
-		if err := rows.Scan(&t.ID, &t.ProjectID, &t.Name, &t.Agent, &t.Path, &t.SystemPrompt, &t.Prompt, &yolo, &t.CreatedAt); err != nil {
-			return nil, fmt.Errorf("scan template: %w", err)
+		var t Trait
+		if err := rows.Scan(&t.ID, &t.Name, &t.Prompt, &t.CreatedAt, &t.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan trait: %w", err)
 		}
-		t.Yolo = yolo != 0
 		result = append(result, &t)
 	}
 	return result, rows.Err()
 }
 
-// ListAllTemplates returns all templates across all projects, with project name.
-func (s *Store) ListAllTemplates() ([]*AgentTemplate, map[string]string, error) {
-	rows, err := s.db.Query(
-		`SELECT t.id, t.project_id, t.name, t.agent, t.path, t.system_prompt, t.prompt, t.yolo, t.created_at, p.name
-		 FROM agent_templates t
-		 JOIN projects p ON t.project_id = p.id
-		 ORDER BY p.name, t.name`,
-	)
-	if err != nil {
-		return nil, nil, fmt.Errorf("list all templates: %w", err)
-	}
-	defer rows.Close()
-	var result []*AgentTemplate
-	projectNames := make(map[string]string) // template ID → project name
-	for rows.Next() {
-		var t AgentTemplate
-		var yolo int
-		var projName string
-		if err := rows.Scan(&t.ID, &t.ProjectID, &t.Name, &t.Agent, &t.Path, &t.SystemPrompt, &t.Prompt, &yolo, &t.CreatedAt, &projName); err != nil {
-			return nil, nil, fmt.Errorf("scan template: %w", err)
-		}
-		t.Yolo = yolo != 0
-		result = append(result, &t)
-		projectNames[t.ID] = projName
-	}
-	return result, projectNames, rows.Err()
-}
+// UpdateTrait updates specified fields of a trait. Only non-nil pointers are updated.
+func (s *Store) UpdateTrait(id string, name, prompt *string) error {
+	var sets []string
+	var args []interface{}
 
-// DeleteTemplate removes a template by ID.
-func (s *Store) DeleteTemplate(id string) error {
-	_, err := s.db.Exec(`DELETE FROM agent_templates WHERE id = ?`, id)
-	if err != nil {
-		return fmt.Errorf("delete template %q: %w", id, err)
+	if name != nil {
+		sets = append(sets, "name = ?")
+		args = append(args, *name)
+	}
+	if prompt != nil {
+		sets = append(sets, "prompt = ?")
+		args = append(args, *prompt)
+	}
+
+	if len(sets) == 0 {
+		return nil
+	}
+
+	sets = append(sets, "updated_at = ?")
+	args = append(args, time.Now())
+	args = append(args, id)
+
+	query := fmt.Sprintf("UPDATE traits SET %s WHERE id = ?", strings.Join(sets, ", "))
+	if _, err := s.db.Exec(query, args...); err != nil {
+		return fmt.Errorf("update trait %q: %w", id, err)
 	}
 	return nil
 }
 
+// DeleteTrait removes a trait by id and clears any session mappings to it.
+func (s *Store) DeleteTrait(id string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("delete trait %q: %w", id, err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`DELETE FROM session_traits WHERE trait_id = ?`, id); err != nil {
+		return fmt.Errorf("clearing session mappings for trait %q: %w", id, err)
+	}
+	if _, err := tx.Exec(`DELETE FROM traits WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("delete trait %q: %w", id, err)
+	}
+	return tx.Commit()
+}
+
+// SetSessionTraits replaces the set of traits mapped to a session.
+func (s *Store) SetSessionTraits(sessionID string, traitIDs []string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("set session traits: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`DELETE FROM session_traits WHERE session_id = ?`, sessionID); err != nil {
+		return fmt.Errorf("clearing session traits %q: %w", sessionID, err)
+	}
+	for _, tid := range traitIDs {
+		if tid == "" {
+			continue
+		}
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO session_traits (session_id, trait_id) VALUES (?, ?)`, sessionID, tid); err != nil {
+			return fmt.Errorf("mapping session trait %q: %w", sessionID, err)
+		}
+	}
+	return tx.Commit()
+}
+
+// GetSessionTraits returns the trait IDs mapped to a session, ordered by trait name.
+func (s *Store) GetSessionTraits(sessionID string) ([]string, error) {
+	rows, err := s.db.Query(
+		`SELECT st.trait_id FROM session_traits st
+		 JOIN traits t ON t.id = st.trait_id
+		 WHERE st.session_id = ? ORDER BY t.name`, sessionID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get session traits %q: %w", sessionID, err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan session trait: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+func scanTrait(row *sql.Row) (*Trait, error) {
+	var t Trait
+	err := row.Scan(&t.ID, &t.Name, &t.Prompt, &t.CreatedAt, &t.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &t, nil
+}
+
+// ---------------------------------------------------------------------------
 // migrateSchema runs ALTER TABLE statements for existing databases,
 // ignoring "duplicate column name" errors.
 func (s *Store) migrateSchema() error {
@@ -895,7 +961,6 @@ func (s *Store) migrateSchema() error {
 		`ALTER TABLE sessions ADD COLUMN project_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sessions ADD COLUMN hem_status TEXT NOT NULL DEFAULT 'active'`,
 		`ALTER TABLE sessions ADD COLUMN reviewed INTEGER NOT NULL DEFAULT 1`,
-		`ALTER TABLE agent_templates ADD COLUMN yolo INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE sessions ADD COLUMN parent_session_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE moneypennies ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`,
 		`ALTER TABLE sessions ADD COLUMN callback_prompt TEXT NOT NULL DEFAULT ''`,

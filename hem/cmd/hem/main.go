@@ -536,6 +536,7 @@ func printResponse(data json.RawMessage, outputFmt string) {
 					{"system_prompt", result.SystemPrompt},
 					{"yolo", fmt.Sprintf("%v", result.Yolo)},
 					{"path", result.Path},
+					{"traits", strings.Join(result.Traits, ", ")},
 					{"status", result.Status},
 				},
 			}
@@ -602,6 +603,33 @@ func printResponse(data json.RawMessage, outputFmt string) {
 					fmt.Printf("[%s]\n%s\n\n", turn.Role, turn.Content)
 				}
 			}
+			return
+		}
+	}
+
+	// Check if it's a TraitResult: exactly id+name+prompt, and none of the
+	// project/session discriminator fields (status, moneypenny, system_prompt).
+	_, hasPrompt := raw["prompt"]
+	_, hasName := raw["name"]
+	_, hasID := raw["id"]
+	_, hasStatus := raw["status"]
+	_, hasMP := raw["moneypenny"]
+	if hasPrompt && hasName && hasID && !hasStatus && !hasMP {
+		var result commands.TraitResult
+		if json.Unmarshal(data, &result) == nil {
+			td := output.TableData{
+				Headers: []string{"Field", "Value"},
+				Rows: [][]string{
+					{"id", result.ID},
+					{"name", result.Name},
+					{"prompt", result.Prompt},
+				},
+			}
+			showFmt := outputFmt
+			if showFmt == output.FormatText {
+				showFmt = output.FormatTable
+			}
+			output.Print(os.Stdout, showFmt, td)
 			return
 		}
 	}

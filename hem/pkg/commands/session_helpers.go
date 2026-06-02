@@ -21,6 +21,8 @@ type sessionParams struct {
 	Yolo           bool
 	Gadgets        bool
 	Async          bool
+	TraitsSpec     string // comma-separated trait IDs/names; resolved to TraitIDs
+	TraitIDs       []string
 }
 
 // resolveMoneypennyForSession resolves the moneypenny to use for a session.
