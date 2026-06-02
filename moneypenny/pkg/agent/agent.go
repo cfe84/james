@@ -483,6 +483,15 @@ func (r *Runner) runCopilotStreaming(cmd *exec.Cmd, buf *activityBuffer, session
 
 	var resultText string
 	var lastRawEvent string
+	// Copilot has no separate "result" event: the final answer is conveyed
+	// purely through assistant.message events. The model often emits its
+	// substantive answer, then makes a housekeeping tool call (memory update,
+	// git commit, etc.), then a short closing message. Treating only the LAST
+	// assistant.message as the reply would orphan the substantive text in the
+	// train of thought, so we accumulate every assistant.message text block and
+	// join them into the final reply. (Reasoning still flows through
+	// assistant.reasoning -> thinking and is rendered separately.)
+	var copilotTexts []string
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 256*1024), 10*1024*1024)
 
@@ -518,9 +527,8 @@ func (r *Runner) runCopilotStreaming(cmd *exec.Cmd, buf *activityBuffer, session
 				r.vlog.Printf("copilot stream: assistant.message content=%d bytes, toolRequests=%v",
 					len(content), data["toolRequests"] != nil)
 				if content != "" {
-					resultText = content
+					copilotTexts = append(copilotTexts, content)
 					buf.add(ActivityEvent{Type: "text", Summary: content, Timestamp: now})
-					r.emitPersistent(sessionID, "text", content)
 				}
 				// Parse tool requests for activity.
 				if toolReqs, ok := data["toolRequests"].([]any); ok {
@@ -610,9 +618,31 @@ func (r *Runner) runCopilotStreaming(cmd *exec.Cmd, buf *activityBuffer, session
 			r.vlog.Printf("copilot stream: unhandled event type=%q", evType)
 		}
 	}
+	scanErr := scanner.Err()
+	if scanErr != nil {
+		r.vlog.Printf("copilot stream: scanner error: %v", scanErr)
+	}
 
+	// Join all assistant.message text blocks into the final reply. Trim each
+	// segment so provider newlines don't compound, and separate with a blank
+	// line for clean Markdown rendering. Computed before cmd.Wait so the error
+	// path still carries whatever partial reply was produced.
+	segments := make([]string, 0, len(copilotTexts))
+	for _, t := range copilotTexts {
+		if s := strings.TrimSpace(t); s != "" {
+			segments = append(segments, s)
+		}
+	}
+	resultText = strings.Join(segments, "\n\n")
+
+	// Reap the process first so its exit error takes precedence, then surface
+	// any stream read error (e.g. a line exceeding the scanner buffer) rather
+	// than silently storing a truncated reply as a successful turn.
 	if err := cmd.Wait(); err != nil {
 		return nil, fmtAgentErrorFull(err, stderrBuf, resultText, lastRawEvent)
+	}
+	if scanErr != nil {
+		return nil, fmtAgentErrorFull(fmt.Errorf("reading copilot stream: %w", scanErr), stderrBuf, resultText, lastRawEvent)
 	}
 	return &Result{Text: strings.TrimSpace(resultText)}, nil
 }

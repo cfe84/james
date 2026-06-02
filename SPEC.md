@@ -637,6 +637,12 @@ When a Claude agent session is working, moneypenny streams its output in real ti
 - Activity is ephemeral — it is not persisted to SQLite, only held in memory while the agent is working.
 - When the agent finishes, the activity buffer is cleared and the actual response is shown.
 
+### Final Reply Assembly
+
+Some agent output is also persisted as conversation turns so the "train of thought" survives reloads: `thinking` turns (💭) and, for Claude, intermediate `agent_text` turns (📝) are stored alongside the final `assistant` reply.
+
+Claude exposes a dedicated `result` event for its final answer, so its streamed text blocks are kept as `agent_text` and the duplicate trailing block is deduped against the `result`. Copilot has no result event — its answer is delivered purely through `assistant.message` events. Because the agent often emits its substantive answer, then a housekeeping tool call (e.g. a memory update or commit), then a short closing message, moneypenny **concatenates all of a turn's `assistant.message` text blocks** (each trimmed, joined with a blank line) into the single `assistant` reply rather than treating only the last one as the answer. This prevents substantive content from being orphaned in the train of thought. Copilot's `assistant.message` text is therefore not persisted as separate `agent_text` turns (it still streams live as activity); only Copilot reasoning is persisted as `thinking`.
+
 ### Moneypenny Protocol
 
 Method: **get_session_activity**: returns the current activity buffer for a session. Data: `{ "session_id": "id" }`. Returns `{ "events": [{ "type": "thinking|tool_use|text", "content": "..." }, ...] }`. Returns an empty list if the session is idle or has no buffered events.
