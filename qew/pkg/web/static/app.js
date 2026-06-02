@@ -714,7 +714,7 @@
     }
   }
 
-  function renderWizardModal(content) {
+  function renderWizardModal(content, modalClass) {
     let overlay = document.querySelector('.modal-overlay');
     if (!overlay) {
       overlay = document.createElement('div');
@@ -722,7 +722,7 @@
       overlay.addEventListener('click', (e) => { if (e.target === overlay) closeWizard(); });
       document.body.appendChild(overlay);
     }
-    overlay.innerHTML = `<div class="modal">${content}</div>`;
+    overlay.innerHTML = `<div class="modal${modalClass ? ' ' + modalClass : ''}">${content}</div>`;
   }
 
   // Expose wizard functions for inline onclick handlers.
@@ -747,7 +747,7 @@
         <button class="btn" onclick="window._qewCommitFromDiff()">Commit</button>
         <button class="btn" onclick="window._qewCommitAndPush()">Commit & Push</button>
       </div>
-    `);
+    `, 'modal-large');
 
     // Fetch branch name in parallel.
     apiCall('git-info', 'session', [currentSession]).then(resp => {
@@ -2061,6 +2061,14 @@
   }
 
   window.addEventListener('hashchange', handleRoute);
+
+  // Display the Qew version in the header.
+  fetch('/version').then(r => r.ok ? r.text() : '').then(v => {
+    if (v) {
+      const el = document.getElementById('app-version');
+      if (el) el.textContent = 'v' + v.trim();
+    }
+  }).catch(() => {});
 
   // Initial load.
   Promise.all([loadProjects(), loadTraitsCache(), loadDashboard()]).then(() => {

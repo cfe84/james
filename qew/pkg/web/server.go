@@ -36,6 +36,7 @@ type Server struct {
 	addr        string
 	password    string
 	development bool
+	version     string
 	secret      []byte // HMAC signing key for session tokens
 	pollMu      sync.Mutex
 
@@ -50,7 +51,7 @@ type loginTracker struct {
 }
 
 // NewServer creates a new Qew web server.
-func NewServer(hem HemClient, listenAddr, password string, development bool, vlog *log.Logger) *Server {
+func NewServer(hem HemClient, listenAddr, password string, development bool, vlog *log.Logger, version string) *Server {
 	secret := make([]byte, 32)
 	rand.Read(secret)
 	return &Server{
@@ -59,6 +60,7 @@ func NewServer(hem HemClient, listenAddr, password string, development bool, vlo
 		addr:          listenAddr,
 		password:      password,
 		development:   development,
+		version:       version,
 		secret:        secret,
 		loginAttempts: make(map[string]*loginTracker),
 	}
@@ -74,6 +76,12 @@ func (s *Server) Run() error {
 
 	// API endpoint: POST /api — proxy to Hem.
 	mux.HandleFunc("/api", s.requireAuth(s.csrfProtect(s.handleAPI)))
+
+	// Version endpoint (unauthenticated): returns the Qew version string.
+	mux.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Write([]byte(s.version))
+	})
 
 	// WebSocket endpoint for real-time polling.
 	mux.Handle("/ws", s.requireAuthWS(http.HandlerFunc(s.handleWSUpgrade)))

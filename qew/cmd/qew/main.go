@@ -93,7 +93,7 @@ func main() {
 		hem = &web.SocketClient{SockPath: *sockPath}
 	}
 
-	srv := web.NewServer(hem, *listenAddr, *password, *development, vlog)
+	srv := web.NewServer(hem, *listenAddr, *password, *development, vlog, Version)
 	if err := srv.Run(); err != nil {
 		log.Fatalf("server error: %v", err)
 	}

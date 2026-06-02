@@ -185,6 +185,12 @@ header h1 span { color: var(--primary); }
   background: var(--bg); border: 1px solid var(--surface2); border-radius: 10px;
   padding: 24px; width: 90%; max-width: 500px; max-height: 80vh; overflow-y: auto;
 }
+/* Large variant for content-heavy modals (e.g. git diff review). */
+.modal.modal-large {
+  width: 95vw; max-width: 95vw; height: 95vh; max-height: 95vh;
+  display: flex; flex-direction: column;
+}
+.modal.modal-large .diff-content { flex: 1; max-height: none; }
 .modal h3 { margin-bottom: 16px; font-size: 1.1em; }
 .modal label { display: block; font-size: 0.85em; color: var(--muted); margin-bottom: 4px; margin-top: 12px; }
 .modal input, .modal select, .modal textarea {
@@ -272,7 +278,7 @@ header h1 span { color: var(--primary); }
 <body>
 <div id="app">
   <header>
-    <h1><span>Qew</span> — James</h1>
+    <h1><span>Qew</span> — James <span id="app-version" style="color:var(--muted);font-size:0.6em;font-weight:normal"></span></h1>
     <div style="display:flex;align-items:center;gap:12px">
       <button id="sound-toggle" title="Sound on (click to mute)" style="background:none;border:none;font-size:1.2em;cursor:pointer">🔔</button>
       <div id="conn-status"><span class="status-dot disconnected"></span>Connecting...</div>
