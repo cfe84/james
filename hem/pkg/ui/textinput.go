@@ -149,6 +149,68 @@ func (t *textInput) HandleKey(msg tea.KeyMsg) (handled, submitted bool) {
 	return false, false
 }
 
+// cursorLineCol returns the 0-based line and rune-column of the cursor within
+// the (unwrapped) text, counting explicit newlines only. The column is a rune
+// count so vertical movement never lands inside a multibyte rune.
+func (t *textInput) cursorLineCol() (line, col int) {
+	for i, r := range t.text {
+		if i >= t.cursorPos {
+			break
+		}
+		if r == '\n' {
+			line++
+			col = 0
+		} else {
+			col++
+		}
+	}
+	return line, col
+}
+
+// CursorLine returns the 0-based line index of the cursor (newline-delimited).
+func (t *textInput) CursorLine() int {
+	line, _ := t.cursorLineCol()
+	return line
+}
+
+// LineCount returns the number of newline-delimited lines in the text.
+func (t *textInput) LineCount() int {
+	return len(splitLines(t.text))
+}
+
+// MoveCursorVertical moves the cursor up (negative n) or down (positive n) by n
+// newline-delimited lines, preserving the rune column where possible. It clamps
+// to the first and last lines and to each line's length.
+func (t *textInput) MoveCursorVertical(n int) {
+	if n == 0 {
+		return
+	}
+	lines := splitLines(t.text)
+	curLine, curCol := t.cursorLineCol()
+	target := curLine + n
+	if target < 0 {
+		target = 0
+	}
+	if target > len(lines)-1 {
+		target = len(lines) - 1
+	}
+	// Byte offset of the start of the target line.
+	pos := 0
+	for i := 0; i < target; i++ {
+		pos += len(lines[i]) + 1 // +1 for the consumed newline
+	}
+	// Walk curCol runes into the target line, clamping at its end. This keeps
+	// the cursor on a rune boundary even when the line contains multibyte runes.
+	line := lines[target]
+	b, runes := 0, 0
+	for b < len(line) && runes < curCol {
+		_, size := utf8.DecodeRuneInString(line[b:])
+		b += size
+		runes++
+	}
+	t.cursorPos = pos + b
+}
+
 // Render returns the text with a cursor block at the cursor position.
 func (t *textInput) Render() string {
 	return t.text[:t.cursorPos] + "█" + t.text[t.cursorPos:]

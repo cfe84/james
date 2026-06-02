@@ -595,7 +595,7 @@ Each session has a persistent memory — a free-form text blob that survives acr
 ### TUI
 
 - In chat command mode, `m` opens the memory editor.
-- The memory editor is a full-screen text area with Ctrl+S to save and Esc to go back.
+- The memory editor is a full-screen text area with Ctrl+S to save and Esc to go back. It supports vertical navigation for large memories: ↑/↓ move the cursor by one line, and Ctrl+U/Ctrl+D (or PgUp/PgDn) move by half a page. The viewport scrolls to keep the cursor visible.
 
 ### Agent prompt
 

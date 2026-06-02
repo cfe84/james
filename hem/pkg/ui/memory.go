@@ -56,6 +56,24 @@ func (m memoryModel) saveMemory() tea.Cmd {
 	}
 }
 
+// visibleHeight returns the number of text lines visible in the editor box.
+func (m memoryModel) visibleHeight() int {
+	h := m.height - 6 // account for title, hints, padding
+	if h < 3 {
+		h = 3
+	}
+	return h
+}
+
+// pageStep returns the number of lines ctrl+u/ctrl+d move the cursor (half a page).
+func (m memoryModel) pageStep() int {
+	step := m.visibleHeight() / 2
+	if step < 1 {
+		step = 1
+	}
+	return step
+}
+
 func (m memoryModel) Update(msg tea.Msg) (memoryModel, tea.Cmd) {
 	switch msg := msg.(type) {
 	case memoryLoadedMsg:
@@ -96,6 +114,18 @@ func (m memoryModel) Update(msg tea.Msg) (memoryModel, tea.Cmd) {
 				return m, m.saveMemory()
 			}
 			return m, nil
+		case "up":
+			m.input.MoveCursorVertical(-1)
+			return m, nil
+		case "down":
+			m.input.MoveCursorVertical(1)
+			return m, nil
+		case "ctrl+u", "pgup":
+			m.input.MoveCursorVertical(-m.pageStep())
+			return m, nil
+		case "ctrl+d", "pgdown":
+			m.input.MoveCursorVertical(m.pageStep())
+			return m, nil
 		}
 
 		// Pass keys to text input.
@@ -124,7 +154,7 @@ func (m memoryModel) View() string {
 	}
 
 	hintStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
-	b.WriteString(hintStyle.Render("  Ctrl+S save · Esc back"))
+	b.WriteString(hintStyle.Render("  Ctrl+S save · ↑/↓ move · Ctrl+U/Ctrl+D page · Esc back"))
 	if m.dirty {
 		modifiedStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
 		b.WriteString(modifiedStyle.Render(" [modified]"))
@@ -141,10 +171,7 @@ func (m memoryModel) View() string {
 		Padding(0, 1).
 		Width(m.width - 4)
 
-	inputHeight := m.height - 6 // account for title, hints, padding
-	if inputHeight < 3 {
-		inputHeight = 3
-	}
+	inputHeight := m.visibleHeight()
 
 	var rendered string
 	if m.input.IsEmpty() {
@@ -153,10 +180,22 @@ func (m memoryModel) View() string {
 		rendered = m.input.Render()
 	}
 
-	// Truncate to visible height.
+	// Scroll the viewport to follow the cursor: show a window of inputHeight
+	// lines that always contains the cursor's line.
 	lines := strings.Split(rendered, "\n")
 	if len(lines) > inputHeight {
-		lines = lines[len(lines)-inputHeight:]
+		cursorLine := m.input.CursorLine()
+		start := 0
+		if cursorLine >= inputHeight {
+			start = cursorLine - inputHeight + 1
+		}
+		if start > len(lines)-inputHeight {
+			start = len(lines) - inputHeight
+		}
+		if start < 0 {
+			start = 0
+		}
+		lines = lines[start : start+inputHeight]
 	}
 	rendered = strings.Join(lines, "\n")
 
