@@ -3987,6 +3987,9 @@ func (e *Executor) SummarizeSession(args []string) *protocol.Response {
 	var result struct {
 		SessionID string `json:"session_id"`
 		Summary   string `json:"summary"`
+		// Pointer so we can tell an absent field (older moneypenny that doesn't
+		// report it) from an explicit zero ("genuinely no turns").
+		TurnCount *int `json:"turn_count"`
 	}
 	if err := json.Unmarshal(resp.Data, &result); err != nil {
 		return protocol.ErrResponse(fmt.Sprintf("parsing summary: %v", err))
@@ -3999,9 +4002,19 @@ func (e *Executor) SummarizeSession(args []string) *protocol.Response {
 	}
 
 	if result.Summary == "" {
-		return protocol.OKResponse(TextResult{
-			Message: "(no conversation history to summarize)",
-		})
+		// Distinguish "nothing to summarize" from "the agent returned an empty
+		// summary despite stored history" so a transient summarizer failure
+		// isn't silently reported as an empty session.
+		switch {
+		case result.TurnCount != nil && *result.TurnCount == 0:
+			return protocol.OKResponse(TextResult{
+				Message: "(no conversation history to summarize)",
+			})
+		case result.TurnCount == nil:
+			return protocol.ErrResponse("summarization returned an empty summary and the moneypenny did not report a turn count (it may be outdated); cannot tell whether the session is empty or the summarizer failed — upgrade the moneypenny or try again")
+		default:
+			return protocol.ErrResponse(fmt.Sprintf("summarization produced an empty summary despite %d stored conversation turns; the summarizer agent may have failed (e.g. a retired model) — try again", *result.TurnCount))
+		}
 	}
 	return protocol.OKResponse(TextResult{Message: result.Summary})
 }
@@ -4171,9 +4184,27 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	}
 	var sumResult struct {
 		Summary string `json:"summary"`
+		// Pointer so we can tell an absent field (older source moneypenny that
+		// doesn't report it) from an explicit zero ("genuinely no turns").
+		TurnCount *int `json:"turn_count"`
 	}
 	if err := json.Unmarshal(sumResp.Data, &sumResult); err != nil {
 		return protocol.ErrResponse(fmt.Sprintf("parsing summary: %v", err))
+	}
+
+	// Guard against silently producing a degraded copy. An empty summary is
+	// only legitimate when the source genuinely has zero stored turns; if it
+	// has turns (or the source moneypenny is too old to report a count) the
+	// empty result is a transient summarizer failure (e.g. a retired model on
+	// the source's agent), so abort rather than fabricate a "no history"
+	// preamble that strips the new session of its context.
+	if sumResult.Summary == "" {
+		switch {
+		case sumResult.TurnCount == nil:
+			return protocol.ErrResponse("summarizing source session returned an empty summary and the source moneypenny did not report a turn count (it may be outdated); cannot tell whether the session is empty or the summarizer failed — upgrade the moneypenny or try again")
+		case *sumResult.TurnCount > 0:
+			return protocol.ErrResponse(fmt.Sprintf("summarizing source session produced an empty summary despite %d stored conversation turns; the summarizer agent may have failed (e.g. a retired model) — try again", *sumResult.TurnCount))
+		}
 	}
 
 	// Build the bootstrap prompt: preamble + summary, then either the user's

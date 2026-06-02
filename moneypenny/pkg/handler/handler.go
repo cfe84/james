@@ -379,20 +379,20 @@ func isSessionNotFoundErr(err error) bool {
 // the conversation history stored in moneypenny. Reusable for recovery (when
 // the agent-side session is gone) and future uses (e.g. explicit user-driven
 // compaction). Returns "" if there's no history to compact.
-func (h *Handler) CompactSession(ctx context.Context, sessionID string) (string, error) {
+func (h *Handler) CompactSession(ctx context.Context, sessionID string) (string, int, error) {
 	sess, err := h.store.GetSession(sessionID)
 	if err != nil {
-		return "", fmt.Errorf("get session: %w", err)
+		return "", 0, fmt.Errorf("get session: %w", err)
 	}
 	if sess == nil {
-		return "", fmt.Errorf("session not found: %s", sessionID)
+		return "", 0, fmt.Errorf("session not found: %s", sessionID)
 	}
 	turns, err := h.store.GetConversation(sessionID)
 	if err != nil {
-		return "", fmt.Errorf("get conversation: %w", err)
+		return "", 0, fmt.Errorf("get conversation: %w", err)
 	}
 	if len(turns) == 0 {
-		return "", nil
+		return "", 0, nil
 	}
 
 	// Build a clean transcript. Skip thinking/agent_text noise — keep only
@@ -431,7 +431,7 @@ Conversation:
 		prompt = "Context for this task:\n" + sess.SystemPrompt + "\n\n---\n\n" + prompt
 	}
 
-	return h.runner.RunOneShot(ctx, agent.RunParams{
+	summary, err := h.runner.RunOneShot(ctx, agent.RunParams{
 		Agent:        sess.Agent,
 		Model:        sess.Model,
 		Effort:       sess.Effort,
@@ -440,6 +440,7 @@ Conversation:
 		Prompt:       prompt,
 		SystemPrompt: sess.SystemPrompt, // used by claude one-shot
 	})
+	return summary, len(turns), err
 }
 
 // summarizeSession is the user-facing dispatch for summarize_session.
@@ -459,7 +460,7 @@ func (h *Handler) summarizeSession(ctx context.Context, cmd *envelope.Command) *
 	sumCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
-	summary, err := h.CompactSession(sumCtx, data.SessionID)
+	summary, turnCount, err := h.CompactSession(sumCtx, data.SessionID)
 	if err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
 	}
@@ -467,6 +468,7 @@ func (h *Handler) summarizeSession(ctx context.Context, cmd *envelope.Command) *
 	return envelope.SuccessResponse(cmd.RequestID, envelope.SummarizeSessionResponse{
 		SessionID: data.SessionID,
 		Summary:   summary,
+		TurnCount: turnCount,
 	})
 }
 
@@ -495,10 +497,17 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 		_ = h.store.AddConversationTurn(sessionID, "system",
 			"Underlying agent session was lost. Compacting prior conversation and starting fresh…")
 		compactCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		summary, sumErr := h.CompactSession(compactCtx, sessionID)
+		summary, turnCount, sumErr := h.CompactSession(compactCtx, sessionID)
 		cancel()
 		if sumErr != nil {
 			h.vlog("compaction failed for session %s: %v", sessionID, sumErr)
+		} else if summary == "" && turnCount > 0 {
+			// History existed but the summarizer returned nothing (e.g. a
+			// retired model). Surface it so the fresh retry's lack of prior
+			// context is explained rather than silently lost.
+			h.vlog("compaction returned empty summary for session %s despite %d stored turns; retrying without prior context", sessionID, turnCount)
+			_ = h.store.AddConversationTurn(sessionID, "system",
+				"Could not summarize prior conversation before restarting; continuing without earlier context.")
 		}
 		// Retry as a CREATE with the summary in the system prompt.
 		params.Resume = false

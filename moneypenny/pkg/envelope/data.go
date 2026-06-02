@@ -127,9 +127,14 @@ type SummarizeSessionData struct {
 }
 
 // SummarizeSessionResponse is returned by summarize_session.
+// TurnCount is the number of stored conversation turns the summarizer saw. It
+// lets callers distinguish "no history yet" (TurnCount==0) from "history exists
+// but the agent returned an empty summary" (TurnCount>0, Summary==""), so the
+// copy/summarize paths don't silently fabricate a "no history" preamble.
 type SummarizeSessionResponse struct {
 	SessionID string `json:"session_id"`
 	Summary   string `json:"summary"`
+	TurnCount int    `json:"turn_count"`
 }
 
 // UpdateMemoryData is the data payload for update_memory.
