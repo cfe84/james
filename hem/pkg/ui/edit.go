@@ -233,7 +233,7 @@ func (m editModel) Update(msg tea.Msg) (editModel, tea.Cmd) {
 		m.traitsLoaded = true
 		for _, t := range msg.traits {
 			m.fields = append(m.fields, formField{
-				label:   "Trait: " + t.Name,
+				label:   t.Name,
 				isBool:  true,
 				value:   "false",
 				traitID: t.ID,
@@ -418,15 +418,22 @@ func (m editModel) View() string {
 		return dialogStyle.Render(b.String())
 	}
 
-	// labelWidth (24) + indent (2) + space (1) = 27 chars before value.
-	const valueIndent = 27
+	// Size the label column to the longest field label (clamped) so long trait
+	// names don't wrap. valueIndent = labelWidth + indent (2) + space (1).
+	labels := make([]string, len(m.fields))
+	for i, f := range m.fields {
+		labels[i] = f.label
+	}
+	labelW := formLabelWidth(labels)
+	lStyle := labelStyle.Width(labelW)
+	valueIndent := labelW + 3
 	maxValueWidth := m.width - valueIndent - 2
 	if maxValueWidth < 20 {
 		maxValueWidth = 20
 	}
 
 	for i, f := range m.fields {
-		label := labelStyle.Render(f.label + ":")
+		label := lStyle.Render(truncateDisplay(f.label+":", labelW))
 
 		// Show change indicator.
 		changed := ""

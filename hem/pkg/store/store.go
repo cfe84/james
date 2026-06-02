@@ -57,11 +57,12 @@ type Project struct {
 // on/off per session. Selected traits are composed into the agent's system
 // prompt at session create/update time.
 type Trait struct {
-	ID        string
-	Name      string
-	Prompt    string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID               string
+	Name             string
+	Prompt           string
+	EnabledByDefault bool
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 // Store manages Hem's SQLite database.
@@ -140,6 +141,7 @@ CREATE TABLE IF NOT EXISTS traits (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     prompt TEXT NOT NULL DEFAULT '',
+    enabled_by_default INTEGER NOT NULL DEFAULT 0,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -796,9 +798,9 @@ func scanProject(row *sql.Row) (*Project, error) {
 // CreateTrait inserts a new trait.
 func (s *Store) CreateTrait(t *Trait) error {
 	_, err := s.db.Exec(
-		`INSERT INTO traits (id, name, prompt, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?)`,
-		t.ID, t.Name, t.Prompt, t.CreatedAt, t.UpdatedAt,
+		`INSERT INTO traits (id, name, prompt, enabled_by_default, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		t.ID, t.Name, t.Prompt, boolToInt(t.EnabledByDefault), t.CreatedAt, t.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("create trait %q: %w", t.Name, err)
@@ -809,7 +811,7 @@ func (s *Store) CreateTrait(t *Trait) error {
 // GetTrait retrieves a trait by ID first, then by name. Returns nil, nil if not found.
 func (s *Store) GetTrait(nameOrID string) (*Trait, error) {
 	row := s.db.QueryRow(
-		`SELECT id, name, prompt, created_at, updated_at FROM traits WHERE id = ?`, nameOrID,
+		`SELECT id, name, prompt, enabled_by_default, created_at, updated_at FROM traits WHERE id = ?`, nameOrID,
 	)
 	t, err := scanTrait(row)
 	if err == nil {
@@ -820,7 +822,7 @@ func (s *Store) GetTrait(nameOrID string) (*Trait, error) {
 	}
 
 	row = s.db.QueryRow(
-		`SELECT id, name, prompt, created_at, updated_at FROM traits WHERE name = ?`, nameOrID,
+		`SELECT id, name, prompt, enabled_by_default, created_at, updated_at FROM traits WHERE name = ?`, nameOrID,
 	)
 	t, err = scanTrait(row)
 	if err == sql.ErrNoRows {
@@ -835,7 +837,7 @@ func (s *Store) GetTrait(nameOrID string) (*Trait, error) {
 // ListTraits returns all traits ordered by name.
 func (s *Store) ListTraits() ([]*Trait, error) {
 	rows, err := s.db.Query(
-		`SELECT id, name, prompt, created_at, updated_at FROM traits ORDER BY name`,
+		`SELECT id, name, prompt, enabled_by_default, created_at, updated_at FROM traits ORDER BY name`,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list traits: %w", err)
@@ -845,16 +847,18 @@ func (s *Store) ListTraits() ([]*Trait, error) {
 	var result []*Trait
 	for rows.Next() {
 		var t Trait
-		if err := rows.Scan(&t.ID, &t.Name, &t.Prompt, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		var enabledByDefault int
+		if err := rows.Scan(&t.ID, &t.Name, &t.Prompt, &enabledByDefault, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan trait: %w", err)
 		}
+		t.EnabledByDefault = enabledByDefault != 0
 		result = append(result, &t)
 	}
 	return result, rows.Err()
 }
 
 // UpdateTrait updates specified fields of a trait. Only non-nil pointers are updated.
-func (s *Store) UpdateTrait(id string, name, prompt *string) error {
+func (s *Store) UpdateTrait(id string, name, prompt *string, enabledByDefault *bool) error {
 	var sets []string
 	var args []interface{}
 
@@ -865,6 +869,10 @@ func (s *Store) UpdateTrait(id string, name, prompt *string) error {
 	if prompt != nil {
 		sets = append(sets, "prompt = ?")
 		args = append(args, *prompt)
+	}
+	if enabledByDefault != nil {
+		sets = append(sets, "enabled_by_default = ?")
+		args = append(args, boolToInt(*enabledByDefault))
 	}
 
 	if len(sets) == 0 {
@@ -946,10 +954,12 @@ func (s *Store) GetSessionTraits(sessionID string) ([]string, error) {
 
 func scanTrait(row *sql.Row) (*Trait, error) {
 	var t Trait
-	err := row.Scan(&t.ID, &t.Name, &t.Prompt, &t.CreatedAt, &t.UpdatedAt)
+	var enabledByDefault int
+	err := row.Scan(&t.ID, &t.Name, &t.Prompt, &enabledByDefault, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
+	t.EnabledByDefault = enabledByDefault != 0
 	return &t, nil
 }
 
@@ -964,6 +974,7 @@ func (s *Store) migrateSchema() error {
 		`ALTER TABLE sessions ADD COLUMN parent_session_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE moneypennies ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`,
 		`ALTER TABLE sessions ADD COLUMN callback_prompt TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE traits ADD COLUMN enabled_by_default INTEGER NOT NULL DEFAULT 0`,
 	}
 	for _, m := range migrations {
 		_, err := s.db.Exec(m)

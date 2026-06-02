@@ -70,7 +70,7 @@
     try {
       const resp = await apiCall('list', 'trait', []);
       if (resp.status === 'ok' && resp.data && resp.data.rows) {
-        traitsCache = resp.data.rows.map(r => ({ id: r[0], name: r[1], preview: r[2] }));
+        traitsCache = resp.data.rows.map(r => ({ id: r[0], name: r[1], preview: r[2], def: r[3] === 'yes' }));
       }
     } catch (e) { /* ignore */ }
   }
@@ -572,7 +572,7 @@
         <label for="wiz-gadgets" style="margin:0;color:var(--text)">Gadgets (include James tooling in system prompt)</label>
       </div>
       ${traitsCache.length ? `<label>Traits</label><div id="wiz-traits" style="display:flex;flex-direction:column;gap:4px">` +
-        traitsCache.map(t => `<div class="toggle-row"><input type="checkbox" class="wiz-trait" id="wiz-trait-${escapeAttr(t.id)}" value="${escapeAttr(t.id)}"><label for="wiz-trait-${escapeAttr(t.id)}" style="margin:0;color:var(--text)" title="${escapeAttr(t.preview)}">${escapeHtml(t.name)}</label></div>`).join('') +
+        traitsCache.map(t => `<div class="toggle-row"><input type="checkbox" class="wiz-trait" id="wiz-trait-${escapeAttr(t.id)}" value="${escapeAttr(t.id)}"${t.def ? ' checked' : ''}><label for="wiz-trait-${escapeAttr(t.id)}" style="margin:0;color:var(--text)" title="${escapeAttr(t.preview)}">${escapeHtml(t.name)}</label></div>`).join('') +
         `</div>` : ''}
       <div class="modal-actions">
         <button class="btn-muted" onclick="window._qewWizardBackToPath()">Back</button>
@@ -607,7 +607,9 @@
     if (document.getElementById('wiz-yolo').checked) args.push('--yolo');
     if (document.getElementById('wiz-gadgets').checked) args.push('--gadgets');
     const selTraits = Array.from(document.querySelectorAll('.wiz-trait:checked')).map(c => c.value);
-    if (selTraits.length) args.push('--traits', selTraits.join(','));
+    // Only emit explicit --traits once traits have loaded; emitting an empty
+    // selection before traits are known would suppress backend default traits.
+    if (traitsCache.length) args.push('--traits', selTraits.join(','));
     args.push(prompt);
 
     document.getElementById('wiz-submit').disabled = true;
@@ -1607,17 +1609,17 @@
         return;
       }
       const rows = (resp.data && resp.data.rows) || [];
-      traitsCache = rows.map(r => ({ id: r[0], name: r[1], preview: r[2] }));
+      traitsCache = rows.map(r => ({ id: r[0], name: r[1], preview: r[2], def: r[3] === 'yes' }));
       if (rows.length === 0) {
         container.innerHTML = '<div class="empty-state">No traits. Create one to get started.</div>';
         return;
       }
       let html = '';
       for (const r of rows) {
-        const id = r[0], name = r[1], preview = r[2];
+        const id = r[0], name = r[1], preview = r[2], def = r[3] === 'yes';
         html += `
           <div class="mgmt-row">
-            <span class="mgmt-name">${escapeHtml(name)}</span>
+            <span class="mgmt-name">${escapeHtml(name)}${def ? ' <span title="Enabled by default for new agents" style="color:var(--accent)">✔</span>' : ''}</span>
             <span class="mgmt-detail" style="flex:1">${escapeHtml(preview)}</span>
             <span class="mgmt-actions">
               <button data-trait-id="${escapeAttr(id)}" data-action="edit">Edit</button>
@@ -1656,6 +1658,7 @@
       <input id="trait-name" type="text" placeholder="e.g. Concise commits">
       <label for="trait-prompt">Prompt</label>
       <textarea id="trait-prompt" rows="6" placeholder="System-prompt snippet describing how the agent should behave..."></textarea>
+      <div class="toggle-row"><input type="checkbox" id="trait-default"><label for="trait-default" style="margin:0;color:var(--text)">Enable by default for new agents</label></div>
       <div class="modal-actions">
         <button class="btn-muted" onclick="window._qewCloseWizard()">Cancel</button>
         <button class="btn" id="trait-submit">Create</button>
@@ -1665,10 +1668,11 @@
       const name = document.getElementById('trait-name').value.trim();
       if (!name) { alert('Name is required'); return; }
       const prompt = document.getElementById('trait-prompt').value;
+      const def = document.getElementById('trait-default').checked;
       const btn = document.getElementById('trait-submit');
       btn.disabled = true; btn.textContent = 'Creating...';
       try {
-        const resp = await apiCall('create', 'trait', ['--name', name, '--prompt', prompt]);
+        const resp = await apiCall('create', 'trait', ['--name', name, '--prompt', prompt, `--default=${def}`]);
         if (resp.status === 'error') {
           alert('Error: ' + resp.message);
           btn.disabled = false; btn.textContent = 'Create';
@@ -1706,6 +1710,7 @@
       <input id="trait-name" type="text" value="${escapeAttr(t.name || '')}">
       <label for="trait-prompt">Prompt</label>
       <textarea id="trait-prompt" rows="6">${escapeHtml(t.prompt || '')}</textarea>
+      <div class="toggle-row"><input type="checkbox" id="trait-default"${t.enabled_by_default ? ' checked' : ''}><label for="trait-default" style="margin:0;color:var(--text)">Enable by default for new agents</label></div>
       <div class="modal-actions">
         <button class="btn-muted" onclick="window._qewCloseWizard()">Cancel</button>
         <button class="btn" id="trait-submit">Save</button>
@@ -1717,6 +1722,8 @@
       if (name !== (t.name || '')) args.push('--name', name);
       const prompt = document.getElementById('trait-prompt').value;
       if (prompt !== (t.prompt || '')) args.push('--prompt', prompt);
+      const def = document.getElementById('trait-default').checked;
+      if (def !== !!t.enabled_by_default) args.push(`--default=${def}`);
       if (args.length <= 1) { closeWizard(); return; }
       const btn = document.getElementById('trait-submit');
       btn.disabled = true; btn.textContent = 'Saving...';

@@ -106,7 +106,7 @@ func (m traitsModel) View() string {
 
 	var b strings.Builder
 
-	header := fmt.Sprintf("  %-24s %-50s", "Name", "Prompt")
+	header := fmt.Sprintf("  %-24s %-50s %s", "Name", "Prompt", "Default")
 	b.WriteString(sessionHeaderStyle.Render(header))
 	b.WriteString("\n")
 
@@ -128,7 +128,11 @@ func (m traitsModel) View() string {
 		t := m.traits[i]
 		name := truncate(t.Name, 22)
 		preview := truncate(t.Preview, 48)
-		line := fmt.Sprintf("  %-24s %-50s", name, preview)
+		def := ""
+		if t.enabledByDefault {
+			def = "✔"
+		}
+		line := fmt.Sprintf("  %-24s %-50s %s", name, preview, def)
 		if i == m.cursor {
 			if m.width > 0 && lipgloss.Width(line) < m.width {
 				line += strings.Repeat(" ", m.width-lipgloss.Width(line))
@@ -184,6 +188,7 @@ func newCreateTraitModel(c *client) editTraitModel {
 	fields := []formField{
 		{label: "Name", flag: "--name", value: ""},
 		{label: "Prompt", flag: "--prompt", value: "", input: &spInput},
+		{label: "Enable by default", flag: "--default", value: "false", isBool: true},
 	}
 	original := make([]string, len(fields))
 	for i, f := range fields {
@@ -199,9 +204,14 @@ func newCreateTraitModel(c *client) editTraitModel {
 func newEditTraitModel(c *client, t *traitDetail) editTraitModel {
 	spInput := newTextInput(true)
 	spInput.SetValue(t.Prompt)
+	defVal := "false"
+	if t.EnabledByDefault {
+		defVal = "true"
+	}
 	fields := []formField{
 		{label: "Name", flag: "--name", value: t.Name, cursorPos: len(t.Name)},
 		{label: "Prompt", flag: "--prompt", value: t.Prompt, cursorPos: len(t.Prompt), input: &spInput},
+		{label: "Enable by default", flag: "--default", value: defVal, isBool: true},
 	}
 	original := make([]string, len(fields))
 	for i, f := range fields {
@@ -219,11 +229,13 @@ func (m editTraitModel) save() tea.Cmd {
 	isCreate := m.traitID == ""
 	name := m.fields[0].value
 	prompt := m.fields[1].value
+	enabledByDefault := m.fields[2].value == "true"
+	defaultChanged := m.fields[2].value != m.original[2]
 	id := m.traitID
 	client := m.client
 	return func() tea.Msg {
 		if isCreate {
-			err := client.createTrait(name, prompt)
+			err := client.createTrait(name, prompt, enabledByDefault)
 			return traitCreatedMsg{err: err}
 		}
 		fields := map[string]string{}
@@ -232,6 +244,10 @@ func (m editTraitModel) save() tea.Cmd {
 		}
 		if prompt != m.original[1] {
 			fields["--prompt"] = prompt
+		}
+		if defaultChanged {
+			// Boolean flag must use "--flag=value" form to parse correctly.
+			fields[fmt.Sprintf("--default=%t", enabledByDefault)] = ""
 		}
 		if len(fields) == 0 {
 			return traitUpdatedMsg{err: nil}
@@ -303,7 +319,15 @@ func (m editTraitModel) Update(msg tea.Msg) (editTraitModel, tea.Cmd) {
 			field.value = ""
 			field.cursorPos = 0
 		default:
-			if msg.Type == tea.KeyRunes {
+			if field.isBool {
+				if msg.Type == tea.KeySpace {
+					if field.value == "true" {
+						field.value = "false"
+					} else {
+						field.value = "true"
+					}
+				}
+			} else if msg.Type == tea.KeyRunes {
 				field.value += string(msg.Runes)
 				field.cursorPos = len(field.value)
 			} else if msg.Type == tea.KeySpace {
@@ -325,14 +349,20 @@ func (m editTraitModel) View() string {
 	b.WriteString(titleStyle.Render(title))
 	b.WriteString("\n\n")
 
-	const valueIndent = 27
+	labels := make([]string, len(m.fields))
+	for i, f := range m.fields {
+		labels[i] = f.label
+	}
+	labelW := formLabelWidth(labels)
+	lStyle := labelStyle.Width(labelW)
+	valueIndent := labelW + 3
 	maxValueWidth := m.width - valueIndent - 2
 	if maxValueWidth < 20 {
 		maxValueWidth = 20
 	}
 
 	for i, f := range m.fields {
-		label := labelStyle.Render(f.label + ":")
+		label := lStyle.Render(truncateDisplay(f.label+":", labelW))
 
 		changed := ""
 		if f.value != m.original[i] {
@@ -340,7 +370,17 @@ func (m editTraitModel) View() string {
 		}
 
 		var value string
-		if i == m.cursor {
+		if f.isBool {
+			box := "[ ]"
+			if f.value == "true" {
+				box = "[x]"
+			}
+			if i == m.cursor {
+				value = fieldActiveStyle.Render(box + " " + f.value)
+			} else {
+				value = fieldInactiveStyle.Render(box)
+			}
+		} else if i == m.cursor {
 			if f.input != nil {
 				lines := f.input.RenderWrapped(maxValueWidth, valueIndent)
 				var parts []string

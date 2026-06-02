@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"james/hem/pkg/hemclient"
 	"james/hem/pkg/protocol"
@@ -446,9 +447,10 @@ func (c *client) updateProject(nameOrID string, fields map[string]string) error 
 
 // traitInfo is a parsed trait from list traits.
 type traitInfo struct {
-	ID      string
-	Name    string
-	Preview string
+	ID               string
+	Name             string
+	Preview          string
+	enabledByDefault bool
 }
 
 func (c *client) listTraits() ([]traitInfo, error) {
@@ -478,15 +480,19 @@ func (c *client) listTraits() ([]traitInfo, error) {
 		if len(row) > 2 {
 			t.Preview = row[2]
 		}
+		if len(row) > 3 {
+			t.enabledByDefault = row[3] == "yes"
+		}
 		traits = append(traits, t)
 	}
 	return traits, nil
 }
 
 type traitDetail struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Prompt string `json:"prompt"`
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	Prompt           string `json:"prompt"`
+	EnabledByDefault bool   `json:"enabled_by_default"`
 }
 
 func (c *client) showTrait(nameOrID string) (*traitDetail, error) {
@@ -504,8 +510,9 @@ func (c *client) showTrait(nameOrID string) (*traitDetail, error) {
 	return &detail, nil
 }
 
-func (c *client) createTrait(name, prompt string) error {
-	resp, err := c.send("create", "trait", "--name", name, "--prompt", prompt)
+func (c *client) createTrait(name, prompt string, enabledByDefault bool) error {
+	resp, err := c.send("create", "trait", "--name", name, "--prompt", prompt,
+		fmt.Sprintf("--default=%t", enabledByDefault))
 	if err != nil {
 		return err
 	}
@@ -515,10 +522,17 @@ func (c *client) createTrait(name, prompt string) error {
 	return nil
 }
 
+// updateTrait updates trait fields. Boolean flags (e.g. "--default") must be
+// supplied in "--flag=value" form by the caller so they parse correctly; other
+// flags use the two-token "--flag value" form.
 func (c *client) updateTrait(nameOrID string, fields map[string]string) error {
 	args := []string{nameOrID}
 	for flag, value := range fields {
-		args = append(args, flag, value)
+		if strings.Contains(flag, "=") {
+			args = append(args, flag)
+		} else {
+			args = append(args, flag, value)
+		}
 	}
 	resp, err := c.send("update", "trait", args...)
 	if err != nil {

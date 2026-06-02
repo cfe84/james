@@ -275,6 +275,7 @@ func (m wizardModel) createProject() tea.Cmd {
 func (m wizardModel) createSession() tea.Cmd {
 	isCopy := m.sourceSessionID != ""
 	sourceID := m.sourceSessionID
+	traitsLoaded := m.traitsLoaded
 	return func() tea.Msg {
 		var args []string
 		// Copy mode: the source session ID is the leading positional arg the
@@ -307,12 +308,14 @@ func (m wizardModel) createSession() tea.Cmd {
 				args = append(args, f.flag, f.value)
 			}
 		}
-		// In copy mode, always emit --traits (even empty) so the selection is
-		// explicit; otherwise copy inherits the source's traits. In create
-		// mode only emit when at least one trait is selected.
-		if isCopy {
-			args = append(args, "--traits", strings.Join(traitIDs, ","))
-		} else if len(traitIDs) > 0 {
+		// In copy mode, emit --traits (even empty) so the selection is explicit
+		// — but only once traits have loaded; before that, omit it so copy
+		// inherits the source's traits rather than clearing them. In create
+		// mode only emit explicit --traits once the trait list has loaded —
+		// emitting an empty --traits before traits are known would suppress
+		// the backend's default-enabled traits. Once loaded, an empty value
+		// correctly means "the user deselected everything".
+		if traitsLoaded {
 			args = append(args, "--traits", strings.Join(traitIDs, ","))
 		}
 		if m.async {
@@ -460,13 +463,18 @@ func (m wizardModel) Update(msg tea.Msg) (wizardModel, tea.Cmd) {
 
 	case wizardTraitsLoadedMsg:
 		m.traitsLoaded = true
+		isCopy := m.sourceSessionID != ""
 		// Append a bool checkbox field per trait at the end of the form.
 		for _, t := range msg.traits {
-			label := "Trait: " + t.Name
+			value := "false"
+			// In create mode (not copy), pre-check default-enabled traits.
+			if !isCopy && t.enabledByDefault {
+				value = "true"
+			}
 			m.fields = append(m.fields, formField{
-				label:   label,
+				label:   t.Name,
 				isBool:  true,
-				value:   "false",
+				value:   value,
 				traitID: t.ID,
 			})
 		}
@@ -1087,15 +1095,22 @@ func (m wizardModel) viewFormStep() string {
 		mpLabel, lipgloss.NewStyle().Foreground(colorSuccess).Render(m.selectedMP),
 		pathLabel, lipgloss.NewStyle().Foreground(colorSuccess).Render(m.selectedPath)))
 
-	// labelWidth (24) + indent (2) + space (1) = 27 chars before value.
-	const valueIndent = 27
+	// Size the label column to the longest field label (clamped), so long trait
+	// names don't wrap. valueIndent = labelWidth + indent (2) + space (1).
+	labels := make([]string, len(m.fields))
+	for i, f := range m.fields {
+		labels[i] = f.label
+	}
+	labelW := formLabelWidth(labels)
+	lStyle := labelStyle.Width(labelW)
+	valueIndent := labelW + 3
 	maxValueWidth := m.width - valueIndent - 2
 	if maxValueWidth < 20 {
 		maxValueWidth = 20
 	}
 
 	for i, f := range m.fields {
-		label := labelStyle.Render(f.label + ":")
+		label := lStyle.Render(truncateDisplay(f.label+":", labelW))
 		var value string
 		if i == m.fCursor {
 			if f.options != nil {

@@ -402,7 +402,7 @@ Hem manages sessions on moneypennies. It tracks which moneypenny each session li
 - Hem generates a session_id (UUID) and sends `create_session` to the moneypenny.
 - By default: waits for the agent to complete, prints the session_id and the response.
 - With `--async`: prints the session_id and returns immediately without waiting.
-- Flags: `--agent NAME` (default "claude"), `--name NAME` (session name, default empty), `--system-prompt TEXT`, `--traits ID1,ID2` (apply reusable traits, see Traits), `--yolo` (skip permissions), `--path PATH` (working directory for the agent), `--gadgets` (include James tooling instructions in system prompt).
+- Flags: `--agent NAME` (default "claude"), `--name NAME` (session name, default empty), `--system-prompt TEXT`, `--traits ID1,ID2` (apply reusable traits, see Traits; when omitted, default-enabled traits are applied), `--yolo` (skip permissions), `--path PATH` (working directory for the agent), `--gadgets` (include James tooling instructions in system prompt).
 - `--gadgets`: Appends instructions telling the agent about `hem` CLI access and scheduling. For MI6-connected moneypennies, includes the MI6 server address so the agent can connect back.
 
 ### Continue
@@ -698,11 +698,11 @@ Traits are a hem-level concept (like projects); moneypenny is unaware of them. T
 
 ### Create
 
-`hem create trait --name NAME [--prompt TEXT | TEXT...]` — creates a trait. Name must be unique. The prompt may be passed via `--prompt` or as trailing positional args.
+`hem create trait --name NAME [--prompt TEXT | TEXT...] [--default=true|false]` — creates a trait. Name must be unique. The prompt may be passed via `--prompt` or as trailing positional args. `--default` marks the trait as enabled-by-default (applied automatically to new agents when `--traits` is not specified).
 
 ### List
 
-`hem list traits` — lists all traits with a one-line prompt preview.
+`hem list traits` — lists all traits with a one-line prompt preview and a **Default** column (`yes`/`no`).
 
 ### Show
 
@@ -710,7 +710,7 @@ Traits are a hem-level concept (like projects); moneypenny is unaware of them. T
 
 ### Update
 
-`hem update trait NAME_OR_ID [--name NAME] [--prompt TEXT]` — updates a trait. Editing a trait definition does **not** retroactively rewrite existing sessions; the new text applies to sessions created or re-applied afterwards.
+`hem update trait NAME_OR_ID [--name NAME] [--prompt TEXT] [--default=true|false]` — updates a trait. Editing a trait definition does **not** retroactively rewrite existing sessions; the new text applies to sessions created or re-applied afterwards. `--default` toggles whether the trait is enabled by default for new agents.
 
 ### Delete
 
@@ -719,10 +719,11 @@ Traits are a hem-level concept (like projects); moneypenny is unaware of them. T
 ### Applying traits to sessions
 
 - On `create session`, `copy session`, and `update session`, the `--traits ID1,ID2` flag selects traits by ID or name (comma-separated). Unknown traits are an error.
+- **Default traits:** traits flagged with `--default` are applied automatically to new agents created via `create session` **only when `--traits` is not provided at all**. Passing `--traits` (even an empty value) uses exactly the given selection and suppresses defaults. Defaults do not apply to `update session` or `copy session` (copy inherits the source's selection).
 - On `update session`, passing `--traits` with an empty value clears all traits. The session's stored system prompt is recomposed: the existing traits block is stripped and the new one inserted, preserving gadgets/memory. This means subsequent chat messages use the updated traits.
 - On `copy session`, traits are inherited from the source unless `--traits` is given.
 - **System prompt composition order:** base → traits → gadgets → memory. The traits block is wrapped in `<!--james:traits:begin-->` / `<!--james:traits:end-->` sentinel markers so it can be stripped and recomposed regardless of its (arbitrary) content.
-- TUI: a dedicated traits management view (dashboard key `T`) lists traits with new/edit/delete. Trait checkboxes appear in the create wizard and the edit-session form. Qew exposes the same via a **Traits** nav button and checkboxes in the create/edit dialogs.
+- TUI: a dedicated traits management view (dashboard key `T`) lists traits with new/edit/delete and a default indicator; the trait editor has an "Enable by default" toggle. Trait checkboxes appear in the create wizard (default traits pre-checked) and the edit-session form. Qew exposes the same via a **Traits** nav button and checkboxes in the create/edit dialogs.
 
 ## Settings
 

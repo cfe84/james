@@ -179,6 +179,51 @@ func truncate(s string, max int) string {
 	return s[:max-3] + "..."
 }
 
+// Label-column sizing for forms. The column is sized to the longest label and
+// clamped so very long (e.g. trait) names neither wrap nor dominate the layout.
+const (
+	minLabelWidth = 16
+	maxLabelWidth = 40
+)
+
+// formLabelWidth returns the label-column display width for a set of field
+// labels (the trailing ":" is accounted for), clamped to [minLabelWidth, maxLabelWidth].
+func formLabelWidth(labels []string) int {
+	w := minLabelWidth
+	for _, l := range labels {
+		if lw := lipgloss.Width(l + ":"); lw > w {
+			w = lw
+		}
+	}
+	if w > maxLabelWidth {
+		w = maxLabelWidth
+	}
+	return w
+}
+
+// truncateDisplay truncates s to a maximum display width (rune- and
+// double-width aware), appending an ellipsis when truncation occurs.
+func truncateDisplay(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	if lipgloss.Width(s) <= max {
+		return s
+	}
+	var out strings.Builder
+	used := 0
+	for _, r := range s {
+		rw := lipgloss.Width(string(r))
+		if used+rw > max-1 {
+			break
+		}
+		out.WriteRune(r)
+		used += rw
+	}
+	out.WriteString("…")
+	return out.String()
+}
+
 func pluralS(n int) string {
 	if n == 1 {
 		return ""

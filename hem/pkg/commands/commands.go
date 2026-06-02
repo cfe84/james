@@ -1041,9 +1041,10 @@ type ProjectResult struct {
 }
 
 type TraitResult struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Prompt string `json:"prompt"`
+	ID               string `json:"id"`
+	Name             string `json:"name"`
+	Prompt           string `json:"prompt"`
+	EnabledByDefault bool   `json:"enabled_by_default"`
 }
 
 // CommandResult is returned by the run command.
@@ -1501,6 +1502,16 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 	var projectNameOrID string
 	params := &sessionParams{}
 
+	// Detect whether --traits was explicitly provided. When absent, default-enabled
+	// traits are applied; when present (even empty), the given selection is used verbatim.
+	traitsExplicit := false
+	for _, a := range args {
+		if a == "--traits" || a == "-traits" || strings.HasPrefix(a, "--traits=") || strings.HasPrefix(a, "-traits=") {
+			traitsExplicit = true
+			break
+		}
+	}
+
 	remaining, err := parseFlagsFromArgs("create-session", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&params.MoneypennyName, "m", "", "moneypenny name")
 		fs.StringVar(&params.MoneypennyName, "moneypenny", "", "moneypenny name")
@@ -1544,7 +1555,22 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 	params.SessionName = generateSessionName(prompt, params.SessionName)
 
 	// Resolve and append traits (reusable system-prompt snippets) first, so the
-	// canonical order is base → traits → gadgets → memory.
+	// canonical order is base → traits → gadgets → memory. When --traits was not
+	// provided at all, apply the default-enabled traits.
+	if !traitsExplicit && params.TraitsSpec == "" {
+		defaultTraits, derr := e.store.ListTraits()
+		if derr != nil {
+			return protocol.ErrResponse(derr.Error())
+		}
+		var ids []string
+		for _, t := range defaultTraits {
+			if t.EnabledByDefault {
+				ids = append(ids, t.ID)
+			}
+		}
+		params.TraitsSpec = strings.Join(ids, ",")
+	}
+
 	traits, err := e.resolveTraits(params.TraitsSpec)
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -2810,10 +2836,12 @@ func (e *Executor) DeleteProject(args []string) *protocol.Response {
 
 func (e *Executor) CreateTrait(args []string) *protocol.Response {
 	var name, prompt string
+	var enabledByDefault bool
 
 	remaining, err := parseFlagsFromArgs("create-trait", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&name, "name", "", "trait name")
 		fs.StringVar(&prompt, "prompt", "", "trait system-prompt text")
+		fs.BoolVar(&enabledByDefault, "default", false, "enable this trait by default for new agents")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -2829,11 +2857,12 @@ func (e *Executor) CreateTrait(args []string) *protocol.Response {
 
 	now := time.Now()
 	t := &store.Trait{
-		ID:        generateSessionID(),
-		Name:      name,
-		Prompt:    prompt,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:               generateSessionID(),
+		Name:             name,
+		Prompt:           prompt,
+		EnabledByDefault: enabledByDefault,
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}
 	if err := e.store.CreateTrait(t); err != nil {
 		return protocol.ErrResponse(fmt.Sprintf("creating trait: %v", err))
@@ -2851,14 +2880,18 @@ func (e *Executor) ListTraits(args []string) *protocol.Response {
 	}
 
 	result := TableResult{
-		Headers: []string{"ID", "Name", "Prompt"},
+		Headers: []string{"ID", "Name", "Prompt", "Default"},
 	}
 	for _, t := range traits {
 		preview := strings.ReplaceAll(t.Prompt, "\n", " ")
 		if len(preview) > 60 {
 			preview = preview[:60] + "…"
 		}
-		result.Rows = append(result.Rows, []string{t.ID, t.Name, preview})
+		def := "no"
+		if t.EnabledByDefault {
+			def = "yes"
+		}
+		result.Rows = append(result.Rows, []string{t.ID, t.Name, preview, def})
 	}
 	return protocol.OKResponse(result)
 }
@@ -2887,27 +2920,34 @@ func (e *Executor) ShowTrait(args []string) *protocol.Response {
 	}
 
 	return protocol.OKResponse(TraitResult{
-		ID:     t.ID,
-		Name:   t.Name,
-		Prompt: t.Prompt,
+		ID:               t.ID,
+		Name:             t.Name,
+		Prompt:           t.Prompt,
+		EnabledByDefault: t.EnabledByDefault,
 	})
 }
 
 func (e *Executor) UpdateTrait(args []string) *protocol.Response {
 	var nameFlag, promptFlag string
+	var defaultFlag bool
 
-	// Detect explicit --prompt so an empty value can clear the prompt text.
+	// Detect explicit --prompt so an empty value can clear the prompt text,
+	// and explicit --default so it can be toggled off.
 	promptExplicit := false
+	defaultExplicit := false
 	for _, a := range args {
 		if a == "--prompt" || a == "-prompt" || strings.HasPrefix(a, "--prompt=") || strings.HasPrefix(a, "-prompt=") {
 			promptExplicit = true
-			break
+		}
+		if a == "--default" || a == "-default" || strings.HasPrefix(a, "--default=") || strings.HasPrefix(a, "-default=") {
+			defaultExplicit = true
 		}
 	}
 
 	remaining, err := parseFlagsFromArgs("update-trait", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&nameFlag, "name", "", "new trait name")
 		fs.StringVar(&promptFlag, "prompt", "", "new trait system-prompt text")
+		fs.BoolVar(&defaultFlag, "default", false, "enable this trait by default for new agents")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -2927,17 +2967,21 @@ func (e *Executor) UpdateTrait(args []string) *protocol.Response {
 	}
 
 	var pName, pPrompt *string
+	var pDefault *bool
 	if nameFlag != "" {
 		pName = &nameFlag
 	}
 	if promptExplicit {
 		pPrompt = &promptFlag
 	}
-	if pName == nil && pPrompt == nil {
-		return protocol.ErrResponse("no fields to update (use --name, --prompt)")
+	if defaultExplicit {
+		pDefault = &defaultFlag
+	}
+	if pName == nil && pPrompt == nil && pDefault == nil {
+		return protocol.ErrResponse("no fields to update (use --name, --prompt, --default)")
 	}
 
-	if err := e.store.UpdateTrait(t.ID, pName, pPrompt); err != nil {
+	if err := e.store.UpdateTrait(t.ID, pName, pPrompt, pDefault); err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
 

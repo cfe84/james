@@ -252,8 +252,15 @@ func (m createModel) View() string {
 	b.WriteString(titleStyle.Render(" New Agent "))
 	b.WriteString("\n\n")
 
+	labels := make([]string, len(m.fields))
 	for i, f := range m.fields {
-		label := labelStyle.Render(f.label + ":")
+		labels[i] = f.label
+	}
+	labelW := formLabelWidth(labels)
+	lStyle := labelStyle.Width(labelW)
+
+	for i, f := range m.fields {
+		label := lStyle.Render(truncateDisplay(f.label+":", labelW))
 		var value string
 		if i == m.cursor {
 			if f.options != nil {

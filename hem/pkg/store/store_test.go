@@ -2,6 +2,7 @@ package store
 
 import (
 	"testing"
+	"time"
 )
 
 func newTestStore(t *testing.T) *Store {
@@ -247,4 +248,62 @@ func TestDeleteMoneypennyCascadesToSessions(t *testing.T) {
 	if len(sessions) != 0 {
 		t.Fatalf("expected 0 sessions after cascade delete, got %d", len(sessions))
 	}
+}
+
+func TestTraitEnabledByDefault(t *testing.T) {
+s := newTestStore(t)
+now := time.Now()
+
+if err := s.CreateTrait(&Trait{ID: "t1", Name: "alpha", Prompt: "a", EnabledByDefault: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+t.Fatalf("CreateTrait t1: %v", err)
+}
+if err := s.CreateTrait(&Trait{ID: "t2", Name: "beta", Prompt: "b", CreatedAt: now, UpdatedAt: now}); err != nil {
+t.Fatalf("CreateTrait t2: %v", err)
+}
+
+got, err := s.GetTrait("t1")
+if err != nil || got == nil {
+t.Fatalf("GetTrait t1: %v", err)
+}
+if !got.EnabledByDefault {
+t.Fatalf("t1 should be enabled by default")
+}
+
+got2, _ := s.GetTrait("t2")
+if got2.EnabledByDefault {
+t.Fatalf("t2 should not be enabled by default")
+}
+
+// Toggle t1 off and t2 on via UpdateTrait.
+off, on := false, true
+if err := s.UpdateTrait("t1", nil, nil, &off); err != nil {
+t.Fatalf("UpdateTrait t1: %v", err)
+}
+if err := s.UpdateTrait("t2", nil, nil, &on); err != nil {
+t.Fatalf("UpdateTrait t2: %v", err)
+}
+
+// nil enabledByDefault must leave the flag unchanged.
+newName := "beta2"
+if err := s.UpdateTrait("t2", &newName, nil, nil); err != nil {
+t.Fatalf("UpdateTrait t2 name: %v", err)
+}
+
+traits, err := s.ListTraits()
+if err != nil {
+t.Fatalf("ListTraits: %v", err)
+}
+byID := map[string]*Trait{}
+for _, tr := range traits {
+byID[tr.ID] = tr
+}
+if byID["t1"].EnabledByDefault {
+t.Fatalf("t1 should now be disabled")
+}
+if !byID["t2"].EnabledByDefault {
+t.Fatalf("t2 should now be enabled and unchanged by name update")
+}
+if byID["t2"].Name != "beta2" {
+t.Fatalf("t2 name not updated: %q", byID["t2"].Name)
+}
 }
