@@ -169,8 +169,10 @@ Moneypenny is a client deployed on each host, which handles agent sessions. It i
 
 Moneypenny supports multiple agent types:
 
-- **claude** (default): Claude Code CLI. Uses `--output-format json --session-id <id> -p <prompt>`. System prompt via `--system-prompt`. Permissions via `--dangerously-skip-permissions`. New sessions use bare flags, continuations add `--continue`.
-- **copilot**: GitHub Copilot CLI. Uses `--resume <id> -s -p <prompt>` for both new and continued sessions. Permissions via `--yolo`. No JSON output format — parses plain text. No system prompt support.
+- **claude** (default): Claude Code CLI. Uses `--output-format json --session-id <id> -p <prompt>`. System prompt via `--system-prompt`. Permissions via `--dangerously-skip-permissions`. New sessions use bare flags, continuations add `--continue`. Long (>4 KB), `-`-prefixed, or **multi-line** prompts are piped via stdin (bare `-p`) instead of inline, so they survive the Windows `cmd.exe` shim's first-newline command-line truncation.
+- **copilot**: GitHub Copilot CLI. Uses `--resume <id> -s` for both new and continued sessions, with the prompt piped via stdin (not `-p`). Permissions via `--yolo`. JSON stream output. No system prompt flag — system prompt is written to an instructions file referenced by `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`.
+
+The copilot prompt is delivered on stdin rather than as an inline `-p` value. On Windows, npm installs `copilot` as a `.cmd`/`.ps1` batch shim that Go runs through `cmd.exe`, which truncates the command line at the first newline — a multi-line `-p` prompt loses everything after its first line (observed as agents receiving only the first line of review comments). Copilot reads its prompt from a non-TTY stdin when `-p` is omitted, so piping the prompt sidesteps argv entirely and preserves multi-line content (also avoids the Windows ~32KB argv limit). The `@file` form is not usable — copilot treats `@` as an attachment, not prompt text.
 
 Method: **create_session**: creates a new session with an agent. Format of the data is `{ "agent": "claude", "system_prompt": "a system prompt for the agent", "yolo": boolean indicating if the session should be started with --dangerously-skip-permissions, "prompt": "prompt for the agent", "session_id": "GUID used for communication about that session id", "name": "a session name", "path": "the path where to start the agent" }`
 

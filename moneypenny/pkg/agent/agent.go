@@ -759,16 +759,24 @@ func buildCopilotOneShotArgs(params RunParams) agentInvocation {
 		args = append(args, "--yolo")
 	}
 	inv := agentInvocation{}
-	// One-shots don't write instructions files (no session-scoped dir for an ephemeral
-	// call). System-prompt content can be prepended into the prompt itself by
-	// the caller if needed.
+	// Route the prompt via stdin rather than the `-p` flag. Copilot reads its
+	// prompt from a non-TTY stdin when `-p` is omitted, and this is the only
+	// reliable way to pass multi-line prompts: on Windows the npm-installed
+	// `copilot.cmd` shim runs through cmd.exe, which truncates the command
+	// line at the first newline, silently dropping everything after the first
+	// line of an inline `-p` value. stdin sidesteps argv entirely (also avoids
+	// the Windows ~32KB argv limit for long prompts). The `@file` form is not
+	// usable — copilot treats `@` as an attachment, not prompt text.
 	//
-	// Copilot's `-p, --prompt` flag requires an inline text value — there's no
-	// stdin or @file fallback (the @ prefix is treated as an attachment, not
-	// prompt text). So we always inline the prompt, even when long. On
-	// platforms with strict argv limits (Windows: ~32KB) this can fail for
-	// very large prompts; we accept that tradeoff over silently broken stdin.
-	args = append(args, "-p", params.Prompt)
+	// Guard the (handler-validated, so practically unreachable) empty-prompt
+	// case explicitly: with neither `-p` nor stdin content, copilot could drop
+	// into interactive mode and hang. Pass an explicit empty inline value.
+	if params.Prompt == "" {
+		args = append(args, "-p", "")
+		inv.args = args
+		return inv
+	}
+	inv.stdin = params.Prompt
 	inv.args = args
 	return inv
 }
@@ -821,6 +829,14 @@ func needsStdin(prompt string) bool {
 	if strings.HasPrefix(prompt, "-") {
 		return true
 	}
+	// Multi-line prompts must not be passed inline on Windows: npm installs
+	// claude as a `.cmd`/`.ps1` shim that Go runs through cmd.exe, which
+	// truncates the command line at the first newline (dropping everything
+	// after the first line). Routing via stdin avoids argv entirely. It's
+	// harmless to do this on every platform, so we don't branch on GOOS.
+	if strings.ContainsAny(prompt, "\r\n") {
+		return true
+	}
 	return false
 }
 
@@ -865,11 +881,24 @@ func buildCopilotArgs(params RunParams) agentInvocation {
 		}
 	}
 
-	// Copilot's -p requires an inline text value (no stdin / @file fallback).
-	// Always pass the prompt inline; on Windows this can fail for very large
-	// prompts due to argv limits but the alternative (silent stdin no-op)
-	// is worse.
-	args = append(args, "-p", params.Prompt)
+	// Route the prompt via stdin rather than the `-p` flag. Copilot reads its
+	// prompt from a non-TTY stdin when `-p` is omitted. This is the only
+	// reliable way to pass multi-line prompts: on Windows the npm-installed
+	// `copilot.cmd` shim runs through cmd.exe, which truncates the command
+	// line at the first newline, silently dropping everything after the first
+	// line of an inline `-p` value. stdin sidesteps argv entirely (also avoids
+	// the Windows ~32KB argv limit for long prompts). The `@file` form is not
+	// usable — copilot treats `@` as an attachment, not prompt text.
+	//
+	// Guard the (handler-validated, so practically unreachable) empty-prompt
+	// case explicitly: with neither `-p` nor stdin content, copilot could drop
+	// into interactive mode and hang. Pass an explicit empty inline value.
+	if params.Prompt == "" {
+		args = append(args, "-p", "")
+		inv.args = args
+		return inv
+	}
+	inv.stdin = params.Prompt
 	inv.args = args
 	return inv
 }
