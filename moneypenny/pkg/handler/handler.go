@@ -984,12 +984,15 @@ func copilotModels() []envelope.ModelInfo {
 	log.Printf("copilot models: querying copilot at %s", path)
 
 	// Ask copilot to list its available models. Use --available-tools '' to
-	// prevent it from using tools (faster, cheaper). Timeout after 30 seconds.
+	// prevent it from using tools (faster, cheaper). Let copilot pick its
+	// default model — pinning a specific --model here is brittle because model
+	// identifiers are retired over time (e.g. gpt-4.1), which would make this
+	// query fail outright and surface as "no models" in the UI. Timeout after
+	// 30 seconds.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path,
 		"-p", "List the model identifiers available for --model. One per line. No other text, no markdown formatting.",
-		"--model", "gpt-4.1",
 		"--output-format", "text",
 		"--available-tools", "",
 	)
