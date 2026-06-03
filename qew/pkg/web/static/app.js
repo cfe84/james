@@ -12,6 +12,17 @@
   let currentSessionStatus = '';
   let currentSessionMP = '';
   let queuedMessages = []; // optimistic messages not yet confirmed by server
+  // Chat history pagination state (mirrors hem/pkg/ui/chat.go). chatConversation
+  // holds ONLY server turns (queued messages are tracked separately above).
+  let chatConversation = [];   // merged server turns: older (scroll-loaded) + recent (latest poll)
+  let chatRecentCount = 0;     // number of turns in the latest poll window
+  let chatTotal = 0;           // total server turn count
+  let chatLoadingMore = false; // an older-history fetch is in flight
+  let chatForceScrollBottom = false; // one-shot: force scroll to bottom on next render
+  let lastSchedules = [];      // cached so an older-history re-render needn't refetch
+  let lastSubagents = [];
+  let lastActivity = [];
+  const CHAT_PAGE_SIZE = 50;
   let lastSessionStates = {}; // track WORKING→READY transitions for notifications
   let parentSessionStack = []; // stack for subagent navigation
   let soundEnabled = true;
@@ -262,6 +273,14 @@
     autoResize(chatInput);
     lastChatHTML = '';
     queuedMessages = [];
+    chatConversation = [];
+    chatRecentCount = 0;
+    chatTotal = 0;
+    chatLoadingMore = false;
+    chatForceScrollBottom = false;
+    lastSchedules = [];
+    lastSubagents = [];
+    lastActivity = [];
     // Update URL hash without triggering hashchange handler.
     const newHash = '#/session/' + sessionId;
     if (window.location.hash !== newHash) {
@@ -303,9 +322,10 @@
 
   async function loadChat() {
     if (!currentSession) return;
+    const sessAtStart = currentSession;
     try {
       const calls = [
-        apiCall('history', 'session', [currentSession, '--count', '50']),
+        apiCall('history', 'session', [currentSession, '--count', String(CHAT_PAGE_SIZE), '--from', '0']),
         apiCall('show', 'session', [currentSession]).catch(() => null),
         apiCall('list', 'schedule', ['--session-id', currentSession]).catch(() => null),
         apiCall('list', 'subsession', [currentSession]).catch(() => null),
@@ -313,6 +333,9 @@
       // Always fetch activity — avoids race where status isn't yet "working" on current poll.
       calls.push(apiCall('activity', 'session', [currentSession]).catch(() => null));
       const [histResp, showResp, schedResp, subsResp, actResp] = await Promise.all(calls);
+      // Bail out if the user navigated to a different session while we awaited;
+      // otherwise we'd overwrite the new session's state with stale data.
+      if (currentSession !== sessAtStart) return;
       if (histResp.status === 'error') {
         document.getElementById('chat-messages').innerHTML =
           `<div class="empty-state">Error: ${escapeHtml(histResp.message)}</div>`;
@@ -346,35 +369,133 @@
       if (actResp && actResp.status === 'ok' && actResp.data && actResp.data.activity) {
         activity = actResp.data.activity;
       }
-      renderChat(histResp.data, schedules, subagents, activity);
+      lastSchedules = schedules;
+      lastSubagents = subagents;
+      lastActivity = activity;
+      mergeRecentHistory(histResp.data);
+      renderChat(false);
     } catch (e) {
+      if (currentSession !== sessAtStart) return;
       document.getElementById('chat-messages').innerHTML =
         `<div class="empty-state">Error: ${escapeHtml(e.message)}</div>`;
     }
   }
 
-  function renderChat(data, schedules, subagents, activity) {
-    const container = document.getElementById('chat-messages');
-    if (!data) {
-      container.innerHTML = '<div class="empty-state">No data received</div>';
-      return;
-    }
-    if (!data.conversation || data.conversation.length === 0) {
-      container.innerHTML = '<div class="empty-state">No messages yet</div>';
+  // mergeRecentHistory folds the latest poll window (from=0) into chatConversation
+  // while preserving any older turns the user scroll-loaded. Mirrors the merge in
+  // hem/pkg/ui/chat.go historyLoadedMsg. The "from" offset is end-relative, so as
+  // new turns arrive the older/recent boundary shifts by the total delta.
+  function mergeRecentHistory(data) {
+    const recent = (data && Array.isArray(data.conversation)) ? data.conversation : [];
+    const total = (data && typeof data.total === 'number') ? data.total : recent.length;
+
+    // Don't let an empty poll (a transient race during working state) wipe out a
+    // conversation we already have — just refresh the known total.
+    if (recent.length === 0 && chatConversation.length > 0) {
+      chatTotal = total;
       return;
     }
 
-    let html = '';
-    // Merge server conversation with queued messages.
-    const serverTurns = data.conversation;
-    // Remove queued messages that the server now has.
+    // While an older-history fetch is in flight, leave chatConversation untouched
+    // so the two mutators never interleave on the same array (the older fetch's
+    // end-relative offset would otherwise become stale). The next poll reconciles.
+    if (chatLoadingMore) {
+      chatTotal = total;
+      return;
+    }
+
+    const previousTotal = chatTotal;
+    chatTotal = total;
+
+    // A shrinking total shouldn't happen, but if it does the incremental merge
+    // could fabricate/duplicate turns — reset to the recent window instead.
+    if (total < previousTotal) {
+      chatConversation = recent.slice();
+      chatRecentCount = recent.length;
+      return;
+    }
+
+    const prevServerKnown = chatConversation.length;
+    let delta = total - previousTotal;
+    if (delta < 0) delta = 0;
+    // If more than one page of new turns arrived since the last poll, the recent
+    // window (last CHAT_PAGE_SIZE turns) doesn't reach back to the turns we
+    // already have — there's an unrecoverable gap between them. Concatenating
+    // would create a non-contiguous array and corrupt the end-relative paging
+    // offset, so reset to the recent window (the user can scroll-load the rest).
+    if (delta > recent.length) {
+      chatConversation = recent.slice();
+      chatRecentCount = recent.length;
+      return;
+    }
+    let olderCount = prevServerKnown - recent.length + delta;
+    if (olderCount < 0) olderCount = 0;
+    if (olderCount > prevServerKnown) olderCount = prevServerKnown;
+    chatConversation = chatConversation.slice(0, olderCount).concat(recent);
+    chatRecentCount = recent.length;
+  }
+
+  // recentServerTurns returns the latest poll window (the tail of chatConversation).
+  function recentServerTurns() {
+    if (chatRecentCount <= 0) return [];
+    return chatConversation.slice(chatConversation.length - chatRecentCount);
+  }
+
+  // loadOlderHistory fetches the next older page and prepends it. Triggered when
+  // the user scrolls to the top of the chat. Mirrors loadOlderHistory in the TUI.
+  async function loadOlderHistory() {
+    if (chatLoadingMore || !currentSession) return;
+    const from = chatConversation.length;
+    const remaining = chatTotal - from;
+    if (remaining <= 0) return;
+    const count = Math.min(CHAT_PAGE_SIZE, remaining);
+    chatLoadingMore = true;
+    const sessAtStart = currentSession;
+    const knownTotal = chatTotal;
+    try {
+      const resp = await apiCall('history', 'session', [currentSession, '--count', String(count), '--from', String(from)]);
+      // Discard if the session changed, or if a concurrent poll moved the total
+      // (which would make this end-relative page overlap/misalign). The user can
+      // scroll again to retry against the new state.
+      if (currentSession !== sessAtStart || chatTotal !== knownTotal) return;
+      if (resp.status === 'ok' && resp.data && Array.isArray(resp.data.conversation) && resp.data.conversation.length) {
+        chatConversation = resp.data.conversation.concat(chatConversation);
+        renderChat(true);
+      }
+    } catch (e) { /* leave state intact; next scroll retries */ }
+    finally {
+      chatLoadingMore = false;
+    }
+  }
+
+  function renderChat(prepend) {
+    const container = document.getElementById('chat-messages');
+    const serverTurns = chatConversation;
+    const schedules = lastSchedules;
+    const subagents = lastSubagents;
+    const activity = lastActivity;
+
+    // Remove queued messages that the server now has. Match only against the
+    // latest poll window (recent turns) — matching the whole loaded history
+    // could wrongly drop a freshly-queued message that merely repeats older text.
+    const recent = recentServerTurns();
     queuedMessages = queuedMessages.filter(qm => {
-      for (const st of serverTurns) {
+      for (const st of recent) {
         if (st.role === 'user' && st.content === qm.content) return false;
       }
       return true;
     });
 
+    const hasIndicators = (currentSessionStatus === 'working') ||
+      (schedules && schedules.length > 0) || (subagents && subagents.length > 0);
+    if (serverTurns.length === 0 && queuedMessages.length === 0 && !hasIndicators) {
+      if (lastChatHTML === '__empty__') return;
+      lastChatHTML = '__empty__';
+      container.innerHTML = '<div class="empty-state">No messages yet</div>';
+      return;
+    }
+
+    let html = '';
     for (const turn of serverTurns) {
       const agentName = currentSessionName || 'agent';
       const content = turn.content || '(empty)';
@@ -412,8 +533,8 @@
     // Working indicator with activity events.
     if (currentSessionStatus === 'working') {
       if (activity && activity.length > 0) {
-        const recent = activity.slice(-5);
-        for (const ev of recent) {
+        const recentAct = activity.slice(-5);
+        for (const ev of recentAct) {
           const icon = ev.type === 'tool_use' ? '🔧' : ev.type === 'text' ? '📝' : '💭';
           html += `<div class="msg activity-indicator">${icon} ${escapeHtml(ev.summary)}</div>`;
         }
@@ -440,12 +561,30 @@
       }
     }
     // Skip re-render if content hasn't changed (preserves selection and scroll).
-    if (html === lastChatHTML) return;
+    // A forced bottom-scroll (after sending) must still run, so don't skip then.
+    if (html === lastChatHTML && !chatForceScrollBottom) return;
     lastChatHTML = html;
-    // Only auto-scroll if user is already near the bottom.
-    const atBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 80;
+
+    const prevHeight = container.scrollHeight;
+    const prevTop = container.scrollTop;
+    const atBottom = prevHeight - prevTop - container.clientHeight < 80;
     container.innerHTML = html;
-    if (atBottom) container.scrollTop = container.scrollHeight;
+
+    if (chatForceScrollBottom) {
+      // After sending a message, always reveal it at the bottom.
+      container.scrollTop = container.scrollHeight;
+      chatForceScrollBottom = false;
+    } else if (prepend) {
+      // Older turns were prepended — keep the viewport on the same content by
+      // offsetting the scroll by the height that was added above.
+      container.scrollTop = prevTop + (container.scrollHeight - prevHeight);
+    } else if (atBottom) {
+      container.scrollTop = container.scrollHeight;
+    } else {
+      // Preserve the user's reading position across polls (setting innerHTML
+      // resets scrollTop to 0 otherwise).
+      container.scrollTop = prevTop;
+    }
   }
 
   async function sendMessage() {
@@ -462,6 +601,7 @@
       await apiCall('continue', 'session', [currentSession, '--async', text]);
       // Track as queued and re-render.
       queuedMessages.push({ content: text });
+      chatForceScrollBottom = true; // reveal the new message even if scrolled up
       lastChatHTML = ''; // force re-render
       await loadChat();
     } catch (e) {
@@ -2440,6 +2580,14 @@
     }
   });
   chatInput.addEventListener('input', () => autoResize(chatInput));
+
+  // Load older history when the user scrolls to the top of the chat.
+  const chatMessagesEl = document.getElementById('chat-messages');
+  chatMessagesEl.addEventListener('scroll', () => {
+    if (chatMessagesEl.scrollTop < 60 && !chatLoadingMore && chatConversation.length < chatTotal) {
+      loadOlderHistory();
+    }
+  });
 
   // --- Routing ---
 
