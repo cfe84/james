@@ -737,8 +737,13 @@
 
   // --- Git Actions ---
 
-  // Git diff review state (clickable lines + inline comments).
-  let diffReview = { text: '', lines: [], comments: {}, branch: '' };
+  // Git diff review state (clickable lines + inline comments). `mode` is
+  // 'diff' (working-tree diff) or 'commit' (a specific commit's contents);
+  // `commit` holds the hash in commit mode.
+  let diffReview = { text: '', lines: [], comments: {}, branch: '', mode: 'diff', commit: '' };
+  // Monotonic token guarding against stale async responses (log -> commit ->
+  // back -> another commit) overwriting the current view.
+  let gitViewToken = 0;
 
   function parseHunkHeader(line) {
     const m = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
@@ -748,18 +753,24 @@
 
   // parseDiffLines mirrors hem's parseDiffMeta: walks the unified diff tracking
   // the current file and old/new line numbers so each line carries the metadata
-  // needed to build a review comment (file, real line number, code).
-  function parseDiffLines(text) {
+  // needed to build a review comment (file, real line number, code). When
+  // opts.commitPreamble is set (commit view, fed by `git show --stat --patch`),
+  // lines before the first patch header (commit metadata + diffstat) are left
+  // non-commentable since they carry no file/line context.
+  function parseDiffLines(text, opts) {
+    opts = opts || {};
     const lines = text.split('\n');
     const out = [];
     let currentFile = '';
     let oldLine = 0, newLine = 0;
+    let inPatch = !opts.commitPreamble; // diff mode is always "in patch"
     for (let raw of lines) {
       raw = raw.replace(/\r+$/, '');
       const meta = { raw, file: currentFile, lineNum: 0, code: '', side: '', cls: '', commentable: false };
       if (raw.startsWith('+++ b/')) { currentFile = raw.slice(6); meta.file = currentFile; meta.cls = 'diff-header'; }
       else if (raw.startsWith('+++ ') || raw.startsWith('--- ')) { meta.cls = 'diff-header'; }
       else if (raw.startsWith('diff ')) {
+        inPatch = true;
         const idx = raw.indexOf(' b/');
         if (idx >= 0) currentFile = raw.slice(idx + 3);
         meta.file = currentFile; meta.cls = 'diff-header';
@@ -776,7 +787,7 @@
         meta.lineNum = newLine; meta.side = ' '; meta.code = raw.slice(1);
         oldLine++; newLine++;
       }
-      meta.commentable = raw.trim() !== '';
+      meta.commentable = raw.trim() !== '' && inPatch;
       out.push(meta);
     }
     return out;
@@ -794,15 +805,23 @@
   }
 
   function renderDiffView() {
-    renderWizardModal(`
-      <h3>Git Diff <span id="diff-branch-label" style="color:var(--muted);font-size:0.85em">${diffReview.branch ? '(' + escapeHtml(diffReview.branch) + ')' : ''}</span></h3>
-      <div class="diff-content" id="diff-review-content">${renderDiffReview()}</div>
-      <div class="modal-actions">
+    const isCommit = diffReview.mode === 'commit';
+    const title = isCommit
+      ? `Commit <span style="color:var(--muted);font-size:0.85em">${escapeHtml((diffReview.commit || '').slice(0, 12))}</span>`
+      : `Git Diff <span id="diff-branch-label" style="color:var(--muted);font-size:0.85em">${diffReview.branch ? '(' + escapeHtml(diffReview.branch) + ')' : ''}</span>`;
+    const actions = isCommit
+      ? `
+        <button class="btn-muted" onclick="window._qewBackToLog()">Back</button>
+        <button class="btn" id="diff-send-comments" style="display:none" onclick="window._qewDiffSendStep()">Send comments</button>`
+      : `
         <button class="btn-muted" onclick="window._qewCloseWizard()">Close</button>
         <button class="btn" onclick="window._qewCommitFromDiff()">Commit</button>
         <button class="btn" onclick="window._qewCommitAndPush()">Commit &amp; Push</button>
-        <button class="btn" id="diff-send-comments" style="display:none" onclick="window._qewDiffSendStep()">Send comments</button>
-      </div>
+        <button class="btn" id="diff-send-comments" style="display:none" onclick="window._qewDiffSendStep()">Send comments</button>`;
+    renderWizardModal(`
+      <h3>${title}</h3>
+      <div class="diff-content" id="diff-review-content">${renderDiffReview()}</div>
+      <div class="modal-actions">${actions}</div>
     `, 'modal-large');
     const content = document.getElementById('diff-review-content');
     content.addEventListener('click', (e) => {
@@ -920,10 +939,17 @@
   function buildReviewPrompt(overall) {
     let b = '';
     if (overall && overall.trim() !== '') b += overall + '\n\n';
-    b += "Here are some review comments on the code currently in `git diff`. ";
-    b += "If comments are questions, answer those questions. ";
-    b += "If comments are unclear, or shouldn't be integrated, ask for feedback and confirmation. ";
-    b += "Else integrate the comments.\n";
+    if (diffReview.mode === 'commit') {
+      b += "Here are some review comments on the changes in commit `" + (diffReview.commit || '') + "`. ";
+      b += "If comments are questions, answer those questions. ";
+      b += "If comments are unclear, or shouldn't be addressed, ask for feedback and confirmation. ";
+      b += "Else address the comments.\n";
+    } else {
+      b += "Here are some review comments on the code currently in `git diff`. ";
+      b += "If comments are questions, answer those questions. ";
+      b += "If comments are unclear, or shouldn't be integrated, ask for feedback and confirmation. ";
+      b += "Else integrate the comments.\n";
+    }
     const grouped = Object.keys(diffReview.comments).map(seq => {
       const m = diffReview.lines[seq];
       return { file: m.file, lineNum: m.lineNum, code: m.code, comment: diffReview.comments[seq] };
@@ -955,7 +981,9 @@
 
   async function showDiff() {
     if (!currentSession) return;
-    diffReview = { text: '', lines: [], comments: {}, branch: '' };
+    diffReview = { text: '', lines: [], comments: {}, branch: '', mode: 'diff', commit: '' };
+    const token = ++gitViewToken;
+    const session = currentSession;
     renderWizardModal(`
       <h3>Git Diff <span id="diff-branch-label" style="color:var(--muted);font-size:0.85em"></span></h3>
       <div class="diff-content"><div class="loading">Loading diff...</div></div>
@@ -975,6 +1003,7 @@
 
     try {
       const resp = await apiCall('diff', 'session', [currentSession]);
+      if (token !== gitViewToken || currentSession !== session) return;
       const diffContainer = document.querySelector('.diff-content');
       if (resp.status === 'error') {
         if (diffContainer) diffContainer.innerHTML = `<span style="color:var(--danger)">${escapeHtml(resp.message)}</span>`;
@@ -989,6 +1018,7 @@
       diffReview.lines = parseDiffLines(diffText);
       renderDiffView();
     } catch (e) {
+      if (token !== gitViewToken || currentSession !== session) return;
       const c = document.querySelector('.diff-content');
       if (c) c.innerHTML = `<span style="color:var(--danger)">Error: ${escapeHtml(e.message)}</span>`;
     }
@@ -996,6 +1026,8 @@
 
   async function showGitLog() {
     if (!currentSession) return;
+    const token = ++gitViewToken;
+    const session = currentSession;
     renderWizardModal(`
       <h3>Git Log <span id="git-log-branch-label" style="color:var(--muted);font-size:0.85em"></span></h3>
       <div class="diff-content"><div class="loading">Loading git log...</div></div>
@@ -1006,6 +1038,7 @@
 
     // Fetch branch name in parallel.
     apiCall('git-info', 'session', [currentSession]).then(resp => {
+      if (token !== gitViewToken || currentSession !== session) return;
       if (resp.status === 'ok' && resp.data && resp.data.branch) {
         const el = document.getElementById('git-log-branch-label');
         if (el) el.textContent = '(' + resp.data.branch + ')';
@@ -1014,6 +1047,7 @@
 
     try {
       const resp = await apiCall('git-log', 'session', [currentSession]);
+      if (token !== gitViewToken || currentSession !== session) return;
       const container = document.querySelector('.diff-content');
       if (resp.status === 'error') {
         container.innerHTML = `<span style="color:var(--danger)">${escapeHtml(resp.message)}</span>`;
@@ -1025,21 +1059,66 @@
         return;
       }
       container.innerHTML = formatGitLog(logText);
+      // Clicking a commit line opens that commit's contents for review.
+      container.addEventListener('click', (e) => {
+        const el = e.target.closest('.log-commit');
+        if (el && el.dataset.hash) showCommit(el.dataset.hash);
+      });
     } catch (e) {
+      if (token !== gitViewToken || currentSession !== session) return;
       document.querySelector('.diff-content').innerHTML =
         `<span style="color:var(--danger)">Error: ${escapeHtml(e.message)}</span>`;
+    }
+  }
+
+  // showCommit fetches a commit's contents (git show) and renders them in the
+  // same review UI as the working-tree diff, so the user can leave inline
+  // comments and send them to the agent.
+  async function showCommit(hash) {
+    if (!currentSession || !hash) return;
+    diffReview = { text: '', lines: [], comments: {}, branch: diffReview.branch, mode: 'commit', commit: hash };
+    const token = ++gitViewToken;
+    const session = currentSession;
+    renderWizardModal(`
+      <h3>Commit <span style="color:var(--muted);font-size:0.85em">${escapeHtml(hash.slice(0, 12))}</span></h3>
+      <div class="diff-content"><div class="loading">Loading commit...</div></div>
+      <div class="modal-actions">
+        <button class="btn-muted" onclick="window._qewBackToLog()">Back</button>
+      </div>
+    `, 'modal-large');
+    try {
+      const resp = await apiCall('git-show', 'session', [currentSession, '--hash', hash]);
+      if (token !== gitViewToken || currentSession !== session) return;
+      const container = document.querySelector('.diff-content');
+      if (resp.status === 'error') {
+        if (container) container.innerHTML = `<span style="color:var(--danger)">${escapeHtml(resp.message)}</span>`;
+        return;
+      }
+      const showText = resp.data && resp.data.message ? resp.data.message : '';
+      if (!showText.trim()) {
+        if (container) container.innerHTML = '<span style="color:var(--muted)">Empty commit</span>';
+        return;
+      }
+      diffReview.text = showText;
+      diffReview.lines = parseDiffLines(showText, { commitPreamble: true });
+      renderDiffView();
+    } catch (e) {
+      if (token !== gitViewToken || currentSession !== session) return;
+      const c = document.querySelector('.diff-content');
+      if (c) c.innerHTML = `<span style="color:var(--danger)">Error: ${escapeHtml(e.message)}</span>`;
     }
   }
 
   function formatGitLog(text) {
     return text.split('\n').map(line => {
       const escaped = escapeHtml(line);
-      // Color graph characters (*, |, /, \)
+      // Color graph characters (*, |, /, \) and wrap commit lines so they're
+      // clickable (the captured hash is hex, safe to embed as an attribute).
       return escaped.replace(/^([*|/\\ ]+)([0-9a-f]{7,})(.*)$/, (_, graph, hash, rest) => {
         let msg = rest;
         // Color decorations like (HEAD -> main)
         msg = msg.replace(/\(([^)]+)\)/g, '<span style="color:var(--success)">($1)</span>');
-        return `<span style="color:var(--warning)">${graph}</span><span style="color:var(--info)">${hash}</span>${msg}`;
+        return `<span class="log-commit" data-hash="${hash}"><span style="color:var(--warning)">${graph}</span><span style="color:var(--info)">${hash}</span>${msg}</span>`;
       });
     }).join('\n');
   }
@@ -1223,6 +1302,14 @@
   window._qewDiffRemoveComment = removeComment;
   window._qewDiffCancelComment = cancelComment;
   window._qewDiffEditComment = openCommentEditor;
+  window._qewBackToLog = function() {
+    // Warn before discarding unsent commit comments (Back navigates away).
+    if (Object.keys(diffReview.comments).length > 0 &&
+        !confirm('Discard unsent comments and return to the log?')) {
+      return;
+    }
+    showGitLog();
+  };
 
   // --- Session Edit & Delete ---
 
