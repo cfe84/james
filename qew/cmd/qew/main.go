@@ -93,10 +93,67 @@ func main() {
 		hem = &web.SocketClient{SockPath: *sockPath}
 	}
 
-	srv := web.NewServer(hem, *listenAddr, *password, *development, vlog, Version)
+	// Load (or create) the persistent session-signing secret so issued cookies
+	// survive process restarts. Only needed when a password is configured.
+	var secretSeed []byte
+	if *password != "" {
+		secretPath := filepath.Join(filepath.Dir(*keyPath), "qew_secret")
+		seed, err := loadOrCreateSecret(secretPath)
+		if err != nil {
+			log.Fatalf("failed to load/create session secret: %v", err)
+		}
+		secretSeed = seed
+	}
+
+	srv := web.NewServer(hem, *listenAddr, *password, *development, vlog, Version, secretSeed)
 	if err := srv.Run(); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
+}
+
+// loadOrCreateSecret returns the 32-byte session-signing seed stored at path,
+// generating and persisting a new one (0600) on first run. The seed persists
+// across restarts so previously-issued cookies remain valid after a reboot.
+func loadOrCreateSecret(path string) ([]byte, error) {
+	if info, err := os.Lstat(path); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("secret file %s is a symlink; refusing to read", path)
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("secret file %s is not a regular file", path)
+		}
+		if info.Mode().Perm()&0077 != 0 {
+			return nil, fmt.Errorf("secret file %s has insecure permissions %o (want 0600)", path, info.Mode().Perm())
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		if len(data) != 32 {
+			return nil, fmt.Errorf("secret file %s has invalid length %d (want 32)", path, len(data))
+		}
+		return data, nil
+	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		return nil, fmt.Errorf("generating secret: %w", err)
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		// Lost a race to another process; re-read the file it wrote.
+		if os.IsExist(err) {
+			return loadOrCreateSecret(path)
+		}
+		return nil, err
+	}
+	defer f.Close()
+	if _, err := f.Write(secret); err != nil {
+		return nil, fmt.Errorf("writing secret: %w", err)
+	}
+	return secret, nil
 }
 
 func loadOrCreatePublicKey(keyPath string) (ssh.PublicKey, error) {

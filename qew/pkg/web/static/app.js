@@ -333,6 +333,8 @@
     const chatInput = document.getElementById('chat-input');
     chatInput.value = chatInputCache[sessionId] || '';
     autoResize(chatInput);
+    // Focus the message input by default when opening a session.
+    chatInput.focus();
     lastChatHTML = '';
     queuedMessages = [];
     chatConversation = [];

@@ -2,7 +2,6 @@ package web
 
 import (
 	"crypto/hmac"
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"embed"
@@ -26,7 +25,18 @@ var staticFS embed.FS
 
 const (
 	authCookieName = "qew_session"
-	tokenMaxAge    = 7 * 24 * time.Hour
+	// sessionInactivityTimeout is the sliding window: a session is dropped after
+	// this much time with no authenticated request (e.g. the tab is closed).
+	sessionInactivityTimeout = 2 * time.Hour
+	// sessionAbsoluteTimeout caps total session lifetime regardless of activity,
+	// so a renewing (e.g. stolen) cookie can't live forever.
+	sessionAbsoluteTimeout = 30 * 24 * time.Hour
+	// tokenRefreshInterval is how stale a token must be before requireAuth
+	// re-issues it; avoids a Set-Cookie on every few-second poll.
+	tokenRefreshInterval = 10 * time.Minute
+	// clockSkewTolerance bounds how far in the future a token timestamp may be
+	// before it's rejected (guards against clock rollback extending validity).
+	clockSkewTolerance = 60 * time.Second
 )
 
 // Server is the Qew web server.
@@ -37,7 +47,7 @@ type Server struct {
 	password    string
 	development bool
 	version     string
-	secret      []byte // HMAC signing key for session tokens
+	secret      []byte // HMAC signing key for session tokens (derived from persisted seed + password)
 	pollMu      sync.Mutex
 
 	// Login rate limiting: per-IP tracking.
@@ -50,10 +60,16 @@ type loginTracker struct {
 	lastFail time.Time
 }
 
-// NewServer creates a new Qew web server.
-func NewServer(hem HemClient, listenAddr, password string, development bool, vlog *log.Logger, version string) *Server {
-	secret := make([]byte, 32)
-	rand.Read(secret)
+// NewServer creates a new Qew web server. secretSeed is a persistent random key
+// (loaded from disk by the caller) so issued cookies survive process restarts;
+// the effective signing key binds it to the password so changing the password
+// invalidates existing sessions. secretSeed may be nil when no password is set.
+func NewServer(hem HemClient, listenAddr, password string, development bool, vlog *log.Logger, version string, secretSeed []byte) *Server {
+	// Bind the signing key to the password: derive HMAC key = sha256(seed || password).
+	keyInput := make([]byte, 0, len(secretSeed)+len(password))
+	keyInput = append(keyInput, secretSeed...)
+	keyInput = append(keyInput, []byte(password)...)
+	derived := sha256.Sum256(keyInput)
 	return &Server{
 		hem:           hem,
 		vlog:          vlog,
@@ -61,7 +77,7 @@ func NewServer(hem HemClient, listenAddr, password string, development bool, vlo
 		password:      password,
 		development:   development,
 		version:       version,
-		secret:        secret,
+		secret:        derived[:],
 		loginAttempts: make(map[string]*loginTracker),
 	}
 }
@@ -134,7 +150,10 @@ func (s *Server) handleWSUpgrade(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	wsHandler := websocket.Handler(s.handleWS)
+	deadline := s.sessionDeadline(r)
+	wsHandler := websocket.Handler(func(ws *websocket.Conn) {
+		s.handleWS(ws, deadline)
+	})
 	wsHandler.ServeHTTP(w, r)
 }
 
@@ -156,9 +175,26 @@ func (s *Server) isAllowedOrigin(origin, host string) bool {
 	return oHost == rHost
 }
 
-func (s *Server) handleWS(ws *websocket.Conn) {
+func (s *Server) handleWS(ws *websocket.Conn, deadline time.Time) {
 	defer ws.Close()
 	s.vlog.Printf("WebSocket connected: %s", ws.Request().RemoteAddr)
+
+	// Enforce the session deadline on this long-lived connection: close it when
+	// the upgrade token would expire, so a still-open socket can't outlive the
+	// inactivity/absolute window. The client must reconnect with a fresh cookie.
+	// A zero deadline while a password is configured means the cookie was invalid
+	// or expired between auth and upgrade (TOCTOU): refuse to serve it.
+	if s.password != "" && deadline.IsZero() {
+		s.vlog.Printf("WebSocket rejected: no valid session deadline: %s", ws.Request().RemoteAddr)
+		return
+	}
+	if !deadline.IsZero() {
+		timer := time.AfterFunc(time.Until(deadline), func() {
+			s.vlog.Printf("WebSocket session expired, closing: %s", ws.Request().RemoteAddr)
+			ws.Close()
+		})
+		defer timer.Stop()
+	}
 
 	// Subscribe to broadcasts if using MI6.
 	var broadcastCh <-chan *Response
@@ -226,62 +262,129 @@ func (s *Server) handleWS(ws *websocket.Conn) {
 
 // --- Auth ---
 
-// makeToken creates a signed token embedding the issued-at timestamp.
-func (s *Server) makeToken() string {
-	ts := make([]byte, 8)
-	binary.BigEndian.PutUint64(ts, uint64(time.Now().Unix()))
+// makeToken creates a signed token embedding the created and last-active
+// timestamps. Both are signed so neither can be tampered to extend validity.
+func (s *Server) makeToken(created, lastActive time.Time) string {
+	payload := make([]byte, 16)
+	binary.BigEndian.PutUint64(payload[0:8], uint64(created.Unix()))
+	binary.BigEndian.PutUint64(payload[8:16], uint64(lastActive.Unix()))
 	mac := hmac.New(sha256.New, s.secret)
-	mac.Write(ts)
-	sig := mac.Sum(nil)
-	return hex.EncodeToString(ts) + "." + hex.EncodeToString(sig)
+	mac.Write(payload)
+	return hex.EncodeToString(payload) + "." + hex.EncodeToString(mac.Sum(nil))
 }
 
-// validToken checks the token signature and expiry.
-func (s *Server) validToken(token string) bool {
+// validToken checks the token signature, future-dating, inactivity window and
+// absolute lifetime cap. On success it returns the embedded timestamps.
+func (s *Server) validToken(token string) (created, lastActive time.Time, ok bool) {
 	parts := strings.SplitN(token, ".", 2)
 	if len(parts) != 2 {
-		return false
+		return time.Time{}, time.Time{}, false
 	}
-	tsBytes, err := hex.DecodeString(parts[0])
-	if err != nil || len(tsBytes) != 8 {
-		return false
+	payload, err := hex.DecodeString(parts[0])
+	if err != nil || len(payload) != 16 {
+		return time.Time{}, time.Time{}, false
 	}
 	sigBytes, err := hex.DecodeString(parts[1])
 	if err != nil {
-		return false
+		return time.Time{}, time.Time{}, false
 	}
 
 	// Verify signature.
 	mac := hmac.New(sha256.New, s.secret)
-	mac.Write(tsBytes)
-	expected := mac.Sum(nil)
-	if !hmac.Equal(sigBytes, expected) {
-		return false
+	mac.Write(payload)
+	if !hmac.Equal(sigBytes, mac.Sum(nil)) {
+		return time.Time{}, time.Time{}, false
 	}
 
-	// Check expiry.
-	issuedAt := time.Unix(int64(binary.BigEndian.Uint64(tsBytes)), 0)
-	return time.Since(issuedAt) < tokenMaxAge
+	created = time.Unix(int64(binary.BigEndian.Uint64(payload[0:8])), 0)
+	lastActive = time.Unix(int64(binary.BigEndian.Uint64(payload[8:16])), 0)
+	now := time.Now()
+
+	// Reject tokens dated in the future (beyond tolerated skew) so a clock
+	// rollback can't make a token outlive its intended window.
+	if created.After(now.Add(clockSkewTolerance)) || lastActive.After(now.Add(clockSkewTolerance)) {
+		return time.Time{}, time.Time{}, false
+	}
+	// Sliding inactivity window.
+	if now.Sub(lastActive) >= sessionInactivityTimeout {
+		return time.Time{}, time.Time{}, false
+	}
+	// Absolute lifetime cap.
+	if now.Sub(created) >= sessionAbsoluteTimeout {
+		return time.Time{}, time.Time{}, false
+	}
+	return created, lastActive, true
+}
+
+// parseCookie reads and validates the session cookie from a request.
+func (s *Server) parseCookie(r *http.Request) (created, lastActive time.Time, ok bool) {
+	cookie, err := r.Cookie(authCookieName)
+	if err != nil {
+		return time.Time{}, time.Time{}, false
+	}
+	return s.validToken(cookie.Value)
+}
+
+// sessionCookie builds the auth cookie for a token value.
+func (s *Server) sessionCookie(value string) *http.Cookie {
+	cookie := &http.Cookie{
+		Name:     authCookieName,
+		Value:    value,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   int(sessionInactivityTimeout.Seconds()),
+	}
+	if !s.development {
+		cookie.Secure = true
+	}
+	return cookie
 }
 
 func (s *Server) isAuthenticated(r *http.Request) bool {
 	if s.password == "" {
 		return true
 	}
-	cookie, err := r.Cookie(authCookieName)
-	if err != nil {
-		return false
+	_, _, ok := s.parseCookie(r)
+	return ok
+}
+
+// sessionDeadline returns the time at which the request's session expires
+// (the earlier of the inactivity window and the absolute cap). A zero time
+// means no deadline (no password configured or no valid cookie).
+func (s *Server) sessionDeadline(r *http.Request) time.Time {
+	if s.password == "" {
+		return time.Time{}
 	}
-	return s.validToken(cookie.Value)
+	created, lastActive, ok := s.parseCookie(r)
+	if !ok {
+		return time.Time{}
+	}
+	deadline := lastActive.Add(sessionInactivityTimeout)
+	if abs := created.Add(sessionAbsoluteTimeout); abs.Before(deadline) {
+		deadline = abs
+	}
+	return deadline
 }
 
 func (s *Server) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.isAuthenticated(r) {
+		if s.password == "" {
 			next(w, r)
 			return
 		}
-		http.Redirect(w, r, "/login", http.StatusFound)
+		created, lastActive, ok := s.parseCookie(r)
+		if !ok {
+			http.Redirect(w, r, "/login", http.StatusFound)
+			return
+		}
+		// Slide the window: re-issue the cookie when it's older than the refresh
+		// interval (keeping the original created time). Done before next() so the
+		// Set-Cookie header isn't dropped by handlers that write immediately.
+		if time.Since(lastActive) >= tokenRefreshInterval {
+			http.SetCookie(w, s.sessionCookie(s.makeToken(created, time.Now())))
+		}
+		next(w, r)
 	}
 }
 
@@ -329,18 +432,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		pw := r.FormValue("password")
 		if subtle.ConstantTimeCompare([]byte(pw), []byte(s.password)) == 1 {
 			s.clearLoginAttempts(ip)
-			cookie := &http.Cookie{
-				Name:     authCookieName,
-				Value:    s.makeToken(),
-				Path:     "/",
-				HttpOnly: true,
-				SameSite: http.SameSiteStrictMode,
-				MaxAge:   int(tokenMaxAge.Seconds()),
-			}
-			if !s.development {
-				cookie.Secure = true
-			}
-			http.SetCookie(w, cookie)
+			now := time.Now()
+			http.SetCookie(w, s.sessionCookie(s.makeToken(now, now)))
 			http.Redirect(w, r, "/", http.StatusFound)
 			return
 		}
