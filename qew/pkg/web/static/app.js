@@ -473,11 +473,45 @@
 
   // --- Deploy Agent Wizard ---
 
-  let wizardState = { step: 1, moneypennies: [], selectedMP: '', currentPath: '', projects: [] };
+  let wizardState = { step: 1, moneypennies: [], selectedMP: '', currentPath: '', projects: [], copy: false, source: null, sourceId: '' };
+
+  // wizardTitle reflects whether the wizard is creating a fresh agent or
+  // duplicating an existing session.
+  function wizardTitle() { return wizardState.copy ? 'Duplicate Agent' : 'New Agent'; }
 
   async function openCreateWizard() {
-    wizardState = { step: 1, moneypennies: [], selectedMP: '', currentPath: '', projects: projectsCache };
+    wizardState = { step: 1, moneypennies: [], selectedMP: '', currentPath: '', projects: projectsCache, copy: false, source: null, sourceId: '' };
     if (traitsCache.length === 0) await loadTraitsCache();
+    showWizardStep1();
+  }
+
+  // openDuplicateWizard reuses the 3-step create wizard in "copy" mode. It loads
+  // the source session's details (via `show session`) to prefill the form and
+  // pre-select the source's moneypenny/path, then submits via `copy session`
+  // (which inherits any field the user leaves untouched).
+  async function openDuplicateWizard() {
+    if (!currentSession) return;
+    if (traitsCache.length === 0) await loadTraitsCache();
+    renderWizardModal(`<h3>Duplicate Agent</h3><div class="loading">Loading...</div>`);
+    let s;
+    try {
+      const resp = await apiCall('show', 'session', [currentSession]);
+      if (resp.status === 'error') {
+        renderWizardModal(`<h3>Duplicate Agent</h3><div class="empty-state">Error: ${escapeHtml(resp.message)}</div>
+          <div class="modal-actions"><button class="btn-muted" onclick="window._qewCloseWizard()">Close</button></div>`);
+        return;
+      }
+      s = resp.data || {};
+    } catch (e) {
+      renderWizardModal(`<h3>Duplicate Agent</h3><div class="empty-state">Error: ${escapeHtml(e.message)}</div>
+        <div class="modal-actions"><button class="btn-muted" onclick="window._qewCloseWizard()">Close</button></div>`);
+      return;
+    }
+    wizardState = {
+      step: 1, moneypennies: [], selectedMP: s.moneypenny || '',
+      currentPath: s.path || '~', projects: projectsCache,
+      copy: true, source: s, sourceId: currentSession,
+    };
     showWizardStep1();
   }
 
@@ -502,10 +536,16 @@
       return;
     }
 
-    // Auto-select default.
-    const def = wizardState.moneypennies.find(m => m.isDefault);
-    if (def) wizardState.selectedMP = def.name;
-    else wizardState.selectedMP = wizardState.moneypennies[0].name;
+    // Auto-select default — but in copy mode prefer the source's moneypenny
+    // when it's still registered, so the duplicate lands on the same host.
+    if (wizardState.copy && wizardState.selectedMP &&
+        wizardState.moneypennies.find(m => m.name === wizardState.selectedMP)) {
+      // keep source moneypenny
+    } else {
+      const def = wizardState.moneypennies.find(m => m.isDefault);
+      if (def) wizardState.selectedMP = def.name;
+      else wizardState.selectedMP = wizardState.moneypennies[0].name;
+    }
 
     // If only one moneypenny, skip to step 2.
     if (wizardState.moneypennies.length === 1) {
@@ -514,7 +554,7 @@
     }
 
     renderWizardModal(`
-      <h3>New Agent</h3>
+      <h3>${wizardTitle()}</h3>
       <div class="step-label">Step 1 of 3 — Select Moneypenny</div>
       ${wizardState.moneypennies.map(m => `
         <div class="dir-entry${m.name === wizardState.selectedMP ? ' selected' : ''}" data-mp="${escapeAttr(m.name)}">
@@ -544,7 +584,7 @@
 
   async function renderPathBrowser() {
     renderWizardModal(`
-      <h3>New Agent</h3>
+      <h3>${wizardTitle()}</h3>
       <div class="step-label">Step 2 of 3 — Select Path</div>
       <div class="dir-current">📂 ${escapeHtml(wizardState.currentPath)}</div>
       <div class="dir-browser" id="wizard-dirs"><div class="loading">Loading...</div></div>
@@ -589,51 +629,76 @@
   }
 
   function showWizardStep3() {
-    const projectOpts = wizardState.projects.filter(p => p.status !== 'done')
-      .map(p => `<option value="${escapeAttr(p.name)}">${escapeHtml(p.name)}</option>`).join('');
+    const copy = wizardState.copy;
+    const src = copy ? (wizardState.source || {}) : {};
+    const srcProject = copy ? (src.project || '') : '';
+    let projectOpts = wizardState.projects.filter(p => p.status !== 'done')
+      .map(p => `<option value="${escapeAttr(p.name)}"${p.name === srcProject ? ' selected' : ''}>${escapeHtml(p.name)}</option>`).join('');
+    // Ensure the source's project is selectable even if it's done/archived.
+    if (srcProject && !wizardState.projects.some(p => p.name === srcProject && p.status !== 'done')) {
+      projectOpts += `<option value="${escapeAttr(srcProject)}" selected>${escapeHtml(srcProject)}</option>`;
+    }
+
+    const srcAgent = copy ? (src.agent || 'copilot') : 'copilot';
+    const agents = ['copilot', 'claude'];
+    if (!agents.includes(srcAgent)) agents.push(srcAgent);
+    const agentOpts = agents.map(a => `<option value="${escapeAttr(a)}"${a === srcAgent ? ' selected' : ''}>${escapeHtml(a)}</option>`).join('');
+
+    const defName = copy ? ('Copy of ' + (src.name || '')) : '';
+    const promptLabel = copy ? 'Prompt (optional)' : 'Prompt *';
+    const promptPlaceholder = copy ? 'Leave blank to acknowledge summary' : 'What should the agent do?';
+    const submitLabel = copy ? 'Duplicate Agent' : 'Deploy Agent';
+    // Seed the model dropdown with the source model so syncWizardAgentDeps
+    // preserves it (it only keeps the prior selection if still valid for the
+    // chosen agent).
+    const modelSeed = copy && src.model
+      ? `<option value="${escapeAttr(src.model)}" selected>${escapeHtml(src.model)}</option>`
+      : '<option value="">(default)</option>';
 
     renderWizardModal(`
-      <h3>New Agent</h3>
+      <h3>${wizardTitle()}</h3>
       <div class="step-label">Step 3 of 3 — Session Details</div>
       <div style="font-size:0.85em;color:var(--muted);margin-bottom:8px">
         📡 ${escapeHtml(wizardState.selectedMP)} &nbsp; 📂 ${escapeHtml(wizardState.currentPath)}
       </div>
-      <label for="wiz-prompt">Prompt *</label>
-      <textarea id="wiz-prompt" rows="3" placeholder="What should the agent do?"></textarea>
+      <label for="wiz-prompt">${promptLabel}</label>
+      <textarea id="wiz-prompt" rows="3" placeholder="${escapeAttr(promptPlaceholder)}"></textarea>
       <label for="wiz-name">Name (optional)</label>
-      <input id="wiz-name" type="text" placeholder="Auto-generated from prompt">
+      <input id="wiz-name" type="text" placeholder="Auto-generated from prompt" value="${escapeAttr(defName)}">
       <label for="wiz-project">Project</label>
       <select id="wiz-project"><option value="">(none)</option>${projectOpts}</select>
       <label for="wiz-agent">Agent</label>
-      <select id="wiz-agent">
-        <option value="copilot" selected>copilot</option>
-        <option value="claude">claude</option>
-      </select>
+      <select id="wiz-agent">${agentOpts}</select>
       <label for="wiz-model">Model</label>
-      <select id="wiz-model"><option value="">(default)</option></select>
+      <select id="wiz-model">${modelSeed}</select>
       <label for="wiz-effort">Effort</label>
-      <select id="wiz-effort">${effortOptionsHtml('copilot', '')}</select>
+      <select id="wiz-effort">${effortOptionsHtml(srcAgent, copy ? (src.effort || '') : '')}</select>
       <label for="wiz-sysprompt">System Prompt (optional)</label>
-      <textarea id="wiz-sysprompt" rows="2" placeholder=""></textarea>
+      <textarea id="wiz-sysprompt" rows="2" placeholder="">${copy ? escapeHtml(src.system_prompt || '') : ''}</textarea>
       <div class="toggle-row">
-        <input type="checkbox" id="wiz-yolo">
+        <input type="checkbox" id="wiz-yolo"${copy && src.yolo ? ' checked' : ''}>
         <label for="wiz-yolo" style="margin:0;color:var(--text)">License to Kill (skip permission prompts)</label>
       </div>
       <div class="toggle-row">
-        <input type="checkbox" id="wiz-gadgets">
+        <input type="checkbox" id="wiz-gadgets"${copy && src.gadgets ? ' checked' : ''}>
         <label for="wiz-gadgets" style="margin:0;color:var(--text)">Gadgets (include James tooling in system prompt)</label>
       </div>
       ${traitsCache.length ? `<label>Traits</label><div id="wiz-traits" style="display:flex;flex-direction:column;gap:4px">` +
-        traitsCache.map(t => `<div class="toggle-row"><input type="checkbox" class="wiz-trait" id="wiz-trait-${escapeAttr(t.id)}" value="${escapeAttr(t.id)}"${t.def ? ' checked' : ''}><label for="wiz-trait-${escapeAttr(t.id)}" style="margin:0;color:var(--text)" title="${escapeAttr(t.preview)}">${escapeHtml(t.name)}</label></div>`).join('') +
+        traitsCache.map(t => { const checked = copy ? (Array.isArray(src.traits) && src.traits.includes(t.id)) : t.def; return `<div class="toggle-row"><input type="checkbox" class="wiz-trait" id="wiz-trait-${escapeAttr(t.id)}" value="${escapeAttr(t.id)}"${checked ? ' checked' : ''}><label for="wiz-trait-${escapeAttr(t.id)}" style="margin:0;color:var(--text)" title="${escapeAttr(t.preview)}">${escapeHtml(t.name)}</label></div>`; }).join('') +
         `</div>` : ''}
       <div class="modal-actions">
         <button class="btn-muted" onclick="window._qewWizardBackToPath()">Back</button>
-        <button class="btn" id="wiz-submit">Deploy Agent</button>
+        <button class="btn" id="wiz-submit">${submitLabel}</button>
       </div>
     `);
 
-    // If a project is pre-selected from the filter, select it.
-    if (projectFilter) {
+    // Stash the prefilled system prompt so copy mode can detect user edits and
+    // only override (skipping backend marker stripping) when actually changed.
+    if (copy) wizardState.origSysPrompt = src.system_prompt || '';
+
+    // If a project is pre-selected from the filter, select it — but in copy
+    // mode the source's project takes precedence.
+    if (projectFilter && !copy) {
       document.getElementById('wiz-project').value = projectFilter;
     }
 
@@ -667,13 +732,18 @@
   }
 
   async function submitCreateSession() {
+    const copy = wizardState.copy;
+    const submitLabel = copy ? 'Duplicate Agent' : 'Deploy Agent';
     const prompt = document.getElementById('wiz-prompt').value.trim();
-    if (!prompt) {
+    if (!copy && !prompt) {
       alert('Prompt is required');
       return;
     }
 
-    const args = ['-m', wizardState.selectedMP, '--path', wizardState.currentPath, '--async'];
+    // Copy mode leads with the source session ID (a positional arg the
+    // `copy session` verb expects); create mode has no positional source.
+    const args = copy ? [wizardState.sourceId] : [];
+    args.push('-m', wizardState.selectedMP, '--path', wizardState.currentPath, '--async');
     const name = document.getElementById('wiz-name').value.trim();
     if (name) args.push('--name', name);
     const project = document.getElementById('wiz-project').value;
@@ -685,32 +755,58 @@
     const effort = document.getElementById('wiz-effort').value;
     if (effort) args.push('--effort', effort);
     const sysprompt = document.getElementById('wiz-sysprompt').value.trim();
-    if (sysprompt) args.push('--system-prompt', sysprompt);
-    if (document.getElementById('wiz-yolo').checked) args.push('--yolo');
+    if (copy) {
+      // Only override the system prompt when the user actually edited it;
+      // otherwise let the backend inherit + strip injected markers itself.
+      if (sysprompt !== (wizardState.origSysPrompt || '').trim()) {
+        args.push('--system-prompt', sysprompt);
+      }
+    } else if (sysprompt) {
+      args.push('--system-prompt', sysprompt);
+    }
+    const yolo = document.getElementById('wiz-yolo').checked;
+    if (copy) {
+      // Emit an explicit boolean so unchecking genuinely disables a yolo
+      // source (omitting --yolo would inherit the source's value).
+      args.push('--yolo=' + (yolo ? 'true' : 'false'));
+    } else if (yolo) {
+      args.push('--yolo');
+    }
     if (document.getElementById('wiz-gadgets').checked) args.push('--gadgets');
-    const selTraits = Array.from(document.querySelectorAll('.wiz-trait:checked')).map(c => c.value);
     // Only emit explicit --traits once traits have loaded; emitting an empty
-    // selection before traits are known would suppress backend default traits.
-    if (traitsCache.length) args.push('--traits', selTraits.join(','));
-    args.push(prompt);
+    // selection before traits are known would suppress backend default/source
+    // traits. In copy mode also preserve any source traits not shown in the
+    // checkbox list (e.g. a since-deleted trait definition).
+    if (traitsCache.length) {
+      let selTraits = Array.from(document.querySelectorAll('.wiz-trait:checked')).map(c => c.value);
+      if (copy && Array.isArray(wizardState.source && wizardState.source.traits)) {
+        const visible = new Set(traitsCache.map(t => t.id));
+        const unknown = wizardState.source.traits.filter(id => !visible.has(id));
+        selTraits = selTraits.concat(unknown);
+      }
+      args.push('--traits', selTraits.join(','));
+    }
+    // Prompt is the trailing positional; optional in copy mode.
+    if (prompt || !copy) args.push(prompt);
 
-    document.getElementById('wiz-submit').disabled = true;
-    document.getElementById('wiz-submit').textContent = 'Creating...';
+    const btn = document.getElementById('wiz-submit');
+    btn.disabled = true;
+    btn.textContent = copy ? 'Duplicating...' : 'Creating...';
 
     try {
-      const resp = await apiCall('create', 'session', args);
+      const resp = await apiCall(copy ? 'copy' : 'create', 'session', args);
       if (resp.status === 'error') {
         alert('Error: ' + resp.message);
-        document.getElementById('wiz-submit').disabled = false;
-        document.getElementById('wiz-submit').textContent = 'Deploy Agent';
+        btn.disabled = false;
+        btn.textContent = submitLabel;
         return;
       }
       closeWizard();
       await loadDashboard();
     } catch (e) {
       alert('Error: ' + e.message);
-      document.getElementById('wiz-submit').disabled = false;
-      document.getElementById('wiz-submit').textContent = 'Deploy Agent';
+      btn.disabled = false;
+      btn.textContent = submitLabel;
     }
   }
 
@@ -2323,6 +2419,7 @@
     else if (action === 'branch') showBranchModal();
     else if (action === 'push') gitPush();
     else if (action === 'new-subagent') createNewSubagent();
+    else if (action === 'duplicate') openDuplicateWizard();
     else if (action === 'edit') showEditSessionModal();
     else if (action === 'move-project') showMoveToProjectModal();
     else if (action === 'stop') stopSession();
