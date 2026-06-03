@@ -187,7 +187,7 @@ header h1 span { color: var(--primary); }
 }
 /* Large variant for content-heavy modals (e.g. git diff review). */
 .modal.modal-large {
-  width: 95vw; max-width: 95vw; height: 95vh; max-height: 95vh;
+  width: 97vw; max-width: 97vw; height: 97vh; max-height: 97vh;
   display: flex; flex-direction: column;
 }
 .modal.modal-large .diff-content { flex: 1; max-height: none; }
@@ -235,7 +235,7 @@ header h1 span { color: var(--primary); }
 /* Diff display */
 .diff-content {
   font-family: 'SF Mono', 'Menlo', 'Monaco', 'Consolas', monospace;
-  font-size: 0.85em; line-height: 1.5; white-space: pre; overflow: auto;
+  font-size: 0.85em; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; overflow: auto;
   max-height: 60vh; background: var(--surface); border-radius: 6px; padding: 12px;
 }
 .diff-content .diff-add { color: #4ade80; }
@@ -244,7 +244,7 @@ header h1 span { color: var(--primary); }
 .diff-content .diff-header { color: var(--primary); font-weight: 600; }
 
 /* Diff review (clickable lines + inline comments) */
-.diff-line { display: block; white-space: pre; }
+.diff-line { display: block; white-space: pre-wrap; overflow-wrap: anywhere; }
 .diff-line.commentable { cursor: pointer; }
 .diff-line.commentable:hover { background: rgba(255,255,255,0.07); }
 .diff-line.has-comment { border-left: 3px solid var(--primary); }
