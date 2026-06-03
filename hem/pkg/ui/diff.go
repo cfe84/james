@@ -424,7 +424,7 @@ func parseHunkHeader(line string) (oldStart, newStart int) {
 // comment. n is the 1-based comment index.
 func formatReviewComment(n int, file string, lineNum int, code, comment string) string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("\n_Comment %d_\n\n", n))
+	b.WriteString(fmt.Sprintf("\n## Comment %d\n\n", n))
 	if file != "" {
 		if lineNum > 0 {
 			b.WriteString(fmt.Sprintf("Filename: `%s`, line: %d\n\n", file, lineNum))

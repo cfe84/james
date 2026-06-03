@@ -1286,7 +1286,7 @@
   // formatReviewComment / buildReviewPrompt mirror hem/pkg/ui/diff.go so the
   // prompt sent to the agent is identical to the TUI's.
   function formatReviewComment(n, file, lineNum, code, comment) {
-    let b = `\n_Comment ${n}_\n\n`;
+    let b = `\n## Comment ${n}\n\n`;
     if (file) {
       if (lineNum > 0) b += `Filename: \`${file}\`, line: ${lineNum}\n\n`;
       else b += `Filename: \`${file}\` (file header)\n\n`;
