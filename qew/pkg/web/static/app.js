@@ -30,6 +30,7 @@
   let projectsCache = []; // cached project list
   let dashEntries = [];   // dashboard rows in display order (for keyboard nav)
   let dashSelectedId = ''; // session id of keyboard-selected dashboard row
+  let cmdPaletteOpen = false; // the in-conversation command palette modal is open
   let traitsCache = []; // cached trait list [{id,name,preview}]
   let chatInputCache = {}; // sessionId → draft text
 
@@ -190,6 +191,7 @@
         moneypenny: row[4] || '',
         lastActive: row[5] || '',
         parentSessionId: row[7] || '',
+        agent: row[8] || '',
       };
       e.mpStatus = e.statusRaw;
       e.hemStatus = 'active';
@@ -233,6 +235,7 @@
           <span class="session-name">${escapeHtml(displayName)}</span>
           ${e.project ? `<span class="session-project">${escapeHtml(e.project)}</span>` : ''}
           <span class="session-status ${statusCls}">${escapeHtml(e.mpStatus)}${e.subInfo ? ' <span style="opacity:0.7">' + escapeHtml(e.subInfo) + '</span>' : ''}</span>
+          ${e.agent ? `<span class="session-agent agent-${escapeAttr(e.agent)}">${escapeHtml(e.agent)}</span>` : ''}
           <span class="session-mp">${escapeHtml(e.moneypenny)}</span>
           ${e.lastActive ? `<span class="session-time">${escapeHtml(relativeTime(e.lastActive))}</span>` : ''}
         </div>`;
@@ -247,6 +250,7 @@
       name: e.name || e.sessionId.substring(0, 12),
       mp: e.moneypenny,
       parent: e.parentSessionId,
+      agent: e.agent,
     }));
 
     // Click handlers.
@@ -292,6 +296,16 @@
   function dashOpenSelected() {
     const e = dashEntries.find(x => x.sessionId === dashSelectedId);
     if (e) openDashEntry(e);
+  }
+
+  // Run a complete/delete/edit action on the keyboard-selected dashboard row.
+  // Resolves the entry at call time and no-ops if nothing is selected.
+  function dashAction(cmd) {
+    const e = dashEntries.find(x => x.sessionId === dashSelectedId);
+    if (!e) return;
+    if (cmd === 'complete') completeSession(e.sessionId);
+    else if (cmd === 'delete') deleteSession(e.sessionId, e.name);
+    else if (cmd === 'edit') showEditSessionModal(e.sessionId);
   }
 
   // Scroll the chat message pane by a half page (dir: -1 up, 1 down).
@@ -704,8 +718,70 @@
   }
 
   function closeWizard() {
+    cmdPaletteOpen = false;
     const overlay = document.querySelector('.modal-overlay');
     if (overlay) overlay.remove();
+  }
+
+  // --- In-conversation command palette ---
+
+  // openCmdPalette shows a small keyboard-driven action menu for the open chat
+  // session. Keys (handled by the global keydown listener) run the actions;
+  // Escape closes it and returns focus to the chat input.
+  function openCmdPalette() {
+    if (!currentSession) return;
+    // Close the Actions dropdown if it happens to be open.
+    const menu = document.getElementById('chat-menu');
+    if (menu) menu.classList.remove('open');
+    renderWizardModal(`
+      <div class="cmd-palette" tabindex="-1" role="dialog" aria-modal="true" aria-label="Session commands">
+        <h3>Session Commands</h3>
+        <div class="cmd-list">
+          <button class="cmd-item" data-cmd="complete"><kbd>c</kbd> Complete session</button>
+          <button class="cmd-item" data-cmd="edit"><kbd>e</kbd> Edit session</button>
+          <button class="cmd-item" data-cmd="diff"><kbd>g</kbd> Git diff</button>
+          <button class="cmd-item" data-cmd="stop"><kbd>s</kbd> Stop session</button>
+          <button class="cmd-item" data-cmd="delete" style="color:var(--danger)"><kbd>d</kbd> Delete session</button>
+          <button class="cmd-item" data-cmd="back"><kbd>q</kbd> Back to session list</button>
+        </div>
+        <div class="modal-actions"><button class="btn-muted" onclick="window._qewCloseCmdPalette()">Close (Esc)</button></div>
+      </div>
+    `);
+    cmdPaletteOpen = true;
+    const pal = document.querySelector('.cmd-palette');
+    if (pal) {
+      pal.addEventListener('click', (e) => {
+        const btn = e.target.closest('.cmd-item');
+        if (btn) runCmd(btn.dataset.cmd);
+      });
+      pal.focus();
+    }
+  }
+
+  function closeCmdPalette(focusInput) {
+    cmdPaletteOpen = false;
+    closeWizard();
+    if (focusInput) {
+      const inp = document.getElementById('chat-input');
+      if (inp) inp.focus();
+    }
+  }
+  window._qewCloseCmdPalette = function() { closeCmdPalette(true); };
+
+  // runCmd executes a command-palette action. It always tears down the palette
+  // first (resetting cmdPaletteOpen) so the keydown handler won't keep routing
+  // single keys to the palette while the follow-up modal/flow is showing.
+  function runCmd(cmd) {
+    cmdPaletteOpen = false;
+    closeWizard();
+    switch (cmd) {
+      case 'complete': completeSession(); break;
+      case 'edit':     showEditSessionModal(); break;
+      case 'diff':     showDiff(); break;
+      case 'stop':     stopSession(); break;
+      case 'delete':   deleteSession(); break;
+      case 'back':     closeChat(); break;
+    }
   }
 
   async function showWizardStep1() {
@@ -1571,15 +1647,17 @@
     }
   }
 
-  async function completeSession() {
-    if (!currentSession) return;
+  async function completeSession(sessionId) {
+    const sid = sessionId || currentSession;
+    if (!sid) return;
     try {
-      const resp = await apiCall('complete', 'session', [currentSession]);
+      const resp = await apiCall('complete', 'session', [sid]);
       if (resp.status === 'error') {
         alert('Complete error: ' + resp.message);
         return;
       }
-      closeChat();
+      if (sid === currentSession) closeChat();
+      else loadDashboard();
     } catch (e) {
       alert('Error: ' + e.message);
     }
@@ -1605,16 +1683,18 @@
 
   // --- Session Edit & Delete ---
 
-  async function showEditSessionModal() {
-    if (!currentSession) return;
-    if (traitsCache.length === 0) await loadTraitsCache();
-    // Fetch current session details.
+  async function showEditSessionModal(sessionId) {
+    const sid = sessionId || currentSession;
+    if (!sid) return;
+    // Render the loading modal immediately (before any await) so opening from
+    // a closed command palette never leaves a gap with no modal showing.
     renderWizardModal(`
       <h3>Edit Session</h3>
       <div class="loading">Loading...</div>
     `);
+    if (traitsCache.length === 0) await loadTraitsCache();
     try {
-      const resp = await apiCall('show', 'session', [currentSession]);
+      const resp = await apiCall('show', 'session', [sid]);
       if (resp.status === 'error') {
         renderWizardModal(`<h3>Edit Session</h3><div class="empty-state">Error: ${escapeHtml(resp.message)}</div>
           <div class="modal-actions"><button class="btn-muted" onclick="window._qewCloseWizard()">Close</button></div>`);
@@ -1659,7 +1739,7 @@
       })();
 
       document.getElementById('es-submit').addEventListener('click', async () => {
-        const args = [currentSession];
+        const args = [sid];
         const name = document.getElementById('es-name').value.trim();
         if (name && name !== (s.name || '')) args.push('--name', name);
         const project = document.getElementById('es-project').value;
@@ -1694,10 +1774,12 @@
             return;
           }
           closeWizard();
-          // Update displayed name if changed.
-          if (name && name !== currentSessionName) {
+          // Update displayed name if changed (only when editing the open chat).
+          if (sid === currentSession && name && name !== currentSessionName) {
             currentSessionName = name;
             document.getElementById('chat-title').textContent = name;
+          } else if (sid !== currentSession) {
+            loadDashboard();
           }
         } catch (e) {
           alert('Error: ' + e.message);
@@ -1711,16 +1793,19 @@
     }
   }
 
-  async function deleteSession() {
-    if (!currentSession) return;
-    if (!confirm('Delete session "' + currentSessionName + '"? This cannot be undone.')) return;
+  async function deleteSession(sessionId, name) {
+    const sid = sessionId || currentSession;
+    const sname = name || currentSessionName;
+    if (!sid) return;
+    if (!confirm('Delete session "' + sname + '"? This cannot be undone.')) return;
     try {
-      const resp = await apiCall('delete', 'session', [currentSession]);
+      const resp = await apiCall('delete', 'session', [sid]);
       if (resp.status === 'error') {
         alert('Delete error: ' + resp.message);
         return;
       }
-      closeChat();
+      if (sid === currentSession) closeChat();
+      else loadDashboard();
     } catch (e) {
       alert('Error: ' + e.message);
     }
@@ -2690,8 +2775,21 @@
   }
 
   document.addEventListener('keydown', (e) => {
-    // While a modal is open, Escape triggers its close button; all other keys
-    // are left to the modal's own handlers.
+    // Ignore IME composition and auto-repeat for shortcut handling.
+    if (e.isComposing) return;
+
+    // The in-conversation command palette captures single-key actions while open.
+    if (cmdPaletteOpen && document.querySelector('.cmd-palette')) {
+      if (e.key === 'Escape') { e.preventDefault(); closeCmdPalette(true); return; }
+      if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+      const map = { c: 'complete', e: 'edit', g: 'diff', s: 'stop', d: 'delete', q: 'back' };
+      const cmd = map[e.key];
+      if (cmd) { e.preventDefault(); runCmd(cmd); }
+      return;
+    }
+
+    // While any other modal is open, Escape triggers its close button; all other
+    // keys are left to the modal's own handlers.
     if (document.querySelector('.modal-overlay')) {
       if (e.key === 'Escape') {
         if (escapeCloseModal()) e.preventDefault();
@@ -2703,7 +2801,7 @@
       document.getElementById('chat-view').style.display !== 'none';
 
     if (chatActive) {
-      if (e.key === 'Escape') { e.preventDefault(); closeChat(); return; }
+      if (e.key === 'Escape') { e.preventDefault(); openCmdPalette(); return; }
       if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D')) {
         e.preventDefault(); chatScroll(1); return;
       }
@@ -2713,16 +2811,33 @@
       return;
     }
 
-    // Dashboard list navigation (only when the dashboard is the active view
-    // and focus is not in a form field).
+    // Dashboard list navigation + shortcuts (only when the dashboard is the
+    // active view and focus is not in a form field).
     const dashActive = document.getElementById('dashboard-view').style.display !== 'none';
+    if (!dashActive || e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
     const tag = (e.target.tagName || '').toLowerCase();
-    const typing = tag === 'input' || tag === 'textarea' || tag === 'select' ||
-      tag === 'button' || tag === 'a' || e.target.isContentEditable;
-    if (dashActive && !typing && !e.ctrlKey && !e.metaKey && !e.altKey) {
-      if (e.key === 'ArrowDown' || e.key === 'j') { e.preventDefault(); dashMove(1); }
-      else if (e.key === 'ArrowUp' || e.key === 'k') { e.preventDefault(); dashMove(-1); }
-      else if (e.key === 'Enter') { e.preventDefault(); dashOpenSelected(); }
+    const typingText = tag === 'input' || tag === 'textarea' || tag === 'select' ||
+      e.target.isContentEditable;
+    const typingFocus = typingText || tag === 'button' || tag === 'a';
+
+    // Enter activates the selected row, but only when focus isn't on a button/link
+    // (so toolbar buttons keep their native Enter behaviour).
+    if (e.key === 'Enter') {
+      if (!typingFocus) { e.preventDefault(); dashOpenSelected(); }
+      return;
+    }
+    if (typingText) return;
+    switch (e.key) {
+      case 'ArrowDown': case 'j': e.preventDefault(); dashMove(1); break;
+      case 'ArrowUp':   case 'k': e.preventDefault(); dashMove(-1); break;
+      case 'm': e.preventDefault(); showMoneypenniesView(); break;
+      case 'b': e.preventDefault(); toggleSound(); break;
+      case 'n': e.preventDefault(); openCreateWizard(); break;
+      case 'p': e.preventDefault(); showProjectsView(); break;
+      case 't': e.preventDefault(); showTraitsView(); break;
+      case 'c': e.preventDefault(); dashAction('complete'); break;
+      case 'd': e.preventDefault(); dashAction('delete'); break;
+      case 'e': e.preventDefault(); dashAction('edit'); break;
     }
   });
 

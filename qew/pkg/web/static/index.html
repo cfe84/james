@@ -75,6 +75,9 @@ header h1 span { color: var(--primary); }
 .session-name { flex: 1; font-weight: 500; }
 .session-project { color: var(--muted); margin-right: 12px; font-size: 0.9em; }
 .session-mp { color: var(--muted); font-size: 0.85em; }
+.session-agent { font-size: 0.75em; padding: 2px 8px; border-radius: 10px; margin-left: 8px; font-weight: 600; background: var(--surface2); color: var(--muted); }
+.session-agent.agent-copilot { color: var(--primary); }
+.session-agent.agent-claude { color: #A78BFA; }
 .session-time { color: var(--muted); font-size: 0.8em; margin-left: 8px; }
 .session-status {
   font-size: 0.75em; padding: 2px 8px; border-radius: 10px;
@@ -202,6 +205,21 @@ header h1 span { color: var(--primary); }
 .modal textarea { resize: vertical; min-height: 60px; }
 .modal .modal-actions { display: flex; gap: 8px; margin-top: 20px; justify-content: flex-end; }
 .modal .step-label { font-size: 0.8em; color: var(--muted); margin-bottom: 8px; }
+
+/* In-conversation command palette */
+.cmd-palette:focus { outline: none; }
+.cmd-list { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.cmd-item {
+  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+  background: var(--surface); color: var(--text); border: 1px solid var(--surface2);
+  border-radius: 6px; padding: 8px 12px; font-size: 0.95em; font-family: inherit; cursor: pointer;
+}
+.cmd-item:hover { background: var(--surface2); }
+.cmd-item kbd {
+  display: inline-block; min-width: 1.4em; text-align: center; background: var(--bg);
+  border: 1px solid var(--surface2); border-radius: 4px; padding: 1px 5px;
+  font-family: monospace; font-size: 0.85em; color: var(--primary);
+}
 
 /* Directory browser */
 .dir-browser { max-height: 300px; overflow-y: auto; margin-top: 8px; }

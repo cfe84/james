@@ -1110,7 +1110,7 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.projects.height = m.viewHeight()
 		m.currentView = viewProjects
 		return m, m.projects.loadProjects()
-	case "T":
+	case "t":
 		m.traits = newTraitsModel(m.client)
 		m.traits.width = m.width
 		m.traits.height = m.viewHeight()
@@ -1951,7 +1951,7 @@ func (m Model) renderStatusBar() string {
 				statusKeyStyle.Render("x") + statusDescStyle.Render(" shell"),
 				statusKeyStyle.Render("m") + statusDescStyle.Render(" moneypennies"),
 				statusKeyStyle.Render("p") + statusDescStyle.Render(" projects"),
-				statusKeyStyle.Render("T") + statusDescStyle.Render(" traits"),
+				statusKeyStyle.Render("t") + statusDescStyle.Render(" traits"),
 				statusKeyStyle.Render("l") + statusDescStyle.Render(" all sessions"),
 				statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
 				statusKeyStyle.Render("q") + statusDescStyle.Render(" quit"),

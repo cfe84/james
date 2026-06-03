@@ -643,6 +643,17 @@ func (e *Executor) disabledMPs() map[string]bool {
 	return disabled
 }
 
+// isAgentResponseRole reports whether a turn role represents user-facing agent
+// output that can serve as the session's "last response". An agent that ends
+// its run on a tool call stores no final "assistant" turn (moneypenny keeps the
+// trailing narration as an "agent_text" train-of-thought turn instead), so we
+// accept "agent_text" too. Without this, scanning for "assistant" alone would
+// skip the agent's actual last message and surface a stale earlier assistant
+// turn (e.g. the prompt that asked a sub-agent to perform a review).
+func isAgentResponseRole(role string) bool {
+	return role == "assistant" || role == "agent_text"
+}
+
 // pollUntilIdle polls a moneypenny session until it transitions from working to idle.
 // Returns the last assistant response.
 func (e *Executor) pollUntilIdle(ctx context.Context, mp *store.Moneypenny, sessionID string) (string, error) {
@@ -690,7 +701,7 @@ func (e *Executor) pollUntilIdle(ctx context.Context, mp *store.Moneypenny, sess
 				turns = convData.Conversation
 			}
 			for i := len(turns) - 1; i >= 0; i-- {
-				if turns[i].Role == "assistant" {
+				if isAgentResponseRole(turns[i].Role) {
 					return turns[i].Content, nil
 				}
 			}
@@ -1925,7 +1936,7 @@ func (e *Executor) LastSession(args []string) *protocol.Response {
 	}
 
 	for i := len(turns) - 1; i >= 0; i-- {
-		if turns[i].Role == "assistant" {
+		if isAgentResponseRole(turns[i].Role) {
 			return protocol.OKResponse(SessionLastResult{
 				SessionID: sessionID,
 				Response:  turns[i].Content,
@@ -5512,7 +5523,7 @@ func (e *Executor) WatchSession(args []string) *protocol.Response {
 
 			var lastResponse string
 			for i := len(turns) - 1; i >= 0; i-- {
-				if turns[i].Role == "assistant" {
+				if isAgentResponseRole(turns[i].Role) {
 					lastResponse = turns[i].Content
 					break
 				}
