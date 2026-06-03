@@ -28,6 +28,8 @@
   let soundEnabled = true;
   let projectFilter = ''; // current project filter
   let projectsCache = []; // cached project list
+  let dashEntries = [];   // dashboard rows in display order (for keyboard nav)
+  let dashSelectedId = ''; // session id of keyboard-selected dashboard row
   let traitsCache = []; // cached trait list [{id,name,preview}]
   let chatInputCache = {}; // sessionId → draft text
 
@@ -162,6 +164,8 @@
     } catch (e) {
       document.getElementById('dash-content').innerHTML =
         `<div class="empty-state">Connection error: ${escapeHtml(e.message)}</div>`;
+      dashEntries = [];
+      dashSelectedId = '';
     } finally {
       document.getElementById('dash-loading').style.display = 'none';
     }
@@ -171,6 +175,8 @@
     const container = document.getElementById('dash-content');
     if (!data || !data.rows || data.rows.length === 0) {
       container.innerHTML = '<div class="empty-state">No sessions</div>';
+      dashEntries = [];
+      dashSelectedId = '';
       return;
     }
 
@@ -235,21 +241,63 @@
 
     container.innerHTML = html;
 
+    // Record rows in display order for keyboard navigation.
+    dashEntries = entries.map(e => ({
+      sessionId: e.sessionId,
+      name: e.name || e.sessionId.substring(0, 12),
+      mp: e.moneypenny,
+      parent: e.parentSessionId,
+    }));
+
     // Click handlers.
-    container.querySelectorAll('.session-row').forEach(row => {
-      row.addEventListener('click', () => {
-        if (row.dataset.parent) {
-          // Subagent: open parent first, then navigate to sub.
-          openChat(row.dataset.parent, '', row.dataset.mp);
-          // Use setTimeout to let parent chat initialize, then open subagent.
-          setTimeout(() => {
-            window._openSubagent(row.dataset.sessionId, row.dataset.sessionName);
-          }, 100);
-        } else {
-          openChat(row.dataset.sessionId, row.dataset.sessionName, row.dataset.mp);
-        }
-      });
+    container.querySelectorAll('.session-row').forEach((row, i) => {
+      row.addEventListener('click', () => openDashEntry(dashEntries[i]));
     });
+
+    applyDashSelection();
+  }
+
+  // Open a dashboard entry, handling subagents (open parent then the sub).
+  function openDashEntry(e) {
+    if (!e) return;
+    if (e.parent) {
+      openChat(e.parent, '', e.mp);
+      setTimeout(() => window._openSubagent(e.sessionId, e.name), 100);
+    } else {
+      openChat(e.sessionId, e.name, e.mp);
+    }
+  }
+
+  // Re-apply the keyboard selection highlight after a dashboard re-render.
+  function applyDashSelection() {
+    if (!dashSelectedId) return;
+    const idx = dashEntries.findIndex(e => e.sessionId === dashSelectedId);
+    if (idx < 0) { dashSelectedId = ''; return; }
+    const rows = document.querySelectorAll('#dash-content .session-row');
+    rows.forEach((r, i) => r.classList.toggle('selected', i === idx));
+  }
+
+  // Move the dashboard selection by delta (keyboard nav).
+  function dashMove(delta) {
+    if (!dashEntries.length) return;
+    let idx = dashEntries.findIndex(e => e.sessionId === dashSelectedId);
+    if (idx < 0) idx = 0;
+    else idx = Math.min(dashEntries.length - 1, Math.max(0, idx + delta));
+    dashSelectedId = dashEntries[idx].sessionId;
+    const rows = document.querySelectorAll('#dash-content .session-row');
+    rows.forEach((r, i) => r.classList.toggle('selected', i === idx));
+    if (rows[idx]) rows[idx].scrollIntoView({ block: 'nearest' });
+  }
+
+  function dashOpenSelected() {
+    const e = dashEntries.find(x => x.sessionId === dashSelectedId);
+    if (e) openDashEntry(e);
+  }
+
+  // Scroll the chat message pane by a half page (dir: -1 up, 1 down).
+  function chatScroll(dir) {
+    const c = document.getElementById('chat-messages');
+    if (c) c.scrollBy({ top: dir * c.clientHeight * 0.5, behavior: 'auto' });
   }
 
   // --- Chat ---
@@ -2586,6 +2634,38 @@
   chatMessagesEl.addEventListener('scroll', () => {
     if (chatMessagesEl.scrollTop < 60 && !chatLoadingMore && chatConversation.length < chatTotal) {
       loadOlderHistory();
+    }
+  });
+
+  // --- Keyboard navigation ---
+  document.addEventListener('keydown', (e) => {
+    // Never hijack keys while a modal is open.
+    if (document.querySelector('.modal-overlay')) return;
+
+    const chatActive = currentSession &&
+      document.getElementById('chat-view').style.display !== 'none';
+
+    if (chatActive) {
+      if (e.key === 'Escape') { e.preventDefault(); closeChat(); return; }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D')) {
+        e.preventDefault(); chatScroll(1); return;
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'u' || e.key === 'U')) {
+        e.preventDefault(); chatScroll(-1); return;
+      }
+      return;
+    }
+
+    // Dashboard list navigation (only when the dashboard is the active view
+    // and focus is not in a form field).
+    const dashActive = document.getElementById('dashboard-view').style.display !== 'none';
+    const tag = (e.target.tagName || '').toLowerCase();
+    const typing = tag === 'input' || tag === 'textarea' || tag === 'select' ||
+      tag === 'button' || tag === 'a' || e.target.isContentEditable;
+    if (dashActive && !typing && !e.ctrlKey && !e.metaKey && !e.altKey) {
+      if (e.key === 'ArrowDown' || e.key === 'j') { e.preventDefault(); dashMove(1); }
+      else if (e.key === 'ArrowUp' || e.key === 'k') { e.preventDefault(); dashMove(-1); }
+      else if (e.key === 'Enter') { e.preventDefault(); dashOpenSelected(); }
     }
   });
 
