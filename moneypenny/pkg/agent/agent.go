@@ -483,15 +483,33 @@ func (r *Runner) runCopilotStreaming(cmd *exec.Cmd, buf *activityBuffer, session
 
 	var resultText string
 	var lastRawEvent string
-	// Copilot has no separate "result" event: the final answer is conveyed
-	// purely through assistant.message events. The model often emits its
-	// substantive answer, then makes a housekeeping tool call (memory update,
-	// git commit, etc.), then a short closing message. Treating only the LAST
-	// assistant.message as the reply would orphan the substantive text in the
-	// train of thought, so we accumulate every assistant.message text block and
-	// join them into the final reply. (Reasoning still flows through
-	// assistant.reasoning -> thinking and is rendered separately.)
-	var copilotTexts []string
+	// Copilot has no separate "result" event: the answer is conveyed purely
+	// through assistant.message events. The model emits narration before each
+	// tool call ("Now let me look at X") as its own assistant.message, then
+	// emits its final answer as another assistant.message. Accumulating *every*
+	// message into the reply made it very chatty (all the preambles leaked into
+	// the bubble).
+	//
+	// Copilot labels each assistant.message with a "phase": "commentary" for
+	// preamble narration and "final_answer" for the concluding reply (older
+	// builds may omit it). We classify at end-of-stream (mirroring Claude's
+	// split of train of thought vs final reply): the reply is the message(s)
+	// tagged phase=="final_answer". When the provider supplies no phase labels,
+	// we fall back to a positional heuristic: the trailing contiguous run of
+	// no-tool messages (the model talking after it finished acting), with a
+	// further fallback to the last non-empty message if there is no such run (so
+	// a reply bundled with a housekeeping tool call is never lost). Everything
+	// else — preamble narration and reasoning — is persisted as train of thought
+	// (agent_text / thinking) in original order. Persistence is deferred to the
+	// end because a message's role (preamble vs reply) isn't known until the
+	// whole stream is seen.
+	type potItem struct {
+		kind     string // "thinking" or "message"
+		content  string
+		hasTools bool
+		phase    string // copilot phase ("final_answer", "commentary", ...); "" if absent
+	}
+	var pot []potItem
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 256*1024), 10*1024*1024)
 
@@ -524,14 +542,23 @@ func (r *Runner) runCopilotStreaming(cmd *exec.Cmd, buf *activityBuffer, session
 		case "assistant.message":
 			if data != nil {
 				content, _ := data["content"].(string)
-				r.vlog.Printf("copilot stream: assistant.message content=%d bytes, toolRequests=%v",
-					len(content), data["toolRequests"] != nil)
+				phase, _ := data["phase"].(string)
+				toolReqs, hasToolReqs := data["toolRequests"].([]any)
+				hasTools := hasToolReqs && len(toolReqs) > 0
+				r.vlog.Printf("copilot stream: assistant.message content=%d bytes, toolRequests=%v, phase=%q",
+					len(content), hasTools, phase)
+				if content != "" || hasTools {
+					// Record the message in the buffer even when content is
+					// empty if it carries tools, so it still acts as a tool
+					// boundary during the positional fallback classification (an
+					// empty tool-only message must stop a trailing no-tool run).
+					pot = append(pot, potItem{kind: "message", content: content, hasTools: hasTools, phase: phase})
+				}
 				if content != "" {
-					copilotTexts = append(copilotTexts, content)
 					buf.add(ActivityEvent{Type: "text", Summary: content, Timestamp: now})
 				}
 				// Parse tool requests for activity.
-				if toolReqs, ok := data["toolRequests"].([]any); ok {
+				if hasTools {
 					for _, tr := range toolReqs {
 						trMap, ok := tr.(map[string]any)
 						if !ok {
@@ -598,8 +625,8 @@ func (r *Runner) runCopilotStreaming(cmd *exec.Cmd, buf *activityBuffer, session
 			if data != nil {
 				content, _ := data["content"].(string)
 				if content != "" {
+					pot = append(pot, potItem{kind: "thinking", content: content})
 					buf.add(ActivityEvent{Type: "thinking", Summary: content, Timestamp: now})
-					r.emitPersistent(sessionID, "thinking", content)
 					if r.notifyWriter != nil {
 						_ = r.notifyWriter.Send(envelope.EventChatActivity, sessionID, map[string]interface{}{
 							"events": buf.snapshot(),
@@ -623,12 +650,99 @@ func (r *Runner) runCopilotStreaming(cmd *exec.Cmd, buf *activityBuffer, session
 		r.vlog.Printf("copilot stream: scanner error: %v", scanErr)
 	}
 
-	// Join all assistant.message text blocks into the final reply. Trim each
-	// segment so provider newlines don't compound, and separate with a blank
-	// line for clean Markdown rendering. Computed before cmd.Wait so the error
-	// path still carries whatever partial reply was produced.
-	segments := make([]string, 0, len(copilotTexts))
-	for _, t := range copilotTexts {
+	// Classify the buffered events into reply vs train of thought.
+	//
+	// Preferred path: Copilot tags each assistant.message with a phase. When any
+	// message carries a phase, trust it — the reply is exactly the message(s)
+	// tagged "final_answer"; everything else is train of thought.
+	usePhase := false
+	for _, it := range pot {
+		if it.kind == "message" && it.phase != "" {
+			usePhase = true
+			break
+		}
+	}
+
+	isReply := make([]bool, len(pot))
+	if usePhase {
+		anyFinal := false
+		for i, it := range pot {
+			if it.kind == "message" && it.phase == "final_answer" && it.content != "" {
+				isReply[i] = true
+				anyFinal = true
+			}
+		}
+		// Diagnostic for the (unexpected) mixed-stream shape: phases present but
+		// no final_answer carried any text. We deliberately do NOT fall back to
+		// the positional heuristic here (that would reintroduce commentary
+		// leakage); an empty reply is correct when the turn ended on tool work.
+		if !anyFinal {
+			r.vlog.Printf("copilot stream: phase labels present but no final_answer content; reply will be empty")
+		}
+	} else {
+		// Fallback (older Copilot builds without phase): the reply is the
+		// trailing contiguous run of message items that carry no tool calls (the
+		// model talking after it stopped acting). Walk backwards over message
+		// items: the reply run starts at the first message item (scanning from
+		// the end) that still has no tool calls, and stops as soon as we hit a
+		// message item that DID carry a tool call.
+		replyStart := len(pot)
+		sawMessage := false
+		lastMessageIdx := -1
+		for i := len(pot) - 1; i >= 0; i-- {
+			if pot[i].kind != "message" {
+				continue
+			}
+			if lastMessageIdx < 0 && pot[i].content != "" {
+				lastMessageIdx = i
+			}
+			if pot[i].hasTools {
+				break
+			}
+			replyStart = i
+			sawMessage = true
+		}
+		// Further fallback: no trailing no-tool message run, but the model did
+		// produce text (e.g. its answer was bundled with a housekeeping tool
+		// call). Use the last non-empty message as the reply so a real answer is
+		// never hidden entirely in the train of thought.
+		if !sawMessage && lastMessageIdx >= 0 {
+			replyStart = lastMessageIdx
+		}
+		for i, it := range pot {
+			if i >= replyStart && it.kind == "message" {
+				isReply[i] = true
+			}
+		}
+	}
+
+	// Persist everything that isn't the reply as train of thought, in original
+	// order. Reasoning -> "thinking"; preamble narration -> "text" (agent_text).
+	// Reply messages are stored by the handler as the assistant turn, so we must
+	// not also persist them here (that would duplicate them in the thread).
+	var replyParts []string
+	for i, it := range pot {
+		if isReply[i] {
+			replyParts = append(replyParts, it.content)
+			continue
+		}
+		switch it.kind {
+		case "thinking":
+			r.emitPersistent(sessionID, "thinking", it.content)
+		case "message":
+			// Skip empty tool-only messages (they exist only as boundaries).
+			if it.content != "" {
+				r.emitPersistent(sessionID, "text", it.content)
+			}
+		}
+	}
+
+	// Join the reply parts. Trim each segment so provider newlines don't
+	// compound, and separate with a blank line for clean Markdown rendering.
+	// Computed before cmd.Wait so the error path still carries whatever partial
+	// reply was produced.
+	segments := make([]string, 0, len(replyParts))
+	for _, t := range replyParts {
 		if s := strings.TrimSpace(t); s != "" {
 			segments = append(segments, s)
 		}

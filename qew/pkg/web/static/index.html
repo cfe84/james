@@ -243,6 +243,28 @@ header h1 span { color: var(--primary); }
 .diff-content .diff-hunk { color: var(--info); }
 .diff-content .diff-header { color: var(--primary); font-weight: 600; }
 
+/* Diff review (clickable lines + inline comments) */
+.diff-line { display: block; white-space: pre; }
+.diff-line.commentable { cursor: pointer; }
+.diff-line.commentable:hover { background: rgba(255,255,255,0.07); }
+.diff-line.has-comment { border-left: 3px solid var(--primary); }
+.diff-comment-slot:empty { display: none; }
+.diff-comment-editor, .diff-comment-saved {
+  white-space: normal; font-family: system-ui, -apple-system, sans-serif;
+  margin: 4px 0 6px 12px; padding: 8px 10px; border-radius: 6px;
+  background: var(--surface); border-left: 3px solid var(--primary);
+}
+.diff-comment-editor textarea {
+  width: 100%; background: var(--bg); color: var(--text);
+  border: 1px solid var(--surface2); border-radius: 4px; padding: 6px;
+  font-family: inherit; font-size: 0.9em; resize: vertical;
+}
+.diff-comment-editor .modal-actions { margin-top: 8px; }
+.diff-comment-saved .cmt-text { color: var(--text); font-size: 0.9em; white-space: pre-wrap; }
+.diff-comment-saved .cmt-actions { margin-top: 4px; display: flex; gap: 12px; }
+.diff-comment-saved .cmt-actions a { color: var(--info); cursor: pointer; font-size: 0.82em; }
+.diff-comment-saved .cmt-actions a:hover { text-decoration: underline; }
+
 /* Git result output */
 .git-output {
   font-family: 'SF Mono', 'Menlo', 'Monaco', 'Consolas', monospace;

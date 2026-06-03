@@ -737,22 +737,238 @@
 
   // --- Git Actions ---
 
-  async function showDiff() {
-    if (!currentSession) return;
+  // Git diff review state (clickable lines + inline comments).
+  let diffReview = { text: '', lines: [], comments: {}, branch: '' };
+
+  function parseHunkHeader(line) {
+    const m = line.match(/@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/);
+    if (!m) return [0, 0];
+    return [parseInt(m[1], 10), parseInt(m[2], 10)];
+  }
+
+  // parseDiffLines mirrors hem's parseDiffMeta: walks the unified diff tracking
+  // the current file and old/new line numbers so each line carries the metadata
+  // needed to build a review comment (file, real line number, code).
+  function parseDiffLines(text) {
+    const lines = text.split('\n');
+    const out = [];
+    let currentFile = '';
+    let oldLine = 0, newLine = 0;
+    for (let raw of lines) {
+      raw = raw.replace(/\r+$/, '');
+      const meta = { raw, file: currentFile, lineNum: 0, code: '', side: '', cls: '', commentable: false };
+      if (raw.startsWith('+++ b/')) { currentFile = raw.slice(6); meta.file = currentFile; meta.cls = 'diff-header'; }
+      else if (raw.startsWith('+++ ') || raw.startsWith('--- ')) { meta.cls = 'diff-header'; }
+      else if (raw.startsWith('diff ')) {
+        const idx = raw.indexOf(' b/');
+        if (idx >= 0) currentFile = raw.slice(idx + 3);
+        meta.file = currentFile; meta.cls = 'diff-header';
+      } else if (raw.startsWith('@@')) {
+        const h = parseHunkHeader(raw); oldLine = h[0]; newLine = h[1];
+        meta.cls = 'diff-hunk';
+      } else if (raw.startsWith('+')) {
+        meta.lineNum = newLine; meta.side = '+'; meta.code = raw.slice(1); meta.cls = 'diff-add';
+        newLine++;
+      } else if (raw.startsWith('-')) {
+        meta.lineNum = oldLine; meta.side = '-'; meta.code = raw.slice(1); meta.cls = 'diff-del';
+        oldLine++;
+      } else if (raw.length > 0 && raw[0] === ' ') {
+        meta.lineNum = newLine; meta.side = ' '; meta.code = raw.slice(1);
+        oldLine++; newLine++;
+      }
+      meta.commentable = raw.trim() !== '';
+      out.push(meta);
+    }
+    return out;
+  }
+
+  function renderDiffReview() {
+    return diffReview.lines.map((m, seq) => {
+      const escaped = escapeHtml(m.raw);
+      const inner = m.cls ? `<span class="${m.cls}">${escaped}</span>` : escaped;
+      const has = diffReview.comments[seq] != null;
+      const cls = 'diff-line' + (m.commentable ? ' commentable' : '') + (has ? ' has-comment' : '');
+      const attr = m.commentable ? ` data-seq="${seq}"` : '';
+      return `<div class="${cls}"${attr}>${inner || ' '}</div><div class="diff-comment-slot" id="dcs-${seq}"></div>`;
+    }).join('');
+  }
+
+  function renderDiffView() {
     renderWizardModal(`
-      <h3>Git Diff <span id="git-branch-label" style="color:var(--muted);font-size:0.85em"></span></h3>
-      <div class="diff-content"><div class="loading">Loading diff...</div></div>
+      <h3>Git Diff <span id="diff-branch-label" style="color:var(--muted);font-size:0.85em">${diffReview.branch ? '(' + escapeHtml(diffReview.branch) + ')' : ''}</span></h3>
+      <div class="diff-content" id="diff-review-content">${renderDiffReview()}</div>
       <div class="modal-actions">
         <button class="btn-muted" onclick="window._qewCloseWizard()">Close</button>
         <button class="btn" onclick="window._qewCommitFromDiff()">Commit</button>
-        <button class="btn" onclick="window._qewCommitAndPush()">Commit & Push</button>
+        <button class="btn" onclick="window._qewCommitAndPush()">Commit &amp; Push</button>
+        <button class="btn" id="diff-send-comments" style="display:none" onclick="window._qewDiffSendStep()">Send comments</button>
+      </div>
+    `, 'modal-large');
+    const content = document.getElementById('diff-review-content');
+    content.addEventListener('click', (e) => {
+      const lineEl = e.target.closest('.diff-line.commentable');
+      if (!lineEl || !content.contains(lineEl)) return;
+      openCommentEditor(parseInt(lineEl.dataset.seq, 10));
+    });
+    Object.keys(diffReview.comments).forEach(seq => renderSavedComment(parseInt(seq, 10)));
+    updateSendBtn();
+  }
+
+  function openCommentEditor(seq) {
+    const slot = document.getElementById('dcs-' + seq);
+    if (!slot) return;
+    const existing = diffReview.comments[seq] || '';
+    slot.innerHTML = `
+      <div class="diff-comment-editor">
+        <textarea id="dce-${seq}" rows="2" placeholder="Comment on this line...">${escapeHtml(existing)}</textarea>
+        <div class="modal-actions">
+          <button class="btn-muted" onclick="window._qewDiffCancelComment(${seq})">Cancel</button>
+          ${existing ? `<button class="btn-muted" onclick="window._qewDiffRemoveComment(${seq})">Remove</button>` : ''}
+          <button class="btn" onclick="window._qewDiffSaveComment(${seq})">Save</button>
+        </div>
+      </div>`;
+    const ta = document.getElementById('dce-' + seq);
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+    ta.addEventListener('keydown', (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); saveComment(seq); }
+    });
+  }
+
+  function markLine(seq, on) {
+    const el = document.querySelector(`.diff-line[data-seq="${seq}"]`);
+    if (el) el.classList.toggle('has-comment', !!on);
+  }
+
+  function renderSavedComment(seq) {
+    const slot = document.getElementById('dcs-' + seq);
+    if (!slot) return;
+    markLine(seq, true);
+    const txt = diffReview.comments[seq] || '';
+    slot.innerHTML = `
+      <div class="diff-comment-saved">
+        <div class="cmt-text">${escapeHtml(txt)}</div>
+        <div class="cmt-actions">
+          <a onclick="window._qewDiffEditComment(${seq})">Edit</a>
+          <a onclick="window._qewDiffRemoveComment(${seq})">Remove</a>
+        </div>
+      </div>`;
+  }
+
+  function saveComment(seq) {
+    const ta = document.getElementById('dce-' + seq);
+    if (!ta) return;
+    const val = ta.value.trim();
+    if (!val) { removeComment(seq); return; }
+    diffReview.comments[seq] = val;
+    renderSavedComment(seq);
+    updateSendBtn();
+  }
+
+  function removeComment(seq) {
+    delete diffReview.comments[seq];
+    markLine(seq, false);
+    const slot = document.getElementById('dcs-' + seq);
+    if (slot) slot.innerHTML = '';
+    updateSendBtn();
+  }
+
+  function cancelComment(seq) {
+    if (diffReview.comments[seq] != null) renderSavedComment(seq);
+    else { const slot = document.getElementById('dcs-' + seq); if (slot) slot.innerHTML = ''; }
+  }
+
+  function updateSendBtn() {
+    const btn = document.getElementById('diff-send-comments');
+    if (!btn) return;
+    const n = Object.keys(diffReview.comments).length;
+    if (n > 0) { btn.style.display = ''; btn.textContent = `Send comments (${n})`; }
+    else { btn.style.display = 'none'; }
+  }
+
+  function showSendCommentsStep() {
+    const n = Object.keys(diffReview.comments).length;
+    if (n === 0) return;
+    renderWizardModal(`
+      <h3>Send ${n} review comment${n > 1 ? 's' : ''}</h3>
+      <label for="diff-overall">Overall comment (optional)</label>
+      <textarea id="diff-overall" rows="4" placeholder="Add an overall instruction for the agent (optional)..."></textarea>
+      <div class="modal-actions">
+        <button class="btn-muted" onclick="window._qewDiffBackToReview()">Back</button>
+        <button class="btn" id="diff-send-submit" onclick="window._qewDiffSubmitReview()">Send to agent</button>
+      </div>
+    `);
+    const ta = document.getElementById('diff-overall');
+    if (ta) ta.focus();
+  }
+
+  // formatReviewComment / buildReviewPrompt mirror hem/pkg/ui/diff.go so the
+  // prompt sent to the agent is identical to the TUI's.
+  function formatReviewComment(n, file, lineNum, code, comment) {
+    let b = `\n_Comment ${n}_\n\n`;
+    if (file) b += `- Filename: ${file}\n`;
+    if (lineNum > 0) b += `- Line number: ${lineNum}\n`;
+    else b += `- Line number: (file header)\n`;
+    if (code && code.trim() !== '') {
+      if (/[\n`]/.test(code)) b += '- Code:\n```\n' + code + '\n```\n';
+      else b += '- Code: `' + code + '`\n';
+    }
+    b += `- Comment: ${comment.replace(/\n+$/, '')}\n`;
+    return b;
+  }
+
+  function buildReviewPrompt(overall) {
+    let b = '';
+    if (overall && overall.trim() !== '') b += overall + '\n\n';
+    b += "Here are some review comments on the code currently in `git diff`. ";
+    b += "If comments are questions, answer those questions. ";
+    b += "If comments are unclear, or shouldn't be integrated, ask for feedback and confirmation. ";
+    b += "Else integrate the comments.\n";
+    const grouped = Object.keys(diffReview.comments).map(seq => {
+      const m = diffReview.lines[seq];
+      return { file: m.file, lineNum: m.lineNum, code: m.code, comment: diffReview.comments[seq] };
+    });
+    grouped.sort((a, c) => a.file !== c.file ? (a.file < c.file ? -1 : 1) : a.lineNum - c.lineNum);
+    grouped.forEach((fc, i) => { b += formatReviewComment(i + 1, fc.file, fc.lineNum, fc.code, fc.comment); });
+    return b;
+  }
+
+  async function submitReview() {
+    const n = Object.keys(diffReview.comments).length;
+    if (n === 0 || !currentSession) return;
+    const overallEl = document.getElementById('diff-overall');
+    const overall = overallEl ? overallEl.value : '';
+    const prompt = buildReviewPrompt(overall);
+    const btn = document.getElementById('diff-send-submit');
+    if (btn) { btn.disabled = true; btn.textContent = 'Sending...'; }
+    try {
+      await apiCall('continue', 'session', [currentSession, '--async', prompt]);
+      closeWizard();
+      queuedMessages.push({ content: prompt });
+      lastChatHTML = '';
+      await loadChat();
+    } catch (e) {
+      alert('Send error: ' + e.message);
+      if (btn) { btn.disabled = false; btn.textContent = 'Send to agent'; }
+    }
+  }
+
+  async function showDiff() {
+    if (!currentSession) return;
+    diffReview = { text: '', lines: [], comments: {}, branch: '' };
+    renderWizardModal(`
+      <h3>Git Diff <span id="diff-branch-label" style="color:var(--muted);font-size:0.85em"></span></h3>
+      <div class="diff-content"><div class="loading">Loading diff...</div></div>
+      <div class="modal-actions">
+        <button class="btn-muted" onclick="window._qewCloseWizard()">Close</button>
       </div>
     `, 'modal-large');
 
     // Fetch branch name in parallel.
     apiCall('git-info', 'session', [currentSession]).then(resp => {
       if (resp.status === 'ok' && resp.data && resp.data.branch) {
-        const el = document.getElementById('git-branch-label');
+        diffReview.branch = resp.data.branch;
+        const el = document.getElementById('diff-branch-label');
         if (el) el.textContent = '(' + resp.data.branch + ')';
       }
     }).catch(() => {});
@@ -761,18 +977,20 @@
       const resp = await apiCall('diff', 'session', [currentSession]);
       const diffContainer = document.querySelector('.diff-content');
       if (resp.status === 'error') {
-        diffContainer.innerHTML = `<span style="color:var(--danger)">${escapeHtml(resp.message)}</span>`;
+        if (diffContainer) diffContainer.innerHTML = `<span style="color:var(--danger)">${escapeHtml(resp.message)}</span>`;
         return;
       }
       const diffText = resp.data && resp.data.message ? resp.data.message : '';
-      if (!diffText) {
-        diffContainer.innerHTML = '<span style="color:var(--muted)">No changes (working tree clean)</span>';
+      if (!diffText.trim()) {
+        if (diffContainer) diffContainer.innerHTML = '<span style="color:var(--muted)">No changes (working tree clean)</span>';
         return;
       }
-      diffContainer.innerHTML = formatDiff(diffText);
+      diffReview.text = diffText;
+      diffReview.lines = parseDiffLines(diffText);
+      renderDiffView();
     } catch (e) {
-      document.querySelector('.diff-content').innerHTML =
-        `<span style="color:var(--danger)">Error: ${escapeHtml(e.message)}</span>`;
+      const c = document.querySelector('.diff-content');
+      if (c) c.innerHTML = `<span style="color:var(--danger)">Error: ${escapeHtml(e.message)}</span>`;
     }
   }
 
@@ -784,7 +1002,7 @@
       <div class="modal-actions">
         <button class="btn-muted" onclick="window._qewCloseWizard()">Close</button>
       </div>
-    `);
+    `, 'modal-large');
 
     // Fetch branch name in parallel.
     apiCall('git-info', 'session', [currentSession]).then(resp => {
@@ -811,19 +1029,6 @@
       document.querySelector('.diff-content').innerHTML =
         `<span style="color:var(--danger)">Error: ${escapeHtml(e.message)}</span>`;
     }
-  }
-
-  function formatDiff(text) {
-    return text.split('\n').map(line => {
-      const escaped = escapeHtml(line);
-      if (line.startsWith('+++') || line.startsWith('---') || line.startsWith('diff ')) {
-        return `<span class="diff-header">${escaped}</span>`;
-      }
-      if (line.startsWith('@@')) return `<span class="diff-hunk">${escaped}</span>`;
-      if (line.startsWith('+')) return `<span class="diff-add">${escaped}</span>`;
-      if (line.startsWith('-')) return `<span class="diff-del">${escaped}</span>`;
-      return escaped;
-    }).join('\n');
   }
 
   function formatGitLog(text) {
@@ -1011,6 +1216,13 @@
 
   window._qewCommitFromDiff = function() { showCommitModal(false); };
   window._qewCommitAndPush = function() { showCommitModal(true); };
+  window._qewDiffSendStep = showSendCommentsStep;
+  window._qewDiffBackToReview = renderDiffView;
+  window._qewDiffSubmitReview = submitReview;
+  window._qewDiffSaveComment = saveComment;
+  window._qewDiffRemoveComment = removeComment;
+  window._qewDiffCancelComment = cancelComment;
+  window._qewDiffEditComment = openCommentEditor;
 
   // --- Session Edit & Delete ---
 
