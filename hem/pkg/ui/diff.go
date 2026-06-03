@@ -426,24 +426,37 @@ func formatReviewComment(n int, file string, lineNum int, code, comment string) 
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf("\n_Comment %d_\n\n", n))
 	if file != "" {
-		b.WriteString(fmt.Sprintf("- Filename: %s\n", file))
-	}
-	if lineNum > 0 {
-		b.WriteString(fmt.Sprintf("- Line number: %d\n", lineNum))
-	} else {
-		b.WriteString("- Line number: (file header)\n")
+		if lineNum > 0 {
+			b.WriteString(fmt.Sprintf("Filename: `%s`, line: %d\n\n", file, lineNum))
+		} else {
+			b.WriteString(fmt.Sprintf("Filename: `%s` (file header)\n\n", file))
+		}
+	} else if lineNum > 0 {
+		b.WriteString(fmt.Sprintf("Line: %d\n\n", lineNum))
 	}
 	if strings.TrimSpace(code) != "" {
-		if strings.ContainsAny(code, "\n`") {
-			b.WriteString("- Code:\n```\n")
-			b.WriteString(code)
-			b.WriteString("\n```\n")
+		b.WriteString("```\n")
+		b.WriteString(code)
+		b.WriteString("\n```\n\n")
+	}
+	b.WriteString(blockquote(comment))
+	b.WriteString("\n")
+	return b.String()
+}
+
+// blockquote renders text as a Markdown blockquote, prefixing each line with
+// "> " (and a bare ">" for blank lines) so multi-line comments survive intact.
+func blockquote(s string) string {
+	s = strings.TrimRight(s, "\n")
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		if l == "" {
+			lines[i] = ">"
 		} else {
-			b.WriteString(fmt.Sprintf("- Code: `%s`\n", code))
+			lines[i] = "> " + l
 		}
 	}
-	b.WriteString(fmt.Sprintf("- Comment: %s\n", strings.TrimRight(comment, "\n")))
-	return b.String()
+	return strings.Join(lines, "\n")
 }
 
 // buildReviewPrompt generates the review prompt from comments.

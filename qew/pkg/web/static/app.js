@@ -1209,15 +1209,23 @@
   // prompt sent to the agent is identical to the TUI's.
   function formatReviewComment(n, file, lineNum, code, comment) {
     let b = `\n_Comment ${n}_\n\n`;
-    if (file) b += `- Filename: ${file}\n`;
-    if (lineNum > 0) b += `- Line number: ${lineNum}\n`;
-    else b += `- Line number: (file header)\n`;
-    if (code && code.trim() !== '') {
-      if (/[\n`]/.test(code)) b += '- Code:\n```\n' + code + '\n```\n';
-      else b += '- Code: `' + code + '`\n';
+    if (file) {
+      if (lineNum > 0) b += `Filename: \`${file}\`, line: ${lineNum}\n\n`;
+      else b += `Filename: \`${file}\` (file header)\n\n`;
+    } else if (lineNum > 0) {
+      b += `Line: ${lineNum}\n\n`;
     }
-    b += `- Comment: ${comment.replace(/\n+$/, '')}\n`;
+    if (code && code.trim() !== '') {
+      b += '```\n' + code + '\n```\n\n';
+    }
+    b += blockquote(comment) + '\n';
     return b;
+  }
+
+  // blockquote renders text as a Markdown blockquote (mirrors diff.go).
+  function blockquote(s) {
+    s = s.replace(/\n+$/, '');
+    return s.split('\n').map(l => (l === '' ? '>' : '> ' + l)).join('\n');
   }
 
   function buildReviewPrompt(overall) {
@@ -2515,6 +2523,11 @@
     html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
     // Bold: **...**
     html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    // Italic: *...* or _..._ (after bold so ** is already consumed). Requires
+    // non-word boundaries and non-space inner edges so snake_case identifiers
+    // and arithmetic like "2 * 3" are left untouched.
+    html = html.replace(/(^|[^\w*])\*(\S|\S[^*\n]*?\S)\*(?!\w)/g, '$1<em>$2</em>');
+    html = html.replace(/(^|[^\w_])_(\S|\S[^_\n]*?\S)_(?!\w)/g, '$1<em>$2</em>');
     // Links: [text](url) — opens in new tab
     html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
     // Bare URLs: https://... or http://... (not already inside a tag)
@@ -2638,9 +2651,53 @@
   });
 
   // --- Keyboard navigation ---
+
+  // Escape inside a modal triggers its Close/Cancel/Back/OK button so the
+  // button's own logic (e.g. the diff review's unsaved-comment confirmation)
+  // still runs. Returns true if a button was clicked.
+  function escapeCloseModal() {
+    const overlay = document.querySelector('.modal-overlay');
+    if (!overlay) return false;
+    const labels = ['close', 'cancel', 'back', 'ok'];
+    const pick = (root) => {
+      const btns = Array.from(root.querySelectorAll('button'));
+      for (const label of labels) {
+        const btn = btns.find(b => b.textContent.trim().toLowerCase() === label);
+        if (btn) return btn;
+      }
+      return null;
+    };
+    // If focus is in the inline diff comment editor, cancel just that editor
+    // rather than discarding the whole review.
+    const active = document.activeElement;
+    if (active) {
+      const editor = active.closest('.diff-comment-editor');
+      if (editor && overlay.contains(editor)) {
+        const btn = pick(editor);
+        if (btn) { btn.click(); return true; }
+      }
+    }
+    // Otherwise click the modal's primary action-row close button.
+    const modal = overlay.querySelector('.modal');
+    if (modal) {
+      const rows = modal.querySelectorAll(':scope > .modal-actions');
+      for (const row of rows) {
+        const btn = pick(row);
+        if (btn) { btn.click(); return true; }
+      }
+    }
+    return false;
+  }
+
   document.addEventListener('keydown', (e) => {
-    // Never hijack keys while a modal is open.
-    if (document.querySelector('.modal-overlay')) return;
+    // While a modal is open, Escape triggers its close button; all other keys
+    // are left to the modal's own handlers.
+    if (document.querySelector('.modal-overlay')) {
+      if (e.key === 'Escape') {
+        if (escapeCloseModal()) e.preventDefault();
+      }
+      return;
+    }
 
     const chatActive = currentSession &&
       document.getElementById('chat-view').style.display !== 'none';
