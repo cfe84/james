@@ -1195,6 +1195,17 @@
       if (!lineEl || !content.contains(lineEl)) return;
       openCommentEditor(parseInt(lineEl.dataset.seq, 10));
     });
+    // The cursor follows the mouse: hovering a diff line moves the selection
+    // there (without scrolling) so keyboard nav resumes from where you point.
+    content.addEventListener('mousemove', (e) => {
+      const lineEl = e.target.closest('.diff-line');
+      if (!lineEl || !content.contains(lineEl)) return;
+      const idx = Array.prototype.indexOf.call(content.querySelectorAll('.diff-line'), lineEl);
+      if (idx >= 0 && idx !== diffReview.cursor) {
+        diffReview.cursor = idx;
+        applyDiffCursor(false);
+      }
+    });
     Object.keys(diffReview.comments).forEach(seq => renderSavedComment(parseInt(seq, 10)));
     updateSendBtn();
     // Start the keyboard cursor on the first commentable line.
