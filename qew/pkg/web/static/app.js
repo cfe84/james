@@ -1106,7 +1106,7 @@
   // Git diff review state (clickable lines + inline comments). `mode` is
   // 'diff' (working-tree diff) or 'commit' (a specific commit's contents);
   // `commit` holds the hash in commit mode.
-  let diffReview = { text: '', lines: [], comments: {}, branch: '', mode: 'diff', commit: '' };
+  let diffReview = { text: '', lines: [], comments: {}, branch: '', mode: 'diff', commit: '', cursor: 0 };
   // Monotonic token guarding against stale async responses (log -> commit ->
   // back -> another commit) overwriting the current view.
   let gitViewToken = 0;
@@ -1197,6 +1197,72 @@
     });
     Object.keys(diffReview.comments).forEach(seq => renderSavedComment(parseInt(seq, 10)));
     updateSendBtn();
+    // Start the keyboard cursor on the first commentable line.
+    diffReview.cursor = diffReview.lines.findIndex(m => m.commentable);
+    if (diffReview.cursor < 0) diffReview.cursor = 0;
+    applyDiffCursor(false);
+  }
+
+  // applyDiffCursor highlights the line at diffReview.cursor and, when scroll is
+  // true, keeps it within the scrollable diff pane. The Nth .diff-line element
+  // corresponds to line sequence N (renderDiffReview emits them in order).
+  function applyDiffCursor(scroll) {
+    const content = document.getElementById('diff-review-content');
+    if (!content) return;
+    content.querySelectorAll('.diff-line.cursor').forEach(el => el.classList.remove('cursor'));
+    const el = content.querySelectorAll('.diff-line')[diffReview.cursor];
+    if (!el) return;
+    el.classList.add('cursor');
+    if (scroll) el.scrollIntoView({ block: 'nearest' });
+  }
+
+  // diffPageLines estimates how many lines fit in the visible diff pane, used
+  // for half-page (ctrl+u/d) and full-page (PageUp/Down) cursor movement.
+  function diffPageLines(content) {
+    const ref = content.querySelector('.diff-line.cursor') || content.querySelector('.diff-line');
+    const lh = ref && ref.offsetHeight ? ref.offsetHeight : 20;
+    return Math.max(1, Math.floor(content.clientHeight / Math.max(1, lh)));
+  }
+
+  function moveDiffCursor(delta) {
+    const n = diffReview.lines.length;
+    if (!n) return;
+    let c = diffReview.cursor;
+    if (c == null || c < 0) c = 0;
+    diffReview.cursor = Math.min(n - 1, Math.max(0, c + delta));
+    applyDiffCursor(true);
+  }
+
+  function openCommentEditorAtCursor() {
+    const m = diffReview.lines[diffReview.cursor];
+    if (m && m.commentable) openCommentEditor(diffReview.cursor);
+  }
+
+  // handleDiffModalKey provides TUI-parity keyboard navigation for the git diff
+  // review modal: j/k/arrows move one line, PageUp/Down a full page, ctrl+u/d a
+  // half page, r opens the comment editor on the cursor line. Returns true if it
+  // consumed the event. Typing in the inline comment editor is never hijacked.
+  function handleDiffModalKey(e) {
+    const content = document.getElementById('diff-review-content');
+    if (!content || !diffReview.lines.length) return false;
+    const tag = (e.target.tagName || '').toLowerCase();
+    if (tag === 'textarea' || tag === 'input' || e.target.isContentEditable) return false;
+    if (e.altKey) return false;
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D')) {
+      e.preventDefault(); moveDiffCursor(Math.max(1, Math.floor(diffPageLines(content) / 2))); return true;
+    }
+    if ((e.ctrlKey || e.metaKey) && (e.key === 'u' || e.key === 'U')) {
+      e.preventDefault(); moveDiffCursor(-Math.max(1, Math.floor(diffPageLines(content) / 2))); return true;
+    }
+    if (e.ctrlKey || e.metaKey) return false;
+    switch (e.key) {
+      case 'PageDown': e.preventDefault(); moveDiffCursor(diffPageLines(content)); return true;
+      case 'PageUp':   e.preventDefault(); moveDiffCursor(-diffPageLines(content)); return true;
+      case 'ArrowDown': case 'j': e.preventDefault(); moveDiffCursor(1); return true;
+      case 'ArrowUp':   case 'k': e.preventDefault(); moveDiffCursor(-1); return true;
+      case 'r': e.preventDefault(); openCommentEditorAtCursor(); return true;
+    }
+    return false;
   }
 
   function openCommentEditor(seq) {
@@ -1355,7 +1421,7 @@
 
   async function showDiff() {
     if (!currentSession) return;
-    diffReview = { text: '', lines: [], comments: {}, branch: '', mode: 'diff', commit: '' };
+    diffReview = { text: '', lines: [], comments: {}, branch: '', mode: 'diff', commit: '', cursor: 0 };
     const token = ++gitViewToken;
     const session = currentSession;
     renderWizardModal(`
@@ -1450,7 +1516,7 @@
   // comments and send them to the agent.
   async function showCommit(hash) {
     if (!currentSession || !hash) return;
-    diffReview = { text: '', lines: [], comments: {}, branch: diffReview.branch, mode: 'commit', commit: hash };
+    diffReview = { text: '', lines: [], comments: {}, branch: diffReview.branch, mode: 'commit', commit: hash, cursor: 0 };
     const token = ++gitViewToken;
     const session = currentSession;
     renderWizardModal(`
@@ -2794,12 +2860,15 @@
       return;
     }
 
-    // While any other modal is open, Escape triggers its close button; all other
+    // While any other modal is open, Escape triggers its close button; the git
+    // diff review modal additionally supports keyboard navigation. All other
     // keys are left to the modal's own handlers.
     if (document.querySelector('.modal-overlay')) {
       if (e.key === 'Escape') {
         if (escapeCloseModal()) e.preventDefault();
+        return;
       }
+      handleDiffModalKey(e);
       return;
     }
 
