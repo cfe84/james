@@ -306,6 +306,7 @@
     if (cmd === 'complete') completeSession(e.sessionId);
     else if (cmd === 'delete') deleteSession(e.sessionId, e.name);
     else if (cmd === 'edit') showEditSessionModal(e.sessionId);
+    else if (cmd === 'duplicate') openDuplicateWizard(e.sessionId);
   }
 
   // Scroll the chat message pane by a half page (dir: -1 up, 1 down).
@@ -693,13 +694,14 @@
   // the source session's details (via `show session`) to prefill the form and
   // pre-select the source's moneypenny/path, then submits via `copy session`
   // (which inherits any field the user leaves untouched).
-  async function openDuplicateWizard() {
-    if (!currentSession) return;
+  async function openDuplicateWizard(sessionId) {
+    const srcId = sessionId || currentSession;
+    if (!srcId) return;
     if (traitsCache.length === 0) await loadTraitsCache();
     renderWizardModal(`<h3>Duplicate Agent</h3><div class="loading">Loading...</div>`);
     let s;
     try {
-      const resp = await apiCall('show', 'session', [currentSession]);
+      const resp = await apiCall('show', 'session', [srcId]);
       if (resp.status === 'error') {
         renderWizardModal(`<h3>Duplicate Agent</h3><div class="empty-state">Error: ${escapeHtml(resp.message)}</div>
           <div class="modal-actions"><button class="btn-muted" onclick="window._qewCloseWizard()">Close</button></div>`);
@@ -714,7 +716,7 @@
     wizardState = {
       step: 1, moneypennies: [], selectedMP: s.moneypenny || '',
       currentPath: s.path || '~', projects: projectsCache,
-      copy: true, source: s, sourceId: currentSession,
+      copy: true, source: s, sourceId: srcId,
     };
     showWizardStep1();
   }
@@ -741,6 +743,7 @@
         <div class="cmd-list">
           <button class="cmd-item" data-cmd="complete"><kbd>c</kbd> Complete session</button>
           <button class="cmd-item" data-cmd="edit"><kbd>e</kbd> Edit session</button>
+          <button class="cmd-item" data-cmd="duplicate"><kbd>y</kbd> Duplicate session</button>
           <button class="cmd-item" data-cmd="diff"><kbd>g</kbd> Git diff</button>
           <button class="cmd-item" data-cmd="stop"><kbd>s</kbd> Stop session</button>
           <button class="cmd-item" data-cmd="delete" style="color:var(--danger)"><kbd>d</kbd> Delete session</button>
@@ -779,6 +782,7 @@
     switch (cmd) {
       case 'complete': completeSession(); break;
       case 'edit':     showEditSessionModal(); break;
+      case 'duplicate': openDuplicateWizard(); break;
       case 'diff':     showDiff(); break;
       case 'stop':     stopSession(); break;
       case 'delete':   deleteSession(); break;
@@ -2784,7 +2788,7 @@
     if (cmdPaletteOpen && document.querySelector('.cmd-palette')) {
       if (e.key === 'Escape') { e.preventDefault(); closeCmdPalette(true); return; }
       if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
-      const map = { c: 'complete', e: 'edit', g: 'diff', s: 'stop', d: 'delete', q: 'back' };
+      const map = { c: 'complete', e: 'edit', y: 'duplicate', g: 'diff', s: 'stop', d: 'delete', q: 'back' };
       const cmd = map[e.key];
       if (cmd) { e.preventDefault(); runCmd(cmd); }
       return;
@@ -2840,6 +2844,7 @@
       case 'c': e.preventDefault(); dashAction('complete'); break;
       case 'd': e.preventDefault(); dashAction('delete'); break;
       case 'e': e.preventDefault(); dashAction('edit'); break;
+      case 'y': e.preventDefault(); dashAction('duplicate'); break;
     }
   });
 
