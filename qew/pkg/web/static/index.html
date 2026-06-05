@@ -161,6 +161,8 @@ header h1 span { color: var(--primary); }
 .working-indicator { color: var(--success); font-weight: 500; padding: 8px 0; }
 .activity-indicator { color: var(--muted); font-size: 0.85em; font-style: italic; padding: 2px 0; white-space: pre-wrap; word-break: break-word; }
 .msg.thought { color: var(--muted); font-size: 0.9em; font-style: italic; padding: 4px 0 4px 16px; white-space: pre-wrap; word-break: break-word; }
+.msg.system-note { color: var(--muted); font-size: 0.85em; font-style: italic; padding: 4px 0 4px 16px; white-space: pre-wrap; word-break: break-word; opacity: 0.85; }
+#thoughts-toggle.active { filter: none; }
 .msg.thought code, .msg.thought pre { color: var(--muted); }
 .schedule-indicator { color: var(--warning); font-size: 0.9em; padding: 4px 0; }
 .subagent-indicator { color: var(--primary); font-size: 0.9em; padding: 4px 0; }
@@ -377,6 +379,7 @@ header h1 span { color: var(--primary); }
       <span class="back" id="chat-back">←</span>
       <h2 id="chat-title">Chat</h2>
       <span class="chat-mp" id="chat-mp"></span>
+      <button id="thoughts-toggle" title="Train of thought hidden (click to show) — T" style="background:none;border:none;font-size:1.2em;cursor:pointer;margin-right:4px">💤</button>
       <div class="dropdown" id="chat-menu-wrap">
         <button class="btn-muted" id="chat-menu-btn">Actions ▾</button>
         <div class="dropdown-menu" id="chat-menu">

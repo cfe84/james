@@ -26,6 +26,10 @@
   let lastSessionStates = {}; // track WORKING→READY transitions for notifications
   let parentSessionStack = []; // stack for subagent navigation
   let soundEnabled = true;
+  // Show persisted train-of-thought (thinking/agent_text) turns. When off, those
+  // turns are hidden; live activity for the in-progress turn is still shown while
+  // the agent is working. Persisted across reloads.
+  let showThoughts = (localStorage.getItem('qewShowThoughts') === '1');
   let projectFilter = ''; // current project filter
   let projectsCache = []; // cached project list
   let dashEntries = [];   // dashboard rows in display order (for keyboard nav)
@@ -671,15 +675,24 @@
     }
 
     let html = '';
+    let skippedThoughts = false;
     for (const turn of serverTurns) {
       const agentName = currentSessionName || 'agent';
       const content = turn.content || '(empty)';
 
       // Train-of-thought turns get a compact, indented, gray rendering with
-      // the emoji inline — no role-name header.
+      // the emoji inline — no role-name header. Hidden unless the toggle is on.
       if (turn.role === 'thinking' || turn.role === 'agent_text') {
+        if (!showThoughts) { skippedThoughts = true; continue; }
         const icon = turn.role === 'thinking' ? '💭' : '📝';
         html += `<div class="msg thought">${icon} ${formatContent(content)}</div>`;
+        continue;
+      }
+
+      // System turns (e.g. agent process errors) are de-emphasized so they don't
+      // read like the agent's final answer.
+      if (turn.role === 'system') {
+        html += `<div class="msg system-note">⚙ ${formatContent(content)}</div>`;
         continue;
       }
 
@@ -687,7 +700,6 @@
       switch (turn.role) {
         case 'user':       roleLabel = '🧑‍💻 you'; break;
         case 'assistant':  roleLabel = '🕴️ ' + agentName; break;
-        case 'system':     roleLabel = '⚙ system'; break;
         default:           roleLabel = turn.role;
       }
       const roleClass = turn.role;
@@ -734,6 +746,15 @@
         const num = sub.yolo ? '00' + (si + 1) : String(si + 1);
         html += `<div class="msg subagent-indicator" style="cursor:pointer" onclick="window._openSubagent('${sub.sessionId}','${escapeHtml(name)}')">🕴️ ${num} ${escapeHtml(name)} [${escapeHtml(sub.status)}]</div>`;
       }
+    }
+    // If every server turn was a hidden train-of-thought turn (and there are no
+    // indicators/queued messages), show a hint instead of leaving the pane on
+    // its stale/loading content — `html===''` would otherwise match an empty
+    // `lastChatHTML` and skip the DOM update below.
+    if (html === '') {
+      html = skippedThoughts
+        ? '<div class="empty-state">Train of thought hidden — press 💭 (or t) to show</div>'
+        : '<div class="empty-state">No messages yet</div>';
     }
     // Skip re-render if content hasn't changed (preserves selection and scroll).
     // A forced bottom-scroll (after sending) must still run, so don't skip then.
@@ -855,6 +876,7 @@
           <button class="cmd-item" data-cmd="edit"><kbd>e</kbd> Edit session</button>
           <button class="cmd-item" data-cmd="duplicate"><kbd>y</kbd> Duplicate session</button>
           <button class="cmd-item" data-cmd="diff"><kbd>g</kbd> Git diff</button>
+          <button class="cmd-item" data-cmd="thoughts"><kbd>t</kbd> Toggle train of thought</button>
           <button class="cmd-item" data-cmd="stop"><kbd>s</kbd> Stop session</button>
           <button class="cmd-item" data-cmd="delete" style="color:var(--danger)"><kbd>d</kbd> Delete session</button>
           <button class="cmd-item" data-cmd="back"><kbd>q</kbd> Back to session list</button>
@@ -894,6 +916,7 @@
       case 'edit':     showEditSessionModal(); break;
       case 'duplicate': openDuplicateWizard(); break;
       case 'diff':     showDiff(); break;
+      case 'thoughts': toggleThoughts(); break;
       case 'stop':     stopSession(); break;
       case 'delete':   deleteSession(); break;
       case 'back':     closeChat(); break;
@@ -2866,11 +2889,31 @@
     btn.title = soundEnabled ? 'Sound on (click to mute)' : 'Sound off (click to unmute)';
   }
 
+  // toggleThoughts shows/hides persisted train-of-thought turns in the open chat.
+  function toggleThoughts() {
+    showThoughts = !showThoughts;
+    localStorage.setItem('qewShowThoughts', showThoughts ? '1' : '0');
+    syncThoughtsToggle();
+    lastChatHTML = ''; // force re-render
+    renderChat();
+  }
+
+  function syncThoughtsToggle() {
+    const btn = document.getElementById('thoughts-toggle');
+    if (!btn) return;
+    btn.textContent = showThoughts ? '💭' : '💤';
+    btn.title = showThoughts ? 'Train of thought shown (click to hide) — T'
+                             : 'Train of thought hidden (click to show) — T';
+    btn.classList.toggle('active', showThoughts);
+  }
+
   // --- Init ---
 
   document.getElementById('chat-back').addEventListener('click', closeChat);
   document.getElementById('chat-send').addEventListener('click', sendMessage);
   document.getElementById('sound-toggle').addEventListener('click', toggleSound);
+  document.getElementById('thoughts-toggle').addEventListener('click', toggleThoughts);
+  syncThoughtsToggle();
   document.getElementById('new-session-btn').addEventListener('click', openCreateWizard);
   document.getElementById('nav-moneypennies-btn').addEventListener('click', showMoneypenniesView);
   document.getElementById('nav-projects-btn').addEventListener('click', showProjectsView);
@@ -2971,6 +3014,25 @@
     return false;
   }
 
+  // Cmd/Ctrl+Enter inside a modal triggers its primary call-to-action button
+  // (the single non-muted .btn in the modal's action row), mirroring Escape's
+  // dismiss behaviour. Does nothing when the CTA is ambiguous (zero or several
+  // primary buttons, e.g. the git diff view's multiple actions). Returns true
+  // if a button was clicked.
+  function submitModalCTA() {
+    const overlay = document.querySelector('.modal-overlay');
+    if (!overlay) return false;
+    const modal = overlay.querySelector('.modal');
+    if (!modal) return false;
+    const rows = modal.querySelectorAll(':scope > .modal-actions');
+    for (const row of rows) {
+      const btns = Array.from(row.querySelectorAll('button.btn:not(.btn-muted)'))
+        .filter(b => b.offsetParent !== null && !b.disabled);
+      if (btns.length === 1) { btns[0].click(); return true; }
+    }
+    return false;
+  }
+
   document.addEventListener('keydown', (e) => {
     // Ignore IME composition and auto-repeat for shortcut handling.
     if (e.isComposing) return;
@@ -2979,7 +3041,7 @@
     if (cmdPaletteOpen && document.querySelector('.cmd-palette')) {
       if (e.key === 'Escape') { e.preventDefault(); closeCmdPalette(true); return; }
       if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
-      const map = { c: 'complete', e: 'edit', y: 'duplicate', g: 'diff', s: 'stop', d: 'delete', q: 'back' };
+      const map = { c: 'complete', e: 'edit', y: 'duplicate', g: 'diff', t: 'thoughts', s: 'stop', d: 'delete', q: 'back' };
       const cmd = map[e.key];
       if (cmd) { e.preventDefault(); runCmd(cmd); }
       return;
@@ -2991,6 +3053,15 @@
     if (document.querySelector('.modal-overlay')) {
       if (e.key === 'Escape') {
         if (escapeCloseModal()) e.preventDefault();
+        return;
+      }
+      // Cmd/Ctrl+Enter submits the modal's primary action. The diff comment
+      // editor has its own Cmd/Ctrl+Enter (save comment), so defer to it when
+      // focus is inside that editor.
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        const active = document.activeElement;
+        if (active && active.closest('.diff-comment-editor')) return;
+        if (submitModalCTA()) e.preventDefault();
         return;
       }
       if (handleDiffModalKey(e)) return;

@@ -99,6 +99,7 @@ type chatModel struct {
 	polling       bool // a poll loadHistory is in-flight
 	sending       bool
 	commandMode      bool
+	showThoughts     bool // show persisted train-of-thought turns (toggle with T)
 	confirmDelete    bool
 	pickingSubagent      bool // subagent picker overlay
 	subagentCursor       int
@@ -1527,6 +1528,9 @@ func (m chatModel) View() string {
 		// no agent-name prefix, content is indented and gray with the emoji
 		// inline at the first line.
 		if turn.Role == "thinking" || turn.Role == "agent_text" {
+			if !m.showThoughts {
+				continue
+			}
 			icon := "💭"
 			if turn.Role == "agent_text" {
 				icon = "📝"

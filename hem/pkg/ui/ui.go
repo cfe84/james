@@ -1571,6 +1571,11 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.currentView = viewSummary
 			m.previousView = viewChat
 			return m, m.summary.loadSummary()
+		case "T":
+			// Toggle visibility of persisted train-of-thought turns.
+			m.chat.confirmDelete = false
+			m.chat.showThoughts = !m.chat.showThoughts
+			return m, nil
 		case "f":
 			m.chat.confirmDelete = false
 			m.chat.browsingFiles = true
@@ -2103,6 +2108,12 @@ func (m Model) renderStatusBar() string {
 				statusKeyStyle.Render("s") + statusDescStyle.Render(" stop"),
 				statusKeyStyle.Render("S") + statusDescStyle.Render(" summarize"),
 				statusKeyStyle.Render("t") + statusDescStyle.Render(" schedule"),
+				statusKeyStyle.Render("T") + statusDescStyle.Render(func() string {
+					if m.chat.showThoughts {
+						return " hide thoughts"
+					}
+					return " show thoughts"
+				}()),
 				statusKeyStyle.Render("f") + statusDescStyle.Render(" files"),
 				statusKeyStyle.Render("m") + statusDescStyle.Render(" memory"),
 				statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
