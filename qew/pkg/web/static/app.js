@@ -30,6 +30,7 @@
   let projectsCache = []; // cached project list
   let dashEntries = [];   // dashboard rows in display order (for keyboard nav)
   let dashSelectedId = ''; // session id of keyboard-selected dashboard row
+  let mgmtCursor = 0;      // selected row index in the active mgmt list (moneypennies/traits)
   let cmdPaletteOpen = false; // the in-conversation command palette modal is open
   let traitsCache = []; // cached trait list [{id,name,preview}]
   let chatInputCache = {}; // sessionId → draft text
@@ -307,6 +308,115 @@
     else if (cmd === 'delete') deleteSession(e.sessionId, e.name);
     else if (cmd === 'edit') showEditSessionModal(e.sessionId);
     else if (cmd === 'duplicate') openDuplicateWizard(e.sessionId);
+  }
+
+  // --- Management list keyboard navigation (moneypennies / traits views) ---
+
+  // activeMgmtList returns the visible management list ({kind, container}) or
+  // null. Moneypennies and traits both render `.mgmt-row` rows; only one of the
+  // two views is ever visible at a time.
+  function activeMgmtList() {
+    const mp = document.getElementById('moneypennies-view');
+    if (mp && mp.style.display !== 'none') return { kind: 'mp', container: document.getElementById('mp-content') };
+    const tr = document.getElementById('traits-view');
+    if (tr && tr.style.display !== 'none') return { kind: 'trait', container: document.getElementById('trait-content') };
+    return null;
+  }
+
+  function mgmtRows(container) {
+    return container ? Array.from(container.querySelectorAll('.mgmt-row')) : [];
+  }
+
+  // applyMgmtCursor highlights the row at mgmtCursor (clamped) in the given
+  // container; called after each (re)render so the selection survives reloads.
+  function applyMgmtCursor(container, scroll) {
+    const rows = mgmtRows(container);
+    if (!rows.length) { mgmtCursor = 0; return; }
+    mgmtCursor = Math.min(rows.length - 1, Math.max(0, mgmtCursor));
+    rows.forEach((r, i) => r.classList.toggle('selected', i === mgmtCursor));
+    if (scroll && rows[mgmtCursor]) rows[mgmtCursor].scrollIntoView({ block: 'nearest' });
+  }
+
+  function mgmtMove(delta) {
+    const a = activeMgmtList();
+    if (!a) return;
+    const rows = mgmtRows(a.container);
+    if (!rows.length) return;
+    mgmtCursor = Math.min(rows.length - 1, Math.max(0, mgmtCursor + delta));
+    applyMgmtCursor(a.container, true);
+  }
+
+  // mgmtAction runs the per-view keyboard shortcut for the selected row,
+  // mirroring the hem TUI: moneypennies — enter=ping, e=toggle enabled,
+  // s=set default, d=delete, n=new; traits — enter/e=edit, d=delete, n=new.
+  // Returns true if the key was handled.
+  function mgmtAction(key) {
+    const a = activeMgmtList();
+    if (!a) return false;
+    const row = mgmtRows(a.container)[mgmtCursor];
+    if (a.kind === 'mp') {
+      const btn = row && row.querySelector('button[data-mp]');
+      const name = btn ? btn.dataset.mp : null;
+      switch (key) {
+        case 'Enter': if (name) pingMoneypenny(name); return true;
+        case 'e': if (name) toggleMoneypennyEnabled(name); return true;
+        case 's': if (name) setDefaultMoneypenny(name); return true;
+        case 'd': if (name) deleteMoneypenny(name); return true;
+        case 'n': showAddMoneypennyModal(); return true;
+      }
+    } else {
+      const btn = row && row.querySelector('button[data-trait-id]');
+      const id = btn ? btn.dataset.traitId : null;
+      // The trait name lives on the delete button (the edit button omits it).
+      const delBtn = row && row.querySelector('button[data-action="delete"][data-trait-name]');
+      const tname = delBtn ? delBtn.dataset.traitName : null;
+      switch (key) {
+        case 'Enter': case 'e': if (id) showEditTraitModal(id); return true;
+        case 'd': if (id) deleteTrait(id, tname); return true;
+        case 'n': showCreateTraitModal(); return true;
+      }
+    }
+    return false;
+  }
+
+  // handleWizardListKey gives keyboard navigation to the create/duplicate
+  // wizard's list steps: the moneypenny picker (`.dir-entry[data-mp]`, j/k move
+  // the selection, Enter advances) and the path browser (`.dir-entry[data-path]`,
+  // j/k move, Enter opens the directory). Returns true if it handled the key.
+  function handleWizardListKey(e) {
+    const overlay = document.querySelector('.modal-overlay');
+    if (!overlay) return false;
+    if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return false;
+    const tag = (e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable) return false;
+    const onButton = tag === 'button' || tag === 'a';
+    const nav = (entries, onEnter) => {
+      let idx = entries.findIndex(el => el.classList.contains('selected'));
+      if (e.key === 'ArrowDown' || e.key === 'j') idx = Math.min(entries.length - 1, (idx < 0 ? -1 : idx) + 1);
+      else if (e.key === 'ArrowUp' || e.key === 'k') idx = Math.max(0, (idx < 0 ? 0 : idx) - 1);
+      else if (e.key === 'Enter') {
+        // Let a focused button (Cancel/Back/Next/…) activate natively.
+        if (onButton) return false;
+        e.preventDefault(); onEnter(idx); return true;
+      }
+      else return false;
+      e.preventDefault();
+      entries.forEach((el, i) => el.classList.toggle('selected', i === idx));
+      entries[idx].scrollIntoView({ block: 'nearest' });
+      return true;
+    };
+    const mpEntries = Array.from(overlay.querySelectorAll('.dir-entry[data-mp]'));
+    if (mpEntries.length) {
+      return nav(mpEntries, (idx) => {
+        if (idx >= 0) wizardState.selectedMP = mpEntries[idx].dataset.mp;
+        showWizardStep2();
+      });
+    }
+    const pathEntries = Array.from(overlay.querySelectorAll('.dir-entry[data-path]'));
+    if (pathEntries.length) {
+      return nav(pathEntries, (idx) => { if (idx >= 0) pathEntries[idx].click(); });
+    }
+    return false;
   }
 
   // Scroll the chat message pane by a half page (dir: -1 up, 1 down).
@@ -1937,6 +2047,7 @@
     document.getElementById('dashboard-view').style.display = 'none';
     document.getElementById('moneypennies-view').style.display = 'flex';
     stopDashboardPoll();
+    mgmtCursor = 0;
     loadMoneypennies();
   }
 
@@ -1991,6 +2102,7 @@
           else if (action === 'delete') deleteMoneypenny(mp);
         });
       });
+      applyMgmtCursor(container, false);
     } catch (e) {
       container.innerHTML = `<div class="empty-state">Error: ${escapeHtml(e.message)}</div>`;
     }
@@ -2447,6 +2559,7 @@
     document.getElementById('dashboard-view').style.display = 'none';
     document.getElementById('traits-view').style.display = 'flex';
     stopDashboardPoll();
+    mgmtCursor = 0;
     loadTraitsList();
   }
 
@@ -2496,6 +2609,7 @@
           else if (action === 'delete') deleteTrait(id, btn.dataset.traitName);
         });
       });
+      applyMgmtCursor(container, false);
     } catch (e) {
       container.innerHTML = `<div class="empty-state">Error: ${escapeHtml(e.message)}</div>`;
     }
@@ -2879,7 +2993,8 @@
         if (escapeCloseModal()) e.preventDefault();
         return;
       }
-      handleDiffModalKey(e);
+      if (handleDiffModalKey(e)) return;
+      handleWizardListKey(e);
       return;
     }
 
@@ -2894,6 +3009,26 @@
       if ((e.ctrlKey || e.metaKey) && (e.key === 'u' || e.key === 'U')) {
         e.preventDefault(); chatScroll(-1); return;
       }
+      return;
+    }
+
+    // Moneypennies / traits management list views: list navigation + shortcuts.
+    const mgmt = activeMgmtList();
+    if (mgmt) {
+      if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+      const tag = (e.target.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable) return;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        if (mgmt.kind === 'mp') hideMoneypenniesView(); else hideTraitsView();
+        return;
+      }
+      if (e.key === 'ArrowDown' || e.key === 'j') { e.preventDefault(); mgmtMove(1); return; }
+      if (e.key === 'ArrowUp' || e.key === 'k') { e.preventDefault(); mgmtMove(-1); return; }
+      // Let Enter activate a focused row/toolbar button natively (e.g. after a
+      // mouse click) instead of hijacking it for the selected-row action.
+      if (e.key === 'Enter' && (tag === 'button' || tag === 'a')) return;
+      if (mgmtAction(e.key)) e.preventDefault();
       return;
     }
 
