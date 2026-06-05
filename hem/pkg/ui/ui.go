@@ -225,6 +225,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.chat.pickingSubagent = false
 					return m, nil
 				}
+				if m.chat.pickingModel || m.chat.pickingEffort {
+					m.chat.pickingModel = false
+					m.chat.pickingEffort = false
+					return m, nil
+				}
 				if m.chat.pickingSchedule {
 					m.chat.pickingSchedule = false
 					m.chat.confirmDeleteSchedule = false
@@ -611,7 +616,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.chat.width = m.width
 		m.chat.height = m.viewHeight()
 		m.chat.isSubagent = true
-		return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), m.chat.chatPollTickAdaptive())
+		return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), m.chat.loadOverrideConfig(), m.chat.chatPollTickAdaptive())
 
 	case broadcastMsg, broadcastReconnectMsg:
 		// Route dashboard broadcast messages.
@@ -725,7 +730,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusMsg = "Session updated"
 		if m.previousView == viewChat {
 			m.currentView = viewChat
-			return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), m.chat.chatPollTickAdaptive())
+			return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), m.chat.loadOverrideConfig(), m.chat.chatPollTickAdaptive())
 		}
 		m.currentView = viewSessions
 		m.sessions.loading = true
@@ -829,7 +834,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.currentView = viewChat
 		m.previousView = viewDashboard
 		if cm.response == "" {
-			return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), m.chat.chatPollTickAdaptive())
+			return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), m.chat.loadOverrideConfig(), m.chat.chatPollTickAdaptive())
 		}
 		return m, m.chat.chatPollTickAdaptive()
 	}
@@ -1039,7 +1044,7 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.currentView = viewChat
 			m.previousView = viewDashboard
 			uilog("dashboard: switched to viewChat, loading history+activity")
-			return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), m.chat.chatPollTickAdaptive())
+			return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), m.chat.loadOverrideConfig(), m.chat.chatPollTickAdaptive())
 		}
 		uilog("dashboard: enter pressed but no entry selected")
 	case "c":
@@ -1260,7 +1265,7 @@ func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.chat.height = m.viewHeight()
 			m.currentView = viewChat
 			m.previousView = viewProjectDetail
-			return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), m.chat.chatPollTickAdaptive())
+			return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), m.chat.loadOverrideConfig(), m.chat.chatPollTickAdaptive())
 		}
 	case "c":
 		e := m.projectDetail.selectedEntry()
@@ -1376,7 +1381,7 @@ func (m Model) updateSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.currentView = viewChat
 			m.previousView = viewSessions
 			uilog("sessions: switched to viewChat, loading history+activity")
-			return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), m.chat.chatPollTickAdaptive())
+			return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), m.chat.loadOverrideConfig(), m.chat.chatPollTickAdaptive())
 		}
 	case "n":
 		m.wizard = newWizardModel(m.client)
@@ -1463,7 +1468,7 @@ func (m Model) updateSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.chat.commandMode && !m.chat.pickingSubagent && !m.chat.creatingSubagent && !m.chat.pickingSchedule {
+	if m.chat.commandMode && !m.chat.pickingSubagent && !m.chat.creatingSubagent && !m.chat.pickingSchedule && !m.chat.pickingModel && !m.chat.pickingEffort {
 		switch msg.String() {
 		case "s":
 			m.chat.confirmDelete = false
@@ -1576,7 +1581,24 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.chat.confirmDelete = false
 			m.chat.showThoughts = !m.chat.showThoughts
 			return m, nil
+		case "o":
+			// Model override picker (esc-o).
+			m.chat.confirmDelete = false
+			m.chat.pickingModel = true
+			m.chat.pickingEffort = false
+			m.chat.overrideCursor = 0
+			if len(m.chat.availableModels) == 0 {
+				return m, m.chat.loadOverrideConfig()
+			}
+			return m, nil
 		case "f":
+			// Effort override picker (esc-f).
+			m.chat.confirmDelete = false
+			m.chat.pickingEffort = true
+			m.chat.pickingModel = false
+			m.chat.overrideCursor = 0
+			return m, nil
+		case "b":
 			m.chat.confirmDelete = false
 			m.chat.browsingFiles = true
 			m.chat.browserLoading = true
@@ -1609,7 +1631,7 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if len(m.parentChats) > 0 {
 				m.chat = m.parentChats[len(m.parentChats)-1]
 				m.parentChats = m.parentChats[:len(m.parentChats)-1]
-				return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), m.chat.chatPollTickAdaptive())
+				return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), m.chat.loadOverrideConfig(), m.chat.chatPollTickAdaptive())
 			}
 			// Save draft and leave to previous view.
 			m = m.withChatDraftSaved()
@@ -2092,13 +2114,13 @@ func (m Model) renderStatusBar() string {
 				statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
 				statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
 			}
-		} else if m.chat.pickingSchedule {
+		} else if m.chat.pickingModel || m.chat.pickingEffort {
 			keys = []string{
-				statusKeyStyle.Render("↵") + statusDescStyle.Render(" new"),
-				statusKeyStyle.Render("d") + statusDescStyle.Render(" cancel schedule"),
-				statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
+				statusKeyStyle.Render("↵") + statusDescStyle.Render(" select"),
+				statusKeyStyle.Render("j/k") + statusDescStyle.Render(" move"),
+				statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
 			}
-		} else if m.chat.commandMode {
+		} else if m.chat.pickingSchedule {
 			keys = []string{
 				statusKeyStyle.Render("a") + statusDescStyle.Render(" subagents"),
 				statusKeyStyle.Render("c") + statusDescStyle.Render(" complete"),
@@ -2114,7 +2136,9 @@ func (m Model) renderStatusBar() string {
 					}
 					return " show thoughts"
 				}()),
-				statusKeyStyle.Render("f") + statusDescStyle.Render(" files"),
+				statusKeyStyle.Render("b") + statusDescStyle.Render(" browse"),
+				statusKeyStyle.Render("o") + statusDescStyle.Render(" model"),
+				statusKeyStyle.Render("f") + statusDescStyle.Render(" effort"),
 				statusKeyStyle.Render("m") + statusDescStyle.Render(" memory"),
 				statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
 				statusKeyStyle.Render("x") + statusDescStyle.Render(" shell"),

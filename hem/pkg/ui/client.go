@@ -271,8 +271,16 @@ type continueResult struct {
 	Queued   bool
 }
 
-func (c *client) continueSession(sessionID, prompt string) (continueResult, error) {
-	resp, err := c.send("continue", "session", sessionID, "--async", prompt)
+func (c *client) continueSession(sessionID, prompt, model, effort string) (continueResult, error) {
+	args := []string{sessionID, "--async"}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	if effort != "" {
+		args = append(args, "--effort", effort)
+	}
+	args = append(args, prompt)
+	resp, err := c.send("continue", "session", args...)
 	if err != nil {
 		return continueResult{}, err
 	}

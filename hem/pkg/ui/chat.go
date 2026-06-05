@@ -114,6 +114,17 @@ type chatModel struct {
 	scheduleCursor       int
 	confirmDeleteSchedule bool
 	workingVerb   string // random spy verb chosen once per working session
+	// Temporary per-conversation model/effort override (reset when leaving the
+	// chat). Empty override = use the session's stored default.
+	sessionAgent   string   // agent type (copilot/claude), for effort option list
+	defaultModel   string   // session's stored model ("" = agent default)
+	defaultEffort  string   // session's stored effort ("" = agent default)
+	overrideModel  string   // active temporary model override
+	overrideEffort string   // active temporary effort override
+	availableModels []string // models discovered for this session's mp+agent
+	pickingModel   bool     // model override picker overlay
+	pickingEffort  bool     // effort override picker overlay
+	overrideCursor int      // cursor in the model/effort picker
 	browsingFiles      bool       // file browser overlay
 	browserPath        string     // current directory in browser
 	browserEntries     []dirEntry // directory listing
@@ -464,8 +475,11 @@ func (m chatModel) loadOlderHistory() tea.Cmd {
 }
 
 func (m chatModel) sendMessage(prompt string) tea.Cmd {
+	model, effort := m.overrideModel, m.overrideEffort
+	sessionID := m.sessionID
+	client := m.client
 	return func() tea.Msg {
-		result, err := m.client.continueSession(m.sessionID, prompt)
+		result, err := client.continueSession(sessionID, prompt, model, effort)
 		return messageSentMsg{response: result.Response, queued: result.Queued, err: err}
 	}
 }
@@ -524,6 +538,35 @@ func (m chatModel) loadActivity() tea.Cmd {
 			uilog("loadActivity: done in %v, events=%d", time.Since(start), len(events))
 		}
 		return activityLoadedMsg{activity: events, err: err}
+	}
+}
+
+type overrideConfigLoadedMsg struct {
+	agent         string
+	defaultModel  string
+	defaultEffort string
+	models        []string
+	err           error
+}
+
+// loadOverrideConfig fetches the session's agent + default model/effort and the
+// list of available models for the model-override picker.
+func (m chatModel) loadOverrideConfig() tea.Cmd {
+	sessionID := m.sessionID
+	mp := m.moneypennyName
+	client := m.client
+	return func() tea.Msg {
+		detail, err := client.showSession(sessionID)
+		if err != nil {
+			return overrideConfigLoadedMsg{err: err}
+		}
+		models, _ := client.listModels(mp, detail.Agent)
+		return overrideConfigLoadedMsg{
+			agent:         detail.Agent,
+			defaultModel:  detail.Model,
+			defaultEffort: detail.Effort,
+			models:        models,
+		}
 	}
 }
 
@@ -689,6 +732,7 @@ func (m chatModel) Init() tea.Cmd {
 		m.loadSchedules(),
 		m.loadSubagents(),
 		m.loadActivity(),
+		m.loadOverrideConfig(),
 		m.chatPollTickAdaptive(),
 	}
 
@@ -941,6 +985,14 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 			}
 		}
 
+	case overrideConfigLoadedMsg:
+		if msg.err == nil {
+			m.sessionAgent = msg.agent
+			m.defaultModel = msg.defaultModel
+			m.defaultEffort = msg.defaultEffort
+			m.availableModels = msg.models
+		}
+
 	case chatSessionStoppedMsg:
 		if msg.err != nil {
 			m.err = msg.err
@@ -1171,6 +1223,46 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 					m.chatInput.Reset()
 					return m, nil
 				}
+			}
+			return m, nil
+		}
+
+		if m.pickingModel || m.pickingEffort {
+			var options []string
+			if m.pickingModel {
+				options = m.availableModels
+				if len(options) == 0 {
+					options = []string{""}
+				}
+			} else {
+				options = effortOptions(m.sessionAgent)
+			}
+			switch msg.String() {
+			case "esc":
+				m.pickingModel = false
+				m.pickingEffort = false
+				return m, nil
+			case "up", "k":
+				if m.overrideCursor > 0 {
+					m.overrideCursor--
+				}
+			case "down", "j":
+				if m.overrideCursor < len(options)-1 {
+					m.overrideCursor++
+				}
+			case "enter":
+				if m.overrideCursor >= 0 && m.overrideCursor < len(options) {
+					sel := options[m.overrideCursor]
+					if m.pickingModel {
+						m.overrideModel = sel
+					} else {
+						m.overrideEffort = sel
+					}
+				}
+				m.pickingModel = false
+				m.pickingEffort = false
+				m.commandMode = false
+				return m, nil
 			}
 			return m, nil
 		}
@@ -1465,6 +1557,27 @@ func (m chatModel) View() string {
 		title = fmt.Sprintf("%s(%s) ", title, m.moneypennyName)
 	}
 	b.WriteString(titleStyle.Render(title))
+	// Model/effort override indicator.
+	curModel := m.overrideModel
+	if curModel == "" {
+		curModel = m.defaultModel
+	}
+	if curModel == "" {
+		curModel = "default"
+	}
+	curEffort := m.overrideEffort
+	if curEffort == "" {
+		curEffort = m.defaultEffort
+	}
+	if curEffort == "" {
+		curEffort = "default"
+	}
+	ovLabel := fmt.Sprintf(" 🧠 %s · ⚙ %s", curModel, curEffort)
+	ovStyle := lipgloss.NewStyle().Foreground(colorMuted)
+	if m.overrideModel != "" || m.overrideEffort != "" {
+		ovStyle = lipgloss.NewStyle().Foreground(colorWarning).Bold(true)
+	}
+	b.WriteString(ovStyle.Render(ovLabel))
 	b.WriteString("\n")
 
 	if m.loading {
@@ -1728,6 +1841,45 @@ func (m chatModel) View() string {
 		errLine := lipgloss.NewStyle().Foreground(colorDanger).Render(fmt.Sprintf("  Error: %v", m.err))
 		b.WriteString(errLine)
 		b.WriteString("\n")
+	}
+
+	// Model/effort override picker overlay
+	if m.pickingModel || m.pickingEffort {
+		var options []string
+		var title string
+		if m.pickingModel {
+			title = " 🧠 Model override: "
+			options = m.availableModels
+			if len(options) == 0 {
+				options = []string{""}
+			}
+		} else {
+			title = " ⚙ Effort override: "
+			options = effortOptions(m.sessionAgent)
+		}
+		b.WriteString(lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render(title))
+		b.WriteString("\n")
+		for i, opt := range options {
+			label := opt
+			if opt == "" {
+				dflt := m.defaultModel
+				if m.pickingEffort {
+					dflt = m.defaultEffort
+				}
+				if dflt == "" {
+					dflt = "agent default"
+				}
+				label = "Default (" + dflt + ")"
+			}
+			line := "  " + label
+			if i == m.overrideCursor {
+				b.WriteString(sessionSelectedStyle.Render(line))
+			} else {
+				b.WriteString(sessionNormalStyle.Render(line))
+			}
+			b.WriteString("\n")
+		}
+		return b.String()
 	}
 
 	// Subagent picker overlay

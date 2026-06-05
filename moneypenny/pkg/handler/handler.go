@@ -305,14 +305,25 @@ func (h *Handler) continueSession(ctx context.Context, cmd *envelope.Command) *e
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to add conversation turn: %v", err))
 	}
 
+	// Resolve the effective model/effort: a per-prompt override (when supplied)
+	// takes precedence over the session's stored default.
+	effModel := sess.Model
+	if data.Model != "" {
+		effModel = data.Model
+	}
+	effEffort := sess.Effort
+	if data.Effort != "" {
+		effEffort = data.Effort
+	}
+
 	// Run agent asynchronously with Resume=true.
 	go h.runAgent(data.SessionID, agent.RunParams{
 		SessionID:    data.SessionID,
 		Agent:        sess.Agent,
 		Prompt:       data.Prompt,
 		SystemPrompt: sess.SystemPrompt,
-		Model:        sess.Model,
-		Effort:       sess.Effort,
+		Model:        effModel,
+		Effort:       effEffort,
 		Yolo:         sess.Yolo,
 		Path:         sess.Path,
 		Resume:       true,
@@ -341,7 +352,7 @@ func (h *Handler) queuePrompt(_ context.Context, cmd *envelope.Command) *envelop
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, fmt.Sprintf("session not found: %s", data.SessionID))
 	}
 
-	if err := h.store.QueuePrompt(data.SessionID, data.Prompt); err != nil {
+	if err := h.store.QueuePrompt(data.SessionID, data.Prompt, data.Model, data.Effort); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to queue prompt: %v", err))
 	}
 
@@ -565,14 +576,18 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 
 	h.vlog("agent completed for session %s", sessionID)
 
-	// Check for queued prompts before going idle.
-	prompts, err := h.store.DrainQueue(sessionID)
+	// Check for queued prompts before going idle. Drain one override-group at a
+	// time: prompts sharing the same per-prompt model/effort override are
+	// processed together, and the next group (if any) is handled by the
+	// recursive drain at the end of this run. This honors distinct overrides
+	// without re-inserting prompts, so queue order is always preserved.
+	group, err := h.store.DrainQueueGroup(sessionID)
 	if err != nil {
 		h.vlog("failed to drain queue for session %s: %v", sessionID, err)
 	}
 
-	if len(prompts) > 0 {
-		h.vlog("processing %d queued prompt(s) for session %s", len(prompts), sessionID)
+	if len(group) > 0 {
+		h.vlog("processing %d queued prompt(s) for session %s", len(group), sessionID)
 
 		// Re-fetch session for latest settings.
 		sess, err := h.store.GetSession(sessionID)
@@ -582,22 +597,36 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 			return
 		}
 
-		// Process each queued prompt as its own turn.
-		for _, prompt := range prompts {
-			if err := h.store.AddConversationTurn(sessionID, "user", prompt); err != nil {
+		first := group[0]
+
+		// Process each prompt in the group as its own conversation turn.
+		texts := make([]string, 0, len(group))
+		for _, qp := range group {
+			if err := h.store.AddConversationTurn(sessionID, "user", qp.Prompt); err != nil {
 				h.vlog("failed to add queued conversation turn for session %s: %v", sessionID, err)
 			}
+			texts = append(texts, qp.Prompt)
 		}
 
-		// Continue with all queued prompts joined for the agent.
-		combinedPrompt := strings.Join(prompts, "\n")
+		// A per-prompt override (when present) wins over the session default.
+		effModel := sess.Model
+		if first.Model != "" {
+			effModel = first.Model
+		}
+		effEffort := sess.Effort
+		if first.Effort != "" {
+			effEffort = first.Effort
+		}
+
+		// Continue with this group's prompts joined for the agent.
+		combinedPrompt := strings.Join(texts, "\n")
 		h.runAgent(sessionID, agent.RunParams{
 			SessionID:    sessionID,
 			Agent:        sess.Agent,
 			Prompt:       combinedPrompt,
 			SystemPrompt: sess.SystemPrompt,
-			Model:        sess.Model,
-			Effort:       sess.Effort,
+			Model:        effModel,
+			Effort:       effEffort,
 			Yolo:         sess.Yolo,
 			Path:         sess.Path,
 			Resume:       true,
@@ -1610,7 +1639,7 @@ func (h *Handler) processDueSchedules() {
 			})
 		} else {
 			// Session is busy — queue the prompt, it'll run after current task finishes.
-			if err := h.store.QueuePrompt(sch.SessionID, sch.Prompt); err != nil {
+			if err := h.store.QueuePrompt(sch.SessionID, sch.Prompt, "", ""); err != nil {
 				h.vlog("scheduler: failed to queue prompt for session %s: %v", sch.SessionID, err)
 				_ = h.store.UpdateScheduleStatus(sch.ID, store.SchedulePending)
 				continue

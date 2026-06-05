@@ -124,6 +124,8 @@ CREATE TABLE IF NOT EXISTS prompt_queue (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     prompt TEXT NOT NULL,
+    model TEXT NOT NULL DEFAULT '',
+    effort TEXT NOT NULL DEFAULT '',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -158,6 +160,12 @@ CREATE INDEX IF NOT EXISTS idx_schedules_pending ON schedules(status, scheduled_
 
 	// Migration: add memory column to sessions if missing.
 	db.Exec(`ALTER TABLE sessions ADD COLUMN memory TEXT NOT NULL DEFAULT ''`)
+
+	// Migration: add per-prompt model/effort override columns to prompt_queue.
+	// These carry a temporary override chosen for a specific queued message so
+	// it is honored when the queue is later drained (empty = use session default).
+	db.Exec(`ALTER TABLE prompt_queue ADD COLUMN model TEXT NOT NULL DEFAULT ''`)
+	db.Exec(`ALTER TABLE prompt_queue ADD COLUMN effort TEXT NOT NULL DEFAULT ''`)
 
 	return nil
 }
@@ -505,11 +513,21 @@ func (s *Store) GetConversationPaginated(sessionID string, limit, offset int) ([
 	return turns, rows.Err()
 }
 
-// QueuePrompt adds a prompt to the queue for a session.
-func (s *Store) QueuePrompt(sessionID, prompt string) error {
+// QueuedPrompt is a queued prompt with its optional per-prompt model/effort
+// override (empty strings mean "use the session default").
+type QueuedPrompt struct {
+	Prompt string
+	Model  string
+	Effort string
+}
+
+// QueuePrompt adds a prompt to the queue for a session. The model/effort
+// override (may be empty) is stored so a temporary override chosen while the
+// session was busy is honored when the queue is drained.
+func (s *Store) QueuePrompt(sessionID, prompt, model, effort string) error {
 	_, err := s.db.Exec(
-		`INSERT INTO prompt_queue (session_id, prompt) VALUES (?, ?)`,
-		sessionID, prompt,
+		`INSERT INTO prompt_queue (session_id, prompt, model, effort) VALUES (?, ?, ?, ?)`,
+		sessionID, prompt, model, effort,
 	)
 	if err != nil {
 		return fmt.Errorf("queue prompt: %w", err)
@@ -517,10 +535,69 @@ func (s *Store) QueuePrompt(sessionID, prompt string) error {
 	return nil
 }
 
+// DrainQueueGroup removes and returns the leading contiguous run of queued
+// prompts that share the same model/effort override (ordered by creation time),
+// leaving the remainder untouched. Processing one override-group per call (and
+// re-invoking after each agent run) lets distinct overrides be honored without
+// ever re-inserting prompts — so ordering is preserved and a later-arriving
+// prompt can never jump ahead of the remainder. Returns an empty slice when the
+// queue is empty.
+func (s *Store) DrainQueueGroup(sessionID string) ([]QueuedPrompt, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("drain queue group: %w", err)
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query(
+		`SELECT id, prompt, model, effort FROM prompt_queue WHERE session_id = ? ORDER BY created_at, id`, sessionID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("drain queue group: %w", err)
+	}
+
+	var ids []int64
+	var prompts []QueuedPrompt
+	var haveFirst bool
+	var firstModel, firstEffort string
+	for rows.Next() {
+		var id int64
+		var qp QueuedPrompt
+		if err := rows.Scan(&id, &qp.Prompt, &qp.Model, &qp.Effort); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan queued prompt: %w", err)
+		}
+		if !haveFirst {
+			haveFirst = true
+			firstModel, firstEffort = qp.Model, qp.Effort
+		} else if qp.Model != firstModel || qp.Effort != firstEffort {
+			// Different override: end of the leading group.
+			break
+		}
+		ids = append(ids, id)
+		prompts = append(prompts, qp)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	for _, id := range ids {
+		if _, err := tx.Exec(`DELETE FROM prompt_queue WHERE id = ?`, id); err != nil {
+			return nil, fmt.Errorf("delete queued prompt: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit drain queue group: %w", err)
+	}
+
+	return prompts, nil
+}
+
 // DrainQueue removes and returns all queued prompts for a session, ordered by creation time.
-func (s *Store) DrainQueue(sessionID string) ([]string, error) {
+func (s *Store) DrainQueue(sessionID string) ([]QueuedPrompt, error) {
 	rows, err := s.db.Query(
-		`SELECT id, prompt FROM prompt_queue WHERE session_id = ? ORDER BY created_at, id`, sessionID,
+		`SELECT id, prompt, model, effort FROM prompt_queue WHERE session_id = ? ORDER BY created_at, id`, sessionID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("drain queue: %w", err)
@@ -528,15 +605,15 @@ func (s *Store) DrainQueue(sessionID string) ([]string, error) {
 	defer rows.Close()
 
 	var ids []int64
-	var prompts []string
+	var prompts []QueuedPrompt
 	for rows.Next() {
 		var id int64
-		var prompt string
-		if err := rows.Scan(&id, &prompt); err != nil {
+		var qp QueuedPrompt
+		if err := rows.Scan(&id, &qp.Prompt, &qp.Model, &qp.Effort); err != nil {
 			return nil, fmt.Errorf("scan queued prompt: %w", err)
 		}
 		ids = append(ids, id)
-		prompts = append(prompts, prompt)
+		prompts = append(prompts, qp)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

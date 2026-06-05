@@ -26,9 +26,13 @@ type CreateSessionData struct {
 }
 
 // ContinueSessionData is the data payload for continue_session.
+// Model and Effort are optional per-prompt overrides (empty = use the
+// session's stored default).
 type ContinueSessionData struct {
 	SessionID string `json:"session_id"`
 	Prompt    string `json:"prompt"`
+	Model     string `json:"model,omitempty"`
+	Effort    string `json:"effort,omitempty"`
 }
 
 // UpdateSessionData is the data payload for update_session.

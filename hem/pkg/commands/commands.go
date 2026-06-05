@@ -1660,13 +1660,15 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 }
 
 func (e *Executor) ContinueSession(args []string) *protocol.Response {
-	var sessionID, callbackPrompt string
+	var sessionID, callbackPrompt, model, effort string
 	var async bool
 
 	remaining, err := parseFlagsFromArgs("continue-session", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&sessionID, "session-id", "", "session ID")
 		fs.BoolVar(&async, "async", false, "return immediately without waiting for response")
 		fs.StringVar(&callbackPrompt, "callback", "", "prompt to queue to parent when session completes (use with --async on sub-sessions)")
+		fs.StringVar(&model, "model", "", "temporary model override for this prompt (empty = session default)")
+		fs.StringVar(&effort, "effort", "", "temporary effort/complexity override for this prompt (empty = session default)")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -1701,6 +1703,12 @@ func (e *Executor) ContinueSession(args []string) *protocol.Response {
 	cmdData := map[string]interface{}{
 		"session_id": sessionID,
 		"prompt":     prompt,
+	}
+	if model != "" {
+		cmdData["model"] = model
+	}
+	if effort != "" {
+		cmdData["effort"] = effort
 	}
 
 	ctx := context.Background()

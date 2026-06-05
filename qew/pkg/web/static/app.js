@@ -11,6 +11,11 @@
   let lastChatHTML = '';
   let currentSessionStatus = '';
   let currentSessionMP = '';
+  let currentSessionAgent = '';
+  let sessionDefaultModel = '';
+  let sessionDefaultEffort = '';
+  let overrideModel = '';   // temporary per-conversation model override ('' = default)
+  let overrideEffort = '';  // temporary per-conversation effort override ('' = default)
   let queuedMessages = []; // optimistic messages not yet confirmed by server
   // Chat history pagination state (mirrors hem/pkg/ui/chat.go). chatConversation
   // holds ONLY server turns (queued messages are tracked separately above).
@@ -137,6 +142,38 @@
       if (resp.status !== 'ok' || !resp.data || !Array.isArray(resp.data.models)) return [];
       return resp.data.models.map(m => m.value || m.name).filter(Boolean);
     } catch (e) { return []; }
+  }
+
+  // populateOverrideSelects fills the chat header model/effort dropdowns based on
+  // the current session's agent and stored defaults. The first model option is a
+  // "Default (...)" entry whose value is '' (meaning no override).
+  async function populateOverrideSelects() {
+    const modelSel = document.getElementById('chat-model-override');
+    const effortSel = document.getElementById('chat-effort-override');
+    if (!modelSel || !effortSel) return;
+    const agent = currentSessionAgent;
+    // Effort options.
+    const efOpts = effortOptions(agent);
+    effortSel.innerHTML = efOpts.map(o => {
+      const label = o === ''
+        ? `Default (${sessionDefaultEffort || 'agent default'})`
+        : o;
+      return `<option value="${escapeAttr(o)}"${o === overrideEffort ? ' selected' : ''}>${escapeHtml(label)}</option>`;
+    }).join('');
+    // Model options (default entry first).
+    const sessAtStart = currentSession;
+    const models = await loadModels(currentSessionMP, agent);
+    if (currentSession !== sessAtStart) return;
+    let opts = `<option value="">Default (${escapeHtml(sessionDefaultModel || 'agent default')})</option>`;
+    let found = !overrideModel;
+    for (const m of models) {
+      if (m === overrideModel) found = true;
+      opts += `<option value="${escapeAttr(m)}"${m === overrideModel ? ' selected' : ''}>${escapeHtml(m)}</option>`;
+    }
+    if (overrideModel && !found) {
+      opts += `<option value="${escapeAttr(overrideModel)}" selected>${escapeHtml(overrideModel)}</option>`;
+    }
+    modelSel.innerHTML = opts;
   }
 
   // --- Dashboard ---
@@ -437,6 +474,11 @@
     currentSession = sessionId;
     currentSessionName = name || sessionId.substring(0, 12);
     currentSessionMP = mp || '';
+    currentSessionAgent = '';
+    sessionDefaultModel = '';
+    sessionDefaultEffort = '';
+    overrideModel = '';
+    overrideEffort = '';
     document.getElementById('dashboard-view').style.display = 'none';
     document.getElementById('moneypennies-view').style.display = 'none';
     document.getElementById('projects-view').style.display = 'none';
@@ -491,6 +533,11 @@
     currentSession = null;
     currentSessionName = '';
     currentSessionMP = '';
+    currentSessionAgent = '';
+    sessionDefaultModel = '';
+    sessionDefaultEffort = '';
+    overrideModel = '';
+    overrideEffort = '';
     document.getElementById('chat-view').style.display = 'none';
     document.getElementById('dashboard-view').style.display = 'flex';
     if (window.location.hash) history.replaceState(null, '', window.location.pathname);
@@ -527,6 +574,13 @@
         if (showResp.data.moneypenny && !currentSessionMP) {
           currentSessionMP = showResp.data.moneypenny;
           document.getElementById('chat-mp').textContent = '@ ' + currentSessionMP;
+        }
+        // Capture agent + default model/effort for the override dropdowns (once).
+        if (!currentSessionAgent) {
+          currentSessionAgent = showResp.data.agent || '';
+          sessionDefaultModel = showResp.data.model || '';
+          sessionDefaultEffort = showResp.data.effort || '';
+          populateOverrideSelects();
         }
       }
       // Extract schedules.
@@ -794,7 +848,11 @@
     document.getElementById('chat-send').disabled = true;
 
     try {
-      await apiCall('continue', 'session', [currentSession, '--async', text]);
+      const args = [currentSession, '--async'];
+      if (overrideModel) args.push('--model', overrideModel);
+      if (overrideEffort) args.push('--effort', overrideEffort);
+      args.push(text);
+      await apiCall('continue', 'session', args);
       // Track as queued and re-render.
       queuedMessages.push({ content: text });
       chatForceScrollBottom = true; // reveal the new message even if scrolled up
@@ -876,6 +934,9 @@
           <button class="cmd-item" data-cmd="edit"><kbd>e</kbd> Edit session</button>
           <button class="cmd-item" data-cmd="duplicate"><kbd>y</kbd> Duplicate session</button>
           <button class="cmd-item" data-cmd="diff"><kbd>g</kbd> Git diff</button>
+          <button class="cmd-item" data-cmd="model"><kbd>o</kbd> Model override</button>
+          <button class="cmd-item" data-cmd="effort"><kbd>f</kbd> Effort override</button>
+          <button class="cmd-item" data-cmd="memory"><kbd>m</kbd> Memory</button>
           <button class="cmd-item" data-cmd="thoughts"><kbd>t</kbd> Toggle train of thought</button>
           <button class="cmd-item" data-cmd="stop"><kbd>s</kbd> Stop session</button>
           <button class="cmd-item" data-cmd="delete" style="color:var(--danger)"><kbd>d</kbd> Delete session</button>
@@ -917,6 +978,9 @@
       case 'duplicate': openDuplicateWizard(); break;
       case 'diff':     showDiff(); break;
       case 'thoughts': toggleThoughts(); break;
+      case 'model':    focusOverrideSelect('chat-model-override'); break;
+      case 'effort':   focusOverrideSelect('chat-effort-override'); break;
+      case 'memory':   openMemoryModal(); break;
       case 'stop':     stopSession(); break;
       case 'delete':   deleteSession(); break;
       case 'back':     closeChat(); break;
@@ -1222,6 +1286,18 @@
       document.body.appendChild(overlay);
     }
     overlay.innerHTML = `<div class="modal${modalClass ? ' ' + modalClass : ''}">${content}</div>`;
+    // Auto-focus the first text input/textarea so keyboard users (and the
+    // "new trait" / form modals) can start typing immediately. Skipped when an
+    // element opts out via [autofocus] elsewhere or when there is none.
+    const modalEl = overlay.querySelector('.modal');
+    if (modalEl) {
+      const first = modalEl.querySelector(
+        'input:not([type=checkbox]):not([type=radio]):not([disabled]), textarea:not([disabled]), select:not([disabled])');
+      if (first) {
+        // Defer to ensure the element is laid out before focusing.
+        requestAnimationFrame(() => { try { first.focus(); } catch (e) {} });
+      }
+    }
   }
 
   // Expose wizard functions for inline onclick handlers.
@@ -1822,6 +1898,69 @@
         <button class="btn" onclick="window._qewCloseWizard()">OK</button>
       </div>
     `);
+  }
+
+  function focusOverrideSelect(id) {
+    const sel = document.getElementById(id);
+    if (sel) {
+      sel.focus();
+      // Open the native dropdown where supported (best-effort).
+      if (typeof sel.showPicker === 'function') {
+        try { sel.showPicker(); } catch (e) { /* ignore */ }
+      }
+    }
+  }
+
+  // openMemoryModal shows the session's persistent memory in an editable modal
+  // (mirrors hem/pkg/ui/memory.go). Cmd/Ctrl+Enter or Save persists it.
+  async function openMemoryModal() {
+    if (!currentSession) return;
+    const sid = currentSession;
+    renderWizardModal(`
+      <h3>Memory</h3>
+      <div class="loading">Loading...</div>
+    `);
+    let content = '';
+    try {
+      const resp = await apiCall('show', 'memory', [sid]);
+      if (resp.status === 'ok' && resp.data && typeof resp.data.message === 'string') {
+        content = resp.data.message === '(empty)' ? '' : resp.data.message;
+      }
+    } catch (e) { /* show empty on error */ }
+    if (currentSession !== sid) return;
+    renderWizardModal(`
+      <h3>Memory</h3>
+      <label for="memory-content">Persistent notes injected into the agent's context</label>
+      <textarea id="memory-content" rows="12" placeholder="(empty)">${escapeHtml(content)}</textarea>
+      <div class="modal-actions">
+        <button class="btn-muted" onclick="window._qewCloseWizard()">Cancel</button>
+        <button class="btn" id="memory-save">Save</button>
+      </div>
+    `);
+    const ta = document.getElementById('memory-content');
+    if (ta) ta.focus();
+    const saveBtn = document.getElementById('memory-save');
+    saveBtn.addEventListener('click', async () => {
+      const value = document.getElementById('memory-content').value;
+      saveBtn.disabled = true;
+      saveBtn.textContent = 'Saving...';
+      try {
+        const resp = await apiCall('update', 'memory', [sid, value]);
+        if (resp.status === 'error') {
+          alert('Memory error: ' + resp.message);
+          saveBtn.disabled = false;
+          saveBtn.textContent = 'Save';
+          return;
+        }
+        closeWizard();
+        const inp = document.getElementById('chat-input');
+        if (inp) inp.focus();
+      } catch (e) {
+        alert('Error: ' + e.message);
+        saveBtn.disabled = false;
+        saveBtn.textContent = 'Save';
+      }
+    });
   }
 
   async function createNewSubagent() {
@@ -2945,6 +3084,7 @@
     else if (action === 'branch') showBranchModal();
     else if (action === 'push') gitPush();
     else if (action === 'new-subagent') createNewSubagent();
+    else if (action === 'memory') openMemoryModal();
     else if (action === 'duplicate') openDuplicateWizard();
     else if (action === 'edit') showEditSessionModal();
     else if (action === 'move-project') showMoveToProjectModal();
@@ -2966,6 +3106,22 @@
     }
   });
   chatInput.addEventListener('input', () => autoResize(chatInput));
+
+  // Override dropdowns: store the temporary override and refocus the input.
+  const modelOverrideSel = document.getElementById('chat-model-override');
+  if (modelOverrideSel) {
+    modelOverrideSel.addEventListener('change', (e) => {
+      overrideModel = e.target.value;
+      chatInput.focus();
+    });
+  }
+  const effortOverrideSel = document.getElementById('chat-effort-override');
+  if (effortOverrideSel) {
+    effortOverrideSel.addEventListener('change', (e) => {
+      overrideEffort = e.target.value;
+      chatInput.focus();
+    });
+  }
 
   // Load older history when the user scrolls to the top of the chat.
   const chatMessagesEl = document.getElementById('chat-messages');
@@ -3041,7 +3197,7 @@
     if (cmdPaletteOpen && document.querySelector('.cmd-palette')) {
       if (e.key === 'Escape') { e.preventDefault(); closeCmdPalette(true); return; }
       if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
-      const map = { c: 'complete', e: 'edit', y: 'duplicate', g: 'diff', t: 'thoughts', s: 'stop', d: 'delete', q: 'back' };
+      const map = { c: 'complete', e: 'edit', y: 'duplicate', g: 'diff', t: 'thoughts', o: 'model', f: 'effort', m: 'memory', s: 'stop', d: 'delete', q: 'back' };
       const cmd = map[e.key];
       if (cmd) { e.preventDefault(); runCmd(cmd); }
       return;
