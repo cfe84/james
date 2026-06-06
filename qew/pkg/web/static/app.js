@@ -1919,7 +1919,7 @@
     renderWizardModal(`
       <h3>Memory</h3>
       <div class="loading">Loading...</div>
-    `);
+    `, 'modal-mem');
     let content = '';
     try {
       const resp = await apiCall('show', 'memory', [sid]);
@@ -1931,12 +1931,12 @@
     renderWizardModal(`
       <h3>Memory</h3>
       <label for="memory-content">Persistent notes injected into the agent's context</label>
-      <textarea id="memory-content" rows="12" placeholder="(empty)">${escapeHtml(content)}</textarea>
+      <textarea id="memory-content" placeholder="(empty)">${escapeHtml(content)}</textarea>
       <div class="modal-actions">
         <button class="btn-muted" onclick="window._qewCloseWizard()">Cancel</button>
         <button class="btn" id="memory-save">Save</button>
       </div>
-    `);
+    `, 'modal-mem');
     const ta = document.getElementById('memory-content');
     if (ta) ta.focus();
     const saveBtn = document.getElementById('memory-save');

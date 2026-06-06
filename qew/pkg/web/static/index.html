@@ -197,6 +197,12 @@ header h1 span { color: var(--primary); }
   display: flex; flex-direction: column;
 }
 .modal.modal-large .diff-content { flex: 1; max-height: none; }
+/* Large variant sized for editing memory (textarea fills the height). */
+.modal.modal-mem {
+  width: 95vw; max-width: 95vw; height: 95vh; max-height: 95vh;
+  display: flex; flex-direction: column;
+}
+.modal.modal-mem textarea { flex: 1; resize: none; }
 .modal h3 { margin-bottom: 16px; font-size: 1.1em; }
 .modal label { display: block; font-size: 0.85em; color: var(--muted); margin-bottom: 4px; margin-top: 12px; }
 .modal input, .modal select, .modal textarea {
