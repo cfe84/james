@@ -97,6 +97,12 @@ header h1 span { color: var(--primary); }
 .chat-header .back { cursor: pointer; margin-right: 12px; font-size: 1.2em; }
 .chat-header h2 { font-size: 1.1em; flex: 1; }
 .chat-header .chat-mp { color: var(--muted); font-size: 0.85em; margin-left: 8px; }
+.chat-header .chat-override {
+  background: var(--surface); color: var(--text); border: 1px solid var(--surface2);
+  border-radius: 6px; padding: 6px 10px; font-size: 0.9em; font-family: inherit;
+  margin-right: 8px; max-width: 180px;
+}
+.chat-header .chat-override:focus { outline: none; border-color: var(--primary); }
 .chat-messages { flex: 1; overflow-y: auto; padding-bottom: 12px; min-height: 0; }
 .msg { margin-bottom: 12px; }
 .msg-role {
@@ -385,8 +391,8 @@ header h1 span { color: var(--primary); }
       <span class="back" id="chat-back">←</span>
       <h2 id="chat-title">Chat</h2>
       <span class="chat-mp" id="chat-mp"></span>
-      <select id="chat-model-override" class="chat-override" title="Model override — esc-o" style="margin-right:4px;font-size:0.8em;max-width:160px"></select>
-      <select id="chat-effort-override" class="chat-override" title="Effort override — esc-f" style="margin-right:4px;font-size:0.8em"></select>
+      <select id="chat-model-override" class="chat-override" title="Model override — esc-o"></select>
+      <select id="chat-effort-override" class="chat-override" title="Effort override — esc-f"></select>
       <button id="thoughts-toggle" title="Train of thought hidden (click to show) — T" style="background:none;border:none;font-size:1.2em;cursor:pointer;margin-right:4px">💤</button>
       <div class="dropdown" id="chat-menu-wrap">
         <button class="btn-muted" id="chat-menu-btn">Actions ▾</button>
