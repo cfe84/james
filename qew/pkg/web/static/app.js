@@ -1963,6 +1963,100 @@
     });
   }
 
+  // --- Passkeys (WebAuthn) ---
+
+  function _b64urlToBuf(s) {
+    s = s.replace(/-/g, '+').replace(/_/g, '/');
+    while (s.length % 4) s += '=';
+    const bin = atob(s);
+    const b = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) b[i] = bin.charCodeAt(i);
+    return b.buffer;
+  }
+  function _bufToB64url(buf) {
+    const b = new Uint8Array(buf);
+    let s = '';
+    for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
+    return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+  const _waHeaders = { 'Content-Type': 'application/json', 'X-Requested-With': 'QewClient' };
+
+  async function registerPasskey() {
+    if (!window.PublicKeyCredential) { alert('This browser does not support passkeys.'); return; }
+    const label = window.prompt('Name this passkey (e.g. "MacBook", "iPhone"):', 'passkey');
+    if (label === null) return;
+    try {
+      const r = await fetch('/webauthn/register/begin', { method: 'POST', headers: _waHeaders });
+      if (!r.ok) throw new Error('Could not start registration');
+      const opts = (await r.json()).publicKey;
+      opts.challenge = _b64urlToBuf(opts.challenge);
+      opts.user.id = _b64urlToBuf(opts.user.id);
+      if (opts.excludeCredentials) opts.excludeCredentials.forEach(c => c.id = _b64urlToBuf(c.id));
+      const cred = await navigator.credentials.create({ publicKey: opts });
+      const body = {
+        id: cred.id, rawId: _bufToB64url(cred.rawId), type: cred.type,
+        response: {
+          attestationObject: _bufToB64url(cred.response.attestationObject),
+          clientDataJSON: _bufToB64url(cred.response.clientDataJSON),
+        },
+      };
+      const f = await fetch('/webauthn/register/finish?label=' + encodeURIComponent(label),
+        { method: 'POST', headers: _waHeaders, body: JSON.stringify(body) });
+      if (!f.ok) throw new Error('Registration failed');
+      openPasskeyModal();
+    } catch (e) {
+      alert('Passkey error: ' + (e.message || e));
+    }
+  }
+
+  async function deletePasskey(id) {
+    if (!confirm('Remove this passkey?')) return;
+    try {
+      const r = await fetch('/webauthn/credentials/delete',
+        { method: 'POST', headers: _waHeaders, body: JSON.stringify({ id }) });
+      if (!r.ok) throw new Error('Could not delete');
+      openPasskeyModal();
+    } catch (e) {
+      alert('Error: ' + (e.message || e));
+    }
+  }
+  window._qewDeletePasskey = deletePasskey;
+
+  async function openPasskeyModal() {
+    renderWizardModal(`<h3>Passkeys</h3><div class="loading">Loading...</div>`);
+    let list = [];
+    try {
+      const r = await fetch('/webauthn/credentials', { headers: _waHeaders });
+      if (r.ok) list = await r.json();
+      else throw new Error('Passkeys are not available (no password configured).');
+    } catch (e) {
+      renderWizardModal(`
+        <h3>Passkeys</h3>
+        <div class="empty-state">${escapeHtml(e.message || 'Unavailable')}</div>
+        <div class="modal-actions"><button class="btn-muted" onclick="window._qewCloseWizard()">Close</button></div>
+      `);
+      return;
+    }
+    const rows = (list && list.length)
+      ? list.map(c => `
+          <div class="passkey-row" style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--surface2)">
+            <span>${escapeHtml(c.label || 'passkey')}<br><span style="color:var(--muted);font-size:0.85em">${new Date(c.createdAt).toLocaleString()}</span></span>
+            <button class="btn-muted" onclick="window._qewDeletePasskey('${escapeHtml(c.id)}')">Remove</button>
+          </div>`).join('')
+      : `<div class="empty-state">No passkeys registered yet.</div>`;
+    renderWizardModal(`
+      <h3>Passkeys</h3>
+      <p style="color:var(--muted);margin-bottom:12px">Register this device so you can sign in without the password.</p>
+      ${rows}
+      <div class="modal-actions">
+        <button class="btn-muted" onclick="window._qewCloseWizard()">Close</button>
+        <button class="btn" id="passkey-register-btn">+ Register a passkey</button>
+      </div>
+    `);
+    const rb = document.getElementById('passkey-register-btn');
+    if (rb) rb.addEventListener('click', registerPasskey);
+  }
+
   async function createNewSubagent() {
     if (!currentSession) return;
     const prompt = window.prompt('Subagent prompt:');
@@ -3051,6 +3145,7 @@
   document.getElementById('chat-back').addEventListener('click', closeChat);
   document.getElementById('chat-send').addEventListener('click', sendMessage);
   document.getElementById('sound-toggle').addEventListener('click', toggleSound);
+  document.getElementById('passkey-mgmt-btn').addEventListener('click', openPasskeyModal);
   document.getElementById('thoughts-toggle').addEventListener('click', toggleThoughts);
   syncThoughtsToggle();
   document.getElementById('new-session-btn').addEventListener('click', openCreateWizard);

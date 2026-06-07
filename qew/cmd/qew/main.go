@@ -96,6 +96,7 @@ func main() {
 	// Load (or create) the persistent session-signing secret so issued cookies
 	// survive process restarts. Only needed when a password is configured.
 	var secretSeed []byte
+	var passkeys *web.PasskeyStore
 	if *password != "" {
 		secretPath := filepath.Join(filepath.Dir(*keyPath), "qew_secret")
 		seed, err := loadOrCreateSecret(secretPath)
@@ -103,9 +104,16 @@ func main() {
 			log.Fatalf("failed to load/create session secret: %v", err)
 		}
 		secretSeed = seed
+
+		passkeyPath := filepath.Join(filepath.Dir(*keyPath), "qew_passkeys.json")
+		ps, err := web.NewPasskeyStore(passkeyPath)
+		if err != nil {
+			log.Fatalf("failed to load/create passkey store: %v", err)
+		}
+		passkeys = ps
 	}
 
-	srv := web.NewServer(hem, *listenAddr, *password, *development, vlog, Version, secretSeed)
+	srv := web.NewServer(hem, *listenAddr, *password, *development, vlog, Version, secretSeed, passkeys)
 	if err := srv.Run(); err != nil {
 		log.Fatalf("server error: %v", err)
 	}

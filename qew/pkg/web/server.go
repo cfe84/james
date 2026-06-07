@@ -53,6 +53,12 @@ type Server struct {
 	// Login rate limiting: per-IP tracking.
 	loginMu       sync.Mutex
 	loginAttempts map[string]*loginTracker
+
+	// WebAuthn passkeys (additive auth alongside the password). nil when no
+	// password is configured (passkeys require the password bootstrap path).
+	passkeys     *PasskeyStore
+	waMu         sync.Mutex
+	waChallenges map[string]*waChallenge
 }
 
 type loginTracker struct {
@@ -64,7 +70,7 @@ type loginTracker struct {
 // (loaded from disk by the caller) so issued cookies survive process restarts;
 // the effective signing key binds it to the password so changing the password
 // invalidates existing sessions. secretSeed may be nil when no password is set.
-func NewServer(hem HemClient, listenAddr, password string, development bool, vlog *log.Logger, version string, secretSeed []byte) *Server {
+func NewServer(hem HemClient, listenAddr, password string, development bool, vlog *log.Logger, version string, secretSeed []byte, passkeys *PasskeyStore) *Server {
 	// Bind the signing key to the password: derive HMAC key = sha256(seed || password).
 	keyInput := make([]byte, 0, len(secretSeed)+len(password))
 	keyInput = append(keyInput, secretSeed...)
@@ -79,6 +85,8 @@ func NewServer(hem HemClient, listenAddr, password string, development bool, vlo
 		version:       version,
 		secret:        derived[:],
 		loginAttempts: make(map[string]*loginTracker),
+		passkeys:      passkeys,
+		waChallenges:  make(map[string]*waChallenge),
 	}
 }
 
@@ -101,6 +109,20 @@ func (s *Server) Run() error {
 
 	// WebSocket endpoint for real-time polling.
 	mux.Handle("/ws", s.requireAuthWS(http.HandlerFunc(s.handleWSUpgrade)))
+
+	// WebAuthn passkey endpoints (only when a password is configured: the
+	// password bootstraps the first enrollment and remains a fallback).
+	if s.password != "" && s.passkeys != nil {
+		// Registration requires an authenticated (password) session.
+		mux.HandleFunc("/webauthn/register/begin", s.requireAuth(s.csrfProtect(s.handlePasskeyRegisterBegin)))
+		mux.HandleFunc("/webauthn/register/finish", s.requireAuth(s.csrfProtect(s.handlePasskeyRegisterFinish)))
+		mux.HandleFunc("/webauthn/credentials", s.requireAuth(s.csrfProtect(s.handlePasskeyList)))
+		mux.HandleFunc("/webauthn/credentials/delete", s.requireAuth(s.csrfProtect(s.handlePasskeyDelete)))
+		// Login is public (it is itself an authentication method), but
+		// rate-limited and CSRF-guarded like the password login.
+		mux.HandleFunc("/webauthn/login/begin", s.csrfProtect(s.handlePasskeyLoginBegin))
+		mux.HandleFunc("/webauthn/login/finish", s.csrfProtect(s.handlePasskeyLoginFinish))
+	}
 
 	// Static files.
 	staticSub, err := fs.Sub(staticFS, "static")
@@ -417,6 +439,7 @@ func (s *Server) csrfProtect(next http.HandlerFunc) http.HandlerFunc {
 // --- Login with rate limiting ---
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	passkeysEnabled := s.passkeys != nil && s.passkeys.count() > 0
 	if r.Method == http.MethodPost {
 		ip := remoteIP(r)
 
@@ -424,7 +447,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		if wait := s.loginDelay(ip); wait > 0 {
 			s.vlog.Printf("login rate-limited: %s (wait %v)", ip, wait)
 			w.WriteHeader(http.StatusTooManyRequests)
-			fmt.Fprint(w, loginPageHTML(fmt.Sprintf("Too many attempts. Try again in %d seconds.", int(wait.Seconds())+1)))
+			fmt.Fprint(w, loginPageHTML(fmt.Sprintf("Too many attempts. Try again in %d seconds.", int(wait.Seconds())+1), passkeysEnabled))
 			return
 		}
 
@@ -440,10 +463,10 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 		s.recordLoginFailure(ip)
 		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, loginPageHTML("Incorrect password"))
+		fmt.Fprint(w, loginPageHTML("Incorrect password", passkeysEnabled))
 		return
 	}
-	fmt.Fprint(w, loginPageHTML(""))
+	fmt.Fprint(w, loginPageHTML("", passkeysEnabled))
 }
 
 // loginDelay returns how long the IP must wait before next attempt.
@@ -492,10 +515,21 @@ func remoteIP(r *http.Request) string {
 	return host
 }
 
-func loginPageHTML(errorMsg string) string {
+func loginPageHTML(errorMsg string, passkeysEnabled bool) string {
 	errBlock := ""
 	if errorMsg != "" {
 		errBlock = `<p style="color:var(--danger);margin-bottom:12px">` + errorMsg + `</p>`
+	}
+	passkeyBlock := ""
+	if passkeysEnabled {
+		passkeyBlock = `
+  <div style="text-align:center;margin:14px 0;color:var(--surface2)">— or —</div>
+  <button type="button" id="passkey-btn">Sign in with a passkey</button>
+  <p id="passkey-err" style="color:var(--danger);margin-top:12px;display:none"></p>`
+	}
+	script := ""
+	if passkeysEnabled {
+		script = passkeyLoginScript
 	}
 	return `<!DOCTYPE html>
 <html lang="en">
@@ -535,6 +569,7 @@ body {
   border: none; border-radius: 6px; padding: 10px;
   font-size: 1em; font-weight: 600; cursor: pointer;
 }
+.login-box button#passkey-btn { background: var(--surface2); }
 </style>
 </head>
 <body>
@@ -543,9 +578,42 @@ body {
   ` + errBlock + `
   <form method="POST" action="/login">
     <input type="password" name="password" placeholder="Password" autofocus>
-    <button type="submit">Sign in</button>
+    <button type="submit">Sign in</button>` + passkeyBlock + `
   </form>
-</div>
+</div>` + script + `
 </body>
 </html>`
 }
+
+// passkeyLoginScript drives the WebAuthn assertion flow on the login page.
+const passkeyLoginScript = `
+<script>
+function b64urlToBuf(s){s=s.replace(/-/g,'+').replace(/_/g,'/');while(s.length%4)s+='=';const bin=atob(s);const b=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)b[i]=bin.charCodeAt(i);return b.buffer;}
+function bufToB64url(buf){const b=new Uint8Array(buf);let s='';for(let i=0;i<b.length;i++)s+=String.fromCharCode(b[i]);return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
+(function(){
+  const btn=document.getElementById('passkey-btn');
+  if(!btn||!window.PublicKeyCredential){if(btn)btn.style.display='none';return;}
+  const errEl=document.getElementById('passkey-err');
+  function showErr(m){errEl.textContent=m;errEl.style.display='block';}
+  const H={'Content-Type':'application/json','X-Requested-With':'QewClient'};
+  btn.addEventListener('click',async()=>{
+    errEl.style.display='none';btn.disabled=true;
+    try{
+      const r=await fetch('/webauthn/login/begin',{method:'POST',headers:H});
+      if(!r.ok)throw new Error('No passkeys available');
+      const opts=(await r.json()).publicKey;
+      opts.challenge=b64urlToBuf(opts.challenge);
+      if(opts.allowCredentials)opts.allowCredentials.forEach(c=>c.id=b64urlToBuf(c.id));
+      const cred=await navigator.credentials.get({publicKey:opts});
+      const body={id:cred.id,rawId:bufToB64url(cred.rawId),type:cred.type,
+        response:{authenticatorData:bufToB64url(cred.response.authenticatorData),
+          clientDataJSON:bufToB64url(cred.response.clientDataJSON),
+          signature:bufToB64url(cred.response.signature),
+          userHandle:cred.response.userHandle?bufToB64url(cred.response.userHandle):null}};
+      const f=await fetch('/webauthn/login/finish',{method:'POST',headers:H,body:JSON.stringify(body)});
+      if(!f.ok)throw new Error('Passkey sign-in failed');
+      window.location.href='/';
+    }catch(e){showErr(e.message||'Passkey sign-in failed');btn.disabled=false;}
+  });
+})();
+</script>`

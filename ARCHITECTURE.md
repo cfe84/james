@@ -331,6 +331,8 @@ qew/
 ├── cmd/qew/main.go         # Entry point: SSH key gen, MI6 connect, HTTP server
 └── pkg/web/
     ├── server.go            # HTTP server (API proxy, WebSocket, embedded static files)
+    ├── passkey.go           # WebAuthn credential JSON store + qewUser (webauthn.User)
+    ├── webauthn_handlers.go # Passkey register/login/manage HTTP handlers
     ├── mi6.go               # MI6 client transport (persistent connection, auto-reconnect)
     └── static/              # Embedded web frontend (HTML, CSS, JS)
         ├── index.html       # Dashboard and chat UI (dark theme)
@@ -352,6 +354,8 @@ qew/
 6. **Chat features**: Chat view fetches session status and schedules alongside history. Shows "working..." indicator when session is active, queued message labels for optimistic sends, and pending schedule times.
 
 7. **Client-side notifications**: Dashboard polling tracks session states and detects WORKING→READY transitions. Plays a Web Audio API chime and shows a slide-in pop-over notification. Sound can be toggled via a header button.
+
+8. **Passkeys (WebAuthn)**: Additive passwordless auth layered on top of the existing password (`github.com/go-webauthn/webauthn`). The password bootstraps the first enrollment and remains a fallback, sidestepping the chicken-and-egg of having no accounts. A new `passkey.go` holds a JSON credential store (`~/.config/james/qew/qew_passkeys.json`, 0600, atomic write, mutex-guarded) and a `qewUser` implementing `webauthn.User` for the single fixed `qew` user (multiple credentials allowed). `webauthn_handlers.go` builds a **per-request** `*webauthn.WebAuthn` from the `Host` header (RP ID = host w/o port; origin from `X-Forwarded-Proto`+host, so it works behind a TLS-terminating proxy like Caddy) — no RP-ID flag. Register endpoints sit behind `requireAuth` (password session); login endpoints are public but reuse the password login's per-IP rate limiter. Begin/finish ceremonies are linked by a 5-minute single-use temporary cookie (`qew_wa`) keying an in-memory challenge map (lazily swept). On a successful assertion the handler updates the stored sign counter and issues the *same* `makeToken`/`sessionCookie` session as a password login — none of the sliding-window/CSRF/WS-deadline logic changes. The login page (server-rendered) gets a "Sign in with a passkey" button; the app header gets a 🔑 dialog to register/list/remove credentials. Reuses the existing `X-Requested-With: QewClient` CSRF guard.
 
 ## Docker Deployment
 
