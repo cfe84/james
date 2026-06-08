@@ -127,25 +127,63 @@ func (c *client) listSessions(mpFilter string) ([]sessionInfo, error) {
 	return sessions, nil
 }
 
-func (c *client) getMemory(sessionID string) (string, error) {
-	resp, err := c.send("show", "memory", sessionID)
-	if err != nil {
-		return "", err
-	}
-	if resp.Status == protocol.StatusError {
-		return "", fmt.Errorf("%s", resp.Message)
-	}
-	var result struct {
-		Message string `json:"message"`
-	}
-	if err := json.Unmarshal(resp.Data, &result); err != nil {
-		return "", fmt.Errorf("parsing memory: %w", err)
-	}
-	return result.Message, nil
+// memoryNodeView is a single memory node as rendered by the TUI.
+type memoryNodeView struct {
+	Path        string `json:"path"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+	Body        string `json:"body,omitempty"`
 }
 
-func (c *client) updateMemory(sessionID, content string) error {
-	resp, err := c.send("update", "memory", sessionID, content)
+// loadMemoryTree fetches the full flat node list (body-less, DFS pre-order) for
+// the session's memory tree.
+func (c *client) loadMemoryTree(sessionID string) ([]memoryNodeView, error) {
+	resp, err := c.send("show", "memory", sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Status == protocol.StatusError {
+		return nil, fmt.Errorf("%s", resp.Message)
+	}
+	var result struct {
+		Nodes []memoryNodeView `json:"nodes"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return nil, fmt.Errorf("parsing memory: %w", err)
+	}
+	return result.Nodes, nil
+}
+
+// getMemoryNode fetches a single node (with body) and its immediate children.
+func (c *client) getMemoryNode(sessionID, path string) (*memoryNodeView, []memoryNodeView, error) {
+	resp, err := c.send("show", "memory", sessionID, path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if resp.Status == protocol.StatusError {
+		return nil, nil, fmt.Errorf("%s", resp.Message)
+	}
+	var result struct {
+		Node     *memoryNodeView  `json:"node"`
+		Children []memoryNodeView `json:"children"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return nil, nil, fmt.Errorf("parsing memory: %w", err)
+	}
+	return result.Node, result.Children, nil
+}
+
+// saveMemoryNode creates or replaces the node at path.
+func (c *client) saveMemoryNode(sessionID, path, title, description, body string) error {
+	args := []string{}
+	if title != "" {
+		args = append(args, "--title", title)
+	}
+	if description != "" {
+		args = append(args, "--description", description)
+	}
+	args = append(args, sessionID, path, body)
+	resp, err := c.send("update", "memory", args...)
 	if err != nil {
 		return err
 	}
@@ -153,6 +191,40 @@ func (c *client) updateMemory(sessionID, content string) error {
 		return fmt.Errorf("%s", resp.Message)
 	}
 	return nil
+}
+
+// deleteMemoryNode deletes the node at path (recursively if requested).
+func (c *client) deleteMemoryNode(sessionID, path string, recursive bool) error {
+	args := []string{sessionID, path}
+	if recursive {
+		args = append(args, "--recursive")
+	}
+	resp, err := c.send("delete", "memory", args...)
+	if err != nil {
+		return err
+	}
+	if resp.Status == protocol.StatusError {
+		return fmt.Errorf("%s", resp.Message)
+	}
+	return nil
+}
+
+// searchMemoryNodes returns ranked nodes matching query.
+func (c *client) searchMemoryNodes(sessionID, query string) ([]memoryNodeView, error) {
+	resp, err := c.send("search", "memory", sessionID, query)
+	if err != nil {
+		return nil, err
+	}
+	if resp.Status == protocol.StatusError {
+		return nil, fmt.Errorf("%s", resp.Message)
+	}
+	var result struct {
+		Results []memoryNodeView `json:"results"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return nil, fmt.Errorf("parsing memory: %w", err)
+	}
+	return result.Results, nil
 }
 
 func (c *client) showSession(sessionID string) (*sessionDetail, error) {

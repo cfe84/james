@@ -165,10 +165,16 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.listSchedules(ctx, cmd)
 	case "cancel_schedule":
 		return h.cancelSchedule(ctx, cmd)
-	case "get_memory":
-		return h.getMemory(ctx, cmd)
+	case "show_memory":
+		return h.showMemory(ctx, cmd)
+	case "list_memory":
+		return h.listMemory(ctx, cmd)
+	case "search_memory":
+		return h.searchMemory(ctx, cmd)
 	case "update_memory":
 		return h.updateMemory(ctx, cmd)
+	case "delete_memory":
+		return h.deleteMemory(ctx, cmd)
 	case "get_session_activity":
 		return h.getSessionActivity(ctx, cmd)
 	case "list_models":
@@ -486,10 +492,14 @@ func (h *Handler) summarizeSession(ctx context.Context, cmd *envelope.Command) *
 // runAgent executes the agent in the background, updating the store when done.
 // After completion, it checks the prompt queue and auto-continues if there are queued prompts.
 func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
-	// Inject session memory into system prompt at runtime so agents always
-	// see the latest memory content, even if it was updated since session creation.
-	if memory, err := h.store.GetMemory(sessionID); err == nil && memory != "" {
-		params.SystemPrompt += "\n\n<session-memory>\n" + memory + "\n</session-memory>"
+	// Inject a compact, body-less outline of the session's memory tree into the
+	// system prompt at runtime so the agent always sees an up-to-date map of
+	// what it knows and can fetch/search detail on demand (memory is a tool, not
+	// a wholesale prompt dump).
+	h.ensureMemoryMigrated(sessionID)
+	if outline, err := h.store.MemoryOutline(sessionID); err == nil && outline != "" {
+		params.SystemPrompt += "\n\n<session-memory-outline>\n" + outline +
+			"\n</session-memory-outline>\n(Use 'show memory <path>' to read a node, 'search memory <query>' to search.)"
 	}
 
 	// Provide the per-session persistent directory to the agent runner so it
@@ -844,24 +854,132 @@ func (h *Handler) updateSession(_ context.Context, cmd *envelope.Command) *envel
 	return envelope.SuccessResponse(cmd.RequestID, map[string]string{"session_id": data.SessionID})
 }
 
-func (h *Handler) getMemory(_ context.Context, cmd *envelope.Command) *envelope.Response {
-	var data envelope.SessionIDData
+// ensureMemoryMigrated lazily imports a session's legacy blob memory into the
+// node tree on first structured access.
+func (h *Handler) ensureMemoryMigrated(sessionID string) {
+	if _, err := h.store.MigrateLegacyMemory(sessionID); err != nil {
+		h.vlog("memory migration for session %s: %v", sessionID, err)
+	}
+}
+
+func toMemoryPayload(n *store.MemoryNode) envelope.MemoryNodePayload {
+	return envelope.MemoryNodePayload{
+		Path:        n.Path,
+		Title:       n.Title,
+		Description: n.Description,
+		Body:        n.Body,
+	}
+}
+
+func (h *Handler) showMemory(_ context.Context, cmd *envelope.Command) *envelope.Response {
+	var data envelope.ShowMemoryData
 	if err := json.Unmarshal(cmd.Data, &data); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
 	}
 	if data.SessionID == "" {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id is required")
 	}
+	h.ensureMemoryMigrated(data.SessionID)
 
-	content, err := h.store.GetMemory(data.SessionID)
-	if err != nil {
-		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, err.Error())
+	resp := envelope.ShowMemoryResponse{SessionID: data.SessionID, Path: data.Path}
+	if strings.TrimSpace(data.Path) == "" {
+		outline, err := h.store.MemoryOutline(data.SessionID)
+		if err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
+		}
+		resp.Outline = outline
+		// Include the full flat node list (body-less) so tree-rendering clients
+		// (TUI/Qew) can browse without one request per node.
+		nodes, err := h.store.ListMemoryNodes(data.SessionID)
+		if err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
+		}
+		for _, n := range nodes {
+			resp.Nodes = append(resp.Nodes, envelope.MemoryNodePayload{
+				Path: n.Path, Title: n.Title, Description: n.Description,
+			})
+		}
+		return envelope.SuccessResponse(cmd.RequestID, resp)
 	}
 
-	return envelope.SuccessResponse(cmd.RequestID, envelope.MemoryResponse{
-		SessionID: data.SessionID,
-		Content:   content,
-	})
+	path, err := store.NormalizeMemoryPath(data.Path)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
+	}
+	node, err := h.store.GetMemoryNode(data.SessionID, path)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
+	}
+	if node == nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("no memory node at %q", path))
+	}
+	payload := toMemoryPayload(node)
+	resp.Node = &payload
+	children, err := h.store.ListMemoryChildren(data.SessionID, path)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
+	}
+	for _, c := range children {
+		resp.Children = append(resp.Children, envelope.MemoryNodePayload{
+			Path: c.Path, Title: c.Title, Description: c.Description,
+		})
+	}
+	return envelope.SuccessResponse(cmd.RequestID, resp)
+}
+
+func (h *Handler) listMemory(_ context.Context, cmd *envelope.Command) *envelope.Response {
+	var data envelope.ListMemoryData
+	if err := json.Unmarshal(cmd.Data, &data); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
+	}
+	if data.SessionID == "" {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id is required")
+	}
+	h.ensureMemoryMigrated(data.SessionID)
+
+	parent := ""
+	if strings.TrimSpace(data.Path) != "" {
+		p, err := store.NormalizeMemoryPath(data.Path)
+		if err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
+		}
+		parent = p
+	}
+	children, err := h.store.ListMemoryChildren(data.SessionID, parent)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
+	}
+	resp := envelope.ListMemoryResponse{SessionID: data.SessionID, Path: parent}
+	for _, c := range children {
+		resp.Children = append(resp.Children, envelope.MemoryNodePayload{
+			Path: c.Path, Title: c.Title, Description: c.Description,
+		})
+	}
+	return envelope.SuccessResponse(cmd.RequestID, resp)
+}
+
+func (h *Handler) searchMemory(_ context.Context, cmd *envelope.Command) *envelope.Response {
+	var data envelope.SearchMemoryData
+	if err := json.Unmarshal(cmd.Data, &data); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
+	}
+	if data.SessionID == "" {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id is required")
+	}
+	if strings.TrimSpace(data.Query) == "" {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "query is required")
+	}
+	h.ensureMemoryMigrated(data.SessionID)
+
+	nodes, err := h.store.SearchMemoryNodes(data.SessionID, data.Query)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
+	}
+	resp := envelope.SearchMemoryResponse{SessionID: data.SessionID, Query: data.Query}
+	for _, n := range nodes {
+		resp.Results = append(resp.Results, toMemoryPayload(n))
+	}
+	return envelope.SuccessResponse(cmd.RequestID, resp)
 }
 
 func (h *Handler) updateMemory(_ context.Context, cmd *envelope.Command) *envelope.Response {
@@ -872,14 +990,43 @@ func (h *Handler) updateMemory(_ context.Context, cmd *envelope.Command) *envelo
 	if data.SessionID == "" {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id is required")
 	}
-
-	if err := h.store.SetMemory(data.SessionID, data.Content); err != nil {
-		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
+	if strings.TrimSpace(data.Path) == "" {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "path is required")
 	}
+	h.ensureMemoryMigrated(data.SessionID)
 
-	return envelope.SuccessResponse(cmd.RequestID, envelope.MemoryResponse{
+	if err := h.store.SetMemoryNode(data.SessionID, data.Path, data.Title, data.Description, data.Body); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
+	}
+	path, _ := store.NormalizeMemoryPath(data.Path)
+	return envelope.SuccessResponse(cmd.RequestID, envelope.MemoryWriteResponse{
 		SessionID: data.SessionID,
-		Content:   data.Content,
+		Path:      path,
+	})
+}
+
+func (h *Handler) deleteMemory(_ context.Context, cmd *envelope.Command) *envelope.Response {
+	var data envelope.DeleteMemoryData
+	if err := json.Unmarshal(cmd.Data, &data); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
+	}
+	if data.SessionID == "" {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id is required")
+	}
+	if strings.TrimSpace(data.Path) == "" {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "path is required")
+	}
+	h.ensureMemoryMigrated(data.SessionID)
+
+	deleted, err := h.store.DeleteMemoryNode(data.SessionID, data.Path, data.Recursive)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
+	}
+	path, _ := store.NormalizeMemoryPath(data.Path)
+	return envelope.SuccessResponse(cmd.RequestID, envelope.MemoryWriteResponse{
+		SessionID: data.SessionID,
+		Path:      path,
+		Deleted:   deleted,
 	})
 }
 

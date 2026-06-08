@@ -591,8 +591,14 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 	// Memory commands
 	case "show memory":
 		return e.ShowMemory(args)
+	case "list memory":
+		return e.ListMemory(args)
+	case "search memory":
+		return e.SearchMemory(args)
 	case "update memory":
 		return e.UpdateMemory(args)
+	case "delete memory":
+		return e.DeleteMemory(args)
 	default:
 		return protocol.ErrResponse(fmt.Sprintf("unknown command: %s %s", verb, noun))
 	}
@@ -856,6 +862,30 @@ type TextResult struct {
 	Message string `json:"message"`
 }
 
+// MemoryNodeView is a single memory node as exposed to TUI/Qew clients.
+type MemoryNodeView struct {
+	Path        string `json:"path"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+	Body        string `json:"body,omitempty"`
+}
+
+// MemoryResult is returned by the memory commands. Message carries the
+// human/agent-facing text (CLI renders this), while the structured fields let
+// the TUI and Qew render the tree, a node, search results, etc. Kind is one of
+// "outline", "node", "list", "search", or "write".
+type MemoryResult struct {
+	Message  string           `json:"message"`
+	Kind     string           `json:"kind"`
+	Outline  string           `json:"outline,omitempty"`
+	Nodes    []MemoryNodeView `json:"nodes,omitempty"`
+	Node     *MemoryNodeView  `json:"node,omitempty"`
+	Children []MemoryNodeView `json:"children,omitempty"`
+	Results  []MemoryNodeView `json:"results,omitempty"`
+	Path     string           `json:"path,omitempty"`
+	Deleted  int              `json:"deleted,omitempty"`
+}
+
 type TableResult struct {
 	Headers  []string   `json:"headers"`
 	Rows     [][]string `json:"rows"`
@@ -919,19 +949,29 @@ func memorySystemPrompt(hemCmd, sessionID string) string {
 	return fmt.Sprintf(`
 You have a persistent session memory managed by hem. This OVERRIDES any other memory system (do NOT use file-based .md memory files, do NOT write to .claude/projects/ or MEMORY.md). Use ONLY the hem commands below.
 
-Current memory is injected into your system prompt inside <session-memory> tags each time you run. If no <session-memory> tags are present, your memory is empty.
+Memory is a hierarchical tree of nodes. Each node has a slash-delimited path (e.g. "project/conventions/git"), an optional short title, an optional one-line description, and a body. Hierarchy comes purely from the path: writing "a/b/c" auto-creates empty parents "a" and "a/b".
+
+Each run, a body-less OUTLINE of the tree (paths + descriptions) is injected inside <session-memory-outline> tags. It is a map, not the content — fetch detail on demand with the commands below. If no outline is present, your memory is empty.
 
 Memory commands:
-  View memory: %s show memory %s
-  Update memory: %s update memory %s CONTENT
+  Read a node (and list its children):  %[1]s show memory %[2]s PATH
+  Show the full outline:                 %[1]s show memory %[2]s
+  List children of a path:               %[1]s list memory %[2]s [PATH]
+  Search nodes (path/title/desc/body):   %[1]s search memory %[2]s QUERY
+  Create/replace a node:                 %[1]s update memory %[2]s PATH [--title T] [--description D] BODY
+  Delete a node:                         %[1]s delete memory %[2]s PATH [--recursive]
 
-IMPORTANT: update memory REPLACES the entire memory content. When updating, rewrite the full memory — keep what is still relevant, remove what is outdated, and add new learnings. Do NOT append blindly.
+IMPORTANT:
+- "update memory" REPLACES the single node at PATH (it does not append). Rewrite the node's full body.
+- Each node body has a maximum size. If a write is rejected for being too large, do NOT cram it in: keep this node a concise synthesis and move detail into child nodes (e.g. split "project/api" into "project/api/auth", "project/api/errors").
+- Always give nodes a short --description so the outline stays navigable.
+- "delete memory" refuses to delete a node that has children unless you pass --recursive.
 
-Use memory to track:
+Use memory to track, organized into a sensible tree:
 - Key decisions and context about the task
 - User preferences discovered during the conversation
 - Important file paths, patterns, or conventions
-- Anything you would want to remember if the conversation continues later`, hemCmd, sessionID, hemCmd, sessionID)
+- Anything you would want to remember if the conversation continues later`, hemCmd, sessionID)
 }
 
 // Traits are reusable, hem-level system-prompt snippets composed into the
@@ -2279,6 +2319,18 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 // Memory commands
 // ---------------------------------------------------------------------------
 
+// memoryNodePayload mirrors envelope.MemoryNodePayload for decoding moneypenny
+// responses on the hem side.
+type memoryNodePayload struct {
+	Path        string `json:"path"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+	Body        string `json:"body,omitempty"`
+}
+
+// ShowMemory: show memory SESSION_ID [PATH]
+// With no PATH, prints the body-less outline of the whole tree. With a PATH,
+// prints that node's title/description/body plus its immediate children.
 func (e *Executor) ShowMemory(args []string) *protocol.Response {
 	var sessionID string
 
@@ -2291,9 +2343,14 @@ func (e *Executor) ShowMemory(args []string) *protocol.Response {
 
 	if sessionID == "" {
 		if len(remaining) == 0 {
-			return protocol.ErrResponse("session_id is required")
+			return protocol.ErrResponse("session_id is required: show memory SESSION_ID [PATH]")
 		}
 		sessionID = remaining[0]
+		remaining = remaining[1:]
+	}
+	path := ""
+	if len(remaining) > 0 {
+		path = remaining[0]
 	}
 
 	mp, err := e.resolveSessionMoneypenny(sessionID)
@@ -2301,33 +2358,97 @@ func (e *Executor) ShowMemory(args []string) *protocol.Response {
 		return protocol.ErrResponse(err.Error())
 	}
 
-	cmdData := map[string]interface{}{
-		"session_id": sessionID,
+	cmdData := map[string]interface{}{"session_id": sessionID}
+	if path != "" {
+		cmdData["path"] = path
 	}
 
 	ctx := context.Background()
-	resp, err := e.sendCommand(ctx, mp, "get_memory", cmdData)
+	resp, err := e.sendCommand(ctx, mp, "show_memory", cmdData)
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
 
-	var memResp struct {
-		Content string `json:"content"`
+	var out struct {
+		Path     string              `json:"path"`
+		Outline  string              `json:"outline"`
+		Nodes    []memoryNodePayload `json:"nodes"`
+		Node     *memoryNodePayload  `json:"node"`
+		Children []memoryNodePayload `json:"children"`
 	}
-	if err := json.Unmarshal(resp.Data, &memResp); err != nil {
+	if err := json.Unmarshal(resp.Data, &out); err != nil {
 		return protocol.ErrResponse(fmt.Sprintf("parsing memory response: %v", err))
 	}
 
-	if memResp.Content == "" {
-		return protocol.OKResponse(TextResult{Message: "(empty)"})
+	// Outline view (no path requested).
+	if out.Node == nil {
+		result := MemoryResult{Kind: "outline", Outline: out.Outline}
+		for _, n := range out.Nodes {
+			result.Nodes = append(result.Nodes, MemoryNodeView{
+				Path: n.Path, Title: n.Title, Description: n.Description,
+			})
+		}
+		if strings.TrimSpace(out.Outline) == "" {
+			result.Message = "(memory is empty)"
+		} else {
+			result.Message = "Memory outline:\n" + out.Outline
+		}
+		return protocol.OKResponse(result)
 	}
-	return protocol.OKResponse(TextResult{Message: memResp.Content})
+
+	// Single-node view.
+	var b strings.Builder
+	fmt.Fprintf(&b, "path: %s\n", out.Node.Path)
+	if out.Node.Title != "" {
+		fmt.Fprintf(&b, "title: %s\n", out.Node.Title)
+	}
+	if out.Node.Description != "" {
+		fmt.Fprintf(&b, "description: %s\n", out.Node.Description)
+	}
+	b.WriteString("\n")
+	if out.Node.Body != "" {
+		b.WriteString(out.Node.Body)
+		b.WriteString("\n")
+	} else {
+		b.WriteString("(no body)\n")
+	}
+	if len(out.Children) > 0 {
+		b.WriteString("\nChildren:\n")
+		for _, c := range out.Children {
+			if c.Description != "" {
+				fmt.Fprintf(&b, "  %s — %s\n", c.Path, c.Description)
+			} else if c.Title != "" {
+				fmt.Fprintf(&b, "  %s — %s\n", c.Path, c.Title)
+			} else {
+				fmt.Fprintf(&b, "  %s\n", c.Path)
+			}
+		}
+	}
+	result := MemoryResult{
+		Message: strings.TrimRight(b.String(), "\n"),
+		Kind:    "node",
+		Path:    out.Node.Path,
+		Node: &MemoryNodeView{
+			Path:        out.Node.Path,
+			Title:       out.Node.Title,
+			Description: out.Node.Description,
+			Body:        out.Node.Body,
+		},
+	}
+	for _, c := range out.Children {
+		result.Children = append(result.Children, MemoryNodeView{
+			Path: c.Path, Title: c.Title, Description: c.Description,
+		})
+	}
+	return protocol.OKResponse(result)
 }
 
-func (e *Executor) UpdateMemory(args []string) *protocol.Response {
+// ListMemory: list memory SESSION_ID [PATH]
+// Lists the immediate children of PATH (or the roots when PATH is omitted).
+func (e *Executor) ListMemory(args []string) *protocol.Response {
 	var sessionID string
 
-	remaining, err := parseFlagsFromArgs("update-memory", args, func(fs *flag.FlagSet) {
+	remaining, err := parseFlagsFromArgs("list-memory", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&sessionID, "session-id", "", "session ID")
 	})
 	if err != nil {
@@ -2336,16 +2457,268 @@ func (e *Executor) UpdateMemory(args []string) *protocol.Response {
 
 	if sessionID == "" {
 		if len(remaining) == 0 {
-			return protocol.ErrResponse("session_id is required: update memory SESSION_ID CONTENT")
+			return protocol.ErrResponse("session_id is required: list memory SESSION_ID [PATH]")
 		}
 		sessionID = remaining[0]
 		remaining = remaining[1:]
 	}
-
-	if len(remaining) == 0 {
-		return protocol.ErrResponse("content is required: update memory SESSION_ID CONTENT")
+	path := ""
+	if len(remaining) > 0 {
+		path = remaining[0]
 	}
-	content := strings.Join(remaining, " ")
+
+	mp, err := e.resolveSessionMoneypenny(sessionID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	cmdData := map[string]interface{}{"session_id": sessionID}
+	if path != "" {
+		cmdData["path"] = path
+	}
+
+	ctx := context.Background()
+	resp, err := e.sendCommand(ctx, mp, "list_memory", cmdData)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	var out struct {
+		Children []memoryNodePayload `json:"children"`
+	}
+	if err := json.Unmarshal(resp.Data, &out); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("parsing memory response: %v", err))
+	}
+	if len(out.Children) == 0 {
+		return protocol.OKResponse(MemoryResult{Message: "(no child nodes)", Kind: "list", Path: path})
+	}
+	var b strings.Builder
+	result := MemoryResult{Kind: "list", Path: path}
+	for _, c := range out.Children {
+		if c.Description != "" {
+			fmt.Fprintf(&b, "%s — %s\n", c.Path, c.Description)
+		} else if c.Title != "" {
+			fmt.Fprintf(&b, "%s — %s\n", c.Path, c.Title)
+		} else {
+			fmt.Fprintf(&b, "%s\n", c.Path)
+		}
+		result.Children = append(result.Children, MemoryNodeView{
+			Path: c.Path, Title: c.Title, Description: c.Description,
+		})
+	}
+	result.Message = strings.TrimRight(b.String(), "\n")
+	return protocol.OKResponse(result)
+}
+
+// SearchMemory: search memory SESSION_ID QUERY
+func (e *Executor) SearchMemory(args []string) *protocol.Response {
+	var sessionID string
+
+	remaining, err := parseFlagsFromArgs("search-memory", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&sessionID, "session-id", "", "session ID")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if sessionID == "" {
+		if len(remaining) == 0 {
+			return protocol.ErrResponse("session_id is required: search memory SESSION_ID QUERY")
+		}
+		sessionID = remaining[0]
+		remaining = remaining[1:]
+	}
+	if len(remaining) == 0 {
+		return protocol.ErrResponse("query is required: search memory SESSION_ID QUERY")
+	}
+	query := strings.Join(remaining, " ")
+
+	mp, err := e.resolveSessionMoneypenny(sessionID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	cmdData := map[string]interface{}{"session_id": sessionID, "query": query}
+
+	ctx := context.Background()
+	resp, err := e.sendCommand(ctx, mp, "search_memory", cmdData)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	var out struct {
+		Results []memoryNodePayload `json:"results"`
+	}
+	if err := json.Unmarshal(resp.Data, &out); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("parsing memory response: %v", err))
+	}
+	if len(out.Results) == 0 {
+		return protocol.OKResponse(MemoryResult{
+			Message: fmt.Sprintf("No memory nodes match %q.", query), Kind: "search",
+		})
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Matches for %q:\n", query)
+	result := MemoryResult{Kind: "search"}
+	for _, r := range out.Results {
+		fmt.Fprintf(&b, "\n%s", r.Path)
+		if r.Title != "" {
+			fmt.Fprintf(&b, " (%s)", r.Title)
+		}
+		b.WriteString("\n")
+		if r.Description != "" {
+			fmt.Fprintf(&b, "  %s\n", r.Description)
+		}
+		if r.Body != "" {
+			fmt.Fprintf(&b, "  %s\n", memorySnippet(r.Body))
+		}
+		result.Results = append(result.Results, MemoryNodeView{
+			Path: r.Path, Title: r.Title, Description: r.Description, Body: r.Body,
+		})
+	}
+	result.Message = strings.TrimRight(b.String(), "\n")
+	return protocol.OKResponse(result)
+}
+
+// memorySnippet returns a one-line preview of a node body for search output.
+func memorySnippet(body string) string {
+	s := strings.ReplaceAll(strings.TrimSpace(body), "\n", " ")
+	const max = 160
+	if len(s) > max {
+		return s[:max] + "…"
+	}
+	return s
+}
+
+// UpdateMemory: update memory SESSION_ID PATH [--title T] [--description D] BODY...
+// Creates or replaces the single node at PATH. Missing ancestors are
+// auto-created. Over-cap bodies are rejected by moneypenny.
+//
+// Args are parsed manually (not via the generic flag helper) so that a BODY
+// beginning with "-" — e.g. a markdown bullet list — is not mistaken for a
+// flag. Only the exact tokens --session-id/--title/--description are treated as
+// flags, and only before the positional BODY begins.
+func (e *Executor) UpdateMemory(args []string) *protocol.Response {
+	var sessionID, title, description, path string
+	sessionSet := false
+	pathSet := false
+	var bodyParts []string
+	bodyStarted := false
+
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if bodyStarted {
+			bodyParts = append(bodyParts, a)
+			continue
+		}
+		// Recognize only the exact known flags (and their =value forms). This
+		// avoids mistaking a BODY that begins with "-" (e.g. a markdown bullet
+		// list) for a flag.
+		switch a {
+		case "--session-id", "--title", "--description":
+			if i+1 >= len(args) {
+				return protocol.ErrResponse(fmt.Sprintf("flag %s requires a value", a))
+			}
+			i++
+			switch a {
+			case "--session-id":
+				sessionID, sessionSet = args[i], true
+			case "--title":
+				title = args[i]
+			case "--description":
+				description = args[i]
+			}
+			continue
+		}
+		if strings.HasPrefix(a, "--session-id=") {
+			sessionID, sessionSet = strings.TrimPrefix(a, "--session-id="), true
+			continue
+		}
+		if strings.HasPrefix(a, "--title=") {
+			title = strings.TrimPrefix(a, "--title=")
+			continue
+		}
+		if strings.HasPrefix(a, "--description=") {
+			description = strings.TrimPrefix(a, "--description=")
+			continue
+		}
+		// Positional: session, then path, then BODY (verbatim from here on).
+		if !sessionSet {
+			sessionID, sessionSet = a, true
+		} else if !pathSet {
+			path, pathSet = a, true
+		} else {
+			bodyStarted = true
+			bodyParts = append(bodyParts, a)
+		}
+	}
+
+	if !sessionSet {
+		return protocol.ErrResponse("session_id is required: update memory SESSION_ID PATH BODY")
+	}
+	if !pathSet {
+		return protocol.ErrResponse("path is required: update memory SESSION_ID PATH BODY")
+	}
+	body := strings.Join(bodyParts, " ")
+
+	mp, err := e.resolveSessionMoneypenny(sessionID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	cmdData := map[string]interface{}{
+		"session_id":  sessionID,
+		"path":        path,
+		"title":       title,
+		"description": description,
+		"body":        body,
+	}
+
+	ctx := context.Background()
+	resp, err := e.sendCommand(ctx, mp, "update_memory", cmdData)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	var out struct {
+		Path string `json:"path"`
+	}
+	_ = json.Unmarshal(resp.Data, &out)
+	savedPath := out.Path
+	if savedPath == "" {
+		savedPath = path
+	}
+	return protocol.OKResponse(MemoryResult{
+		Message: fmt.Sprintf("Saved memory node %s.", savedPath),
+		Kind:    "write",
+		Path:    savedPath,
+	})
+}
+
+// DeleteMemory: delete memory SESSION_ID PATH [--recursive]
+func (e *Executor) DeleteMemory(args []string) *protocol.Response {
+	var sessionID string
+	var recursive bool
+
+	remaining, err := parseFlagsFromArgs("delete-memory", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&sessionID, "session-id", "", "session ID")
+		fs.BoolVar(&recursive, "recursive", false, "also delete all descendant nodes")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if sessionID == "" {
+		if len(remaining) == 0 {
+			return protocol.ErrResponse("session_id is required: delete memory SESSION_ID PATH")
+		}
+		sessionID = remaining[0]
+		remaining = remaining[1:]
+	}
+	if len(remaining) == 0 {
+		return protocol.ErrResponse("path is required: delete memory SESSION_ID PATH")
+	}
+	path := remaining[0]
 
 	mp, err := e.resolveSessionMoneypenny(sessionID)
 	if err != nil {
@@ -2354,16 +2727,30 @@ func (e *Executor) UpdateMemory(args []string) *protocol.Response {
 
 	cmdData := map[string]interface{}{
 		"session_id": sessionID,
-		"content":    content,
+		"path":       path,
+		"recursive":  recursive,
 	}
 
 	ctx := context.Background()
-	if _, err := e.sendCommand(ctx, mp, "update_memory", cmdData); err != nil {
+	resp, err := e.sendCommand(ctx, mp, "delete_memory", cmdData)
+	if err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
 
-	return protocol.OKResponse(TextResult{
-		Message: fmt.Sprintf("Memory updated for session %s.", sessionID),
+	var out struct {
+		Path    string `json:"path"`
+		Deleted int    `json:"deleted"`
+	}
+	_ = json.Unmarshal(resp.Data, &out)
+	savedPath := out.Path
+	if savedPath == "" {
+		savedPath = path
+	}
+	return protocol.OKResponse(MemoryResult{
+		Message: fmt.Sprintf("Deleted %d memory node(s) at %s.", out.Deleted, savedPath),
+		Kind:    "write",
+		Path:    savedPath,
+		Deleted: out.Deleted,
 	})
 }
 

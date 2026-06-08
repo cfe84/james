@@ -143,6 +143,20 @@ CREATE TABLE IF NOT EXISTS schedules (
 
 CREATE INDEX IF NOT EXISTS idx_schedules_session ON schedules(session_id);
 CREATE INDEX IF NOT EXISTS idx_schedules_pending ON schedules(status, scheduled_at);
+
+CREATE TABLE IF NOT EXISTS memory_nodes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL DEFAULT '',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(session_id, path)
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_nodes_session ON memory_nodes(session_id);
 `
 	_, err := db.Exec(schema)
 	if err != nil {

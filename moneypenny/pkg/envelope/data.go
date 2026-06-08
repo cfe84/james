@@ -141,16 +141,83 @@ type SummarizeSessionResponse struct {
 	TurnCount int    `json:"turn_count"`
 }
 
-// UpdateMemoryData is the data payload for update_memory.
-type UpdateMemoryData struct {
-	SessionID string `json:"session_id"`
-	Content   string `json:"content"`
+// MemoryNodePayload is a single hierarchical memory node in protocol responses.
+type MemoryNodePayload struct {
+	Path        string `json:"path"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+	Body        string `json:"body,omitempty"`
 }
 
-// MemoryResponse is returned by get_memory and update_memory.
-type MemoryResponse struct {
+// ShowMemoryData is the data payload for show_memory. Path is optional: empty
+// path requests the full outline.
+type ShowMemoryData struct {
 	SessionID string `json:"session_id"`
-	Content   string `json:"content"`
+	Path      string `json:"path,omitempty"`
+}
+
+// ShowMemoryResponse is returned by show_memory. When Path is empty, Outline
+// holds the body-less tree outline and Nodes holds the full flat node list
+// (path/title/description, DFS pre-order) for clients that render a tree. When
+// Path is set, Node holds that node and Children lists its immediate children
+// (path/title/description only).
+type ShowMemoryResponse struct {
+	SessionID string              `json:"session_id"`
+	Path      string              `json:"path,omitempty"`
+	Outline   string              `json:"outline,omitempty"`
+	Nodes     []MemoryNodePayload `json:"nodes,omitempty"`
+	Node      *MemoryNodePayload  `json:"node,omitempty"`
+	Children  []MemoryNodePayload `json:"children,omitempty"`
+}
+
+// ListMemoryData is the data payload for list_memory.
+type ListMemoryData struct {
+	SessionID string `json:"session_id"`
+	Path      string `json:"path,omitempty"`
+}
+
+// ListMemoryResponse is returned by list_memory: immediate children under Path.
+type ListMemoryResponse struct {
+	SessionID string              `json:"session_id"`
+	Path      string              `json:"path,omitempty"`
+	Children  []MemoryNodePayload `json:"children"`
+}
+
+// SearchMemoryData is the data payload for search_memory.
+type SearchMemoryData struct {
+	SessionID string `json:"session_id"`
+	Query     string `json:"query"`
+}
+
+// SearchMemoryResponse is returned by search_memory: ranked matching nodes.
+type SearchMemoryResponse struct {
+	SessionID string              `json:"session_id"`
+	Query     string              `json:"query"`
+	Results   []MemoryNodePayload `json:"results"`
+}
+
+// UpdateMemoryData is the data payload for update_memory: create/replace one
+// node at Path.
+type UpdateMemoryData struct {
+	SessionID   string `json:"session_id"`
+	Path        string `json:"path"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+	Body        string `json:"body"`
+}
+
+// DeleteMemoryData is the data payload for delete_memory.
+type DeleteMemoryData struct {
+	SessionID string `json:"session_id"`
+	Path      string `json:"path"`
+	Recursive bool   `json:"recursive,omitempty"`
+}
+
+// MemoryWriteResponse is returned by update_memory and delete_memory.
+type MemoryWriteResponse struct {
+	SessionID string `json:"session_id"`
+	Path      string `json:"path"`
+	Deleted   int    `json:"deleted,omitempty"`
 }
 
 // ListDirectoryData is the data payload for list_directory.

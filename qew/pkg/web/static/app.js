@@ -1911,56 +1911,180 @@
     }
   }
 
-  // openMemoryModal shows the session's persistent memory in an editable modal
-  // (mirrors hem/pkg/ui/memory.go). Cmd/Ctrl+Enter or Save persists it.
+  // openMemoryModal shows the session's hierarchical memory as a browsable tree
+  // with a per-node editor and search (mirrors hem/pkg/ui/memory.go). Memory is
+  // a tree of nodes (slash-delimited paths); each node has an optional
+  // title/description and a body. Cmd/Ctrl+Enter saves in the editor; Esc backs
+  // out (editor → tree → close).
   async function openMemoryModal() {
     if (!currentSession) return;
     const sid = currentSession;
-    renderWizardModal(`
-      <h3>Memory</h3>
-      <div class="loading">Loading...</div>
-    `, 'modal-mem');
-    let content = '';
-    try {
-      const resp = await apiCall('show', 'memory', [sid]);
-      if (resp.status === 'ok' && resp.data && typeof resp.data.message === 'string') {
-        content = resp.data.message === '(empty)' ? '' : resp.data.message;
-      }
-    } catch (e) { /* show empty on error */ }
+    const state = { sid, nodes: [], view: 'browse', search: { term: '', results: [], done: false } };
+
+    renderWizardModal(`<h3>Memory</h3><div class="loading">Loading...</div>`, 'modal-mem');
+    await loadMemTree();
     if (currentSession !== sid) return;
-    renderWizardModal(`
-      <h3>Memory</h3>
-      <label for="memory-content">Persistent notes injected into the agent's context</label>
-      <textarea id="memory-content" placeholder="(empty)">${escapeHtml(content)}</textarea>
-      <div class="modal-actions">
-        <button class="btn-muted" onclick="window._qewCloseWizard()">Cancel</button>
-        <button class="btn" id="memory-save">Save</button>
-      </div>
-    `, 'modal-mem');
-    const ta = document.getElementById('memory-content');
-    if (ta) ta.focus();
-    const saveBtn = document.getElementById('memory-save');
-    saveBtn.addEventListener('click', async () => {
-      const value = document.getElementById('memory-content').value;
-      saveBtn.disabled = true;
-      saveBtn.textContent = 'Saving...';
+    renderBrowse();
+
+    async function loadMemTree() {
       try {
-        const resp = await apiCall('update', 'memory', [sid, value]);
-        if (resp.status === 'error') {
-          alert('Memory error: ' + resp.message);
+        const resp = await apiCall('show', 'memory', [sid]);
+        if (resp.status === 'ok' && resp.data && Array.isArray(resp.data.nodes)) {
+          state.nodes = resp.data.nodes;
+        } else {
+          state.nodes = [];
+        }
+      } catch (e) { state.nodes = []; }
+    }
+
+    function nodeRowsHtml(nodes, withIndent) {
+      if (!nodes.length) return `<div class="mem-empty">(empty — create the first memory node)</div>`;
+      return nodes.map(n => {
+        const depth = withIndent ? (n.path.split('/').length - 1) : 0;
+        const leaf = withIndent ? n.path.split('/').pop() : n.path;
+        const desc = n.description || n.title || '';
+        return `<div class="mem-node" data-path="${escapeHtml(n.path)}">` +
+          `<span class="mem-path" style="padding-left:${depth * 16}px">${escapeHtml(leaf)}</span>` +
+          `<span class="mem-desc">${escapeHtml(desc)}</span></div>`;
+      }).join('');
+    }
+
+    function renderBrowse() {
+      state.view = 'browse';
+      const listHtml = state.search.done
+        ? (state.search.error
+            ? `<div class="mem-empty">Search error: ${escapeHtml(state.search.error)}</div>`
+            : nodeRowsHtml(state.search.results, false))
+        : nodeRowsHtml(state.nodes, true);
+      renderWizardModal(`
+        <h3>Memory</h3>
+        <div class="mem-toolbar">
+          <input id="mem-search" type="text" placeholder="Search memory…" value="${escapeHtml(state.search.term)}">
+          <button class="btn-muted" id="mem-new">New node</button>
+        </div>
+        ${state.search.done ? `<div class="step-label">Results for "${escapeHtml(state.search.term)}" — Esc-clear search</div>` : ''}
+        <div class="mem-tree" id="mem-tree">${listHtml}</div>
+        <div class="modal-actions">
+          <button class="btn-muted" onclick="window._qewCloseWizard()">Close</button>
+        </div>
+      `, 'modal-mem');
+
+      const searchBox = document.getElementById('mem-search');
+      if (searchBox) {
+        searchBox.focus();
+        searchBox.addEventListener('keydown', async (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            const term = searchBox.value.trim();
+            if (!term) { state.search = { term: '', results: [], done: false }; renderBrowse(); return; }
+            try {
+              const resp = await apiCall('search', 'memory', [sid, term]);
+              if (resp.status === 'error') {
+                state.search = { term, results: [], done: true, error: resp.message || 'search failed' };
+              } else {
+                const results = (resp.status === 'ok' && resp.data && Array.isArray(resp.data.results)) ? resp.data.results : [];
+                state.search = { term, results, done: true };
+              }
+            } catch (err) { state.search = { term, results: [], done: true, error: err.message }; }
+            renderBrowse();
+          } else if (e.key === 'Escape' && state.search.done) {
+            e.preventDefault();
+            e.stopPropagation();
+            state.search = { term: '', results: [], done: false };
+            renderBrowse();
+          }
+        });
+      }
+      const newBtn = document.getElementById('mem-new');
+      if (newBtn) newBtn.addEventListener('click', () => openEditor(null));
+      document.querySelectorAll('#mem-tree .mem-node').forEach(el => {
+        el.addEventListener('click', () => openEditor(el.getAttribute('data-path')));
+      });
+    }
+
+    async function openEditor(path) {
+      let node = { path: '', title: '', description: '', body: '' };
+      const isNew = !path;
+      if (path) {
+        try {
+          const resp = await apiCall('show', 'memory', [sid, path]);
+          if (resp.status === 'ok' && resp.data && resp.data.node) node = resp.data.node;
+          else { alert('Memory error: ' + (resp.message || 'node not found')); return; }
+        } catch (e) { alert('Error: ' + e.message); return; }
+      }
+      if (currentSession !== sid) return;
+      state.view = 'editor';
+      renderWizardModal(`
+        <h3>${isNew ? 'New Memory Node' : 'Edit Node'}</h3>
+        <label for="mem-f-path">Path (slash-delimited, e.g. project/conventions)</label>
+        <input id="mem-f-path" type="text" value="${escapeHtml(node.path)}" ${isNew ? '' : 'readonly'}>
+        <label for="mem-f-title">Title (optional)</label>
+        <input id="mem-f-title" type="text" value="${escapeHtml(node.title || '')}">
+        <label for="mem-f-desc">Description (optional, shown in the outline)</label>
+        <input id="mem-f-desc" type="text" value="${escapeHtml(node.description || '')}">
+        <label for="mem-f-body">Body</label>
+        <textarea id="mem-f-body" placeholder="Keep this node a concise synthesis; put detail in child nodes.">${escapeHtml(node.body || '')}</textarea>
+        <div class="modal-actions">
+          <button class="btn-muted" id="mem-back">Back</button>
+          ${isNew ? '' : '<button class="btn-muted" id="mem-delete">Delete</button>'}
+          <button class="btn" id="mem-save">Save</button>
+        </div>
+      `, 'modal-mem');
+
+      const pathEl = document.getElementById('mem-f-path');
+      const bodyEl = document.getElementById('mem-f-body');
+      if (isNew && pathEl) pathEl.focus(); else if (bodyEl) bodyEl.focus();
+
+      document.getElementById('mem-back').addEventListener('click', () => renderBrowse());
+
+      const delBtn = document.getElementById('mem-delete');
+      if (delBtn) {
+        delBtn.addEventListener('click', async () => {
+          const p = node.path;
+          if (!confirm(`Delete "${p}" and all descendants?`)) return;
+          try {
+            const resp = await apiCall('delete', 'memory', [sid, p, '--recursive']);
+            if (resp.status === 'error') { alert('Memory error: ' + resp.message); return; }
+          } catch (e) { alert('Error: ' + e.message); return; }
+          await loadMemTree();
+          state.search = { term: '', results: [], done: false };
+          renderBrowse();
+        });
+      }
+
+      const saveBtn = document.getElementById('mem-save');
+      saveBtn.addEventListener('click', async () => {
+        const p = document.getElementById('mem-f-path').value.trim();
+        const title = document.getElementById('mem-f-title').value;
+        const desc = document.getElementById('mem-f-desc').value;
+        const body = document.getElementById('mem-f-body').value;
+        if (!p) { alert('Path is required.'); return; }
+        saveBtn.disabled = true;
+        saveBtn.textContent = 'Saving...';
+        // Flags first so a body starting with "-" stays verbatim positional.
+        const args = [];
+        if (title) args.push('--title', title);
+        if (desc) args.push('--description', desc);
+        args.push(sid, p, body);
+        try {
+          const resp = await apiCall('update', 'memory', args);
+          if (resp.status === 'error') {
+            alert('Memory error: ' + resp.message);
+            saveBtn.disabled = false;
+            saveBtn.textContent = 'Save';
+            return;
+          }
+        } catch (e) {
+          alert('Error: ' + e.message);
           saveBtn.disabled = false;
           saveBtn.textContent = 'Save';
           return;
         }
-        closeWizard();
-        const inp = document.getElementById('chat-input');
-        if (inp) inp.focus();
-      } catch (e) {
-        alert('Error: ' + e.message);
-        saveBtn.disabled = false;
-        saveBtn.textContent = 'Save';
-      }
-    });
+        await loadMemTree();
+        state.search = { term: '', results: [], done: false };
+        renderBrowse();
+      });
+    }
   }
 
   // --- Passkeys (WebAuthn) ---
@@ -2170,6 +2294,10 @@
           <input type="checkbox" id="es-yolo" ${s.yolo ? 'checked' : ''}>
           <label for="es-yolo" style="margin:0;color:var(--text)">License to Kill</label>
         </div>
+        <div class="toggle-row">
+          <input type="checkbox" id="es-gadgets" ${s.gadgets ? 'checked' : ''}>
+          <label for="es-gadgets" style="margin:0;color:var(--text)">Gadgets (include James tooling in system prompt)</label>
+        </div>
         ${traitsCache.length ? `<label>Traits</label><div id="es-traits" style="display:flex;flex-direction:column;gap:4px">` +
           traitsCache.map(t => `<div class="toggle-row"><input type="checkbox" class="es-trait" id="es-trait-${escapeAttr(t.id)}" value="${escapeAttr(t.id)}"${selectedTraits.includes(t.id) ? ' checked' : ''}><label for="es-trait-${escapeAttr(t.id)}" style="margin:0;color:var(--text)" title="${escapeAttr(t.preview)}">${escapeHtml(t.name)}</label></div>`).join('') +
           `</div>` : ''}
@@ -2200,9 +2328,19 @@
         // clear sentinel (an empty value is treated as "unchanged").
         if (effort !== (s.effort || '')) args.push('--effort', effort === '' ? 'none' : effort);
         const sysprompt = document.getElementById('es-sysprompt').value.trim();
-        if (sysprompt !== (s.system_prompt || '')) args.push('--system-prompt', sysprompt);
         const yolo = document.getElementById('es-yolo').checked;
         if (yolo !== !!s.yolo) args.push('--yolo', yolo ? 'true' : 'false');
+        // Gadgets toggle: when it changes, let the backend recompose the system
+        // prompt (append/strip the gadgets block). Sending --system-prompt in the
+        // same call would clobber that recomposition, so they're mutually exclusive
+        // (mirrors the TUI edit form).
+        const gadgets = document.getElementById('es-gadgets').checked;
+        const gadgetsChanged = gadgets !== !!s.gadgets;
+        if (gadgetsChanged) {
+          args.push('--gadgets', gadgets ? 'true' : 'false');
+        } else if (sysprompt !== (s.system_prompt || '')) {
+          args.push('--system-prompt', sysprompt);
+        }
         // Traits: emit --traits (possibly empty) only when the selection changed.
         const newTraits = Array.from(document.querySelectorAll('.es-trait:checked')).map(c => c.value);
         const origSorted = [...selectedTraits].sort().join(',');

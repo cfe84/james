@@ -323,6 +323,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.currentView == viewDiff && m.diff.shouldConfirmQuit() {
 				return m, nil
 			}
+			// Memory view: when in an edit or search sub-mode, Esc returns to
+			// the browse list instead of leaving the memory view entirely.
+			if m.currentView == viewMemory && m.memory.mode != memModeBrowse {
+				m.memory.mode = memModeBrowse
+				m.memory.err = nil
+				m.memory.confirmDelete = false
+				return m, nil
+			}
 			return m.handleEsc()
 		}
 
@@ -736,7 +744,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessions.loading = true
 		return m, m.sessions.loadSessions()
 
-	case memoryLoadedMsg, memorySavedMsg:
+	case memoryLoadedMsg, memoryNodeLoadedMsg, memorySavedMsg, memoryDeletedMsg, memorySearchedMsg:
 		var cmd tea.Cmd
 		m.memory, cmd = m.memory.Update(msg)
 		return m, cmd
