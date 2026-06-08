@@ -44,6 +44,12 @@ header h1 span { color: var(--primary); }
 }
 .dash-toolbar select:focus { outline: none; border-color: var(--primary); }
 .dash-toolbar .spacer { flex: 1; }
+.dash-filter {
+  display: none; width: 100%; box-sizing: border-box; margin-bottom: 12px;
+  background: var(--surface); color: var(--text); border: 1px solid var(--surface2);
+  border-radius: 6px; padding: 8px 12px; font-size: 0.95em; font-family: inherit;
+}
+.dash-filter:focus { outline: none; border-color: var(--primary); }
 .btn {
   background: var(--primary); color: white; border: none; border-radius: 6px;
   padding: 6px 14px; cursor: pointer; font-weight: 600; font-size: 0.9em;
@@ -380,6 +386,7 @@ header h1 span { color: var(--primary); }
       <button class="btn-muted" id="nav-traits-btn">Traits</button>
       <button class="btn" id="new-session-btn">+ New Agent</button>
     </div>
+    <input id="dash-filter" class="dash-filter" type="text" placeholder="Filter sessions… (type to fuzzy-match, Enter to navigate, Esc to clear)" autocomplete="off">
     <div class="loading" id="dash-loading">Loading dashboard...</div>
     <div id="dash-content" style="flex:1;overflow-y:auto"></div>
   </div>

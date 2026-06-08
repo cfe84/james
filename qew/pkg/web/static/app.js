@@ -39,6 +39,8 @@
   let projectsCache = []; // cached project list
   let dashEntries = [];   // dashboard rows in display order (for keyboard nav)
   let dashSelectedId = ''; // session id of keyboard-selected dashboard row
+  let dashFilter = '';     // fuzzy filter term for the session list ('' = no filter)
+  let lastDashboardData = null; // most recent dashboard payload (for local re-filter)
   let mgmtCursor = 0;      // selected row index in the active mgmt list (moneypennies/traits)
   let cmdPaletteOpen = false; // the in-conversation command palette modal is open
   let traitsCache = []; // cached trait list [{id,name,preview}]
@@ -215,6 +217,7 @@
   }
 
   function renderDashboard(data) {
+    lastDashboardData = data;
     const container = document.getElementById('dash-content');
     if (!data || !data.rows || data.rows.length === 0) {
       container.innerHTML = '<div class="empty-state">No sessions</div>';
@@ -254,6 +257,18 @@
 
     // Server sends entries pre-sorted with subagents after their parents.
 
+    // Apply the fuzzy filter (if any) against name/project/agent/moneypenny/id.
+    const filtered = dashFilter
+      ? entries.filter(e => fuzzyMatch(dashFilter, `${e.name} ${e.project} ${e.agent} ${e.moneypenny} ${e.sessionId}`))
+      : entries;
+
+    if (filtered.length === 0) {
+      container.innerHTML = `<div class="empty-state">No sessions match "${escapeHtml(dashFilter)}"</div>`;
+      dashEntries = [];
+      applyDashSelection();
+      return;
+    }
+
     const catLabels = [
       { cls: 'cat-ready', label: 'Ready' },
       { cls: 'cat-working', label: 'Working' },
@@ -263,7 +278,7 @@
 
     let html = '';
     let lastCat = -1;
-    for (const e of entries) {
+    for (const e of filtered) {
       if (e.category !== lastCat) {
         if (lastCat !== -1) html += '</div>';
         const cat = catLabels[e.category];
@@ -287,7 +302,7 @@
     container.innerHTML = html;
 
     // Record rows in display order for keyboard navigation.
-    dashEntries = entries.map(e => ({
+    dashEntries = filtered.map(e => ({
       sessionId: e.sessionId,
       name: e.name || e.sessionId.substring(0, 12),
       mp: e.moneypenny,
@@ -349,6 +364,62 @@
     else if (cmd === 'delete') deleteSession(e.sessionId, e.name);
     else if (cmd === 'edit') showEditSessionModal(e.sessionId);
     else if (cmd === 'duplicate') openDuplicateWizard(e.sessionId);
+  }
+
+  // --- Dashboard fuzzy filter ---
+
+  // fuzzyMatch returns true when every character of query appears in target in
+  // order (case-insensitive subsequence match), the usual lightweight fuzzy
+  // filter. An empty query always matches.
+  function fuzzyMatch(query, target) {
+    const q = query.toLowerCase().replace(/\s+/g, '');
+    if (!q) return true;
+    const t = target.toLowerCase();
+    let qi = 0;
+    for (let ti = 0; ti < t.length && qi < q.length; ti++) {
+      if (t[ti] === q[qi]) qi++;
+    }
+    return qi === q.length;
+  }
+
+  // Open (reveal + focus) the dashboard filter input.
+  function openDashFilter() {
+    const input = document.getElementById('dash-filter');
+    if (!input) return;
+    input.style.display = 'block';
+    input.focus();
+    input.select();
+  }
+
+  // Wire the filter input: live fuzzy filtering, Enter blurs (keeping the filter
+  // so the list can be navigated with j/k/Enter), Escape clears + blurs.
+  function initDashFilter() {
+    const input = document.getElementById('dash-filter');
+    if (!input) return;
+    input.addEventListener('input', () => {
+      dashFilter = input.value;
+      // Re-render from the cached dashboard data without a network round-trip.
+      if (lastDashboardData) renderDashboard(lastDashboardData);
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        e.stopPropagation();
+        input.blur();
+        // Select the first result so j/k navigation has an anchor.
+        if (dashEntries.length && !dashEntries.some(x => x.sessionId === dashSelectedId)) {
+          dashSelectedId = dashEntries[0].sessionId;
+          applyDashSelection();
+        }
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        input.value = '';
+        dashFilter = '';
+        if (lastDashboardData) renderDashboard(lastDashboardData);
+        input.blur();
+      }
+    });
   }
 
   // --- Management list keyboard navigation (moneypennies / traits views) ---
@@ -3514,6 +3585,7 @@
     switch (e.key) {
       case 'ArrowDown': case 'j': e.preventDefault(); dashMove(1); break;
       case 'ArrowUp':   case 'k': e.preventDefault(); dashMove(-1); break;
+      case '/': e.preventDefault(); openDashFilter(); break;
       case 'm': e.preventDefault(); showMoneypenniesView(); break;
       case 'b': e.preventDefault(); toggleSound(); break;
       case 'n': e.preventDefault(); openCreateWizard(); break;
@@ -3542,6 +3614,8 @@
   }
 
   window.addEventListener('hashchange', handleRoute);
+
+  initDashFilter();
 
   // Display the Qew version in the header.
   fetch('/version').then(r => r.ok ? r.text() : '').then(v => {
