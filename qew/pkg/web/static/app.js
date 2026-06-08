@@ -2280,6 +2280,9 @@
 
       renderWizardModal(`
         <h3>Edit Session</h3>
+        <div style="font-size:0.85em;color:var(--muted);margin-bottom:8px">
+          🕴️ ${escapeHtml(s.agent || 'copilot')} &nbsp; 📡 ${escapeHtml(s.moneypenny || '')} &nbsp; 📂 ${escapeHtml(s.path || '')}
+        </div>
         <label for="es-name">Name</label>
         <input id="es-name" type="text" value="${escapeAttr(s.name || '')}">
         <label for="es-project">Project</label>
@@ -2289,7 +2292,7 @@
         <label for="es-effort">Effort</label>
         <select id="es-effort">${effortOptionsHtml(s.agent || 'copilot', s.effort || '')}</select>
         <label for="es-sysprompt">System Prompt</label>
-        <textarea id="es-sysprompt" rows="2">${escapeHtml(s.system_prompt || '')}</textarea>
+        <textarea id="es-sysprompt" rows="6">${escapeHtml(s.system_prompt || '')}</textarea>
         <div class="toggle-row">
           <input type="checkbox" id="es-yolo" ${s.yolo ? 'checked' : ''}>
           <label for="es-yolo" style="margin:0;color:var(--text)">License to Kill</label>
@@ -2305,7 +2308,7 @@
           <button class="btn-muted" onclick="window._qewCloseWizard()">Cancel</button>
           <button class="btn" id="es-submit">Save</button>
         </div>
-      `);
+      `, 'modal-edit');
 
       // Populate the model dropdown asynchronously from the session's
       // moneypenny + agent, preserving the session's current model.
