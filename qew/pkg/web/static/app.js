@@ -2125,12 +2125,8 @@
         <h3>${isNew ? 'New Memory Node' : 'Edit Node'}</h3>
         <label for="mem-f-path">Path (slash-delimited, e.g. project/conventions)</label>
         <input id="mem-f-path" type="text" value="${escapeHtml(node.path)}" ${isNew ? '' : 'readonly'}>
-        <label for="mem-f-title">Title (optional)</label>
-        <input id="mem-f-title" type="text" value="${escapeHtml(node.title || '')}">
-        <label for="mem-f-desc">Description (optional, shown in the outline)</label>
-        <input id="mem-f-desc" type="text" value="${escapeHtml(node.description || '')}">
-        <label for="mem-f-body">Body</label>
-        <textarea id="mem-f-body" placeholder="Keep this node a concise synthesis; put detail in child nodes.">${escapeHtml(node.body || '')}</textarea>
+        <label for="mem-f-body">Note (README.md — Markdown)</label>
+        <textarea id="mem-f-body" placeholder="This becomes the folder's README.md. Use a heading and keep parents as a concise synthesis + index of child folders.">${escapeHtml(node.body || '')}</textarea>
         <div class="modal-actions">
           <button class="btn-muted" id="mem-back">Back</button>
           ${isNew ? '' : '<button class="btn-muted" id="mem-delete">Delete</button>'}
@@ -2162,17 +2158,12 @@
       const saveBtn = document.getElementById('mem-save');
       saveBtn.addEventListener('click', async () => {
         const p = document.getElementById('mem-f-path').value.trim();
-        const title = document.getElementById('mem-f-title').value;
-        const desc = document.getElementById('mem-f-desc').value;
         const body = document.getElementById('mem-f-body').value;
         if (!p) { alert('Path is required.'); return; }
         saveBtn.disabled = true;
         saveBtn.textContent = 'Saving...';
-        // Flags first so a body starting with "-" stays verbatim positional.
-        const args = [];
-        if (title) args.push('--title', title);
-        if (desc) args.push('--description', desc);
-        args.push(sid, p, body);
+        // sid + path first, then body positional (the README content).
+        const args = [sid, p, body];
         try {
           const resp = await apiCall('update', 'memory', args);
           if (resp.status === 'error') {

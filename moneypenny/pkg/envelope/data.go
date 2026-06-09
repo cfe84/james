@@ -28,6 +28,10 @@ type CreateSessionData struct {
 	// distillation + summary + fresh-session substitution). Empty defaults to
 	// "custom" for new sessions.
 	CompactionMode string `json:"compaction_mode,omitempty"`
+	// CopyMemoryFrom, when set, names a source session on this same moneypenny
+	// whose memory folder should be copied into the new session's memory folder
+	// (used when duplicating a session so the copy inherits accumulated memory).
+	CopyMemoryFrom string `json:"copy_memory_from,omitempty"`
 }
 
 // ContinueSessionData is the data payload for continue_session.

@@ -110,11 +110,10 @@ func (m memoryModel) saveNode() tea.Cmd {
 	sessionID := m.sessionID
 	client := m.client
 	path := m.fields[0].value
-	title := m.fields[1].value
-	desc := m.fields[2].value
-	body := m.fields[3].value
+	body := m.fields[1].value
 	return func() tea.Msg {
-		err := client.saveMemoryNode(sessionID, path, title, desc, body)
+		// Body is the full README.md content; title/description are derived.
+		err := client.saveMemoryNode(sessionID, path, "", "", body)
 		return memorySavedMsg{path: path, err: err}
 	}
 }
@@ -146,14 +145,12 @@ func (m memoryModel) selectedNode() *memoryNodeView {
 
 // newEditFields builds the per-node edit form. When path is non-empty and
 // isNew is false, the Path field is locked (renaming is not supported — create
-// a new node instead).
-func newEditFields(path, title, description, body string, isNew bool) ([]formField, []string) {
+// a new node instead). The body is the node's README.md content.
+func newEditFields(path, body string, isNew bool) ([]formField, []string) {
 	bodyInput := newTextInput(true)
 	bodyInput.SetValue(body)
 	fields := []formField{
 		{label: "Path", flag: "path", value: path, cursorPos: len(path)},
-		{label: "Title", flag: "--title", value: title, cursorPos: len(title)},
-		{label: "Description", flag: "--description", value: description, cursorPos: len(description)},
 		{label: "Body", flag: "body", value: body, cursorPos: len(body), input: &bodyInput},
 	}
 	original := make([]string, len(fields))
@@ -168,7 +165,7 @@ func (m *memoryModel) openNew() {
 	if n := m.selectedNode(); n != nil {
 		parent = n.Path + "/"
 	}
-	m.fields, m.original = newEditFields(parent, "", "", "", true)
+	m.fields, m.original = newEditFields(parent, "", true)
 	m.isNew = true
 	m.editPath = ""
 	m.fcursor = 0
@@ -199,10 +196,10 @@ func (m memoryModel) Update(msg tea.Msg) (memoryModel, tea.Cmd) {
 		}
 		m.err = nil
 		if msg.node != nil {
-			m.fields, m.original = newEditFields(msg.node.Path, msg.node.Title, msg.node.Description, msg.node.Body, false)
+			m.fields, m.original = newEditFields(msg.node.Path, msg.node.Body, false)
 			m.isNew = false
 			m.editPath = msg.node.Path
-			m.fcursor = 3 // focus body
+			m.fcursor = 1 // focus body
 			m.mode = memModeEdit
 		}
 		return m, nil

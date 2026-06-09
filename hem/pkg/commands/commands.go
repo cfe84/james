@@ -944,42 +944,14 @@ const memoryMarker = "\nYou have a persistent session memory managed by hem."
 const memoryMarkerLegacy = "\nYou have a persistent memory for this session."
 
 // findMemoryMarker returns the index of the memory marker in s, checking both
-// current and legacy markers. Returns -1 if not found.
+// current and legacy markers. Returns -1 if not found. Retained so legacy
+// hem-injected memory blocks are stripped from inherited system prompts; memory
+// instructions are now injected by moneypenny at runtime (file-based memory).
 func findMemoryMarker(s string) int {
 	if idx := strings.Index(s, memoryMarker); idx >= 0 {
 		return idx
 	}
 	return strings.Index(s, memoryMarkerLegacy)
-}
-
-func memorySystemPrompt(hemCmd, sessionID string) string {
-	return fmt.Sprintf(`
-You have a persistent session memory managed by hem. This OVERRIDES any other memory system (do NOT use file-based .md memory files, do NOT write to .claude/projects/ or MEMORY.md). Use ONLY the hem commands below.
-
-Memory is a hierarchical tree of nodes. Each node has a slash-delimited path (e.g. "project/conventions/git"), an optional short title, an optional one-line description, and a body. Hierarchy comes purely from the path: writing "a/b/c" auto-creates empty parents "a" and "a/b".
-
-Each run, a body-less OUTLINE of the tree (paths + descriptions) is injected inside <session-memory-outline> tags. It is a map, not the content — fetch detail on demand with the commands below. If no outline is present, your memory is empty.
-
-Memory commands:
-  Read a node (and list its children):  %[1]s show memory %[2]s PATH
-  Show the full outline:                 %[1]s show memory %[2]s
-  List children of a path:               %[1]s list memory %[2]s [PATH]
-  Search nodes (path/title/desc/body):   %[1]s search memory %[2]s QUERY
-  Create/replace a node:                 %[1]s update memory %[2]s PATH [--title T] [--description D] BODY
-  Delete a node:                         %[1]s delete memory %[2]s PATH [--recursive]
-
-IMPORTANT:
-- PATH is a short slash-delimited slug (e.g. "project/api/auth"), NOT prose. The note text goes in BODY. Do not pass content as the PATH.
-- "update memory" REPLACES the single node at PATH (it does not append). Rewrite the node's full body.
-- Each node body has a maximum size. If a write is rejected for being too large, do NOT cram it in: keep this node a concise synthesis and move detail into child nodes (e.g. split "project/api" into "project/api/auth", "project/api/errors").
-- Always give nodes a short --description so the outline stays navigable.
-- "delete memory" refuses to delete a node that has children unless you pass --recursive.
-
-Use memory to track, organized into a sensible tree:
-- Key decisions and context about the task
-- User preferences discovered during the conversation
-- Important file paths, patterns, or conventions
-- Anything you would want to remember if the conversation continues later`, hemCmd, sessionID)
 }
 
 // Traits are reusable, hem-level system-prompt snippets composed into the
@@ -1645,12 +1617,8 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 		params.SystemPrompt += gadgetsSystemPrompt(e.MI6Control, sessionID)
 	}
 
-	// Always inject memory instructions when hem is reachable (MI6 or local).
-	// Memory is independent of gadgets — even non-gadgets sessions can use memory.
-	if e.MI6Control != "" {
-		hemCmd := fmt.Sprintf("hem --hem %s", e.MI6Control)
-		params.SystemPrompt += memorySystemPrompt(hemCmd, sessionID)
-	}
+	// Memory instructions are injected by the moneypenny at runtime now that
+	// memory is a file-based folder it manages directly (no hem dependency).
 
 	// Build command data.
 	cmdData := buildCreateSessionData(params, sessionID, prompt)
@@ -4746,12 +4714,15 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	if params.Gadgets {
 		params.SystemPrompt += gadgetsSystemPrompt(e.MI6Control, newSessionID)
 	}
-	if e.MI6Control != "" {
-		hemCmd := fmt.Sprintf("hem --hem %s", e.MI6Control)
-		params.SystemPrompt += memorySystemPrompt(hemCmd, newSessionID)
-	}
+	// Memory instructions are injected by the moneypenny at runtime (file-based
+	// memory). When duplicating within the same moneypenny, ask it to copy the
+	// source session's memory folder into the new session so the duplicate
+	// inherits accumulated knowledge.
 
 	cmdData := buildCreateSessionData(params, newSessionID, prompt)
+	if sourceMP.Name == targetMP.Name {
+		cmdData["copy_memory_from"] = sourceSessionID
+	}
 
 	// Track the new session locally on the target moneypenny.
 	if params.ProjectID != "" {
@@ -5750,10 +5721,8 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 	if gadgets {
 		systemPrompt += gadgetsSystemPrompt(e.MI6Control, sessionID)
 	}
-	if e.MI6Control != "" {
-		hemCmd := fmt.Sprintf("hem --hem %s", e.MI6Control)
-		systemPrompt += memorySystemPrompt(hemCmd, sessionID)
-	}
+	// Memory instructions are injected by the moneypenny at runtime (file-based
+	// memory); no hem-side injection needed.
 
 	cmdData := map[string]interface{}{
 		"agent":      agentName,

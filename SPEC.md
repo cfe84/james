@@ -226,7 +226,7 @@ Method: **list_directory**: lists entries in a directory. Data: `{ "path": "/som
 
 Method: **get_version**: returns the version of moneypenny
 
-Memory: Each session has a persistent, hierarchical, searchable memory tree stored in moneypenny's SQLite. Only a body-less outline is injected into the system prompt each call; the agent reads, searches, writes, and deletes individual nodes on demand via the `hem ... memory` CLI commands. See the Session Memory section for details.
+Memory: Each session has a persistent, file-based memory — a per-session folder of Markdown files (`memory/`, one `README.md` per topic folder) that the agent reads and edits directly with its native file tools. Moneypenny grants access via `--add-dir` and injects an up-to-date outline into the system prompt each call. The `hem ... memory` CLI/TUI/Qew commands browse and edit the same folder. See the Session Memory section for details.
 
 Local deployment: add a `--local` convenience flag that allows moneypenny to run in local mode through fifo.
 
@@ -572,40 +572,46 @@ Schedule instructions are appended to every session's system prompt automaticall
 
 ## Session Memory
 
-Each session has a persistent memory — a **hierarchical, searchable tree of nodes** that survives across conversation turns and session continuations. Memory is a tool the agent navigates on demand, not a blob dumped into every prompt.
+Each session has a persistent memory — a **folder of Markdown files** on the moneypenny host that survives across conversation turns, compactions, and session continuations. The agent reads and edits it directly with its **native file tools**; it is not a blob dumped into every prompt.
 
 ### Model
 
-- Memory is a tree of **nodes**. Each node has a slash-delimited **path** (e.g. `project/conventions/git`), an optional short **title**, an optional one-line **description**, and a **body**.
-- Hierarchy comes purely from the path: writing `a/b/c` auto-creates empty ancestor nodes `a` and `a/b`.
-- Each node body has a maximum size (`MemoryMaxBodyLen`, 2000 chars; descriptions `MemoryMaxDescriptionLen`, 200 chars). **Over-cap writes are rejected** to force agents to hierarchize — keep a node a concise synthesis and push detail into child nodes.
-- A path segment is a short slug, not prose: segments over `MemoryMaxPathSegmentLen` (64 chars) are **rejected** with a hint to put content in the BODY. This guards against an agent passing a whole note as the PATH (which would otherwise create a node whose path is the entire text and no body).
-- Memory is stored per session in moneypenny's SQLite database (`memory_nodes` table, `UNIQUE(session_id, path)`).
+- Memory lives in a per-session folder `<sessionDir>/memory/` on the moneypenny.
+- The structure is a **uniform hierarchy**: every node is a *folder* containing a `README.md` that serves as both that topic's note and an index of its sub-topics. The root note is `memory/README.md`; a node at path `a/b` is `memory/a/b/README.md`.
+- Hierarchy comes purely from the folder path. There are no separate title/description/body fields — a node *is* its `README.md`. For display (outline/browser), a one-line **description** is derived from the README's first heading or first non-empty line.
+- Paths are short slugs. `NormalizePath` rejects traversal (`..`/`.`), absolute paths, control characters, and prose-length segments (over 64 chars), so an agent can never escape the memory folder or pass a whole note as the path.
+- Hierarchization is encouraged by instruction (soft), not enforced with hard size caps.
 
 ### How it works
 
-- When the agent runs, only a **body-less outline** of the tree (paths + descriptions, DFS pre-order, indented) is injected into the system prompt inside `<session-memory-outline>` tags. This is a map; the agent fetches/searches detail on demand.
-- Memory instructions are automatically included in the system prompt when the session has hem CLI access (MI6 connection), independent of the gadgets flag.
-- Agents read, search, write, and delete nodes via the hem CLI commands below.
-- A legacy flat memory blob (from before this feature) is auto-migrated on first access into a single `notes` node (the migration bypasses the size cap to avoid data loss).
+- The agent edits memory with its normal file tools. The folder is outside the project working directory, so moneypenny passes `--add-dir <memoryDir>` so the agent can reach it. For **non-yolo** sessions it also pre-authorizes the file-writing tools so memory edits don't trigger permission prompts that would be auto-denied in non-interactive (`-p`) mode — but only where they can be path-scoped: Claude gets path-scoped `Read/Write/Edit/MultiEdit(<memoryDir>/**)`. **Copilot can't scope a tool by path**, and we won't grant a non-yolo session broad write access, so **non-yolo Copilot sessions have memory disabled** (no folder access, no injection). Yolo sessions (Claude or Copilot) already allow everything, so they get memory with just `--add-dir`.
+- Each run, moneypenny injects a `<session-memory>` block into the system prompt: the absolute memory-folder path, the uniform-hierarchy convention, and an up-to-date **body-less outline** of the current tree. On first use it seeds a root `README.md` template.
+- Because memory is local files managed by moneypenny, it works **without any hem/MI6 connectivity** — agents no longer shell out to `hem` to read or write memory.
+- When a session is **duplicated**, the source session's `memory/` folder is copied into the new session (same-moneypenny only) so the copy inherits accumulated knowledge.
 
-### CLI Commands
+### CLI Commands (management)
+
+The `hem ... memory` verbs remain for browsing/editing memory from the CLI, TUI, and Qew; they are now backed by the filesystem (the single source of truth):
 
 - `hem show memory SESSION_ID` — prints the body-less outline of the whole tree.
-- `hem show memory SESSION_ID PATH` — prints that node's title/description/body and lists its immediate children.
+- `hem show memory SESSION_ID PATH` — prints that node's `README.md` and lists its immediate children.
 - `hem list memory SESSION_ID [PATH]` — lists the immediate children of PATH (or the roots).
-- `hem search memory SESSION_ID QUERY` — ranked substring search over path/title/description/body.
-- `hem update memory SESSION_ID PATH [--title T] [--description D] BODY` — creates or replaces the single node at PATH (auto-creating ancestors). A BODY beginning with `-` (e.g. a markdown bullet list) is taken verbatim, not parsed as a flag.
-- `hem delete memory SESSION_ID PATH [--recursive]` — deletes a node; refuses a node with children unless `--recursive`.
+- `hem search memory SESSION_ID QUERY` — ranked substring search over node path and README content.
+- `hem update memory SESSION_ID PATH BODY` — creates or replaces the `README.md` at PATH (auto-creating ancestor folders). A BODY beginning with `-` is taken verbatim, not parsed as a flag. (Legacy `--title`/`--description` flags are still accepted and folded into the note.)
+- `hem delete memory SESSION_ID PATH [--recursive]` — deletes a node's folder; refuses a node with child folders unless `--recursive`.
 
-### TUI
+### TUI / Qew
 
-- In chat command mode, `m` opens the memory view.
-- The view has three sub-modes: a **browse** tree list (Enter/`e` edit a node, `n` new, `d` delete with confirm, `/` search, `r` refresh), a per-node **editor** (Path/Title/Description/Body fields; the Path is locked when editing an existing node; Ctrl+S saves, Esc returns to the tree), and **search** (Enter searches or opens the selected result). Esc backs out one level (editor/search → tree → leave).
+- In chat command mode, `m` opens the memory view (Qew: command-palette `m` / Actions menu).
+- The view has a **browse** tree (Enter/`e` edit, `n` new, `d` delete with confirm, `/` search, `r` refresh), a per-node **editor** with a Path field plus a single **Note (README.md)** Markdown field (the Path is locked when editing an existing node), and **search**.
+
+### Migration (transitional)
+
+Memory previously lived in moneypenny's SQLite (`memory_nodes` table, plus an even older flat `sessions.memory` blob). On moneypenny **startup**, that data is exported once into the per-session `memory/` folders (idempotent — skipped when a folder already has content); a lazy per-session export also runs on first access. The SQLite memory tables and this migration shim are slated for removal (TODO ~2026-06-12).
 
 ### Agent prompt
 
-Agents are instructed to organize what they learn into a sensible tree (key decisions, user preferences, file paths, conventions, anything relevant for future continuations), to keep each node a concise synthesis with detail in child nodes, to always give nodes a short description so the outline stays navigable, and that `update memory` replaces a single node (not append). When a write is rejected for being too large, they are told to split detail into child nodes rather than cram it in.
+Agents are instructed to treat the memory folder as their long-term knowledge base: read `README.md` first, organize hierarchically with a `README.md` per folder, keep parents as concise synthesis + index of children, update existing notes instead of duplicating, and record the task, key decisions and rationale, conventions, important paths/names, current state, and pending actions.
 
 ## Sub-agents
 

@@ -114,6 +114,13 @@ func main() {
 	h := handler.New(st, runner, Version, *dataDir)
 	h.SetLogger(vlog.Printf)
 
+	// One-time export of legacy SQLite memory into per-session memory folders.
+	// TODO(2026-06-12): remove this startup migration once all sessions have
+	// been exported to the filesystem.
+	if n := h.MigrateMemoryToFiles(); n > 0 {
+		log.Printf("memory: exported legacy memory for %d session(s) to files", n)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

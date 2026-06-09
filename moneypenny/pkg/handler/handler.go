@@ -16,6 +16,7 @@ import (
 
 	"james/moneypenny/pkg/agent"
 	"james/moneypenny/pkg/envelope"
+	"james/moneypenny/pkg/memory"
 	"james/moneypenny/pkg/store"
 )
 
@@ -73,6 +74,18 @@ func (h *Handler) sessionDir(sessionID string) string {
 		return ""
 	}
 	return dir
+}
+
+// memoryDir returns the per-session memory folder (<sessionDir>/memory). The
+// agent reads and edits this folder directly with its native file tools; it is
+// also the single source of truth backing the show/list/search/update/delete
+// memory commands. Returns "" when no session dir is available.
+func (h *Handler) memoryDir(sessionID string) string {
+	sd := h.sessionDir(sessionID)
+	if sd == "" {
+		return ""
+	}
+	return filepath.Join(sd, "memory")
 }
 
 // SetLogger sets a verbose logger.
@@ -246,6 +259,27 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 	// Set status to working.
 	if err := h.store.UpdateSessionStatus(data.SessionID, store.StateWorking); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to update status: %v", err))
+	}
+
+	// Inherit the source session's memory folder when duplicating.
+	// Validate the source is a real session in the store first — moneypenny
+	// receives raw JSON, so this is the trust boundary that prevents a crafted
+	// copy_memory_from value (e.g. "../../") from escaping the sessions dir.
+	if data.CopyMemoryFrom != "" {
+		if _, err := h.store.GetSession(data.CopyMemoryFrom); err != nil {
+			h.vlog("copy_memory_from %q is not a known session: %v", data.CopyMemoryFrom, err)
+		} else {
+			srcMem := h.memoryDir(data.CopyMemoryFrom)
+			// Ensure any legacy SQLite memory on the source is exported to files
+			// first so the copy captures it.
+			h.ensureMemoryMigrated(data.CopyMemoryFrom)
+			dstMem := h.memoryDir(data.SessionID)
+			if srcMem != "" && dstMem != "" {
+				if err := memory.CopyTree(srcMem, dstMem); err != nil {
+					h.vlog("copy memory %s -> %s: %v", data.CopyMemoryFrom, data.SessionID, err)
+				}
+			}
+		}
 	}
 
 	// Notify that session is now working.
@@ -500,14 +534,18 @@ func (h *Handler) summarizeSession(ctx context.Context, cmd *envelope.Command) *
 // runAgent executes the agent in the background, updating the store when done.
 // After completion, it checks the prompt queue and auto-continues if there are queued prompts.
 func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
-	// Inject a compact, body-less outline of the session's memory tree into the
-	// system prompt at runtime so the agent always sees an up-to-date map of
-	// what it knows and can fetch/search detail on demand (memory is a tool, not
-	// a wholesale prompt dump).
-	h.ensureMemoryMigrated(sessionID)
-	if outline, err := h.store.MemoryOutline(sessionID); err == nil && outline != "" {
-		params.SystemPrompt += "\n\n<session-memory-outline>\n" + outline +
-			"\n</session-memory-outline>\n(Use 'show memory <path>' to read a node, 'search memory <query>' to search.)"
+	// Inject the file-based memory instructions plus a compact, body-less outline
+	// of the session's memory tree into the system prompt at runtime. The agent
+	// edits its memory folder directly with its native file tools, so it always
+	// sees an up-to-date map of what it knows and where to write. Memory is
+	// skipped for agent/permission combinations that can't write it without an
+	// interactive prompt (non-yolo Copilot — see agent.MemoryEnabled).
+	if agent.MemoryEnabled(params.Agent, params.Yolo) {
+		h.ensureMemoryMigrated(sessionID)
+		if memDir := h.memoryDir(sessionID); memDir != "" {
+			params.MemoryDir = memDir
+			params.SystemPrompt += memorySystemPrompt(memDir)
+		}
 	}
 
 	// Provide the per-session persistent directory to the agent runner so it
@@ -900,21 +938,147 @@ func (h *Handler) updateSession(_ context.Context, cmd *envelope.Command) *envel
 	return envelope.SuccessResponse(cmd.RequestID, map[string]string{"session_id": data.SessionID})
 }
 
-// ensureMemoryMigrated lazily imports a session's legacy blob memory into the
-// node tree on first structured access.
+// MigrateMemoryToFiles exports every session's legacy SQLite memory into its
+// file-based memory folder, idempotently (skips sessions whose folder already
+// has content). Returns the number of sessions exported. Intended to run once
+// at moneypenny startup.
+//
+// TODO(2026-06-12): remove this migration helper and the SQLite memory store.
+func (h *Handler) MigrateMemoryToFiles() int {
+	sessions, err := h.store.ListSessions()
+	if err != nil {
+		h.vlog("memory migration: list sessions: %v", err)
+		return 0
+	}
+	migrated := 0
+	for _, s := range sessions {
+		memDir := h.memoryDir(s.SessionID)
+		if memDir == "" || !memory.IsEmpty(memDir) {
+			continue
+		}
+		count, _ := h.store.MemoryNodeCount(s.SessionID)
+		blob, _ := h.store.GetMemory(s.SessionID)
+		if count == 0 && strings.TrimSpace(blob) == "" {
+			continue
+		}
+		if err := h.exportLegacyMemory(s.SessionID, memDir); err != nil {
+			h.vlog("memory migration for session %s: %v", s.SessionID, err)
+			continue
+		}
+		migrated++
+	}
+	return migrated
+}
+
+// ensureMemoryMigrated lazily exports a session's legacy SQLite memory (the node
+// tree, or the older flat blob) into the file-based memory folder on first
+// access. Idempotent: it no-ops once the folder has any content.
+//
+// TODO(2026-06-12): remove this migration shim and the SQLite memory store once
+// all active sessions have been exported to the filesystem.
 func (h *Handler) ensureMemoryMigrated(sessionID string) {
-	if _, err := h.store.MigrateLegacyMemory(sessionID); err != nil {
-		h.vlog("memory migration for session %s: %v", sessionID, err)
+	memDir := h.memoryDir(sessionID)
+	if memDir == "" || !memory.IsEmpty(memDir) {
+		return
+	}
+	if err := h.exportLegacyMemory(sessionID, memDir); err != nil {
+		h.vlog("memory export for session %s: %v", sessionID, err)
 	}
 }
 
-func toMemoryPayload(n *store.MemoryNode) envelope.MemoryNodePayload {
-	return envelope.MemoryNodePayload{
-		Path:        n.Path,
-		Title:       n.Title,
-		Description: n.Description,
-		Body:        n.Body,
+// exportLegacyMemory writes the session's SQLite memory nodes out as README.md
+// files under memDir. Title/Description (which the file model folds into the
+// body) are preserved by prepending them as a heading + summary.
+func (h *Handler) exportLegacyMemory(sessionID, memDir string) error {
+	// Fold the oldest flat blob into a single node first, matching prior behavior.
+	if _, err := h.store.MigrateLegacyMemory(sessionID); err != nil {
+		h.vlog("legacy blob migration for session %s: %v", sessionID, err)
 	}
+	nodes, err := h.store.ListMemoryNodes(sessionID)
+	if err != nil {
+		return err
+	}
+	var firstErr error
+	for _, n := range nodes {
+		body := n.Body
+		if n.Title != "" || n.Description != "" {
+			var hb strings.Builder
+			if n.Title != "" {
+				hb.WriteString("# " + n.Title + "\n\n")
+			}
+			if n.Description != "" {
+				hb.WriteString(n.Description + "\n\n")
+			}
+			hb.WriteString(body)
+			body = hb.String()
+		}
+		if _, err := memory.Set(memDir, n.Path, body); err != nil {
+			h.vlog("export memory node %q for session %s: %v", n.Path, sessionID, err)
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	// Surface a partial-export failure so the caller does not mark the session
+	// migrated; it will be retried (lazily or on next startup) until every node
+	// is written, avoiding silent data loss when the SQLite store is removed.
+	return firstErr
+}
+
+// rootReadmeTemplate seeds a fresh memory folder so the agent has a starting
+// index to extend.
+const rootReadmeTemplate = `# Session Memory
+
+Persistent memory for this agent session. Organize knowledge hierarchically:
+each topic is a folder with its own README.md that serves as both the topic note
+and an index of its sub-topics. Read this file first, then drill into folders.
+
+## Index
+
+(Add links to topic folders here as you create them.)
+`
+
+// seedRootReadme writes the root README.md if the folder has no root note yet.
+func seedRootReadme(memDir string) {
+	readme := filepath.Join(memDir, "README.md")
+	if _, err := os.Stat(readme); err == nil {
+		return
+	}
+	_ = os.MkdirAll(memDir, 0o755)
+	_ = os.WriteFile(readme, []byte(rootReadmeTemplate), 0o644)
+}
+
+// memorySystemPrompt builds the system-prompt block that points the agent at its
+// file-based memory folder. It ensures the folder exists, seeds a root README on
+// first use, and appends an up-to-date outline of the tree.
+func memorySystemPrompt(memDir string) string {
+	_ = os.MkdirAll(memDir, 0o755)
+	seedRootReadme(memDir)
+	var b strings.Builder
+	b.WriteString("\n\n<session-memory>\n")
+	b.WriteString("You have a persistent MEMORY FOLDER at:\n  ")
+	b.WriteString(memDir)
+	b.WriteString("\nThis folder is yours to read and edit with your normal file tools. It survives this session's compactions and restarts, so use it as your long-term knowledge base — record the task, key decisions and rationale, conventions, important paths/names, current state, and pending actions.\n\n")
+	b.WriteString("Structure (uniform hierarchy):\n")
+	b.WriteString("- Every topic is a FOLDER containing a README.md that is both that topic's note and an index of its sub-topics.\n")
+	b.WriteString("- The root note is " + filepath.Join(memDir, "README.md") + " — keep a high-level overview and a table of contents there.\n")
+	b.WriteString("- Put detail in nested topic folders (e.g. project/conventions/README.md). Keep each note focused; update existing notes instead of duplicating; summarize in parent READMEs so nothing is lost.\n")
+	if outline, err := memory.Outline(memDir); err == nil && strings.TrimSpace(outline) != "" {
+		b.WriteString("\nCurrent memory tree:\n")
+		b.WriteString(outline)
+		b.WriteString("\n")
+	}
+	b.WriteString("</session-memory>\n")
+	return b.String()
+}
+
+// memNodePayload converts a file-based memory node to its protocol payload.
+func memNodePayload(n *memory.Node, withBody bool) envelope.MemoryNodePayload {
+	p := envelope.MemoryNodePayload{Path: n.Path, Description: n.Description}
+	if withBody {
+		p.Body = n.Body
+	}
+	return p
 }
 
 func (h *Handler) showMemory(_ context.Context, cmd *envelope.Command) *envelope.Response {
@@ -925,50 +1089,56 @@ func (h *Handler) showMemory(_ context.Context, cmd *envelope.Command) *envelope
 	if data.SessionID == "" {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id is required")
 	}
+	memDir := h.memoryDir(data.SessionID)
+	if memDir == "" {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, "no session directory available")
+	}
 	h.ensureMemoryMigrated(data.SessionID)
 
 	resp := envelope.ShowMemoryResponse{SessionID: data.SessionID, Path: data.Path}
 	if strings.TrimSpace(data.Path) == "" {
-		outline, err := h.store.MemoryOutline(data.SessionID)
+		outline, err := memory.Outline(memDir)
 		if err != nil {
 			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
 		}
 		resp.Outline = outline
-		// Include the full flat node list (body-less) so tree-rendering clients
-		// (TUI/Qew) can browse without one request per node.
-		nodes, err := h.store.ListMemoryNodes(data.SessionID)
+		nodes, err := memory.List(memDir)
 		if err != nil {
 			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
 		}
 		for _, n := range nodes {
-			resp.Nodes = append(resp.Nodes, envelope.MemoryNodePayload{
-				Path: n.Path, Title: n.Title, Description: n.Description,
-			})
+			// The root note has an empty path, which clients treat as
+			// "new node"/outline rather than an editable row. Skip it here —
+			// its content is surfaced in the outline above and it is maintained
+			// by the agent directly — so the browse list only contains named,
+			// openable nodes.
+			if n.Path == "" {
+				continue
+			}
+			resp.Nodes = append(resp.Nodes, memNodePayload(n, false))
 		}
 		return envelope.SuccessResponse(cmd.RequestID, resp)
 	}
 
-	path, err := store.NormalizeMemoryPath(data.Path)
+	path, err := memory.NormalizePath(data.Path)
 	if err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
 	}
-	node, err := h.store.GetMemoryNode(data.SessionID, path)
+	node, err := memory.Get(memDir, path)
 	if err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
 	}
 	if node == nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("no memory node at %q", path))
 	}
-	payload := toMemoryPayload(node)
+	payload := memNodePayload(node, true)
 	resp.Node = &payload
-	children, err := h.store.ListMemoryChildren(data.SessionID, path)
+	children, err := memory.Children(memDir, path)
 	if err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
 	}
 	for _, c := range children {
-		resp.Children = append(resp.Children, envelope.MemoryNodePayload{
-			Path: c.Path, Title: c.Title, Description: c.Description,
-		})
+		resp.Children = append(resp.Children, memNodePayload(c, false))
 	}
 	return envelope.SuccessResponse(cmd.RequestID, resp)
 }
@@ -981,25 +1151,27 @@ func (h *Handler) listMemory(_ context.Context, cmd *envelope.Command) *envelope
 	if data.SessionID == "" {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id is required")
 	}
+	memDir := h.memoryDir(data.SessionID)
+	if memDir == "" {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, "no session directory available")
+	}
 	h.ensureMemoryMigrated(data.SessionID)
 
 	parent := ""
 	if strings.TrimSpace(data.Path) != "" {
-		p, err := store.NormalizeMemoryPath(data.Path)
+		p, err := memory.NormalizePath(data.Path)
 		if err != nil {
 			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
 		}
 		parent = p
 	}
-	children, err := h.store.ListMemoryChildren(data.SessionID, parent)
+	children, err := memory.Children(memDir, parent)
 	if err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
 	}
 	resp := envelope.ListMemoryResponse{SessionID: data.SessionID, Path: parent}
 	for _, c := range children {
-		resp.Children = append(resp.Children, envelope.MemoryNodePayload{
-			Path: c.Path, Title: c.Title, Description: c.Description,
-		})
+		resp.Children = append(resp.Children, memNodePayload(c, false))
 	}
 	return envelope.SuccessResponse(cmd.RequestID, resp)
 }
@@ -1015,15 +1187,19 @@ func (h *Handler) searchMemory(_ context.Context, cmd *envelope.Command) *envelo
 	if strings.TrimSpace(data.Query) == "" {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "query is required")
 	}
+	memDir := h.memoryDir(data.SessionID)
+	if memDir == "" {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, "no session directory available")
+	}
 	h.ensureMemoryMigrated(data.SessionID)
 
-	nodes, err := h.store.SearchMemoryNodes(data.SessionID, data.Query)
+	nodes, err := memory.Search(memDir, data.Query)
 	if err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
 	}
 	resp := envelope.SearchMemoryResponse{SessionID: data.SessionID, Query: data.Query}
 	for _, n := range nodes {
-		resp.Results = append(resp.Results, toMemoryPayload(n))
+		resp.Results = append(resp.Results, memNodePayload(n, true))
 	}
 	return envelope.SuccessResponse(cmd.RequestID, resp)
 }
@@ -1039,12 +1215,31 @@ func (h *Handler) updateMemory(_ context.Context, cmd *envelope.Command) *envelo
 	if strings.TrimSpace(data.Path) == "" {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "path is required")
 	}
+	memDir := h.memoryDir(data.SessionID)
+	if memDir == "" {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, "no session directory available")
+	}
 	h.ensureMemoryMigrated(data.SessionID)
 
-	if err := h.store.SetMemoryNode(data.SessionID, data.Path, data.Title, data.Description, data.Body); err != nil {
+	// Body is authoritative for the file model. For backward compatibility with
+	// callers that still split Title/Description from Body, fold them into the
+	// note so nothing is lost.
+	body := data.Body
+	if data.Title != "" || data.Description != "" {
+		var hb strings.Builder
+		if data.Title != "" {
+			hb.WriteString("# " + data.Title + "\n\n")
+		}
+		if data.Description != "" {
+			hb.WriteString(data.Description + "\n\n")
+		}
+		hb.WriteString(body)
+		body = hb.String()
+	}
+	path, err := memory.Set(memDir, data.Path, body)
+	if err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
 	}
-	path, _ := store.NormalizeMemoryPath(data.Path)
 	return envelope.SuccessResponse(cmd.RequestID, envelope.MemoryWriteResponse{
 		SessionID: data.SessionID,
 		Path:      path,
@@ -1062,13 +1257,17 @@ func (h *Handler) deleteMemory(_ context.Context, cmd *envelope.Command) *envelo
 	if strings.TrimSpace(data.Path) == "" {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "path is required")
 	}
+	memDir := h.memoryDir(data.SessionID)
+	if memDir == "" {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, "no session directory available")
+	}
 	h.ensureMemoryMigrated(data.SessionID)
 
-	deleted, err := h.store.DeleteMemoryNode(data.SessionID, data.Path, data.Recursive)
+	deleted, err := memory.Delete(memDir, data.Path, data.Recursive)
 	if err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
 	}
-	path, _ := store.NormalizeMemoryPath(data.Path)
+	path, _ := memory.NormalizePath(data.Path)
 	return envelope.SuccessResponse(cmd.RequestID, envelope.MemoryWriteResponse{
 		SessionID: data.SessionID,
 		Path:      path,

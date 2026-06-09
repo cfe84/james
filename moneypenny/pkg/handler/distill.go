@@ -16,11 +16,11 @@ import (
 // relies on the live agent's accumulated context), distillation runs over a
 // fresh agent session and is therefore handed the transcript explicitly.
 const distillPrompt = `[SYSTEM: MEMORY DISTILLATION]
-Below is the full transcript of a conversation. Your job is to extract ALL durable, important information from it into your hierarchical memory. Do the following, in order:
+Below is the full transcript of a conversation. Your job is to extract ALL durable, important information from it into your memory folder. Do the following, in order:
 
-1. First inspect your EXISTING memory (use the 'show memory', 'list memory', and 'search memory' tools) to see what is already recorded and how it is organized.
+1. First inspect your EXISTING memory (read its README.md and browse the topic folders) to see what is already recorded and how it is organized.
 
-2. Then go through the transcript and SAVE everything important into memory using 'update memory <path>': the original task, key decisions and their rationale, important context (file paths, names, conventions, learnings), the current state of the work, and any pending actions. Where the transcript adds to or changes something already in memory, UPDATE the existing node rather than duplicating it. Reorganize the tree if that makes it clearer. Keep high-level synthesis in parent nodes and detail in child nodes so nothing is lost and size limits are respected.
+2. Then go through the transcript and SAVE everything important into memory by creating/editing README.md files in topic folders: the original task, key decisions and their rationale, important context (file paths, names, conventions, learnings), the current state of the work, and any pending actions. Where the transcript adds to or changes something already in memory, UPDATE the existing README.md rather than duplicating it. Reorganize the folders if that makes it clearer. Keep high-level synthesis in parent folders' README.md and detail in child folders so nothing is lost.
 
 3. When done, briefly report what you wrote or updated as your final message.
 
@@ -126,14 +126,17 @@ func (h *Handler) runDistillation(sessionID string) {
 		return
 	}
 
-	// Run the agent with the session's system prompt (which carries the memory
-	// tooling instructions) plus a body-less outline of the current memory tree
-	// so it can target/extend existing nodes. Use a throwaway underlying agent
-	// session id (NOT persisted) so the live agent session is untouched.
+	// Run the agent with the session's system prompt plus the file-based memory
+	// instructions and a body-less outline of the current memory tree, so it can
+	// target/extend existing nodes. Use a throwaway underlying agent session id
+	// (NOT persisted) so the live agent session is untouched.
 	systemPrompt := sess.SystemPrompt
-	if outline, err := h.store.MemoryOutline(sessionID); err == nil && outline != "" {
-		systemPrompt += "\n\n<session-memory-outline>\n" + outline +
-			"\n</session-memory-outline>\n(Use 'show memory <path>' to read a node, 'search memory <query>' to search.)"
+	memDir := h.memoryDir(sessionID)
+	if !agent.MemoryEnabled(sess.Agent, sess.Yolo) {
+		memDir = ""
+	}
+	if memDir != "" {
+		systemPrompt += memorySystemPrompt(memDir)
 	}
 
 	params := agent.RunParams{
@@ -148,6 +151,7 @@ func (h *Handler) runDistillation(sessionID string) {
 		Resume:         false,
 		AgentSessionID: newAgentSessionID(),
 		SessionDir:     h.sessionDir(sessionID),
+		MemoryDir:      memDir,
 		NoPersistTurns: true,
 	}
 

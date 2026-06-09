@@ -23,7 +23,7 @@ const compactionThreshold = 0.75
 const compactionDistillPrompt = `[SYSTEM: CONTEXT COMPACTION]
 Your context is getting large and is about to be compacted into a fresh session. Do the following, in order:
 
-1. Review your hierarchical memory (use the 'show memory', 'list memory', and 'search memory' tools to see what's already there). Reorganize it if needed and SAVE everything important from the current conversation into memory using 'update memory <path>': the original task, key decisions and their rationale, important context (file paths, names, conventions, learnings), the current state of the work, and any pending actions. Keep high-level synthesis in parent nodes and detail in child nodes so nothing is lost.
+1. Review your memory folder (read its README.md and browse the topic folders to see what's already there). Reorganize it if needed and SAVE everything important from the current conversation into memory by creating/editing README.md files in topic folders: the original task, key decisions and their rationale, important context (file paths, names, conventions, learnings), the current state of the work, and any pending actions. Keep high-level synthesis in parent folders' README.md and detail in child folders so nothing is lost.
 
 2. After memory is saved, output a comprehensive handoff summary of the current conversation as your FINAL message. It must be detailed enough that the work can be resumed from the summary plus memory alone: original task, key decisions, current state, and pending actions. Output ONLY the summary text as your final message — no preamble or meta-commentary.`
 
@@ -201,9 +201,9 @@ func (h *Handler) runCompaction(sessionID, nextPrompt, effModel, effEffort strin
 		AgentSessionID: sess.AgentSessionID,
 		SessionDir:     h.sessionDir(sessionID),
 	}
-	if outline, err := h.store.MemoryOutline(sessionID); err == nil && outline != "" {
-		distillParams.SystemPrompt += "\n\n<session-memory-outline>\n" + outline +
-			"\n</session-memory-outline>\n(Use 'show memory <path>' to read a node, 'search memory <query>' to search.)"
+	if memDir := h.memoryDir(sessionID); memDir != "" && agent.MemoryEnabled(sess.Agent, sess.Yolo) {
+		distillParams.MemoryDir = memDir
+		distillParams.SystemPrompt += memorySystemPrompt(memDir)
 	}
 
 	ctx := context.Background()
@@ -237,7 +237,7 @@ func (h *Handler) runCompaction(sessionID, nextPrompt, effModel, effEffort strin
 	if summary != "" {
 		seedSystem += "\n\n<prior-session-summary>\n" + summary + "\n</prior-session-summary>"
 	}
-	seedSystem += "\n\n<memory-note>\nYour hierarchical memory contains the full history of important details from before this point. Use 'show memory <path>' and 'search memory <query>' to retrieve specifics when needed.\n</memory-note>"
+	seedSystem += "\n\n<memory-note>\nYour memory folder contains the full history of important details from before this point. Read its README.md and browse the topic folders to retrieve specifics when needed.\n</memory-note>"
 
 	seedPrompt := strings.TrimSpace(nextPrompt)
 	if seedPrompt == "" {

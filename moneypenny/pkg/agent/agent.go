@@ -218,6 +218,11 @@ type RunParams struct {
 	Path         string // working directory for the agent
 	Resume       bool   // true for continue_session
 	SessionDir   string // per-session persistent dir (managed by handler)
+	// MemoryDir is the session's file-based memory folder (<SessionDir>/memory).
+	// When set, it is added to the agent's allowed directories so the agent can
+	// read and edit its memory with native file tools; for non-yolo sessions the
+	// file-write tools are also pre-authorized so memory edits don't prompt.
+	MemoryDir string
 	// AgentSessionID is the id passed to the underlying agent CLI via
 	// --session-id/--resume. Decoupled from SessionID so custom compaction can
 	// substitute a fresh underlying session. Falls back to SessionID when empty.
@@ -1015,6 +1020,7 @@ func buildClaudeArgs(params RunParams) agentInvocation {
 	if params.Yolo {
 		args = append(args, "--dangerously-skip-permissions")
 	}
+	args = append(args, memoryAccessArgs("claude", params)...)
 	// Route via stdin when:
 	//   - the prompt is long (avoids Windows ~32KB cmdline limit), or
 	//   - the prompt starts with "-" (else claude's CLI parser treats it as a flag).
@@ -1047,6 +1053,51 @@ func needsStdin(prompt string) bool {
 	return false
 }
 
+// MemoryEnabled reports whether file-based session memory should be wired up for
+// the given agent/permission combination. Memory requires the agent to be able
+// to write its memory folder without interactive prompts (which are auto-denied
+// in headless -p mode). Claude can pre-authorize writes scoped to the memory
+// folder; Copilot's --allow-tool cannot be path-scoped, so the only way to let
+// it write memory would be to grant broad write access to the whole workspace —
+// which we refuse for non-yolo sessions. Therefore non-yolo Copilot sessions get
+// no memory at all (yolo sessions already permit every tool).
+func MemoryEnabled(agentName string, yolo bool) bool {
+	if yolo {
+		return true
+	}
+	return agentName != "copilot"
+}
+
+// memoryAccessArgs returns the extra CLI args that grant the agent read/write
+// access to its file-based memory folder. The folder lives outside the project
+// cwd, so it must be explicitly allowed via --add-dir. For non-yolo sessions we
+// also pre-authorize the file-writing tools so memory edits don't trigger
+// permission prompts that would be auto-denied in non-interactive (-p) mode.
+// Claude permission rules can be path-scoped to the memory folder; Copilot's
+// --allow-tool can't scope by path, so non-yolo Copilot sessions have memory
+// disabled entirely (see MemoryEnabled). Yolo sessions already allow everything.
+func memoryAccessArgs(agentName string, params RunParams) []string {
+	if params.MemoryDir == "" || !MemoryEnabled(agentName, params.Yolo) {
+		return nil
+	}
+	args := []string{"--add-dir", params.MemoryDir}
+	if params.Yolo {
+		return args
+	}
+	// Only Claude reaches here (non-yolo Copilot is filtered out above).
+	// Claude permission rules anchor a single leading "/" to the project root
+	// (gitignore semantics), so an absolute filesystem path must be written
+	// with a doubled leading slash to match. The memory dir is already
+	// absolute, so prefixing one more "/" yields the "//abs/path" form Claude
+	// expects. Use a single space-separated value so the variadic flag doesn't
+	// swallow subsequent args (e.g. the prompt).
+	pat := "/" + filepath.Clean(params.MemoryDir) + "/**"
+	tools := fmt.Sprintf("Read(%s) Write(%s) Edit(%s) MultiEdit(%s)", pat, pat, pat, pat)
+	args = append(args, "--allowedTools", tools)
+	return args
+}
+
+// buildCopilotArgs constructs the command-line invocation for copilot.
 func buildCopilotArgs(params RunParams) agentInvocation {
 	args := []string{
 		"--output-format", "json",
@@ -1070,6 +1121,7 @@ func buildCopilotArgs(params RunParams) agentInvocation {
 	if params.Yolo {
 		args = append(args, "--yolo")
 	}
+	args = append(args, memoryAccessArgs("copilot", params)...)
 
 	inv := agentInvocation{}
 	// Copilot has no --system-prompt flag. The supported mechanism is to place
