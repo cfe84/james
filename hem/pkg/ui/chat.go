@@ -1671,14 +1671,18 @@ func (m chatModel) View() string {
 		}
 		// Train-of-thought turns (thinking, agent_text) get a compact rendering:
 		// no agent-name prefix, content is indented and gray with the emoji
-		// inline at the first line.
-		if turn.Role == "thinking" || turn.Role == "agent_text" {
+		// inline at the first line. Scheduled-invocation prompts render the same
+		// way (⏰) so they read as background activity, not a user message.
+		if turn.Role == "thinking" || turn.Role == "agent_text" || turn.Role == "scheduled" {
 			if !m.showThoughts {
 				continue
 			}
 			icon := "💭"
-			if turn.Role == "agent_text" {
+			switch turn.Role {
+			case "agent_text":
 				icon = "📝"
+			case "scheduled":
+				icon = "⏰"
 			}
 			contentWidth := m.width - 6 // account for "  {icon} " prefix (icon is 2 cols + spaces)
 			if contentWidth < 20 {

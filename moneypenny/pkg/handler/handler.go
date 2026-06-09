@@ -380,7 +380,7 @@ func (h *Handler) queuePrompt(_ context.Context, cmd *envelope.Command) *envelop
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, fmt.Sprintf("session not found: %s", data.SessionID))
 	}
 
-	if err := h.store.QueuePrompt(data.SessionID, data.Prompt, data.Model, data.Effort); err != nil {
+	if err := h.store.QueuePrompt(data.SessionID, data.Prompt, data.Model, data.Effort, ""); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to queue prompt: %v", err))
 	}
 
@@ -640,7 +640,11 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 		// Process each prompt in the group as its own conversation turn.
 		texts := make([]string, 0, len(group))
 		for _, qp := range group {
-			if err := h.store.AddConversationTurn(sessionID, "user", qp.Prompt); err != nil {
+			role := "user"
+			if qp.Source == "scheduled" {
+				role = "scheduled"
+			}
+			if err := h.store.AddConversationTurn(sessionID, role, qp.Prompt); err != nil {
 				h.vlog("failed to add queued conversation turn for session %s: %v", sessionID, err)
 			}
 			texts = append(texts, qp.Prompt)
@@ -1805,7 +1809,7 @@ func (h *Handler) processDueSchedules() {
 				_ = h.store.UpdateScheduleStatus(sch.ID, store.SchedulePending)
 				continue
 			}
-			if err := h.store.AddConversationTurn(sch.SessionID, "user", sch.Prompt); err != nil {
+			if err := h.store.AddConversationTurn(sch.SessionID, "scheduled", sch.Prompt); err != nil {
 				h.vlog("scheduler: failed to add conversation turn for session %s: %v", sch.SessionID, err)
 			}
 			_ = h.store.UpdateScheduleStatus(sch.ID, store.ScheduleDone)
@@ -1828,7 +1832,7 @@ func (h *Handler) processDueSchedules() {
 			})
 		} else {
 			// Session is busy — queue the prompt, it'll run after current task finishes.
-			if err := h.store.QueuePrompt(sch.SessionID, sch.Prompt, "", ""); err != nil {
+			if err := h.store.QueuePrompt(sch.SessionID, sch.Prompt, "", "", "scheduled"); err != nil {
 				h.vlog("scheduler: failed to queue prompt for session %s: %v", sch.SessionID, err)
 				_ = h.store.UpdateScheduleStatus(sch.ID, store.SchedulePending)
 				continue

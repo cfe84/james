@@ -33,7 +33,7 @@ func cleanTranscript(turns []*store.ConversationTurn) string {
 	var b strings.Builder
 	for _, t := range turns {
 		switch t.Role {
-		case "user":
+		case "user", "scheduled":
 			b.WriteString("USER: ")
 		case "assistant":
 			b.WriteString("ASSISTANT: ")

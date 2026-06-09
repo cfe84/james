@@ -547,8 +547,9 @@ Sessions can have scheduled continuations — prompts that are automatically sen
 Moneypenny runs a scheduler goroutine that starts on boot and checks for due schedules every 30 seconds.
 
 - When a schedule is due and the session is idle: continues the session directly with the scheduled prompt.
-- When a schedule is due and the session is busy: queues the prompt via `queue_prompt`.
+- When a schedule is due and the session is busy: queues the prompt via `queue_prompt` (tagged with source `scheduled` so it is classified correctly when drained).
 - When a schedule fires (one-shot or recurring), a "system" conversation turn is added to the session, visible in chat, showing when the task was triggered.
+- The scheduled prompt itself is stored as a **`scheduled`** conversation turn (not a `user` turn), so it renders as a train-of-thought entry (⏰, gated by the show-thoughts toggle) rather than appearing as a message the user typed. It is still included verbatim in compaction/distillation transcripts.
 - For recurring schedules, after firing, a new schedule is automatically created for the next cron-matching time.
 - Executed one-shot schedules are removed from the pending list.
 

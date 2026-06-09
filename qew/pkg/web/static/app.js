@@ -822,9 +822,11 @@
 
       // Train-of-thought turns get a compact, indented, gray rendering with
       // the emoji inline — no role-name header. Hidden unless the toggle is on.
-      if (turn.role === 'thinking' || turn.role === 'agent_text') {
+      // Scheduled-invocation prompts render the same way (⏰) so they read as
+      // background activity rather than a user message.
+      if (turn.role === 'thinking' || turn.role === 'agent_text' || turn.role === 'scheduled') {
         if (!showThoughts) { skippedThoughts = true; continue; }
-        const icon = turn.role === 'thinking' ? '💭' : '📝';
+        const icon = turn.role === 'thinking' ? '💭' : turn.role === 'scheduled' ? '⏰' : '📝';
         html += `<div class="msg thought">${icon} ${formatContent(content)}</div>`;
         continue;
       }

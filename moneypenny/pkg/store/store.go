@@ -145,6 +145,7 @@ CREATE TABLE IF NOT EXISTS prompt_queue (
     prompt TEXT NOT NULL,
     model TEXT NOT NULL DEFAULT '',
     effort TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT '',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -199,6 +200,12 @@ CREATE INDEX IF NOT EXISTS idx_memory_nodes_session ON memory_nodes(session_id);
 	// it is honored when the queue is later drained (empty = use session default).
 	db.Exec(`ALTER TABLE prompt_queue ADD COLUMN model TEXT NOT NULL DEFAULT ''`)
 	db.Exec(`ALTER TABLE prompt_queue ADD COLUMN effort TEXT NOT NULL DEFAULT ''`)
+
+	// Migration: add a source column to prompt_queue so the drain path can tell
+	// scheduler-originated prompts apart from user-typed ones (empty = user).
+	// Scheduled prompts are recorded as a train-of-thought turn rather than a
+	// user message when drained.
+	db.Exec(`ALTER TABLE prompt_queue ADD COLUMN source TEXT NOT NULL DEFAULT ''`)
 
 	// Migration: custom-compaction support. agent_session_id decouples the
 	// underlying agent CLI session from the James session so it can be
@@ -606,20 +613,24 @@ func (s *Store) GetConversationPaginated(sessionID string, limit, offset int) ([
 }
 
 // QueuedPrompt is a queued prompt with its optional per-prompt model/effort
-// override (empty strings mean "use the session default").
+// override (empty strings mean "use the session default"). Source records the
+// prompt's origin ("" = user-typed, "scheduled" = scheduler-fired) so the drain
+// path can classify the resulting conversation turn.
 type QueuedPrompt struct {
 	Prompt string
 	Model  string
 	Effort string
+	Source string
 }
 
 // QueuePrompt adds a prompt to the queue for a session. The model/effort
 // override (may be empty) is stored so a temporary override chosen while the
-// session was busy is honored when the queue is drained.
-func (s *Store) QueuePrompt(sessionID, prompt, model, effort string) error {
+// session was busy is honored when the queue is drained. source records the
+// prompt's origin ("" for user-typed, "scheduled" for scheduler-fired).
+func (s *Store) QueuePrompt(sessionID, prompt, model, effort, source string) error {
 	_, err := s.db.Exec(
-		`INSERT INTO prompt_queue (session_id, prompt, model, effort) VALUES (?, ?, ?, ?)`,
-		sessionID, prompt, model, effort,
+		`INSERT INTO prompt_queue (session_id, prompt, model, effort, source) VALUES (?, ?, ?, ?, ?)`,
+		sessionID, prompt, model, effort, source,
 	)
 	if err != nil {
 		return fmt.Errorf("queue prompt: %w", err)
@@ -642,7 +653,7 @@ func (s *Store) DrainQueueGroup(sessionID string) ([]QueuedPrompt, error) {
 	defer tx.Rollback()
 
 	rows, err := tx.Query(
-		`SELECT id, prompt, model, effort FROM prompt_queue WHERE session_id = ? ORDER BY created_at, id`, sessionID,
+		`SELECT id, prompt, model, effort, source FROM prompt_queue WHERE session_id = ? ORDER BY created_at, id`, sessionID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("drain queue group: %w", err)
@@ -655,7 +666,7 @@ func (s *Store) DrainQueueGroup(sessionID string) ([]QueuedPrompt, error) {
 	for rows.Next() {
 		var id int64
 		var qp QueuedPrompt
-		if err := rows.Scan(&id, &qp.Prompt, &qp.Model, &qp.Effort); err != nil {
+		if err := rows.Scan(&id, &qp.Prompt, &qp.Model, &qp.Effort, &qp.Source); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("scan queued prompt: %w", err)
 		}
@@ -689,7 +700,7 @@ func (s *Store) DrainQueueGroup(sessionID string) ([]QueuedPrompt, error) {
 // DrainQueue removes and returns all queued prompts for a session, ordered by creation time.
 func (s *Store) DrainQueue(sessionID string) ([]QueuedPrompt, error) {
 	rows, err := s.db.Query(
-		`SELECT id, prompt, model, effort FROM prompt_queue WHERE session_id = ? ORDER BY created_at, id`, sessionID,
+		`SELECT id, prompt, model, effort, source FROM prompt_queue WHERE session_id = ? ORDER BY created_at, id`, sessionID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("drain queue: %w", err)
@@ -701,7 +712,7 @@ func (s *Store) DrainQueue(sessionID string) ([]QueuedPrompt, error) {
 	for rows.Next() {
 		var id int64
 		var qp QueuedPrompt
-		if err := rows.Scan(&id, &qp.Prompt, &qp.Model, &qp.Effort); err != nil {
+		if err := rows.Scan(&id, &qp.Prompt, &qp.Model, &qp.Effort, &qp.Source); err != nil {
 			return nil, fmt.Errorf("scan queued prompt: %w", err)
 		}
 		ids = append(ids, id)
