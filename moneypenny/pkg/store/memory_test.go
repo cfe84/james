@@ -60,6 +60,26 @@ func TestMemoryNodeNormalization(t *testing.T) {
 	}
 }
 
+func TestMemoryPathSegmentCap(t *testing.T) {
+	s := newTestStore(t)
+	sid := newMemTestSession(t, s)
+	// A prose blob passed as the PATH (the bug this guards against) must be
+	// rejected with a hint pointing at BODY, not silently stored as a node whose
+	// "path" is the whole note.
+	prose := strings.Repeat("a", MemoryMaxPathSegmentLen+1)
+	err := s.SetMemoryNode(sid, prose, "", "", "")
+	if err == nil {
+		t.Fatalf("expected over-length path segment to be rejected")
+	}
+	if !strings.Contains(err.Error(), "BODY") {
+		t.Fatalf("expected hint pointing at BODY, got %v", err)
+	}
+	// A normal short slug still works.
+	if err := s.SetMemoryNode(sid, "project/topic", "", "", "ok"); err != nil {
+		t.Fatalf("expected short slug to be accepted, got %v", err)
+	}
+}
+
 func TestMemoryBodyCap(t *testing.T) {
 	s := newTestStore(t)
 	sid := newMemTestSession(t, s)

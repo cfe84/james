@@ -579,6 +579,7 @@ Each session has a persistent memory — a **hierarchical, searchable tree of no
 - Memory is a tree of **nodes**. Each node has a slash-delimited **path** (e.g. `project/conventions/git`), an optional short **title**, an optional one-line **description**, and a **body**.
 - Hierarchy comes purely from the path: writing `a/b/c` auto-creates empty ancestor nodes `a` and `a/b`.
 - Each node body has a maximum size (`MemoryMaxBodyLen`, 2000 chars; descriptions `MemoryMaxDescriptionLen`, 200 chars). **Over-cap writes are rejected** to force agents to hierarchize — keep a node a concise synthesis and push detail into child nodes.
+- A path segment is a short slug, not prose: segments over `MemoryMaxPathSegmentLen` (64 chars) are **rejected** with a hint to put content in the BODY. This guards against an agent passing a whole note as the PATH (which would otherwise create a node whose path is the entire text and no body).
 - Memory is stored per session in moneypenny's SQLite database (`memory_nodes` table, `UNIQUE(session_id, path)`).
 
 ### How it works

@@ -13,6 +13,11 @@ import (
 const (
 	MemoryMaxBodyLen        = 2000
 	MemoryMaxDescriptionLen = 200
+	// MemoryMaxPathSegmentLen bounds a single path segment. Paths are short
+	// slugs (e.g. "project/conventions/git"), not prose; a long segment almost
+	// always means an agent passed content as the PATH positional instead of the
+	// BODY, which would otherwise create a node whose "path" is the whole note.
+	MemoryMaxPathSegmentLen = 64
 	// memoryOutlineMaxLen bounds the body-less outline injected into the system
 	// prompt each run, so a large tree can't blow up the prompt.
 	memoryOutlineMaxLen = 4000
@@ -45,6 +50,13 @@ func NormalizeMemoryPath(path string) (string, error) {
 		// act as wildcard patterns or break prefix matching.
 		if strings.ContainsAny(s, "\n\t%_\\") {
 			return "", fmt.Errorf("path segment %q contains invalid characters", s)
+		}
+		// Reject prose-length segments. A path is a short slug like
+		// "project/topic"; an overlong segment means content was passed as the
+		// PATH instead of the BODY.
+		if len(s) > MemoryMaxPathSegmentLen {
+			return "", fmt.Errorf("path segment is %d chars (max %d). PATH must be a short slug like \"project/topic\"; put the content in BODY, not the path",
+				len(s), MemoryMaxPathSegmentLen)
 		}
 		segs = append(segs, s)
 	}

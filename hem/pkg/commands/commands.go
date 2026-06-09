@@ -969,6 +969,7 @@ Memory commands:
   Delete a node:                         %[1]s delete memory %[2]s PATH [--recursive]
 
 IMPORTANT:
+- PATH is a short slash-delimited slug (e.g. "project/api/auth"), NOT prose. The note text goes in BODY. Do not pass content as the PATH.
 - "update memory" REPLACES the single node at PATH (it does not append). Rewrite the node's full body.
 - Each node body has a maximum size. If a write is rejected for being too large, do NOT cram it in: keep this node a concise synthesis and move detail into child nodes (e.g. split "project/api" into "project/api/auth", "project/api/errors").
 - Always give nodes a short --description so the outline stays navigable.
