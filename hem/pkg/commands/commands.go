@@ -4527,6 +4527,7 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 		fs.BoolVar(&params.Yolo, "yolo", false, "enable yolo mode")
 		fs.BoolVar(&params.Gadgets, "gadgets", false, "include James tooling in system prompt")
 		fs.StringVar(&params.Path, "path", "", "working directory path")
+		fs.StringVar(&params.CompactionMode, "compaction", "", "compaction mode: agent or custom (defaults to source's)")
 		fs.BoolVar(&params.Async, "async", false, "return immediately without waiting for response")
 		fs.StringVar(&projectNameOrID, "project", "", "project name or ID")
 		fs.StringVar(&params.TraitsSpec, "traits", "", "comma-separated trait IDs/names (defaults to source session's traits)")
@@ -4568,13 +4569,14 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	}
 
 	var src struct {
-		Name         string `json:"name"`
-		Agent        string `json:"agent"`
-		SystemPrompt string `json:"system_prompt"`
-		Model        string `json:"model"`
-		Effort       string `json:"effort"`
-		Yolo         bool   `json:"yolo"`
-		Path         string `json:"path"`
+		Name           string `json:"name"`
+		Agent          string `json:"agent"`
+		SystemPrompt   string `json:"system_prompt"`
+		Model          string `json:"model"`
+		Effort         string `json:"effort"`
+		Yolo           bool   `json:"yolo"`
+		Path           string `json:"path"`
+		CompactionMode string `json:"compaction_mode"`
 	}
 	if err := json.Unmarshal(getResp.Data, &src); err != nil {
 		return protocol.ErrResponse(fmt.Sprintf("parsing source session: %v", err))
@@ -4615,6 +4617,9 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	}
 	if params.Path == "" {
 		params.Path = src.Path
+	}
+	if params.CompactionMode == "" {
+		params.CompactionMode = src.CompactionMode
 	}
 	if params.SessionName == "" {
 		params.SessionName = "Copy of " + src.Name

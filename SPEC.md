@@ -479,7 +479,7 @@ Hem manages sessions on moneypennies. It tracks which moneypenny each session li
 `hem copy session SOURCE_ID [PROMPT...] [flags]`
 
 - Creates a new session bootstrapped from a summary of an existing one. Source session is preserved (no state migration, no completion).
-- All flags from `create session` apply and override the source's values: `-m/--moneypenny`, `--agent`, `--model`, `--effort`, `--name`, `--system-prompt`, `--traits`, `--yolo`, `--gadgets`, `--path`, `--project`, `--async`. Any flag omitted is copied from the source (traits are inherited from the source unless `--traits` is given).
+- All flags from `create session` apply and override the source's values: `-m/--moneypenny`, `--agent`, `--model`, `--effort`, `--name`, `--system-prompt`, `--traits`, `--yolo`, `--gadgets`, `--path`, `--compaction`, `--project`, `--async`. Any flag omitted is copied from the source (traits are inherited from the source unless `--traits` is given; the compaction mode is inherited from the source unless `--compaction` is given).
 - The target moneypenny can differ from the source's (cross-host copy). The source's conversation history stays on the source moneypenny — only the summary is transferred.
 - Source's gadgets/memory markers are stripped from the inherited system prompt to avoid double injection on the new session.
 - `--yolo` is inherited only when the flag is not mentioned on the command line; passing `--yolo=false` explicitly disables yolo even when the source had it on.
