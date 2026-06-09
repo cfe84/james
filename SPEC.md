@@ -593,7 +593,7 @@ Each session has a persistent memory — a **folder of Markdown files** on the m
 
 The `hem ... memory` verbs remain for browsing/editing memory from the CLI, TUI, and Qew; they are now backed by the filesystem (the single source of truth):
 
-- `hem show memory SESSION_ID` — prints the body-less outline of the whole tree.
+- `hem show memory SESSION_ID` — prints the body-less outline of the whole tree **and the root `README.md` body** (the tree's index note).
 - `hem show memory SESSION_ID PATH` — prints that node's `README.md` and lists its immediate children.
 - `hem list memory SESSION_ID [PATH]` — lists the immediate children of PATH (or the roots).
 - `hem search memory SESSION_ID QUERY` — ranked substring search over node path and README content.
@@ -603,7 +603,7 @@ The `hem ... memory` verbs remain for browsing/editing memory from the CLI, TUI,
 ### TUI / Qew
 
 - In chat command mode, `m` opens the memory view (Qew: command-palette `m` / Actions menu).
-- The view has a **browse** tree (Enter/`e` edit, `n` new, `d` delete with confirm, `/` search, `r` refresh), a per-node **editor** with a Path field plus a single **Note (README.md)** Markdown field (the Path is locked when editing an existing node), and **search**.
+- The view has a **browse** tree (Enter/`e` edit, `n` new, `d` delete with confirm, `/` search, `r` refresh), a per-node **editor** with a Path field plus a single **Note (README.md)** Markdown field (the Path is locked when editing an existing node), and **search**. The tree includes a synthetic **"(root)"** row for the root `README.md`, which is viewable/editable like any other node but cannot be deleted.
 
 ### Migration (transitional)
 

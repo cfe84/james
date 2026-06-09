@@ -2036,8 +2036,13 @@
     async function loadMemTree() {
       try {
         const resp = await apiCall('show', 'memory', [sid]);
-        if (resp.status === 'ok' && resp.data && Array.isArray(resp.data.nodes)) {
-          state.nodes = resp.data.nodes;
+        if (resp.status === 'ok' && resp.data) {
+          const nodes = Array.isArray(resp.data.nodes) ? resp.data.nodes : [];
+          // Prepend a synthetic "(root)" row so the root README is browsable
+          // and editable like any other node. Its body travels in resp.data.node.
+          const rootDesc = resp.data.node ? (resp.data.node.description || '') : '';
+          state.root = resp.data.node || { path: '', body: '' };
+          state.nodes = [{ path: '', title: '(root)', description: rootDesc, _root: true }].concat(nodes);
         } else {
           state.nodes = [];
         }
@@ -2047,8 +2052,9 @@
     function nodeRowsHtml(nodes, withIndent) {
       if (!nodes.length) return `<div class="mem-empty">(empty — create the first memory node)</div>`;
       return nodes.map(n => {
-        const depth = withIndent ? (n.path.split('/').length - 1) : 0;
-        const leaf = withIndent ? n.path.split('/').pop() : n.path;
+        const isRoot = n.path === '';
+        const depth = (withIndent && !isRoot) ? (n.path.split('/').length - 1) : 0;
+        const leaf = isRoot ? '(root)' : (withIndent ? n.path.split('/').pop() : n.path);
         const desc = n.description || n.title || '';
         return `<div class="mem-node" data-path="${escapeHtml(n.path)}">` +
           `<span class="mem-path" style="padding-left:${depth * 16}px">${escapeHtml(leaf)}</span>` +
@@ -2110,9 +2116,15 @@
     }
 
     async function openEditor(path) {
+      // path === null  -> new node (from the "New node" button)
+      // path === ''     -> the root README (cached in state.root)
+      // path === 'a/b'  -> an existing named node (fetched)
       let node = { path: '', title: '', description: '', body: '' };
-      const isNew = !path;
-      if (path) {
+      const isNew = path === null || path === undefined;
+      const isRoot = path === '';
+      if (isRoot) {
+        node = state.root || { path: '', body: '' };
+      } else if (!isNew) {
         try {
           const resp = await apiCall('show', 'memory', [sid, path]);
           if (resp.status === 'ok' && resp.data && resp.data.node) node = resp.data.node;
@@ -2121,15 +2133,16 @@
       }
       if (currentSession !== sid) return;
       state.view = 'editor';
+      const title = isNew ? 'New Memory Node' : (isRoot ? 'Edit Root Note' : 'Edit Node');
       renderWizardModal(`
-        <h3>${isNew ? 'New Memory Node' : 'Edit Node'}</h3>
+        <h3>${title}</h3>
         <label for="mem-f-path">Path (slash-delimited, e.g. project/conventions)</label>
-        <input id="mem-f-path" type="text" value="${escapeHtml(node.path)}" ${isNew ? '' : 'readonly'}>
+        <input id="mem-f-path" type="text" value="${escapeHtml(node.path)}" ${isNew ? '' : 'readonly'} ${isRoot ? 'placeholder="(root)"' : ''}>
         <label for="mem-f-body">Note (README.md — Markdown)</label>
         <textarea id="mem-f-body" placeholder="This becomes the folder's README.md. Use a heading and keep parents as a concise synthesis + index of child folders.">${escapeHtml(node.body || '')}</textarea>
         <div class="modal-actions">
           <button class="btn-muted" id="mem-back">Back</button>
-          ${isNew ? '' : '<button class="btn-muted" id="mem-delete">Delete</button>'}
+          ${(isNew || isRoot) ? '' : '<button class="btn-muted" id="mem-delete">Delete</button>'}
           <button class="btn" id="mem-save">Save</button>
         </div>
       `, 'modal-mem');
@@ -2159,7 +2172,8 @@
       saveBtn.addEventListener('click', async () => {
         const p = document.getElementById('mem-f-path').value.trim();
         const body = document.getElementById('mem-f-body').value;
-        if (!p) { alert('Path is required.'); return; }
+        // The root note has an empty path; every other node requires one.
+        if (!p && !isRoot) { alert('Path is required.'); return; }
         saveBtn.disabled = true;
         saveBtn.textContent = 'Saving...';
         // sid + path first, then body positional (the README content).

@@ -162,7 +162,7 @@ func newEditFields(path, body string, isNew bool) ([]formField, []string) {
 
 func (m *memoryModel) openNew() {
 	parent := ""
-	if n := m.selectedNode(); n != nil {
+	if n := m.selectedNode(); n != nil && n.Path != "" {
 		parent = n.Path + "/"
 	}
 	m.fields, m.original = newEditFields(parent, "", true)
@@ -286,6 +286,10 @@ func (m memoryModel) updateBrowse(msg tea.KeyMsg) (memoryModel, tea.Cmd) {
 		return m, m.loadMemory()
 	case "d":
 		if n := m.selectedNode(); n != nil {
+			if n.Path == "" {
+				// The root note can't be deleted, only edited.
+				return m, nil
+			}
 			if !wasConfirmingDelete {
 				m.confirmDelete = true
 				return m, nil
@@ -480,6 +484,9 @@ func (m memoryModel) viewBrowse() string {
 		leaf := n.Path
 		if idx := strings.LastIndex(n.Path, "/"); idx >= 0 {
 			leaf = n.Path[idx+1:]
+		}
+		if n.Path == "" {
+			leaf = "(root)" // the root README row
 		}
 		label := strings.Repeat("  ", depth) + leaf
 		desc := n.Description

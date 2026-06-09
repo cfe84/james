@@ -2371,19 +2371,26 @@ func (e *Executor) ShowMemory(args []string) *protocol.Response {
 		return protocol.ErrResponse(fmt.Sprintf("parsing memory response: %v", err))
 	}
 
-	// Outline view (no path requested).
-	if out.Node == nil {
+	// Outline view (no path requested). The overview response now also carries
+	// the root README as out.Node, so show its body beneath the outline.
+	if strings.TrimSpace(path) == "" {
 		result := MemoryResult{Kind: "outline", Outline: out.Outline}
 		for _, n := range out.Nodes {
 			result.Nodes = append(result.Nodes, MemoryNodeView{
 				Path: n.Path, Title: n.Title, Description: n.Description,
 			})
 		}
+		var b strings.Builder
 		if strings.TrimSpace(out.Outline) == "" {
-			result.Message = "(memory is empty)"
+			b.WriteString("(memory is empty)")
 		} else {
-			result.Message = "Memory outline:\n" + out.Outline
+			b.WriteString("Memory outline:\n" + out.Outline)
 		}
+		if out.Node != nil && strings.TrimSpace(out.Node.Body) != "" {
+			b.WriteString("\n\nRoot note (README.md):\n" + out.Node.Body)
+			result.Node = &MemoryNodeView{Path: "", Body: out.Node.Body, Description: out.Node.Description}
+		}
+		result.Message = strings.TrimRight(b.String(), "\n")
 		return protocol.OKResponse(result)
 	}
 

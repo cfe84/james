@@ -1102,16 +1102,20 @@ func (h *Handler) showMemory(_ context.Context, cmd *envelope.Command) *envelope
 			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
 		}
 		resp.Outline = outline
+		// Surface the root README itself (with body) so clients can show and
+		// edit the root note. It has an empty path, which the node branch below
+		// can't be reached for, so include it here in the overview response.
+		if root, gerr := memory.Get(memDir, ""); gerr == nil && root != nil {
+			payload := memNodePayload(root, true)
+			resp.Node = &payload
+		}
 		nodes, err := memory.List(memDir)
 		if err != nil {
 			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
 		}
 		for _, n := range nodes {
-			// The root note has an empty path, which clients treat as
-			// "new node"/outline rather than an editable row. Skip it here —
-			// its content is surfaced in the outline above and it is maintained
-			// by the agent directly — so the browse list only contains named,
-			// openable nodes.
+			// Skip the root here (empty path) — it's returned as resp.Node
+			// above; resp.Nodes lists only the named, drill-into child nodes.
 			if n.Path == "" {
 				continue
 			}

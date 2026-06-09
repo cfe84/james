@@ -138,8 +138,9 @@ type memoryNodeView struct {
 	Body        string `json:"body,omitempty"`
 }
 
-// loadMemoryTree fetches the full flat node list (body-less, DFS pre-order) for
-// the session's memory tree.
+// loadMemoryTree fetches the flat node list (body-less, DFS pre-order) for the
+// session's memory tree, with a synthetic "(root)" entry prepended so the root
+// README is browsable and editable like any other node.
 func (c *client) loadMemoryTree(sessionID string) ([]memoryNodeView, error) {
 	resp, err := c.send("show", "memory", sessionID)
 	if err != nil {
@@ -150,11 +151,16 @@ func (c *client) loadMemoryTree(sessionID string) ([]memoryNodeView, error) {
 	}
 	var result struct {
 		Nodes []memoryNodeView `json:"nodes"`
+		Node  *memoryNodeView  `json:"node"`
 	}
 	if err := json.Unmarshal(resp.Data, &result); err != nil {
 		return nil, fmt.Errorf("parsing memory: %w", err)
 	}
-	return result.Nodes, nil
+	root := memoryNodeView{Path: "", Title: "(root)"}
+	if result.Node != nil {
+		root.Description = result.Node.Description
+	}
+	return append([]memoryNodeView{root}, result.Nodes...), nil
 }
 
 // getMemoryNode fetches a single node (with body) and its immediate children.
