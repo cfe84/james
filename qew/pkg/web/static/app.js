@@ -557,6 +557,7 @@
     document.getElementById('chat-view').style.display = 'flex';
     document.getElementById('chat-title').textContent = (parentSessionStack.length > 0 ? 'Subagent: ' : '') + currentSessionName;
     document.getElementById('chat-mp').textContent = currentSessionMP ? '@ ' + currentSessionMP : '';
+    document.getElementById('chat-context').textContent = '';
     document.getElementById('chat-messages').innerHTML = '<div class="loading">Loading...</div>';
     const chatInput = document.getElementById('chat-input');
     chatInput.value = chatInputCache[sessionId] || '';
@@ -645,6 +646,20 @@
         if (showResp.data.moneypenny && !currentSessionMP) {
           currentSessionMP = showResp.data.moneypenny;
           document.getElementById('chat-mp').textContent = '@ ' + currentSessionMP;
+        }
+        // Context usage indicator (custom-compaction sessions track this).
+        const ctxEl = document.getElementById('chat-context');
+        if (ctxEl) {
+          const win = showResp.data.context_window || 0;
+          const tok = showResp.data.context_tokens || 0;
+          if (win > 0) {
+            const pct = Math.round(tok / win * 100);
+            ctxEl.textContent = `🗃️ ${pct}% (${Math.round(tok/1000)}k/${Math.round(win/1000)}k)`;
+            ctxEl.style.color = pct >= 75 ? 'var(--warning, #e0a030)' : 'var(--muted)';
+            ctxEl.title = `Context usage: ${tok} / ${win} tokens (${showResp.data.compaction_mode || 'agent'} compaction)`;
+          } else {
+            ctxEl.textContent = '';
+          }
         }
         // Capture agent + default model/effort for the override dropdowns (once).
         if (!currentSessionAgent) {
@@ -811,6 +826,14 @@
         if (!showThoughts) { skippedThoughts = true; continue; }
         const icon = turn.role === 'thinking' ? '💭' : '📝';
         html += `<div class="msg thought">${icon} ${formatContent(content)}</div>`;
+        continue;
+      }
+
+      // Compaction marker: collapsed single line. The distillation's
+      // thinking/agent_text turns (shown when train-of-thought is on) carry the
+      // detail.
+      if (turn.role === 'compaction') {
+        html += `<div class="msg system-note">🗃️ Session compacted</div>`;
         continue;
       }
 
@@ -1008,6 +1031,8 @@
           <button class="cmd-item" data-cmd="model"><kbd>o</kbd> Model override</button>
           <button class="cmd-item" data-cmd="effort"><kbd>f</kbd> Effort override</button>
           <button class="cmd-item" data-cmd="memory"><kbd>m</kbd> Memory</button>
+          <button class="cmd-item" data-cmd="compact"><kbd>K</kbd> Compact session</button>
+          <button class="cmd-item" data-cmd="distill"><kbd>D</kbd> Distill to memory</button>
           <button class="cmd-item" data-cmd="thoughts"><kbd>t</kbd> Toggle train of thought</button>
           <button class="cmd-item" data-cmd="stop"><kbd>s</kbd> Stop session</button>
           <button class="cmd-item" data-cmd="delete" style="color:var(--danger)"><kbd>d</kbd> Delete session</button>
@@ -1052,6 +1077,8 @@
       case 'model':    focusOverrideSelect('chat-model-override'); break;
       case 'effort':   focusOverrideSelect('chat-effort-override'); break;
       case 'memory':   openMemoryModal(); break;
+      case 'compact':  compactSession(); break;
+      case 'distill':  distillSession(); break;
       case 'stop':     stopSession(); break;
       case 'delete':   deleteSession(); break;
       case 'back':     closeChat(); break;
@@ -1221,6 +1248,11 @@
         <input type="checkbox" id="wiz-gadgets"${copy && src.gadgets ? ' checked' : ''}>
         <label for="wiz-gadgets" style="margin:0;color:var(--text)">Gadgets (include James tooling in system prompt)</label>
       </div>
+      <label for="wiz-compaction">Compaction</label>
+      <select id="wiz-compaction">
+        <option value="custom"${(copy ? (src.compaction_mode || 'custom') : 'custom') === 'custom' ? ' selected' : ''}>Custom (distill to memory, then summarize)</option>
+        <option value="agent"${(copy ? (src.compaction_mode || 'custom') : 'custom') === 'agent' ? ' selected' : ''}>Agent (rely on the agent's own compaction)</option>
+      </select>
       ${traitsCache.length ? `<label>Traits</label><div id="wiz-traits" style="display:flex;flex-direction:column;gap:4px">` +
         traitsCache.map(t => { const checked = copy ? (Array.isArray(src.traits) && src.traits.includes(t.id)) : t.def; return `<div class="toggle-row"><input type="checkbox" class="wiz-trait" id="wiz-trait-${escapeAttr(t.id)}" value="${escapeAttr(t.id)}"${checked ? ' checked' : ''}><label for="wiz-trait-${escapeAttr(t.id)}" style="margin:0;color:var(--text)" title="${escapeAttr(t.preview)}">${escapeHtml(t.name)}</label></div>`; }).join('') +
         `</div>` : ''}
@@ -1311,6 +1343,8 @@
       args.push('--yolo');
     }
     if (document.getElementById('wiz-gadgets').checked) args.push('--gadgets');
+    const compaction = document.getElementById('wiz-compaction').value;
+    if (compaction) args.push('--compaction', compaction);
     // Only emit explicit --traits once traits have loaded; emitting an empty
     // selection before traits are known would suppress backend default/source
     // traits. In copy mode also preserve any source traits not shown in the
@@ -2291,6 +2325,36 @@
     }
   }
 
+  async function compactSession() {
+    if (!currentSession) return;
+    try {
+      const resp = await apiCall('compact', 'session', [currentSession]);
+      if (resp.status === 'error') {
+        alert('Compaction error: ' + resp.message);
+        return;
+      }
+      lastChatHTML = '';
+      await loadChat();
+    } catch (e) {
+      alert('Error: ' + e.message);
+    }
+  }
+
+  async function distillSession() {
+    if (!currentSession) return;
+    try {
+      const resp = await apiCall('distillate', 'session', [currentSession]);
+      if (resp.status === 'error') {
+        alert('Distillation error: ' + resp.message);
+        return;
+      }
+      lastChatHTML = '';
+      await loadChat();
+    } catch (e) {
+      alert('Error: ' + e.message);
+    }
+  }
+
   async function completeSession(sessionId) {
     const sid = sessionId || currentSession;
     if (!sid) return;
@@ -2372,6 +2436,11 @@
           <input type="checkbox" id="es-gadgets" ${s.gadgets ? 'checked' : ''}>
           <label for="es-gadgets" style="margin:0;color:var(--text)">Gadgets (include James tooling in system prompt)</label>
         </div>
+        <label for="es-compaction">Compaction</label>
+        <select id="es-compaction">
+          <option value="agent"${(s.compaction_mode || 'agent') === 'agent' ? ' selected' : ''}>Agent (rely on the agent's own compaction)</option>
+          <option value="custom"${(s.compaction_mode || 'agent') === 'custom' ? ' selected' : ''}>Custom (distill to memory, then summarize)</option>
+        </select>
         ${traitsCache.length ? `<label>Traits</label><div id="es-traits" style="display:flex;flex-direction:column;gap:4px">` +
           traitsCache.map(t => `<div class="toggle-row"><input type="checkbox" class="es-trait" id="es-trait-${escapeAttr(t.id)}" value="${escapeAttr(t.id)}"${selectedTraits.includes(t.id) ? ' checked' : ''}><label for="es-trait-${escapeAttr(t.id)}" style="margin:0;color:var(--text)" title="${escapeAttr(t.preview)}">${escapeHtml(t.name)}</label></div>`).join('') +
           `</div>` : ''}
@@ -2420,6 +2489,8 @@
         const origSorted = [...selectedTraits].sort().join(',');
         const newSorted = [...newTraits].sort().join(',');
         if (origSorted !== newSorted) args.push('--traits', newTraits.join(','));
+        const compaction = document.getElementById('es-compaction').value;
+        if (compaction !== (s.compaction_mode || 'agent')) args.push('--compaction', compaction);
 
         if (args.length <= 1) { closeWizard(); return; }
 
@@ -3392,6 +3463,8 @@
     else if (action === 'push') gitPush();
     else if (action === 'new-subagent') createNewSubagent();
     else if (action === 'memory') openMemoryModal();
+    else if (action === 'compact') compactSession();
+    else if (action === 'distill') distillSession();
     else if (action === 'duplicate') openDuplicateWizard();
     else if (action === 'edit') showEditSessionModal();
     else if (action === 'move-project') showMoveToProjectModal();
@@ -3504,7 +3577,7 @@
     if (cmdPaletteOpen && document.querySelector('.cmd-palette')) {
       if (e.key === 'Escape') { e.preventDefault(); closeCmdPalette(true); return; }
       if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
-      const map = { c: 'complete', e: 'edit', y: 'duplicate', g: 'diff', t: 'thoughts', o: 'model', f: 'effort', m: 'memory', s: 'stop', d: 'delete', q: 'back' };
+      const map = { c: 'complete', e: 'edit', y: 'duplicate', g: 'diff', t: 'thoughts', o: 'model', f: 'effort', m: 'memory', K: 'compact', D: 'distill', s: 'stop', d: 'delete', q: 'back' };
       const cmd = map[e.key];
       if (cmd) { e.preventDefault(); runCmd(cmd); }
       return;

@@ -423,6 +423,7 @@ header h1 span { color: var(--primary); }
       <span class="back" id="chat-back">←</span>
       <h2 id="chat-title">Chat</h2>
       <span class="chat-mp" id="chat-mp"></span>
+      <span class="chat-mp" id="chat-context" title="Context usage (custom compaction)"></span>
       <select id="chat-model-override" class="chat-override" title="Model override — esc-o"></select>
       <select id="chat-effort-override" class="chat-override" title="Effort override — esc-f"></select>
       <button id="thoughts-toggle" title="Train of thought hidden (click to show) — T" style="background:none;border:none;font-size:1.2em;cursor:pointer;margin-right:4px">💤</button>
@@ -438,6 +439,8 @@ header h1 span { color: var(--primary); }
           <hr>
           <button data-action="new-subagent">New Subagent</button>
           <button data-action="memory">Memory</button>
+          <button data-action="compact">Compact Session</button>
+          <button data-action="distill">Distill to Memory</button>
           <button data-action="duplicate">Duplicate Session</button>
           <button data-action="edit">Edit Session</button>
           <button data-action="move-project">Move to Project</button>

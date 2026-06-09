@@ -45,7 +45,7 @@ func TestCopilotStreamingPhaseClassifiesReply(t *testing.T) {
 {"type":"assistant.message","data":{"phase":"final_answer","content":"Done - the file is created."}}
 `
 	buf := newActivityBuffer(30)
-	res, err := r.runCopilotStreaming(fakeCopilotCmd(t, jsonl), buf, "sessP", &bytes.Buffer{})
+	res, err := r.runCopilotStreaming(fakeCopilotCmd(t, jsonl), buf, "sessP", &bytes.Buffer{}, true)
 	if err != nil {
 		t.Fatalf("runCopilotStreaming: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestCopilotStreamingPhaseNoFinalAnswer(t *testing.T) {
 {"type":"tool.execution_complete","data":{}}
 `
 	buf := newActivityBuffer(30)
-	res, err := r.runCopilotStreaming(fakeCopilotCmd(t, jsonl), buf, "sessPN", &bytes.Buffer{})
+	res, err := r.runCopilotStreaming(fakeCopilotCmd(t, jsonl), buf, "sessPN", &bytes.Buffer{}, true)
 	if err != nil {
 		t.Fatalf("runCopilotStreaming: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestCopilotStreamingPreamblesGoToThoughts(t *testing.T) {
 `
 
 	buf := newActivityBuffer(30)
-	res, err := r.runCopilotStreaming(fakeCopilotCmd(t, jsonl), buf, "sess1", &bytes.Buffer{})
+	res, err := r.runCopilotStreaming(fakeCopilotCmd(t, jsonl), buf, "sess1", &bytes.Buffer{}, true)
 	if err != nil {
 		t.Fatalf("runCopilotStreaming: %v", err)
 	}
@@ -169,7 +169,7 @@ func TestCopilotStreamingBundledAnswerFallback(t *testing.T) {
 {"type":"tool.execution_complete","data":{}}
 `
 	buf := newActivityBuffer(30)
-	res, err := r.runCopilotStreaming(fakeCopilotCmd(t, jsonl), buf, "sessF", &bytes.Buffer{})
+	res, err := r.runCopilotStreaming(fakeCopilotCmd(t, jsonl), buf, "sessF", &bytes.Buffer{}, true)
 	if err != nil {
 		t.Fatalf("runCopilotStreaming: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestCopilotStreamingEmptyToolMessageIsBoundary(t *testing.T) {
 {"type":"tool.execution_complete","data":{}}
 `
 	buf := newActivityBuffer(30)
-	res, err := r.runCopilotStreaming(fakeCopilotCmd(t, jsonl), buf, "sessB", &bytes.Buffer{})
+	res, err := r.runCopilotStreaming(fakeCopilotCmd(t, jsonl), buf, "sessB", &bytes.Buffer{}, true)
 	if err != nil {
 		t.Fatalf("runCopilotStreaming: %v", err)
 	}
@@ -230,7 +230,7 @@ func TestCopilotStreamingOnlyToolCalls(t *testing.T) {
 {"type":"tool.execution_complete","data":{}}
 `
 	buf := newActivityBuffer(30)
-	res, err := r.runCopilotStreaming(fakeCopilotCmd(t, jsonl), buf, "sess2", &bytes.Buffer{})
+	res, err := r.runCopilotStreaming(fakeCopilotCmd(t, jsonl), buf, "sess2", &bytes.Buffer{}, true)
 	if err != nil {
 		t.Fatalf("runCopilotStreaming: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestCopilotStreamingTrimsAndJoins(t *testing.T) {
 {"type":"assistant.message","data":{"content":"  Part two.  "}}
 `
 	buf := newActivityBuffer(30)
-	res, err := r.runCopilotStreaming(fakeCopilotCmd(t, jsonl), buf, "sess3", &bytes.Buffer{})
+	res, err := r.runCopilotStreaming(fakeCopilotCmd(t, jsonl), buf, "sess3", &bytes.Buffer{}, true)
 	if err != nil {
 		t.Fatalf("runCopilotStreaming: %v", err)
 	}

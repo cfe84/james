@@ -60,6 +60,7 @@ func newCreateModel(c *client) createModel {
 			{label: "Path", flag: "--path", value: ""},
 			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
 			{label: "Gadgets (James tooling)", flag: "--gadgets", isBool: true, value: "false"},
+			{label: "Compaction", flag: "--compaction", value: "custom", options: []string{"custom", "agent"}},
 		},
 	}
 }

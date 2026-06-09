@@ -83,6 +83,9 @@ type chatModel struct {
 	sessionName   string
 	moneypennyName string
 	sessionStatus string // moneypenny status (ready, working, etc.)
+	contextTokens  int    // current context usage (tokens)
+	contextWindow  int    // model context window (tokens)
+	compactionMode string // "agent" or "custom"
 	conversation  []conversationTurn
 	totalTurns    int // total turns on server
 	recentCount   int // number of turns in the latest page (for comparison on refresh)
@@ -366,6 +369,9 @@ type historyLoadedMsg struct {
 	conversation []conversationTurn
 	total        int
 	status       string // session status from moneypenny
+	contextTokens  int
+	contextWindow  int
+	compactionMode string
 	err          error
 }
 
@@ -443,12 +449,17 @@ func (m chatModel) loadHistory() tea.Cmd {
 		}
 		// Also fetch session status.
 		var status string
+		var ctxTokens, ctxWindow int
+		var compactionMode string
 		detail, err := m.client.showSession(m.sessionID)
 		if err == nil {
 			status = detail.Status
+			ctxTokens = detail.ContextTokens
+			ctxWindow = detail.ContextWindow
+			compactionMode = detail.CompactionMode
 		}
 		uilog("loadHistory: done in %v, turns=%d total=%d status=%s", time.Since(start), len(page.Conversation), page.Total, status)
-		return historyLoadedMsg{conversation: page.Conversation, total: page.Total, status: status}
+		return historyLoadedMsg{conversation: page.Conversation, total: page.Total, status: status, contextTokens: ctxTokens, contextWindow: ctxWindow, compactionMode: compactionMode}
 	}
 }
 
@@ -815,6 +826,9 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 		if msg.err == nil {
 			uilog("history loaded: status=%s turns=%d total=%d", msg.status, len(msg.conversation), msg.total)
 			m.sessionStatus = msg.status
+			m.contextTokens = msg.contextTokens
+			m.contextWindow = msg.contextWindow
+			m.compactionMode = msg.compactionMode
 			if msg.status == "working" && m.workingVerb == "" {
 				m.workingVerb = pickSpyVerb()
 			} else if msg.status != "working" {
@@ -1578,6 +1592,16 @@ func (m chatModel) View() string {
 		ovStyle = lipgloss.NewStyle().Foreground(colorWarning).Bold(true)
 	}
 	b.WriteString(ovStyle.Render(ovLabel))
+	// Context usage indicator (custom compaction sessions track this).
+	if m.contextWindow > 0 {
+		pct := float64(m.contextTokens) / float64(m.contextWindow) * 100
+		ctxLabel := fmt.Sprintf(" · 🗃️ %d%% (%dk/%dk)", int(pct), m.contextTokens/1000, m.contextWindow/1000)
+		ctxStyle := lipgloss.NewStyle().Foreground(colorMuted)
+		if pct >= 75 {
+			ctxStyle = lipgloss.NewStyle().Foreground(colorWarning).Bold(true)
+		}
+		b.WriteString(ctxStyle.Render(ctxLabel))
+	}
 	b.WriteString("\n")
 
 	if m.loading {
@@ -1636,6 +1660,14 @@ func (m chatModel) View() string {
 			if prev == "agent_text" || prev == "thinking" {
 				continue
 			}
+		}
+		// Compaction markers render as a single collapsed line; the actual
+		// distillation/summary turns are stored as train-of-thought and show
+		// only when thoughts are enabled (handled by the block below).
+		if turn.Role == "compaction" {
+			msgLines = append(msgLines, systemMsgStyle.Render("  🗃️ Session compacted"))
+			msgLines = append(msgLines, "")
+			continue
 		}
 		// Train-of-thought turns (thinking, agent_text) get a compact rendering:
 		// no agent-name prefix, content is indented and gray with the emoji

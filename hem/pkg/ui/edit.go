@@ -66,6 +66,7 @@ func newEditModel(c *client, sessionID string) editModel {
 			{label: "Path", flag: "--path", value: ""},
 			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
 			{label: "Gadgets (James tooling)", flag: "--gadgets", isBool: true, value: "false"},
+			{label: "Compaction", flag: "--compaction", value: "agent", options: []string{"agent", "custom"}},
 		},
 	}
 }
@@ -210,6 +211,11 @@ func (m editModel) Update(msg tea.Msg) (editModel, tea.Cmd) {
 			m.fields[7].value = "true"
 		} else {
 			m.fields[7].value = "false"
+		}
+		if d.CompactionMode != "" {
+			m.fields[8].value = d.CompactionMode
+		} else {
+			m.fields[8].value = "agent"
 		}
 		// Place cursors at end of values and sync textInput fields.
 		for i := range m.fields {

@@ -23,6 +23,11 @@ type CreateSessionData struct {
 	SessionID    string `json:"session_id"`
 	Name         string `json:"name"`
 	Path         string `json:"path"`
+	// CompactionMode selects how context is compacted: "agent" (rely on the
+	// underlying agent's built-in compaction) or "custom" (James-managed
+	// distillation + summary + fresh-session substitution). Empty defaults to
+	// "custom" for new sessions.
+	CompactionMode string `json:"compaction_mode,omitempty"`
 }
 
 // ContinueSessionData is the data payload for continue_session.
@@ -38,13 +43,14 @@ type ContinueSessionData struct {
 // UpdateSessionData is the data payload for update_session.
 // Only non-nil pointer fields are updated.
 type UpdateSessionData struct {
-	SessionID    string  `json:"session_id"`
-	Name         *string `json:"name,omitempty"`
-	SystemPrompt *string `json:"system_prompt,omitempty"`
-	Model        *string `json:"model,omitempty"`
-	Effort       *string `json:"effort,omitempty"`
-	Yolo         *bool   `json:"yolo,omitempty"`
-	Path         *string `json:"path,omitempty"`
+	SessionID      string  `json:"session_id"`
+	Name           *string `json:"name,omitempty"`
+	SystemPrompt   *string `json:"system_prompt,omitempty"`
+	Model          *string `json:"model,omitempty"`
+	Effort         *string `json:"effort,omitempty"`
+	Yolo           *bool   `json:"yolo,omitempty"`
+	Path           *string `json:"path,omitempty"`
+	CompactionMode *string `json:"compaction_mode,omitempty"`
 }
 
 // ImportSessionData is the data payload for import_session.
@@ -95,6 +101,14 @@ type SessionDetail struct {
 	Path         string `json:"path"`
 	Memory       string `json:"memory,omitempty"`
 	LastAccessed string `json:"last_accessed,omitempty"`
+	// CompactionMode is "agent" or "custom".
+	CompactionMode string `json:"compaction_mode,omitempty"`
+	// ContextTokens is the last-measured (Claude) or estimated (Copilot) size
+	// of the underlying agent's context, and ContextWindow is the model's max.
+	// Both are 0 when never measured. Surfaced so clients can show usage and so
+	// the burned-in window table can be tuned by observation.
+	ContextTokens int `json:"context_tokens,omitempty"`
+	ContextWindow int `json:"context_window,omitempty"`
 }
 
 // SessionConversation is returned by get_session_conversation.
@@ -139,6 +153,35 @@ type SummarizeSessionResponse struct {
 	SessionID string `json:"session_id"`
 	Summary   string `json:"summary"`
 	TurnCount int    `json:"turn_count"`
+}
+
+// CompactSessionData is the data payload for compact_session. Runs the full
+// custom-compaction pipeline (in-session distillation into memory + handoff
+// summary + fresh underlying-agent substitution) regardless of the session's
+// configured compaction mode.
+type CompactSessionData struct {
+	SessionID string `json:"session_id"`
+}
+
+// CompactSessionResponse is returned by compact_session once the pipeline has
+// been kicked off (the work itself runs asynchronously).
+type CompactSessionResponse struct {
+	SessionID string `json:"session_id"`
+}
+
+// DistillSessionData is the data payload for distill_session. Asks the
+// moneypenny to run the session's agent (same agent/model/effort, but a fresh
+// throwaway underlying agent session — the live one is left untouched) over the
+// full transcript, instructing it to inspect existing hierarchical memory and
+// extract everything important from the conversation into it.
+type DistillSessionData struct {
+	SessionID string `json:"session_id"`
+}
+
+// DistillSessionResponse is returned by distill_session once the distillation
+// has been kicked off (the work itself runs asynchronously).
+type DistillSessionResponse struct {
+	SessionID string `json:"session_id"`
 }
 
 // MemoryNodePayload is a single hierarchical memory node in protocol responses.

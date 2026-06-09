@@ -563,6 +563,10 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.ImportSession(args)
 	case "summarize session":
 		return e.SummarizeSession(args)
+	case "compact session":
+		return e.CompactSession(args)
+	case "distillate session":
+		return e.DistillateSession(args)
 	case "copy session":
 		return e.CopySession(args)
 	case "activity session":
@@ -930,6 +934,9 @@ type SessionShowResult struct {
 	Status       string `json:"status"`
 	Project      string `json:"project,omitempty"`
 	Traits       []string `json:"traits"`
+	CompactionMode string `json:"compaction_mode,omitempty"`
+	ContextTokens  int    `json:"context_tokens,omitempty"`
+	ContextWindow  int    `json:"context_window,omitempty"`
 }
 
 const gadgetsMarker = "\nYou have access to agent orchestration using the"
@@ -1574,6 +1581,7 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 		fs.BoolVar(&params.Yolo, "yolo", false, "enable yolo mode")
 		fs.BoolVar(&params.Gadgets, "gadgets", false, "include James tooling in system prompt")
 		fs.StringVar(&params.Path, "path", "", "working directory path")
+		fs.StringVar(&params.CompactionMode, "compaction", "", "compaction mode: agent or custom")
 		fs.BoolVar(&params.Async, "async", false, "return immediately without waiting for response")
 		fs.StringVar(&projectNameOrID, "project", "", "project name or ID")
 		fs.StringVar(&params.TraitsSpec, "traits", "", "comma-separated trait IDs/names to apply")
@@ -2076,6 +2084,15 @@ func (e *Executor) ShowSession(args []string) *protocol.Response {
 	if v, ok := raw["effort"].(string); ok {
 		result.Effort = v
 	}
+	if v, ok := raw["compaction_mode"].(string); ok {
+		result.CompactionMode = v
+	}
+	if v, ok := raw["context_tokens"].(float64); ok {
+		result.ContextTokens = int(v)
+	}
+	if v, ok := raw["context_window"].(float64); ok {
+		result.ContextWindow = int(v)
+	}
 
 	// Look up project name from hem's local store.
 	if hemSess, err := e.store.GetSession(sessionID); err == nil && hemSess != nil && hemSess.ProjectID != "" {
@@ -2094,7 +2111,7 @@ func (e *Executor) ShowSession(args []string) *protocol.Response {
 
 func (e *Executor) UpdateSession(args []string) *protocol.Response {
 	var sessionID, name, systemPrompt, pathArg, modelStr, effortStr string
-	var yoloStr, projectNameOrID, gadgetsStr, traitsStr string
+	var yoloStr, projectNameOrID, gadgetsStr, traitsStr, compactionStr string
 
 	// Detect whether --traits was explicitly provided so an empty value can
 	// clear all traits (vs. "not specified" which leaves them untouched).
@@ -2117,6 +2134,7 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 		fs.StringVar(&projectNameOrID, "project", "", "move to project (name or ID)")
 		fs.StringVar(&gadgetsStr, "gadgets", "", "enable/disable gadgets (true/false)")
 		fs.StringVar(&traitsStr, "traits", "", "comma-separated trait IDs/names (empty clears all)")
+		fs.StringVar(&compactionStr, "compaction", "", "compaction mode: agent or custom")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -2170,6 +2188,10 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 	}
 	if yoloStr != "" {
 		cmdData["yolo"] = yoloStr == "true"
+		hasUpdate = true
+	}
+	if compactionStr != "" {
+		cmdData["compaction_mode"] = compactionStr
 		hasUpdate = true
 	}
 
@@ -4423,6 +4445,79 @@ func (e *Executor) SummarizeSession(args []string) *protocol.Response {
 		}
 	}
 	return protocol.OKResponse(TextResult{Message: result.Summary})
+}
+
+// CompactSession asks the moneypenny to run the full custom-compaction pipeline
+// for a session (in-session distillation into memory + handoff summary + fresh
+// underlying-agent substitution), regardless of the session's configured mode.
+func (e *Executor) CompactSession(args []string) *protocol.Response {
+	var sessionID string
+
+	remaining, err := parseFlagsFromArgs("compact-session", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&sessionID, "session-id", "", "session ID")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if sessionID == "" {
+		if len(remaining) == 0 {
+			return protocol.ErrResponse("session_id is required")
+		}
+		sessionID = remaining[0]
+	}
+
+	mp, err := e.resolveSessionMoneypenny(sessionID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	ctx := context.Background()
+	_, err = e.sendCommand(ctx, mp, "compact_session", map[string]interface{}{
+		"session_id": sessionID,
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	return protocol.OKResponse(TextResult{Message: "🗃️ Compacting session…"})
+}
+
+// DistillateSession asks the moneypenny to run the session's agent over the
+// full transcript and fold all durable knowledge into the session's
+// hierarchical memory (inspecting and updating existing nodes). The underlying
+// live agent session is left untouched; the work runs asynchronously.
+func (e *Executor) DistillateSession(args []string) *protocol.Response {
+	var sessionID string
+
+	remaining, err := parseFlagsFromArgs("distillate-session", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&sessionID, "session-id", "", "session ID")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if sessionID == "" {
+		if len(remaining) == 0 {
+			return protocol.ErrResponse("session_id is required")
+		}
+		sessionID = remaining[0]
+	}
+
+	mp, err := e.resolveSessionMoneypenny(sessionID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	ctx := context.Background()
+	_, err = e.sendCommand(ctx, mp, "distill_session", map[string]interface{}{
+		"session_id": sessionID,
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	return protocol.OKResponse(TextResult{Message: "🧪 Distilling session into memory…"})
 }
 
 // CopySession creates a new session bootstrapped from a summary of an

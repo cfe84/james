@@ -739,6 +739,31 @@ Traits are a hem-level concept (like projects); moneypenny is unaware of them. T
 - **System prompt composition order:** base → traits → gadgets → memory. The traits block is wrapped in `<!--james:traits:begin-->` / `<!--james:traits:end-->` sentinel markers so it can be stripped and recomposed regardless of its (arbitrary) content.
 - TUI: a dedicated traits management view (dashboard key `t`) lists traits with new/edit/delete and a default indicator; the trait editor has an "Enable by default" toggle. Trait checkboxes appear in the create wizard (default traits pre-checked) and the edit-session form. Qew exposes the same via a **Traits** nav button and checkboxes in the create/edit dialogs.
 
+## Session Compaction
+
+Controls how a session's context is condensed as it grows. Set per session via the `--compaction agent|custom` flag on `create session` / `update session`, the TUI create/edit/wizard **Compaction** option, or the Qew create/edit dialogs.
+
+- **`agent`** (default for pre-existing sessions): rely on the underlying agent's own automatic compaction. James does nothing special.
+- **`custom`** (default for new sessions): when context reaches **75%** of the model's window, James runs a custom compaction before the next turn so session knowledge is preserved.
+
+**Custom compaction pipeline:**
+1. **Distillation (in-session):** the live agent is asked to reorganize its hierarchical memory and save everything important (task, decisions, current state, pending actions) into it, then emit a standalone handoff summary as its final message.
+2. **Substitution:** a fresh underlying agent session is started (the James session id is unchanged) seeded with the summary and a note that its hierarchical memory holds the full detail. For automatic compaction the pending prompt is then run; for manual compaction the agent is told to "Await next instructions."
+
+**Context usage** is tracked per turn and shown in the chat header (`🗃️ N% (Xk/Yk)`). Claude reports real token usage and its context window directly; Copilot exposes none, so usage is estimated (~4 chars/token) against a burned-in, code-tunable per-model window table.
+
+**Manual compaction** — `compact session SESSION_ID` (TUI command-mode `K`; Qew command palette `K` or Actions ▸ Compact Session) runs the pipeline immediately regardless of the configured mode. The session must be idle.
+
+**History display:** a compaction appears as a single collapsed `🗃️ Session compacted` line. When the train-of-thought toggle is on, the distillation's reasoning turns are shown using chain-of-thought formatting.
+
+## Memory Distillation
+
+`distillate session SESSION_ID` — asks the session's agent (same agent/model/effort) to read the **entire** transcript and fold every durable detail into the session's hierarchical memory, updating existing nodes rather than duplicating. Unlike compaction, distillation does **not** replace the live agent session or add any turns to the transcript — it runs a throwaway underlying agent purely to maintain memory, leaving the live context untouched.
+
+- Available in the CLI (`hem distillate session ID`), TUI (chat command-mode `D`), and Qew (command palette `D` or Actions ▸ Distill to Memory).
+- Runs asynchronously on the moneypenny; the session shows busy (`distilling`) while the agent inspects and writes memory, then returns to idle.
+- The session must be idle. Requires the session to have memory tooling available (created with an MI6 control channel), same as compaction.
+
 ## Settings
 
 `hem enable SETTING` / `hem disable SETTING` — toggle boolean settings stored in the defaults table.

@@ -189,6 +189,10 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.checkUpdate(cmd)
 	case "summarize_session":
 		return h.summarizeSession(ctx, cmd)
+	case "compact_session":
+		return h.compactSessionCmd(ctx, cmd)
+	case "distill_session":
+		return h.distillSessionCmd(ctx, cmd)
 	default:
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("unknown method: %s", cmd.Method))
 	}
@@ -217,16 +221,23 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 
 	systemPrompt := data.SystemPrompt
 
+	compactionMode := data.CompactionMode
+	if compactionMode == "" {
+		compactionMode = store.CompactionCustom
+	}
+
 	// Create session in store.
 	sess := &store.Session{
-		SessionID:    data.SessionID,
-		Name:         data.Name,
-		Agent:        data.Agent,
-		SystemPrompt: systemPrompt,
-		Model:        data.Model,
-		Effort:       data.Effort,
-		Yolo:         data.Yolo,
-		Path:         data.Path,
+		SessionID:      data.SessionID,
+		Name:           data.Name,
+		Agent:          data.Agent,
+		SystemPrompt:   systemPrompt,
+		Model:          data.Model,
+		Effort:         data.Effort,
+		Yolo:           data.Yolo,
+		Path:           data.Path,
+		AgentSessionID: data.SessionID,
+		CompactionMode: compactionMode,
 	}
 	if err := h.store.CreateSession(sess); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionAlreadyExists, fmt.Sprintf("session already exists: %s", data.SessionID))
@@ -322,6 +333,17 @@ func (h *Handler) continueSession(ctx context.Context, cmd *envelope.Command) *e
 		effEffort = data.Effort
 	}
 
+	// If custom compaction is enabled and the context has grown past the
+	// threshold, compact first, seeding the fresh underlying session with this
+	// prompt (automatic compaction provides the next prompt).
+	if h.shouldCompact(sess) {
+		h.vlog("context threshold reached for session %s; auto-compacting before continue", data.SessionID)
+		go h.runCompaction(data.SessionID, data.Prompt, effModel, effEffort)
+		return envelope.SuccessResponse(cmd.RequestID, envelope.ContinueSessionResponse{
+			SessionID: data.SessionID,
+		})
+	}
+
 	// Run agent asynchronously with Resume=true.
 	go h.runAgent(data.SessionID, agent.RunParams{
 		SessionID:    data.SessionID,
@@ -414,21 +436,7 @@ func (h *Handler) CompactSession(ctx context.Context, sessionID string) (string,
 
 	// Build a clean transcript. Skip thinking/agent_text noise — keep only
 	// user, assistant, and system role turns.
-	var transcript strings.Builder
-	for _, t := range turns {
-		switch t.Role {
-		case "user":
-			transcript.WriteString("USER: ")
-		case "assistant":
-			transcript.WriteString("ASSISTANT: ")
-		case "system":
-			transcript.WriteString("SYSTEM: ")
-		default:
-			continue
-		}
-		transcript.WriteString(strings.TrimSpace(t.Content))
-		transcript.WriteString("\n\n")
-	}
+	transcript := cleanTranscript(turns)
 
 	prompt := fmt.Sprintf(`Below is the full history of a prior conversation. Provide a comprehensive summary that captures:
 - The original task or question
@@ -440,7 +448,7 @@ func (h *Handler) CompactSession(ctx context.Context, sessionID string) (string,
 Be detailed enough that the conversation can be RESUMED with this summary alone as context. Output ONLY the summary text, no preamble or meta-commentary.
 
 Conversation:
-%s`, transcript.String())
+%s`, transcript)
 
 	// For copilot, system-prompt-via-AGENTS.md isn't available for one-shots,
 	// so prepend any system prompt directly into the user prompt.
@@ -508,6 +516,15 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 		params.SessionDir = h.sessionDir(sessionID)
 	}
 
+	// Resolve the underlying agent session id (decoupled from the James
+	// session id to support custom-compaction substitution). Falls back to the
+	// James session id for sessions created before this column existed.
+	if params.AgentSessionID == "" {
+		if s, err := h.store.GetSession(sessionID); err == nil && s != nil && s.AgentSessionID != "" {
+			params.AgentSessionID = s.AgentSessionID
+		}
+	}
+
 	ctx := context.Background()
 	result, err := h.runner.Run(ctx, params)
 
@@ -530,7 +547,12 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 			_ = h.store.AddConversationTurn(sessionID, "system",
 				"Could not summarize prior conversation before restarting; continuing without earlier context.")
 		}
-		// Retry as a CREATE with the summary in the system prompt.
+		// Retry as a CREATE against a fresh underlying agent session id (the old
+		// one is gone; reusing it can collide on agents that treat --session-id
+		// as create-only).
+		newAgentID := newAgentSessionID()
+		_ = h.store.SetAgentSessionID(sessionID, newAgentID)
+		params.AgentSessionID = newAgentID
 		params.Resume = false
 		if summary != "" {
 			params.SystemPrompt += "\n\n<prior-session-summary>\n" + summary + "\n</prior-session-summary>"
@@ -586,6 +608,12 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 
 	h.vlog("agent completed for session %s", sessionID)
 
+	// Record context usage for this turn so custom compaction can be triggered
+	// at the configured threshold and clients can display usage. Claude reports
+	// real token counts and its model's window; Copilot reports neither, so we
+	// estimate from the stored transcript and fall back to a burned-in window.
+	h.recordContextUsage(sessionID, params, result)
+
 	// Check for queued prompts before going idle. Drain one override-group at a
 	// time: prompts sharing the same per-prompt model/effort override are
 	// processed together, and the next group (if any) is handled by the
@@ -630,6 +658,17 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 
 		// Continue with this group's prompts joined for the agent.
 		combinedPrompt := strings.Join(texts, "\n")
+
+		// If custom compaction is enabled and the context has grown past the
+		// threshold, compact before handling this group, seeding the fresh
+		// underlying session with these prompts (automatic compaction provides
+		// the next prompt rather than "await instructions").
+		if h.shouldCompact(sess) {
+			h.vlog("context threshold reached for session %s; auto-compacting before queued group", sessionID)
+			h.runCompaction(sessionID, combinedPrompt, effModel, effEffort)
+			return
+		}
+
 		h.runAgent(sessionID, agent.RunParams{
 			SessionID:    sessionID,
 			Agent:        sess.Agent,
@@ -705,16 +744,19 @@ func (h *Handler) getSession(_ context.Context, cmd *envelope.Command) *envelope
 	}
 
 	detail := envelope.SessionDetail{
-		SessionID:    sess.SessionID,
-		Name:         sess.Name,
-		Status:       sess.Status,
-		Agent:        sess.Agent,
-		SystemPrompt: sess.SystemPrompt,
-		Model:        sess.Model,
-		Effort:       sess.Effort,
-		Yolo:         sess.Yolo,
-		Path:         sess.Path,
-		Memory:       sess.Memory,
+		SessionID:      sess.SessionID,
+		Name:           sess.Name,
+		Status:         sess.Status,
+		Agent:          sess.Agent,
+		SystemPrompt:   sess.SystemPrompt,
+		Model:          sess.Model,
+		Effort:         sess.Effort,
+		Yolo:           sess.Yolo,
+		Path:           sess.Path,
+		Memory:         sess.Memory,
+		CompactionMode: sess.CompactionMode,
+		ContextTokens:  sess.ContextTokens,
+		ContextWindow:  sess.ContextWindow,
 	}
 
 	if ts, err := h.store.GetSessionTimestamps(data.SessionID); err == nil && ts != nil {
@@ -847,7 +889,7 @@ func (h *Handler) updateSession(_ context.Context, cmd *envelope.Command) *envel
 		}
 	}
 
-	if err := h.store.UpdateSessionFields(data.SessionID, data.Name, data.SystemPrompt, data.Model, data.Effort, data.Path, data.Yolo); err != nil {
+	if err := h.store.UpdateSessionFields(data.SessionID, data.Name, data.SystemPrompt, data.Model, data.Effort, data.Path, data.CompactionMode, data.Yolo); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to update session: %v", err))
 	}
 

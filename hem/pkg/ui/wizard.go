@@ -119,6 +119,7 @@ func newWizardModel(c *client) wizardModel {
 			{label: "System Prompt", flag: "--system-prompt", value: "", input: &spInput},
 			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
 			{label: "Gadgets (James tooling)", flag: "--gadgets", isBool: true, value: "false"},
+			{label: "Compaction", flag: "--compaction", value: "custom", options: []string{"custom", "agent"}},
 		},
 	}
 }
@@ -451,6 +452,11 @@ func (m wizardModel) Update(msg tea.Msg) (wizardModel, tea.Cmd) {
 				if src.Project != "" {
 					m.fields[i].value = src.Project
 					m.fields[i].cursorPos = len(src.Project)
+				}
+			case "--compaction":
+				if src.CompactionMode != "" {
+					m.fields[i].value = src.CompactionMode
+					m.fields[i].cursorPos = len(src.CompactionMode)
 				}
 			}
 		}

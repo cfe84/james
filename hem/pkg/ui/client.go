@@ -69,6 +69,9 @@ type sessionDetail struct {
 	Status       string             `json:"status"`
 	Project      string             `json:"project"`
 	Traits       []string           `json:"traits"`
+	CompactionMode string           `json:"compaction_mode"`
+	ContextTokens  int              `json:"context_tokens"`
+	ContextWindow  int              `json:"context_window"`
 	Conversation []conversationTurn `json:"conversation"`
 }
 
@@ -336,6 +339,34 @@ func (c *client) summarizeSession(sessionID string) (string, error) {
 		return "", err
 	}
 	return result.Message, nil
+}
+
+// compactSession runs `hem compact session SESSION_ID`, kicking off the custom
+// compaction pipeline on the moneypenny. The work runs asynchronously server
+// side; this returns once it has been accepted.
+func (c *client) compactSession(sessionID string) error {
+	resp, err := c.send("compact", "session", sessionID)
+	if err != nil {
+		return err
+	}
+	if resp.Status == protocol.StatusError {
+		return fmt.Errorf("%s", resp.Message)
+	}
+	return nil
+}
+
+// distillateSession runs `hem distillate session SESSION_ID`, asking the
+// moneypenny to fold the session's transcript into hierarchical memory. The
+// work runs asynchronously server side; this returns once it has been accepted.
+func (c *client) distillateSession(sessionID string) error {
+	resp, err := c.send("distillate", "session", sessionID)
+	if err != nil {
+		return err
+	}
+	if resp.Status == protocol.StatusError {
+		return fmt.Errorf("%s", resp.Message)
+	}
+	return nil
 }
 
 type continueResult struct {

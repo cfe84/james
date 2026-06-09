@@ -1589,6 +1589,31 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.chat.confirmDelete = false
 			m.chat.showThoughts = !m.chat.showThoughts
 			return m, nil
+		case "K":
+			// Compact: kick off the custom-compaction pipeline on the session.
+			// Runs asynchronously on the moneypenny; results stream back into
+			// the chat history (the 🗃️ marker and, when shown, the distillation
+			// train-of-thought).
+			m.chat.confirmDelete = false
+			m.chat.commandMode = false
+			sessionID := m.chat.sessionID
+			m.statusMsg = "🗃️ Compacting session…"
+			return m, tea.Batch(func() tea.Msg {
+				_ = m.client.compactSession(sessionID)
+				return nil
+			}, m.chat.chatPollTickAdaptive())
+		case "D":
+			// Distillate: fold the session transcript into hierarchical memory.
+			// Runs asynchronously on the moneypenny; the session shows busy while
+			// the agent inspects and updates memory. No transcript turns added.
+			m.chat.confirmDelete = false
+			m.chat.commandMode = false
+			sessionID := m.chat.sessionID
+			m.statusMsg = "🧪 Distilling session into memory…"
+			return m, tea.Batch(func() tea.Msg {
+				_ = m.client.distillateSession(sessionID)
+				return nil
+			}, m.chat.chatPollTickAdaptive())
 		case "o":
 			// Model override picker (esc-o).
 			m.chat.confirmDelete = false

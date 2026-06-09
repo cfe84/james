@@ -21,6 +21,7 @@ type sessionParams struct {
 	Yolo           bool
 	Gadgets        bool
 	Async          bool
+	CompactionMode string // "agent" or "custom" (empty = moneypenny default)
 	TraitsSpec     string // comma-separated trait IDs/names; resolved to TraitIDs
 	TraitIDs       []string
 }
@@ -135,6 +136,9 @@ func buildCreateSessionData(params *sessionParams, sessionID, prompt string) map
 	}
 	if params.Yolo {
 		cmdData["yolo"] = true
+	}
+	if params.CompactionMode != "" {
+		cmdData["compaction_mode"] = params.CompactionMode
 	}
 	return cmdData
 }

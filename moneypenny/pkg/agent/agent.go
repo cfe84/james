@@ -161,6 +161,13 @@ func unixNodeBinCandidates(home, bin string) []string {
 // Result holds the parsed result from a claude invocation.
 type Result struct {
 	Text string // The text response extracted from Claude's JSON output
+	// ContextTokens is the size of the underlying context after this turn
+	// (input + cache tokens), when the agent reports it. 0 if unavailable
+	// (e.g. Copilot, which exposes no cumulative context usage).
+	ContextTokens int
+	// ContextWindow is the model's max context, when the agent reports it
+	// (Claude's modelUsage). 0 if unavailable.
+	ContextWindow int
 }
 
 // ActivityEvent is a simplified representation of what the agent is doing right now.
@@ -211,6 +218,22 @@ type RunParams struct {
 	Path         string // working directory for the agent
 	Resume       bool   // true for continue_session
 	SessionDir   string // per-session persistent dir (managed by handler)
+	// AgentSessionID is the id passed to the underlying agent CLI via
+	// --session-id/--resume. Decoupled from SessionID so custom compaction can
+	// substitute a fresh underlying session. Falls back to SessionID when empty.
+	AgentSessionID string
+	// NoPersistTurns suppresses persisting the run's thinking/intermediate-text
+	// events as conversation turns. Used by distillation, which runs the agent
+	// purely to maintain memory and must not pollute the live transcript.
+	NoPersistTurns bool
+}
+
+// agentSessionID returns the id to hand to the underlying agent CLI.
+func (p RunParams) agentSessionID() string {
+	if p.AgentSessionID != "" {
+		return p.AgentSessionID
+	}
+	return p.SessionID
 }
 
 // PersistentActivityFunc is called for activity events that should be persisted
@@ -363,13 +386,13 @@ func (r *Runner) Run(ctx context.Context, params RunParams) (*Result, error) {
 
 	// Both Claude and Copilot use streaming JSON output.
 	if params.Agent == "copilot" {
-		return r.runCopilotStreaming(cmd, buf, params.SessionID, &stderrBuf)
+		return r.runCopilotStreaming(cmd, buf, params.SessionID, &stderrBuf, !params.NoPersistTurns)
 	}
-	return r.runStreaming(cmd, buf, params.SessionID, &stderrBuf)
+	return r.runStreaming(cmd, buf, params.SessionID, &stderrBuf, !params.NoPersistTurns)
 }
 
 // runStreaming runs a Claude agent with stream-json, parsing events into the activity buffer.
-func (r *Runner) runStreaming(cmd *exec.Cmd, buf *activityBuffer, sessionID string, stderrBuf *bytes.Buffer) (*Result, error) {
+func (r *Runner) runStreaming(cmd *exec.Cmd, buf *activityBuffer, sessionID string, stderrBuf *bytes.Buffer, persistTurns bool) (*Result, error) {
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("creating stdout pipe: %w", err)
@@ -380,6 +403,7 @@ func (r *Runner) runStreaming(cmd *exec.Cmd, buf *activityBuffer, sessionID stri
 	}
 
 	var resultText string
+	var ctxTokens, ctxWindow int
 	var lastRawEvent string // keep the last raw JSON line for error diagnostics
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 256*1024), 10*1024*1024)
@@ -422,7 +446,9 @@ func (r *Runner) runStreaming(cmd *exec.Cmd, buf *activityBuffer, sessionID stri
 					thinking, _ := b["thinking"].(string)
 					if thinking != "" {
 						buf.add(ActivityEvent{Type: "thinking", Summary: thinking, Timestamp: now})
-						r.emitPersistent(sessionID, "thinking", thinking)
+						if persistTurns {
+							r.emitPersistent(sessionID, "thinking", thinking)
+						}
 					}
 				case "tool_use":
 					buf.add(ActivityEvent{Type: "tool_use", Summary: toolSummary(b), Timestamp: now})
@@ -430,7 +456,9 @@ func (r *Runner) runStreaming(cmd *exec.Cmd, buf *activityBuffer, sessionID stri
 					text, _ := b["text"].(string)
 					if text != "" {
 						buf.add(ActivityEvent{Type: "text", Summary: text, Timestamp: now})
-						r.emitPersistent(sessionID, "text", text)
+						if persistTurns {
+							r.emitPersistent(sessionID, "text", text)
+						}
 					}
 				}
 			}
@@ -449,6 +477,10 @@ func (r *Runner) runStreaming(cmd *exec.Cmd, buf *activityBuffer, sessionID stri
 				b, _ := json.Marshal(r)
 				resultText = string(b)
 			}
+			// Claude reports token usage and per-model context windows in the
+			// result event. The current context size is the prompt the model
+			// just processed: input + cache-read + cache-creation tokens.
+			ctxTokens, ctxWindow = parseClaudeUsage(event)
 		case "error":
 			r.vlog.Printf("stream: error event: %s", truncStr(line, 500))
 			if errMsg, ok := event["error"].(string); ok {
@@ -466,12 +498,41 @@ func (r *Runner) runStreaming(cmd *exec.Cmd, buf *activityBuffer, sessionID stri
 	if err := cmd.Wait(); err != nil {
 		return nil, fmtAgentErrorFull(err, stderrBuf, resultText, lastRawEvent)
 	}
-	return &Result{Text: resultText}, nil
+	return &Result{Text: resultText, ContextTokens: ctxTokens, ContextWindow: ctxWindow}, nil
+}
+
+// parseClaudeUsage extracts the current context size and the largest reported
+// model context window from a Claude stream-json "result" event. Returns
+// (0, 0) when the fields are absent.
+func parseClaudeUsage(event map[string]any) (tokens, window int) {
+	if usage, ok := event["usage"].(map[string]any); ok {
+		num := func(k string) int {
+			if v, ok := usage[k].(float64); ok {
+				return int(v)
+			}
+			return 0
+		}
+		tokens = num("input_tokens") + num("cache_read_input_tokens") + num("cache_creation_input_tokens")
+	}
+	// modelUsage maps model name -> {contextWindow, ...}. Use the largest
+	// window seen (the main model, vs. small helper models like haiku).
+	if mu, ok := event["modelUsage"].(map[string]any); ok {
+		for _, v := range mu {
+			m, ok := v.(map[string]any)
+			if !ok {
+				continue
+			}
+			if cw, ok := m["contextWindow"].(float64); ok && int(cw) > window {
+				window = int(cw)
+			}
+		}
+	}
+	return tokens, window
 }
 
 // runCopilotStreaming runs a Copilot agent with --output-format json --stream on,
 // parsing JSONL events into the activity buffer (same pattern as Claude streaming).
-func (r *Runner) runCopilotStreaming(cmd *exec.Cmd, buf *activityBuffer, sessionID string, stderrBuf *bytes.Buffer) (*Result, error) {
+func (r *Runner) runCopilotStreaming(cmd *exec.Cmd, buf *activityBuffer, sessionID string, stderrBuf *bytes.Buffer, persistTurns bool) (*Result, error) {
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("creating stdout pipe: %w", err)
@@ -728,10 +789,12 @@ func (r *Runner) runCopilotStreaming(cmd *exec.Cmd, buf *activityBuffer, session
 		}
 		switch it.kind {
 		case "thinking":
-			r.emitPersistent(sessionID, "thinking", it.content)
+			if persistTurns {
+				r.emitPersistent(sessionID, "thinking", it.content)
+			}
 		case "message":
 			// Skip empty tool-only messages (they exist only as boundaries).
-			if it.content != "" {
+			if it.content != "" && persistTurns {
 				r.emitPersistent(sessionID, "text", it.content)
 			}
 		}
@@ -931,13 +994,13 @@ func buildClaudeArgs(params RunParams) agentInvocation {
 		args = []string{
 			"--output-format", "stream-json",
 			"--verbose", // required for stream-json
-			"--resume", params.SessionID,
+			"--resume", params.agentSessionID(),
 		}
 	} else {
 		args = []string{
 			"--output-format", "stream-json",
 			"--verbose",
-			"--session-id", params.SessionID,
+			"--session-id", params.agentSessionID(),
 		}
 	}
 	if params.SystemPrompt != "" {
@@ -994,9 +1057,9 @@ func buildCopilotArgs(params RunParams) agentInvocation {
 	// reattach to an existing one. Using --resume on a non-existent session
 	// errors out with "No session, task, or name matched ...".
 	if params.Resume {
-		args = append(args, "--resume", params.SessionID)
+		args = append(args, "--resume", params.agentSessionID())
 	} else {
-		args = append(args, "--session-id", params.SessionID)
+		args = append(args, "--session-id", params.agentSessionID())
 	}
 	if params.Model != "" {
 		args = append(args, "--model", params.Model)

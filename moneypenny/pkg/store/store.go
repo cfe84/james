@@ -28,9 +28,28 @@ type Session struct {
 	Path         string
 	Status       string
 	Memory       string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	// AgentSessionID is the session id handed to the underlying agent CLI
+	// (claude/copilot) via --session-id/--resume. It is decoupled from
+	// SessionID so custom compaction can substitute a fresh underlying agent
+	// session while keeping the stable James session. Defaults to SessionID.
+	AgentSessionID string
+	// CompactionMode is "agent" (rely on the agent's built-in compaction) or
+	// "custom" (James-managed distillation/summary/substitution).
+	CompactionMode string
+	// ContextTokens is the last measured/estimated underlying-context size and
+	// ContextWindow the model's max context. Used to trigger custom compaction
+	// at a threshold and to surface usage in clients.
+	ContextTokens int
+	ContextWindow int
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
+
+// Compaction modes.
+const (
+	CompactionAgent  = "agent"
+	CompactionCustom = "custom"
+)
 
 // ConversationTurn represents a stored prompt or response.
 type ConversationTurn struct {
@@ -181,6 +200,18 @@ CREATE INDEX IF NOT EXISTS idx_memory_nodes_session ON memory_nodes(session_id);
 	db.Exec(`ALTER TABLE prompt_queue ADD COLUMN model TEXT NOT NULL DEFAULT ''`)
 	db.Exec(`ALTER TABLE prompt_queue ADD COLUMN effort TEXT NOT NULL DEFAULT ''`)
 
+	// Migration: custom-compaction support. agent_session_id decouples the
+	// underlying agent CLI session from the James session so it can be
+	// substituted on compaction; existing rows default to their own
+	// session_id (current behavior). compaction_mode defaults to 'agent' for
+	// existing sessions (business as usual); new sessions are created as
+	// 'custom'. context_tokens/context_window track context size.
+	db.Exec(`ALTER TABLE sessions ADD COLUMN agent_session_id TEXT NOT NULL DEFAULT ''`)
+	db.Exec(`UPDATE sessions SET agent_session_id = session_id WHERE agent_session_id = ''`)
+	db.Exec(`ALTER TABLE sessions ADD COLUMN compaction_mode TEXT NOT NULL DEFAULT 'agent'`)
+	db.Exec(`ALTER TABLE sessions ADD COLUMN context_tokens INTEGER NOT NULL DEFAULT 0`)
+	db.Exec(`ALTER TABLE sessions ADD COLUMN context_window INTEGER NOT NULL DEFAULT 0`)
+
 	return nil
 }
 
@@ -201,10 +232,17 @@ func (s *Store) CreateSession(sess *Session) error {
 		yolo = 1
 	}
 
+	if sess.AgentSessionID == "" {
+		sess.AgentSessionID = sess.SessionID
+	}
+	if sess.CompactionMode == "" {
+		sess.CompactionMode = CompactionCustom
+	}
+
 	_, err := s.db.Exec(
-		`INSERT INTO sessions (session_id, name, agent, system_prompt, model, effort, yolo, path, status, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sess.SessionID, sess.Name, sess.Agent, sess.SystemPrompt, sess.Model, sess.Effort, yolo, sess.Path, sess.Status, now, now,
+		`INSERT INTO sessions (session_id, name, agent, system_prompt, model, effort, yolo, path, status, agent_session_id, compaction_mode, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sess.SessionID, sess.Name, sess.Agent, sess.SystemPrompt, sess.Model, sess.Effort, yolo, sess.Path, sess.Status, sess.AgentSessionID, sess.CompactionMode, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("create session: %w", err)
@@ -215,7 +253,7 @@ func (s *Store) CreateSession(sess *Session) error {
 // GetSession retrieves a session by ID. Returns nil, nil if not found.
 func (s *Store) GetSession(sessionID string) (*Session, error) {
 	row := s.db.QueryRow(
-		`SELECT session_id, name, agent, system_prompt, model, effort, yolo, path, status, memory, created_at, updated_at
+		`SELECT session_id, name, agent, system_prompt, model, effort, yolo, path, status, memory, agent_session_id, compaction_mode, context_tokens, context_window, created_at, updated_at
 		 FROM sessions WHERE session_id = ?`, sessionID,
 	)
 
@@ -223,7 +261,8 @@ func (s *Store) GetSession(sessionID string) (*Session, error) {
 	var yolo int
 	err := row.Scan(
 		&sess.SessionID, &sess.Name, &sess.Agent, &sess.SystemPrompt, &sess.Model, &sess.Effort,
-		&yolo, &sess.Path, &sess.Status, &sess.Memory, &sess.CreatedAt, &sess.UpdatedAt,
+		&yolo, &sess.Path, &sess.Status, &sess.Memory, &sess.AgentSessionID, &sess.CompactionMode,
+		&sess.ContextTokens, &sess.ContextWindow, &sess.CreatedAt, &sess.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -232,13 +271,16 @@ func (s *Store) GetSession(sessionID string) (*Session, error) {
 		return nil, fmt.Errorf("get session: %w", err)
 	}
 	sess.Yolo = yolo != 0
+	if sess.AgentSessionID == "" {
+		sess.AgentSessionID = sess.SessionID
+	}
 	return sess, nil
 }
 
 // ListSessions returns all sessions.
 func (s *Store) ListSessions() ([]*Session, error) {
 	rows, err := s.db.Query(
-		`SELECT session_id, name, agent, system_prompt, model, effort, yolo, path, status, memory, created_at, updated_at
+		`SELECT session_id, name, agent, system_prompt, model, effort, yolo, path, status, memory, agent_session_id, compaction_mode, context_tokens, context_window, created_at, updated_at
 		 FROM sessions ORDER BY created_at`,
 	)
 	if err != nil {
@@ -252,18 +294,22 @@ func (s *Store) ListSessions() ([]*Session, error) {
 		var yolo int
 		if err := rows.Scan(
 			&sess.SessionID, &sess.Name, &sess.Agent, &sess.SystemPrompt, &sess.Model, &sess.Effort,
-			&yolo, &sess.Path, &sess.Status, &sess.Memory, &sess.CreatedAt, &sess.UpdatedAt,
+			&yolo, &sess.Path, &sess.Status, &sess.Memory, &sess.AgentSessionID, &sess.CompactionMode,
+			&sess.ContextTokens, &sess.ContextWindow, &sess.CreatedAt, &sess.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
 		sess.Yolo = yolo != 0
+		if sess.AgentSessionID == "" {
+			sess.AgentSessionID = sess.SessionID
+		}
 		sessions = append(sessions, sess)
 	}
 	return sessions, rows.Err()
 }
 
 // UpdateSessionFields updates specific fields of a session.
-func (s *Store) UpdateSessionFields(sessionID string, name, systemPrompt, model, effort, path *string, yolo *bool) error {
+func (s *Store) UpdateSessionFields(sessionID string, name, systemPrompt, model, effort, path, compactionMode *string, yolo *bool) error {
 	sess, err := s.GetSession(sessionID)
 	if err != nil {
 		return err
@@ -290,6 +336,9 @@ func (s *Store) UpdateSessionFields(sessionID string, name, systemPrompt, model,
 	if yolo != nil {
 		sess.Yolo = *yolo
 	}
+	if compactionMode != nil {
+		sess.CompactionMode = *compactionMode
+	}
 
 	now := time.Now().UTC()
 	yoloInt := 0
@@ -297,8 +346,8 @@ func (s *Store) UpdateSessionFields(sessionID string, name, systemPrompt, model,
 		yoloInt = 1
 	}
 	res, err := s.db.Exec(
-		`UPDATE sessions SET name = ?, system_prompt = ?, model = ?, effort = ?, yolo = ?, path = ?, updated_at = ? WHERE session_id = ?`,
-		sess.Name, sess.SystemPrompt, sess.Model, sess.Effort, yoloInt, sess.Path, now, sessionID,
+		`UPDATE sessions SET name = ?, system_prompt = ?, model = ?, effort = ?, yolo = ?, path = ?, compaction_mode = ?, updated_at = ? WHERE session_id = ?`,
+		sess.Name, sess.SystemPrompt, sess.Model, sess.Effort, yoloInt, sess.Path, sess.CompactionMode, now, sessionID,
 	)
 	if err != nil {
 		return fmt.Errorf("update session: %w", err)
@@ -309,6 +358,35 @@ func (s *Store) UpdateSessionFields(sessionID string, name, systemPrompt, model,
 	}
 	if n == 0 {
 		return fmt.Errorf("session %q not found", sessionID)
+	}
+	return nil
+}
+
+// SetAgentSessionID replaces the underlying agent CLI session id. Used by
+// custom compaction to substitute a fresh underlying agent session while
+// keeping the stable James session.
+func (s *Store) SetAgentSessionID(sessionID, agentSessionID string) error {
+	now := time.Now().UTC()
+	_, err := s.db.Exec(
+		`UPDATE sessions SET agent_session_id = ?, updated_at = ? WHERE session_id = ?`,
+		agentSessionID, now, sessionID,
+	)
+	if err != nil {
+		return fmt.Errorf("set agent session id: %w", err)
+	}
+	return nil
+}
+
+// SetContextUsage records the last measured/estimated context size and the
+// model's context window for a session.
+func (s *Store) SetContextUsage(sessionID string, tokens, window int) error {
+	now := time.Now().UTC()
+	_, err := s.db.Exec(
+		`UPDATE sessions SET context_tokens = ?, context_window = ?, updated_at = ? WHERE session_id = ?`,
+		tokens, window, now, sessionID,
+	)
+	if err != nil {
+		return fmt.Errorf("set context usage: %w", err)
 	}
 	return nil
 }
