@@ -1651,7 +1651,7 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if startPath == "" {
 					startPath = "/"
 				}
-				entries, err := m.client.listDirectory(m.chat.moneypennyName, startPath, m.chat.browserShowHidden)
+				entries, _, err := m.client.listDirectory(m.chat.moneypennyName, startPath, m.chat.browserShowHidden)
 				if err != nil {
 					return browserLoadedMsg{path: startPath, err: err}
 				}

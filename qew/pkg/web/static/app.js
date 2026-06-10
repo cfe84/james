@@ -1165,6 +1165,7 @@
     try {
       const resp = await apiCall('list-directory', '', ['-m', wizardState.selectedMP, '--path', wizardState.currentPath]);
       if (resp.status === 'ok' && resp.data) {
+        wizardState.triedHome = false;
         wizardState.currentPath = resp.data.path || wizardState.currentPath;
         document.querySelector('.dir-current').textContent = '📂 ' + wizardState.currentPath;
         const entries = (resp.data.entries || []).filter(e => e.is_dir);
@@ -1188,6 +1189,14 @@
           });
         });
       } else {
+        // The prefilled path (e.g. inherited from a duplicated session) may no
+        // longer exist on the target moneypenny. Fall back once to its home.
+        if (!wizardState.triedHome && wizardState.currentPath !== '~') {
+          wizardState.triedHome = true;
+          wizardState.currentPath = '~';
+          await renderPathBrowser();
+          return;
+        }
         const errMsg = resp.message ? escapeHtml(resp.message) : 'Could not list directory';
         document.getElementById('wizard-dirs').innerHTML = `<div class="empty-state">${errMsg}</div>`;
       }

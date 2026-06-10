@@ -585,7 +585,7 @@ func (m chatModel) loadBrowser(path string) tea.Cmd {
 	mp := m.moneypennyName
 	showHidden := m.browserShowHidden
 	return func() tea.Msg {
-		entries, err := m.client.listDirectory(mp, path, showHidden)
+		entries, _, err := m.client.listDirectory(mp, path, showHidden)
 		if err != nil {
 			return browserLoadedMsg{path: path, err: err}
 		}

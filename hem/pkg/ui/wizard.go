@@ -45,6 +45,10 @@ type wizardModel struct {
 	pathCursor  int
 	pathLoading bool
 	showHidden  bool // toggle with 'a' to show/hide hidden directories
+	// pathTriedHome guards the one-shot fallback to the moneypenny's home when
+	// the prefilled path (e.g. an inherited source path on duplicate) no longer
+	// exists, so a home that also fails can't loop.
+	pathTriedHome bool
 
 	// Step 3: form (reuses createModel fields minus moneypenny/path)
 	fields   []formField
@@ -89,7 +93,11 @@ type wizardProjectsLoadedMsg struct {
 
 type wizardDirLoadedMsg struct {
 	entries []dirEntry
-	err     error
+	// resolvedPath is the absolute path the moneypenny actually listed (e.g.
+	// "~" resolved to the moneypenny's home), used to keep currentPath in sync
+	// so up-navigation works.
+	resolvedPath string
+	err          error
 }
 
 type wizardModelsLoadedMsg struct {
@@ -240,8 +248,8 @@ func (m wizardModel) loadDirectory() tea.Cmd {
 	path := m.currentPath
 	showHidden := m.showHidden
 	return func() tea.Msg {
-		entries, err := m.client.listDirectory(mp, path, showHidden)
-		return wizardDirLoadedMsg{entries: entries, err: err}
+		entries, resolved, err := m.client.listDirectory(mp, path, showHidden)
+		return wizardDirLoadedMsg{entries: entries, resolvedPath: resolved, err: err}
 	}
 }
 
@@ -534,9 +542,25 @@ func (m wizardModel) Update(msg tea.Msg) (wizardModel, tea.Cmd) {
 	case wizardDirLoadedMsg:
 		m.pathLoading = false
 		if msg.err != nil {
+			// The prefilled path (e.g. inherited from a duplicated session)
+			// may no longer exist on the target moneypenny. Fall back once to
+			// the moneypenny's home directory ("~" is resolved remotely).
+			if !m.pathTriedHome && m.currentPath != "~" {
+				m.pathTriedHome = true
+				m.currentPath = "~"
+				m.pathLoading = true
+				m.err = nil
+				return m, m.loadDirectory()
+			}
 			m.err = msg.err
 			return m, nil
 		}
+		// Adopt the resolved absolute path so navigation (e.g. "..") works even
+		// when we requested "~".
+		if msg.resolvedPath != "" {
+			m.currentPath = msg.resolvedPath
+		}
+		m.pathTriedHome = false
 		// Sort: directories first, then files, alphabetically.
 		entries := msg.entries
 		sort.Slice(entries, func(i, j int) bool {

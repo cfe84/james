@@ -819,7 +819,7 @@ type dirEntry struct {
 	IsDir bool   `json:"is_dir"`
 }
 
-func (c *client) listDirectory(moneypenny, path string, showHidden ...bool) ([]dirEntry, error) {
+func (c *client) listDirectory(moneypenny, path string, showHidden ...bool) ([]dirEntry, string, error) {
 	args := []string{}
 	if moneypenny != "" {
 		args = append(args, "-m", moneypenny)
@@ -832,19 +832,19 @@ func (c *client) listDirectory(moneypenny, path string, showHidden ...bool) ([]d
 	}
 	resp, err := c.send("list-directory", "", args...)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if resp.Status == protocol.StatusError {
-		return nil, fmt.Errorf("%s", resp.Message)
+		return nil, "", fmt.Errorf("%s", resp.Message)
 	}
 	var result struct {
 		Path    string     `json:"path"`
 		Entries []dirEntry `json:"entries"`
 	}
 	if err := json.Unmarshal(resp.Data, &result); err != nil {
-		return nil, fmt.Errorf("parsing directory: %w", err)
+		return nil, "", fmt.Errorf("parsing directory: %w", err)
 	}
-	return result.Entries, nil
+	return result.Entries, result.Path, nil
 }
 
 func (c *client) listModels(moneypenny, agent string) ([]string, error) {
