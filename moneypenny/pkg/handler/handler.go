@@ -1402,8 +1402,17 @@ var (
 	copilotModelCacheTTL  = 24 * time.Hour
 )
 
-// copilotModels queries copilot for available models by running a prompt.
-// Results are cached for 1 hour to avoid repeated slow queries.
+// copilotModelLogRe matches each "[id,Display Name]" pair on copilot's
+// debug-level "Listed models:" log line.
+var copilotModelLogRe = regexp.MustCompile(`\[([^,\]]+),([^\]]*)\]`)
+
+// copilotModels queries copilot for its available models. Copilot has no
+// non-interactive "list models" command, so we run a trivial prompt with
+// debug logging enabled and parse the authoritative "Listed models:" line
+// the CLI emits after fetching /models (the real, complete list — dozens of
+// entries). If that parse fails we fall back to parsing the model's textual
+// answer to a "list the identifiers" prompt (older copilot builds, or a log
+// format change). Results are cached to avoid repeated slow queries.
 func copilotModels() []envelope.ModelInfo {
 	if len(copilotModelCache) > 0 && time.Since(copilotModelCacheTime) < copilotModelCacheTTL {
 		log.Printf("copilot models: returning %d cached models (age: %v)", len(copilotModelCache), time.Since(copilotModelCacheTime))
@@ -1417,51 +1426,129 @@ func copilotModels() []envelope.ModelInfo {
 
 	log.Printf("copilot models: querying copilot at %s", path)
 
-	// Ask copilot to list its available models. Use --available-tools '' to
-	// prevent it from using tools (faster, cheaper). Let copilot pick its
-	// default model — pinning a specific --model here is brittle because model
-	// identifiers are retired over time (e.g. gpt-4.1), which would make this
-	// query fail outright and surface as "no models" in the UI. Timeout after
-	// 30 seconds.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Capture copilot's debug logs in a throwaway directory we can parse and
+	// then discard.
+	logDir, err := os.MkdirTemp("", "copilot-models-")
+	if err != nil {
+		log.Printf("copilot models: failed to create log dir: %v", err)
+		return nil
+	}
+	defer os.RemoveAll(logDir)
+
+	// Run a trivial prompt. --available-tools '' prevents tool use (no
+	// permission prompts, faster). --model auto lets copilot pick a current
+	// model so the query can't fail because a pinned identifier was retired.
+	// --log-level debug + --log-dir make the CLI write the "Listed models:"
+	// line we parse below.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path,
 		"-p", "List the model identifiers available for --model. One per line. No other text, no markdown formatting.",
 		"--output-format", "text",
 		"--available-tools", "",
+		"--model", "auto",
+		"--log-level", "debug",
+		"--log-dir", logDir,
 	)
 	// Prepend agent's dir to PATH so its shebang (e.g. `env node`) finds
 	// `node` in the same directory (nvm install layout).
 	cmd.Env = agent.PrependToPath(os.Environ(), filepath.Dir(path))
-	out, err := cmd.Output()
+	out, runErr := cmd.Output()
+	if runErr != nil {
+		// Don't bail yet: the model list is fetched and logged during startup,
+		// before the completion runs, so the log may hold the full list even
+		// when the prompt itself failed.
+		log.Printf("copilot models: query exited with error (will still parse logs): %v", runErr)
+	}
+
+	// Primary: parse the authoritative debug-log model list.
+	if models := parseCopilotModelLog(logDir); len(models) > 0 {
+		copilotModelCache = models
+		copilotModelCacheTime = time.Now()
+		log.Printf("copilot models: parsed %d models from debug log", len(models))
+		return models
+	}
+
+	// Fallback: parse the model's textual answer (older copilot, or a changed
+	// log format). Only meaningful if the prompt actually completed.
+	if runErr == nil {
+		log.Printf("copilot models: debug log empty, falling back to stdout (%d bytes)", len(out))
+		var models []envelope.ModelInfo
+		for _, line := range strings.Split(string(out), "\n") {
+			name := strings.TrimSpace(line)
+			if name == "" {
+				continue
+			}
+			// Stop at the summary footer (lines starting with "Total" or similar).
+			if strings.HasPrefix(name, "Total ") || strings.HasPrefix(name, "API ") ||
+				strings.HasPrefix(name, "Breakdown ") {
+				break
+			}
+			models = append(models, envelope.ModelInfo{Name: name, Value: name})
+		}
+		if len(models) > 0 {
+			copilotModelCache = models
+			copilotModelCacheTime = time.Now()
+			log.Printf("copilot models: cached %d models (stdout fallback)", len(models))
+			return models
+		}
+	}
+
+	log.Printf("copilot models: no models parsed")
+	return nil
+}
+
+// parseCopilotModelLog scans copilot's debug log files in logDir for the
+// "Listed models: [id,Display Name], ..." line and returns the chat models it
+// lists, in order, de-duplicated by identifier. Embedding models (which aren't
+// valid --model values) are skipped.
+func parseCopilotModelLog(logDir string) []envelope.ModelInfo {
+	entries, err := os.ReadDir(logDir)
 	if err != nil {
-		log.Printf("copilot models: query failed: %v", err)
+		return nil
+	}
+	var listLine string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(logDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			if idx := strings.Index(line, "Listed models:"); idx >= 0 {
+				listLine = line[idx+len("Listed models:"):]
+				break
+			}
+		}
+		if listLine != "" {
+			break
+		}
+	}
+	if listLine == "" {
 		return nil
 	}
 
-	log.Printf("copilot models: raw output (%d bytes): %q", len(out), string(out))
-
 	var models []envelope.ModelInfo
-	for _, line := range strings.Split(string(out), "\n") {
-		name := strings.TrimSpace(line)
-		if name == "" {
+	seen := make(map[string]bool)
+	for _, m := range copilotModelLogRe.FindAllStringSubmatch(listLine, -1) {
+		id := strings.TrimSpace(m[1])
+		if id == "" || seen[id] {
 			continue
 		}
-		// Stop at the summary footer (lines starting with "Total" or similar).
-		if strings.HasPrefix(name, "Total ") || strings.HasPrefix(name, "API ") ||
-			strings.HasPrefix(name, "Breakdown ") {
-			break
+		// Embedding models aren't selectable via --model; skip them.
+		if strings.HasPrefix(id, "text-embedding") {
+			continue
 		}
-		models = append(models, envelope.ModelInfo{Name: name, Value: name})
+		seen[id] = true
+		display := strings.TrimSpace(m[2])
+		if display == "" {
+			display = id
+		}
+		models = append(models, envelope.ModelInfo{Name: display, Value: id})
 	}
-	if len(models) > 0 {
-		copilotModelCache = models
-		copilotModelCacheTime = time.Now()
-		log.Printf("copilot models: cached %d models", len(models))
-		return models
-	}
-	log.Printf("copilot models: no models parsed from output")
-	return nil
+	return models
 }
 
 func (h *Handler) stopSession(_ context.Context, cmd *envelope.Command) *envelope.Response {

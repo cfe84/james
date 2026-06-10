@@ -392,7 +392,7 @@
   }
 
   // Wire the filter input: live fuzzy filtering, Enter blurs (keeping the filter
-  // so the list can be navigated with j/k/Enter), Escape clears + blurs.
+  // so the list can be navigated with j/k/Enter), Escape clears + hides.
   function initDashFilter() {
     const input = document.getElementById('dash-filter');
     if (!input) return;
@@ -418,6 +418,7 @@
         dashFilter = '';
         if (lastDashboardData) renderDashboard(lastDashboardData);
         input.blur();
+        input.style.display = 'none';
       }
     });
   }
@@ -3665,6 +3666,17 @@
     switch (e.key) {
       case 'ArrowDown': case 'j': e.preventDefault(); dashMove(1); break;
       case 'ArrowUp':   case 'k': e.preventDefault(); dashMove(-1); break;
+      case 'Escape':
+        // Cancel an active filter while navigating the list (the filter input
+        // is blurred after Enter, so its own Escape handler no longer fires).
+        if (dashFilter) {
+          e.preventDefault();
+          dashFilter = '';
+          const fi = document.getElementById('dash-filter');
+          if (fi) { fi.value = ''; fi.style.display = 'none'; }
+          if (lastDashboardData) renderDashboard(lastDashboardData);
+        }
+        break;
       case '/': e.preventDefault(); openDashFilter(); break;
       case 'm': e.preventDefault(); showMoneypenniesView(); break;
       case 'b': e.preventDefault(); toggleSound(); break;
