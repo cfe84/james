@@ -88,6 +88,24 @@ func (h *Handler) memoryDir(sessionID string) string {
 	return filepath.Join(sd, "memory")
 }
 
+// attachmentsDir returns the per-session attachments folder
+// (<sessionDir>/attachments), creating it if needed. Uploaded files (images,
+// documents) are stored here — outside the working directory so they don't
+// pollute the user's repo — and referenced by absolute path when invoking the
+// agent. Returns "" when no session dir is available.
+func (h *Handler) attachmentsDir(sessionID string) string {
+	sd := h.sessionDir(sessionID)
+	if sd == "" {
+		return ""
+	}
+	dir := filepath.Join(sd, "attachments")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		h.vlog("attachmentsDir: failed to create %s: %v", dir, err)
+		return ""
+	}
+	return dir
+}
+
 // SetLogger sets a verbose logger.
 func (h *Handler) SetLogger(vlog func(string, ...interface{})) {
 	h.vlog = vlog
@@ -172,6 +190,8 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.listDirectory(ctx, cmd)
 	case "transfer_file":
 		return h.transferFile(ctx, cmd)
+	case "save_attachment":
+		return h.saveAttachment(ctx, cmd)
 	case "schedule":
 		return h.schedule(ctx, cmd)
 	case "list_schedules":
@@ -351,8 +371,18 @@ func (h *Handler) continueSession(ctx context.Context, cmd *envelope.Command) *e
 		})
 	}
 
+	// Build the effective prompt: when attachments accompany the prompt, append
+	// a human-readable addendum listing their absolute paths. This serves two
+	// purposes: the persisted user turn reflects what was sent, and (for Claude,
+	// which has no native attachment flag) it tells the agent where to find the
+	// files it has been granted access to via --add-dir.
+	prompt := data.Prompt
+	if len(data.Attachments) > 0 {
+		prompt += attachmentPromptAddendum(data.Attachments)
+	}
+
 	// Add user prompt to conversation.
-	if err := h.store.AddConversationTurn(data.SessionID, "user", data.Prompt); err != nil {
+	if err := h.store.AddConversationTurn(data.SessionID, "user", prompt); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to add conversation turn: %v", err))
 	}
 
@@ -372,7 +402,7 @@ func (h *Handler) continueSession(ctx context.Context, cmd *envelope.Command) *e
 	// prompt (automatic compaction provides the next prompt).
 	if h.shouldCompact(sess) {
 		h.vlog("context threshold reached for session %s; auto-compacting before continue", data.SessionID)
-		go h.runCompaction(data.SessionID, data.Prompt, effModel, effEffort)
+		go h.runCompaction(data.SessionID, prompt, effModel, effEffort)
 		return envelope.SuccessResponse(cmd.RequestID, envelope.ContinueSessionResponse{
 			SessionID: data.SessionID,
 		})
@@ -382,13 +412,14 @@ func (h *Handler) continueSession(ctx context.Context, cmd *envelope.Command) *e
 	go h.runAgent(data.SessionID, agent.RunParams{
 		SessionID:    data.SessionID,
 		Agent:        sess.Agent,
-		Prompt:       data.Prompt,
+		Prompt:       prompt,
 		SystemPrompt: sess.SystemPrompt,
 		Model:        effModel,
 		Effort:       effEffort,
 		Yolo:         sess.Yolo,
 		Path:         sess.Path,
 		Resume:       true,
+		Attachments:  data.Attachments,
 	})
 
 	return envelope.SuccessResponse(cmd.RequestID, envelope.ContinueSessionResponse{
@@ -1855,6 +1886,98 @@ func (h *Handler) transferFile(_ context.Context, cmd *envelope.Command) *envelo
 		Size:    info.Size(),
 		Content: encoded,
 	})
+}
+
+// attachmentMaxSize is the per-file cap for uploaded attachments (10MB raw).
+const attachmentMaxSize = 10 * 1024 * 1024
+
+// sanitizeAttachmentName reduces an arbitrary client-supplied filename to a safe
+// basename with no path separators or traversal components. Returns "" if the
+// result would be empty or unsafe.
+func sanitizeAttachmentName(name string) string {
+	// Strip any directory components the client may have included.
+	name = filepath.Base(filepath.FromSlash(name))
+	name = strings.TrimSpace(name)
+	// Reject traversal/edge cases.
+	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\") {
+		return ""
+	}
+	return name
+}
+
+// saveAttachment writes a base64-encoded uploaded file into the session's
+// attachments directory and returns its resolved absolute path. The agent later
+// reads the file from this path (Copilot via --attachment, Claude via --add-dir).
+func (h *Handler) saveAttachment(_ context.Context, cmd *envelope.Command) *envelope.Response {
+	var data envelope.SaveAttachmentData
+	if err := json.Unmarshal(cmd.Data, &data); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
+	}
+
+	if data.SessionID == "" || data.Name == "" || data.Content == "" {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id, name, and content are required")
+	}
+
+	// Verify session exists.
+	sess, err := h.store.GetSession(data.SessionID)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to get session: %v", err))
+	}
+	if sess == nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, fmt.Sprintf("session not found: %s", data.SessionID))
+	}
+
+	name := sanitizeAttachmentName(data.Name)
+	if name == "" {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "invalid attachment name")
+	}
+
+	content, err := base64.StdEncoding.DecodeString(data.Content)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid base64 content: %v", err))
+	}
+	if len(content) > attachmentMaxSize {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("attachment too large: %d bytes (max %d)", len(content), attachmentMaxSize))
+	}
+
+	dir := h.attachmentsDir(data.SessionID)
+	if dir == "" {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, "no attachments directory available")
+	}
+
+	// Prefix with a short unique id to avoid collisions between same-named uploads.
+	fname := newAgentSessionID() + "-" + name
+	dest := filepath.Join(dir, fname)
+	if err := os.WriteFile(dest, content, 0600); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("cannot write attachment: %v", err))
+	}
+
+	h.vlog("saved attachment %s (%d bytes) for session %s", dest, len(content), data.SessionID)
+
+	return envelope.SuccessResponse(cmd.RequestID, envelope.SaveAttachmentResponse{
+		Path: dest,
+		Name: name,
+		Size: int64(len(content)),
+	})
+}
+
+// attachmentPromptAddendum builds a human-readable trailer listing attachment
+// absolute paths, appended to the user prompt so the persisted turn reflects
+// what was sent and (for Claude) so the agent knows where to find the files.
+func attachmentPromptAddendum(paths []string) string {
+	if len(paths) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("\n\n[Attached files: ")
+	for i, p := range paths {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		b.WriteString(p)
+	}
+	b.WriteString("]")
+	return b.String()
 }
 
 func (h *Handler) schedule(_ context.Context, cmd *envelope.Command) *envelope.Response {

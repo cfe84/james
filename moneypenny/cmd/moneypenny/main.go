@@ -200,7 +200,9 @@ func runStdio(ctx context.Context, h *handler.Handler, vlog *log.Logger, r io.Re
 	h.SetNotificationWriter(envelope.NewNotificationWriter(w))
 
 	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+	// Up to 16MB commands: base64-encoded attachments can be large (10MB raw
+	// ≈ 13.3MB base64 plus envelope overhead). Must stay >= mi6 MaxMessageSize.
+	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
 	for scanner.Scan() {
 		if ctx.Err() != nil {
 			return

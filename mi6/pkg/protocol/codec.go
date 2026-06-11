@@ -7,9 +7,12 @@ import (
 	"io"
 )
 
-// MaxMessageSize is the upper bound on a single framed message (1 MB).
-// Any frame whose length header exceeds this value is rejected.
-const MaxMessageSize = 1 << 20 // 1 MB
+// MaxMessageSize is the upper bound on a single framed message (15 MB).
+// Any frame whose length header exceeds this value is rejected. This ceiling
+// must accommodate the largest data payload carried over MI6 — currently
+// base64-encoded chat attachments (capped at 10 MB raw ≈ 13.3 MB encoded, plus
+// JSON envelope overhead).
+const MaxMessageSize = 15 << 20 // 15 MB
 
 var (
 	ErrMessageTooLarge   = errors.New("protocol: message exceeds maximum size")

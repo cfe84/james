@@ -231,6 +231,11 @@ type RunParams struct {
 	// events as conversation turns. Used by distillation, which runs the agent
 	// purely to maintain memory and must not pollute the live transcript.
 	NoPersistTurns bool
+	// Attachments holds absolute paths of files uploaded with this prompt.
+	// Copilot receives them via repeated --attachment flags; Claude has no
+	// attachment flag, so their containing directories are granted via
+	// --add-dir and the paths are referenced in the prompt text.
+	Attachments []string
 }
 
 // agentSessionID returns the id to hand to the underlying agent CLI.
@@ -1021,6 +1026,12 @@ func buildClaudeArgs(params RunParams) agentInvocation {
 		args = append(args, "--dangerously-skip-permissions")
 	}
 	args = append(args, memoryAccessArgs("claude", params)...)
+	// Claude has no attachment flag; grant read access to the directories
+	// containing uploaded attachments so it can open the absolute paths listed
+	// in the prompt addendum.
+	for _, dir := range attachmentDirs(params.Attachments) {
+		args = append(args, "--add-dir", dir)
+	}
 	// Route via stdin when:
 	//   - the prompt is long (avoids Windows ~32KB cmdline limit), or
 	//   - the prompt starts with "-" (else claude's CLI parser treats it as a flag).
@@ -1097,6 +1108,26 @@ func memoryAccessArgs(agentName string, params RunParams) []string {
 	return args
 }
 
+// attachmentDirs returns the unique parent directories of the given attachment
+// paths, preserving first-seen order. Used to grant Claude read access via
+// --add-dir (it has no native attachment flag).
+func attachmentDirs(paths []string) []string {
+	if len(paths) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(paths))
+	var dirs []string
+	for _, p := range paths {
+		d := filepath.Dir(p)
+		if d == "" || seen[d] {
+			continue
+		}
+		seen[d] = true
+		dirs = append(dirs, d)
+	}
+	return dirs
+}
+
 // buildCopilotArgs constructs the command-line invocation for copilot.
 func buildCopilotArgs(params RunParams) agentInvocation {
 	args := []string{
@@ -1122,6 +1153,12 @@ func buildCopilotArgs(params RunParams) agentInvocation {
 		args = append(args, "--yolo")
 	}
 	args = append(args, memoryAccessArgs("copilot", params)...)
+	// Copilot ingests attachments natively via a repeatable --attachment flag
+	// (images and documents). Only valid in prompt mode, which is how we invoke
+	// it.
+	for _, p := range params.Attachments {
+		args = append(args, "--attachment", p)
+	}
 
 	inv := agentInvocation{}
 	// Copilot has no --system-prompt flag. The supported mechanism is to place

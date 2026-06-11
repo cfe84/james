@@ -85,7 +85,8 @@ func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
 
 	scanner := bufio.NewScanner(conn)
-	scanner.Buffer(make([]byte, 0, 1024*1024), 1024*1024)
+	// Up to 16MB requests: clients may upload base64-encoded attachments.
+	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
 
 	if !scanner.Scan() {
 		return

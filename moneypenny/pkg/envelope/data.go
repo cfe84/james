@@ -38,10 +38,11 @@ type CreateSessionData struct {
 // Model and Effort are optional per-prompt overrides (empty = use the
 // session's stored default).
 type ContinueSessionData struct {
-	SessionID string `json:"session_id"`
-	Prompt    string `json:"prompt"`
-	Model     string `json:"model,omitempty"`
-	Effort    string `json:"effort,omitempty"`
+	SessionID   string   `json:"session_id"`
+	Prompt      string   `json:"prompt"`
+	Model       string   `json:"model,omitempty"`
+	Effort      string   `json:"effort,omitempty"`
+	Attachments []string `json:"attachments,omitempty"` // absolute paths of saved attachments
 }
 
 // UpdateSessionData is the data payload for update_session.
@@ -296,6 +297,22 @@ type TransferFileResponse struct {
 	Name    string `json:"name"`
 	Size    int64  `json:"size"`
 	Content string `json:"content"` // base64-encoded file content
+}
+
+// SaveAttachmentData is the data payload for save_attachment. Content is the
+// base64-encoded file bytes; the moneypenny writes it into the session's
+// attachments directory and returns the resolved absolute path.
+type SaveAttachmentData struct {
+	SessionID string `json:"session_id"`
+	Name      string `json:"name"`
+	Content   string `json:"content"` // base64-encoded file content
+}
+
+// SaveAttachmentResponse is returned by save_attachment.
+type SaveAttachmentResponse struct {
+	Path string `json:"path"`
+	Name string `json:"name"`
+	Size int64  `json:"size"`
 }
 
 // ScheduleData is the data payload for schedule.

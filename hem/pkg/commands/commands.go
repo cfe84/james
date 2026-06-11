@@ -456,6 +456,10 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.TransferFile(noun, args)
 	}
 
+	if verb == "upload" && noun == "attachment" {
+		return e.UploadAttachment(args)
+	}
+
 	switch verb + " " + noun {
 	// Moneypenny commands
 	case "add moneypenny":
@@ -757,6 +761,16 @@ func (e *Executor) resolveSessionMoneypenny(sessionID string) (*store.Moneypenny
 	}
 
 	return nil, fmt.Errorf("session %q not found on any moneypenny", sessionID)
+}
+
+// stringListFlag is a flag.Value that accumulates repeated string flags into a
+// slice, e.g. --attachment a --attachment b → ["a", "b"].
+type stringListFlag []string
+
+func (s *stringListFlag) String() string { return strings.Join(*s, ",") }
+func (s *stringListFlag) Set(v string) error {
+	*s = append(*s, v)
+	return nil
 }
 
 // parseFlagsFromArgs creates a new FlagSet, applies the setup function to register flags,
@@ -1679,6 +1693,7 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 func (e *Executor) ContinueSession(args []string) *protocol.Response {
 	var sessionID, callbackPrompt, model, effort string
 	var async bool
+	var attachments stringListFlag
 
 	remaining, err := parseFlagsFromArgs("continue-session", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&sessionID, "session-id", "", "session ID")
@@ -1686,6 +1701,7 @@ func (e *Executor) ContinueSession(args []string) *protocol.Response {
 		fs.StringVar(&callbackPrompt, "callback", "", "prompt to queue to parent when session completes (use with --async on sub-sessions)")
 		fs.StringVar(&model, "model", "", "temporary model override for this prompt (empty = session default)")
 		fs.StringVar(&effort, "effort", "", "temporary effort/complexity override for this prompt (empty = session default)")
+		fs.Var(&attachments, "attachment", "absolute path of an attachment saved on the moneypenny (repeatable)")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -1726,6 +1742,9 @@ func (e *Executor) ContinueSession(args []string) *protocol.Response {
 	}
 	if effort != "" {
 		cmdData["effort"] = effort
+	}
+	if len(attachments) > 0 {
+		cmdData["attachments"] = []string(attachments)
 	}
 
 	ctx := context.Background()
@@ -4111,6 +4130,80 @@ func (e *Executor) TransferFile(noun string, args []string) *protocol.Response {
 		Name:    transferResp.Name,
 		Size:    transferResp.Size,
 		Content: transferResp.Content,
+	})
+}
+
+// UploadAttachmentResult is returned by `upload attachment`; Path is the
+// resolved absolute path on the moneypenny, to be passed to `continue session
+// --attachment`.
+type UploadAttachmentResult struct {
+	Path string `json:"path"`
+	Name string `json:"name"`
+	Size int64  `json:"size"`
+}
+
+// UploadAttachment relays a base64-encoded file to the session's moneypenny,
+// which stores it under the session's attachments directory and returns the
+// resolved absolute path. The path is then handed to `continue session
+// --attachment` when sending the accompanying prompt.
+func (e *Executor) UploadAttachment(args []string) *protocol.Response {
+	var sessionID, name, content string
+
+	remaining, err := parseFlagsFromArgs("upload-attachment", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&sessionID, "session-id", "", "session ID")
+		fs.StringVar(&name, "name", "", "attachment file name")
+		fs.StringVar(&content, "content", "", "base64-encoded file content")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	// Allow positional fallback: <session-id> <name> <content>.
+	if sessionID == "" && len(remaining) > 0 {
+		sessionID = remaining[0]
+		remaining = remaining[1:]
+	}
+	if name == "" && len(remaining) > 0 {
+		name = remaining[0]
+		remaining = remaining[1:]
+	}
+	if content == "" && len(remaining) > 0 {
+		content = remaining[0]
+		remaining = remaining[1:]
+	}
+
+	if sessionID == "" || name == "" || content == "" {
+		return protocol.ErrResponse("session-id, name, and content are required")
+	}
+
+	mp, err := e.resolveSessionMoneypenny(sessionID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	ctx := context.Background()
+	resp, err := e.sendCommand(ctx, mp, "save_attachment", map[string]interface{}{
+		"session_id": sessionID,
+		"name":       name,
+		"content":    content,
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	var saveResp struct {
+		Path string `json:"path"`
+		Name string `json:"name"`
+		Size int64  `json:"size"`
+	}
+	if err := json.Unmarshal(resp.Data, &saveResp); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("parsing save_attachment response: %v", err))
+	}
+
+	return protocol.OKResponse(UploadAttachmentResult{
+		Path: saveResp.Path,
+		Name: saveResp.Name,
+		Size: saveResp.Size,
 	})
 }
 

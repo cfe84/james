@@ -166,6 +166,30 @@ header h1 span { color: var(--primary); }
   padding: 0 20px; cursor: pointer; font-weight: 600; font-size: 0.95em;
 }
 .chat-input-row button:disabled { opacity: 0.5; cursor: not-allowed; }
+.chat-attach-btn {
+  background: var(--surface2) !important; color: var(--text) !important;
+  padding: 0 14px !important; font-size: 1.2em !important;
+}
+.chat-attach-btn:hover { background: var(--primary) !important; }
+
+/* Pending attachment chips (shown above the chat input before send). */
+.chat-attachments { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 0 0; flex-shrink: 0; }
+.chat-attachments:empty { display: none; }
+.attach-chip {
+  display: flex; align-items: center; gap: 8px; background: var(--surface2);
+  border: 1px solid var(--surface2); border-radius: 6px; padding: 4px 8px; font-size: 0.85em;
+  max-width: 240px;
+}
+.attach-chip img { width: 28px; height: 28px; object-fit: cover; border-radius: 4px; }
+.attach-chip .attach-icon { font-size: 1.2em; }
+.attach-chip .attach-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attach-chip .attach-size { color: var(--muted); font-size: 0.85em; flex-shrink: 0; }
+.attach-chip .attach-remove {
+  background: none; border: none; color: var(--muted); cursor: pointer; font-size: 1.1em;
+  padding: 0 2px; flex-shrink: 0;
+}
+.attach-chip .attach-remove:hover { color: var(--danger); }
+.chat-view.drag-over, #chat-view.drag-over { outline: 2px dashed var(--primary); outline-offset: -4px; }
 
 .empty-state { text-align: center; color: var(--muted); padding: 40px 0; }
 .loading { text-align: center; color: var(--muted); padding: 20px 0; }
@@ -453,7 +477,10 @@ header h1 span { color: var(--primary); }
       </div>
     </div>
     <div class="chat-messages" id="chat-messages"></div>
+    <div class="chat-attachments" id="chat-attachments"></div>
     <div class="chat-input-row">
+      <input type="file" id="chat-file-input" multiple style="display:none">
+      <button id="chat-attach" class="chat-attach-btn" title="Attach files (or paste / drag-drop)">📎</button>
       <textarea id="chat-input" placeholder="Type a message..." rows="1"></textarea>
       <button id="chat-send">Send</button>
     </div>

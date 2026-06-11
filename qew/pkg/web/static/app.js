@@ -46,6 +46,8 @@
   let overridePicker = null; // when set, the model/effort override picker is open: {kind, options, cursor}
   let traitsCache = []; // cached trait list [{id,name,preview}]
   let chatInputCache = {}; // sessionId → draft text
+  let pendingAttachments = []; // files staged for the next send: [{name,size,type,b64,url}]
+  const ATTACH_MAX_BYTES = 10 * 1024 * 1024; // 10MB per-file cap (mirrors moneypenny)
 
   // --- API ---
 
@@ -566,6 +568,7 @@
     document.getElementById('chat-messages').innerHTML = '<div class="loading">Loading...</div>';
     const chatInput = document.getElementById('chat-input');
     chatInput.value = chatInputCache[sessionId] || '';
+    clearPendingAttachments();
     autoResize(chatInput);
     // Focus the message input by default when opening a session.
     chatInput.focus();
@@ -938,10 +941,118 @@
     }
   }
 
+  // --- Attachments ---
+
+  function formatBytes(n) {
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return Math.round(n / 1024) + ' KB';
+    return (n / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  // readFileAsBase64 resolves to the raw base64 (no data: prefix) of a File.
+  function readFileAsBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const res = reader.result || '';
+        const comma = res.indexOf(',');
+        resolve(comma >= 0 ? res.substring(comma + 1) : res);
+      };
+      reader.onerror = () => reject(reader.error || new Error('read failed'));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  // addPendingFiles validates and stages a FileList/array of File objects for the
+  // next send. Files over the size cap are rejected with an alert.
+  async function addPendingFiles(files) {
+    const list = Array.from(files || []);
+    if (list.length === 0) return;
+    const rejected = [];
+    for (const f of list) {
+      if (f.size > ATTACH_MAX_BYTES) {
+        rejected.push(`${f.name} (${formatBytes(f.size)})`);
+        continue;
+      }
+      try {
+        const b64 = await readFileAsBase64(f);
+        const isImg = (f.type || '').startsWith('image/');
+        pendingAttachments.push({
+          name: f.name || 'attachment',
+          size: f.size,
+          type: f.type || '',
+          b64,
+          url: isImg ? URL.createObjectURL(f) : '',
+        });
+      } catch (e) {
+        rejected.push(`${f.name} (read error)`);
+      }
+    }
+    renderAttachmentChips();
+    if (rejected.length > 0) {
+      alert('Some files were not attached (max 10MB each):\n' + rejected.join('\n'));
+    }
+  }
+
+  function removePendingAttachment(idx) {
+    const a = pendingAttachments[idx];
+    if (a && a.url) URL.revokeObjectURL(a.url);
+    pendingAttachments.splice(idx, 1);
+    renderAttachmentChips();
+  }
+  window._removeAttachment = removePendingAttachment;
+
+  function clearPendingAttachments() {
+    for (const a of pendingAttachments) {
+      if (a.url) URL.revokeObjectURL(a.url);
+    }
+    pendingAttachments = [];
+    renderAttachmentChips();
+  }
+
+  function renderAttachmentChips() {
+    const el = document.getElementById('chat-attachments');
+    if (!el) return;
+    el.innerHTML = pendingAttachments.map((a, i) => {
+      const thumb = a.url
+        ? `<img src="${a.url}" alt="">`
+        : `<span class="attach-icon">📄</span>`;
+      return `<div class="attach-chip">${thumb}` +
+        `<span class="attach-name" title="${escapeHtml(a.name)}">${escapeHtml(a.name)}</span>` +
+        `<span class="attach-size">${formatBytes(a.size)}</span>` +
+        `<button class="attach-remove" title="Remove" onclick="window._removeAttachment(${i})">✕</button></div>`;
+    }).join('');
+  }
+
+  // uploadPendingAttachments saves each staged file to the session's moneypenny
+  // and returns the list of resolved absolute paths. Throws on failure.
+  async function uploadPendingAttachments(sessionId) {
+    const paths = [];
+    for (const a of pendingAttachments) {
+      const resp = await apiCall('upload', 'attachment',
+        ['--session-id', sessionId, '--name', a.name, '--content', a.b64]);
+      if (resp.status !== 'ok' || !resp.data || !resp.data.path) {
+        throw new Error(resp.message || ('failed to upload ' + a.name));
+      }
+      paths.push(resp.data.path);
+    }
+    return paths;
+  }
+
   async function sendMessage() {
     const input = document.getElementById('chat-input');
-    const text = input.value.trim();
-    if (!text || !currentSession) return;
+    let text = input.value.trim();
+    const hasAttachments = pendingAttachments.length > 0;
+    if ((!text && !hasAttachments) || !currentSession) return;
+
+    // Idle-only gating for attachments (v1): the agent must not be busy.
+    if (hasAttachments && currentSessionStatus === 'working') {
+      alert('Cannot send attachments while the agent is working. Wait for it to finish.');
+      return;
+    }
+
+    // Image/file-only sends still need a prompt for the agent.
+    const promptText = text || 'Please review the attached file(s).';
 
     input.value = '';
     input.style.height = 'auto';
@@ -949,13 +1060,20 @@
     document.getElementById('chat-send').disabled = true;
 
     try {
+      let attachmentPaths = [];
+      if (hasAttachments) {
+        attachmentPaths = await uploadPendingAttachments(currentSession);
+      }
       const args = [currentSession, '--async'];
       if (overrideModel) args.push('--model', overrideModel);
       if (overrideEffort) args.push('--effort', overrideEffort);
-      args.push(text);
+      for (const p of attachmentPaths) args.push('--attachment', p);
+      args.push(promptText);
       await apiCall('continue', 'session', args);
       // Track as queued and re-render.
-      queuedMessages.push({ content: text });
+      const labelSuffix = hasAttachments ? ` 📎×${attachmentPaths.length}` : '';
+      queuedMessages.push({ content: promptText + labelSuffix });
+      clearPendingAttachments();
       chatForceScrollBottom = true; // reveal the new message even if scrolled up
       lastChatHTML = ''; // force re-render
       await loadChat();
@@ -1407,7 +1525,17 @@
     if (!overlay) {
       overlay = document.createElement('div');
       overlay.className = 'modal-overlay';
-      overlay.addEventListener('click', (e) => { if (e.target === overlay) closeWizard(); });
+      // Dismiss only when the press both starts AND ends on the backdrop
+      // itself. Using a bare `click` closes the modal even when the press
+      // began inside the modal (e.g. selecting text in a field) and the mouse
+      // was released over the backdrop, since the resulting `click` retargets
+      // to the common ancestor (the overlay) — the source of accidental closes.
+      let downOnOverlay = false;
+      overlay.addEventListener('mousedown', (e) => { downOnOverlay = e.target === overlay; });
+      overlay.addEventListener('click', (e) => {
+        if (e.target === overlay && downOnOverlay) closeWizard();
+        downOnOverlay = false;
+      });
       document.body.appendChild(overlay);
     }
     overlay.innerHTML = `<div class="modal${modalClass ? ' ' + modalClass : ''}">${content}</div>`;
@@ -3605,6 +3733,43 @@
     }
   });
   chatInput.addEventListener('input', () => autoResize(chatInput));
+
+  // Attachments: 📎 button → hidden file input; paste images/files; drag-drop.
+  const fileInput = document.getElementById('chat-file-input');
+  const attachBtn = document.getElementById('chat-attach');
+  if (attachBtn && fileInput) {
+    attachBtn.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', () => {
+      addPendingFiles(fileInput.files);
+      fileInput.value = ''; // allow re-selecting the same file
+    });
+  }
+  chatInput.addEventListener('paste', e => {
+    const files = e.clipboardData && e.clipboardData.files;
+    if (files && files.length > 0) {
+      e.preventDefault();
+      addPendingFiles(files);
+    }
+  });
+  const chatView = document.getElementById('chat-view');
+  if (chatView) {
+    chatView.addEventListener('dragover', e => {
+      if (e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')) {
+        e.preventDefault();
+        chatView.classList.add('drag-over');
+      }
+    });
+    chatView.addEventListener('dragleave', e => {
+      if (e.target === chatView) chatView.classList.remove('drag-over');
+    });
+    chatView.addEventListener('drop', e => {
+      chatView.classList.remove('drag-over');
+      if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+        e.preventDefault();
+        addPendingFiles(e.dataTransfer.files);
+      }
+    });
+  }
 
   // Override dropdowns: store the temporary override and refocus the input.
   const modelOverrideSel = document.getElementById('chat-model-override');

@@ -879,7 +879,7 @@ Project management:
 
 Session management:
   create session [-m MONEYPENNY] [--project NAME] PROMPT [--name, --system-prompt, --yolo, --path, --compaction agent|custom, --async]
-  continue session SESSION_ID PROMPT [--async]
+  continue session SESSION_ID PROMPT [--async] [--attachment PATH ...]
   complete session SESSION_ID
   stop session SESSION_ID
   delete session SESSION_ID
@@ -893,6 +893,7 @@ Session management:
   list sessions [-m MONEYPENNY] [--all] [--status STATUS]
   diff session SESSION_ID
   import session FILE.jsonl|SESSION_ID [-m MONEYPENNY] [--name, --project, --path]
+  upload attachment --session-id ID --name NAME --content BASE64  (used by Qew to stage files for the next prompt)
 
 Scheduling:
   schedule session SESSION_ID --at TIME --prompt PROMPT [--cron EXPR]
