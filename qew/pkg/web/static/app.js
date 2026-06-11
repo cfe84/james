@@ -436,6 +436,8 @@
     if (mp && mp.style.display !== 'none') return { kind: 'mp', container: document.getElementById('mp-content') };
     const tr = document.getElementById('traits-view');
     if (tr && tr.style.display !== 'none') return { kind: 'trait', container: document.getElementById('trait-content') };
+    const pr = document.getElementById('projects-view');
+    if (pr && pr.style.display !== 'none') return { kind: 'project', container: document.getElementById('proj-content') };
     return null;
   }
 
@@ -464,7 +466,8 @@
 
   // mgmtAction runs the per-view keyboard shortcut for the selected row,
   // mirroring the hem TUI: moneypennies — enter=ping, e=toggle enabled,
-  // s=set default, d=delete, n=new; traits — enter/e=edit, d=delete, n=new.
+  // s=set default, d=delete, n=new; traits — enter/e=edit, d=delete, n=new;
+  // projects — enter=open (filter dashboard), e=edit, d=delete, n=new.
   // Returns true if the key was handled.
   function mgmtAction(key) {
     const a = activeMgmtList();
@@ -479,6 +482,20 @@
         case 's': if (name) setDefaultMoneypenny(name); return true;
         case 'd': if (name) deleteMoneypenny(name); return true;
         case 'n': showAddMoneypennyModal(); return true;
+      }
+    } else if (a.kind === 'project') {
+      const name = row ? row.dataset.projectName : null;
+      switch (key) {
+        case 'Enter':
+          if (name) {
+            projectFilter = name;
+            document.getElementById('project-filter').value = name;
+            hideProjectsView();
+          }
+          return true;
+        case 'e': if (name) showEditProjectModal(name); return true;
+        case 'd': if (name) deleteProject(name); return true;
+        case 'n': showCreateProjectModal(); return true;
       }
     } else {
       const btn = row && row.querySelector('button[data-trait-id]');
@@ -3004,6 +3021,7 @@
     document.getElementById('dashboard-view').style.display = 'none';
     document.getElementById('projects-view').style.display = 'flex';
     stopDashboardPoll();
+    mgmtCursor = 0;
     loadProjectsList();
   }
 
@@ -3064,6 +3082,7 @@
           else if (action === 'delete') deleteProject(projName);
         });
       });
+      applyMgmtCursor(container, false);
     } catch (e) {
       container.innerHTML = `<div class="empty-state">Error: ${escapeHtml(e.message)}</div>`;
     }
@@ -3908,17 +3927,25 @@
       return;
     }
 
-    // Moneypennies / traits management list views: list navigation + shortcuts.
+    // Moneypennies / traits / projects management list views: list navigation + shortcuts.
     const mgmt = activeMgmtList();
     if (mgmt) {
-      if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
       const tag = (e.target.tagName || '').toLowerCase();
       if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable) return;
+      const isNav = e.key === 'ArrowDown' || e.key === 'j' || e.key === 'ArrowUp' || e.key === 'k';
+      // Allow auto-repeat for navigation (holding j/k scrolls a long list), but
+      // ignore it for every action key (a held key must not fire repeatedly).
+      if (e.repeat && !isNav) return;
       if (e.key === 'Escape') {
         e.preventDefault();
-        if (mgmt.kind === 'mp') hideMoneypenniesView(); else hideTraitsView();
+        if (mgmt.kind === 'mp') hideMoneypenniesView();
+        else if (mgmt.kind === 'project') hideProjectsView();
+        else hideTraitsView();
         return;
       }
+      // 'q' backs out of the projects view to the session list (mirrors chat).
+      if (e.key === 'q' && mgmt.kind === 'project') { e.preventDefault(); hideProjectsView(); return; }
       if (e.key === 'ArrowDown' || e.key === 'j') { e.preventDefault(); mgmtMove(1); return; }
       if (e.key === 'ArrowUp' || e.key === 'k') { e.preventDefault(); mgmtMove(-1); return; }
       // Let Enter activate a focused row/toolbar button natively (e.g. after a
@@ -3931,11 +3958,15 @@
     // Dashboard list navigation + shortcuts (only when the dashboard is the
     // active view and focus is not in a form field).
     const dashActive = document.getElementById('dashboard-view').style.display !== 'none';
-    if (!dashActive || e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+    if (!dashActive || e.ctrlKey || e.metaKey || e.altKey) return;
     const tag = (e.target.tagName || '').toLowerCase();
     const typingText = tag === 'input' || tag === 'textarea' || tag === 'select' ||
       e.target.isContentEditable;
     const typingFocus = typingText || tag === 'button' || tag === 'a';
+    // Allow auto-repeat for list navigation (holding j/k scrolls a long list),
+    // but ignore it for every other key (action keys must not fire repeatedly).
+    const dashIsNav = e.key === 'ArrowDown' || e.key === 'j' || e.key === 'ArrowUp' || e.key === 'k';
+    if (e.repeat && !dashIsNav) return;
 
     // Enter activates the selected row, but only when focus isn't on a button/link
     // (so toolbar buttons keep their native Enter behaviour).
