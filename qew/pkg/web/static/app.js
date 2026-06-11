@@ -43,6 +43,7 @@
   let lastDashboardData = null; // most recent dashboard payload (for local re-filter)
   let mgmtCursor = 0;      // selected row index in the active mgmt list (moneypennies/traits)
   let cmdPaletteOpen = false; // the in-conversation command palette modal is open
+  let overridePicker = null; // when set, the model/effort override picker is open: {kind, options, cursor}
   let traitsCache = []; // cached trait list [{id,name,preview}]
   let chatInputCache = {}; // sessionId → draft text
 
@@ -499,7 +500,10 @@
   function handleWizardListKey(e) {
     const overlay = document.querySelector('.modal-overlay');
     if (!overlay) return false;
-    if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return false;
+    if (e.ctrlKey || e.metaKey || e.altKey) return false;
+    // Allow auto-repeat for navigation (holding j/k to scroll a long listing),
+    // but never for Enter — a held Enter must not rapidly descend directories.
+    if (e.repeat && e.key === 'Enter') return false;
     const tag = (e.target.tagName || '').toLowerCase();
     if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable) return false;
     const onButton = tag === 'button' || tag === 'a';
@@ -1030,6 +1034,8 @@
           <button class="cmd-item" data-cmd="complete"><kbd>c</kbd> Complete session</button>
           <button class="cmd-item" data-cmd="edit"><kbd>e</kbd> Edit session</button>
           <button class="cmd-item" data-cmd="duplicate"><kbd>y</kbd> Duplicate session</button>
+          <button class="cmd-item" data-cmd="subagent"><kbd>a</kbd> New subagent</button>
+          <button class="cmd-item" data-cmd="project"><kbd>p</kbd> Move to project</button>
           <button class="cmd-item" data-cmd="diff"><kbd>g</kbd> Git diff</button>
           <button class="cmd-item" data-cmd="model"><kbd>o</kbd> Model override</button>
           <button class="cmd-item" data-cmd="effort"><kbd>f</kbd> Effort override</button>
@@ -1075,10 +1081,12 @@
       case 'complete': completeSession(); break;
       case 'edit':     showEditSessionModal(); break;
       case 'duplicate': openDuplicateWizard(); break;
+      case 'subagent': createNewSubagent(); break;
+      case 'project':  showMoveToProjectModal(); break;
       case 'diff':     showDiff(); break;
       case 'thoughts': toggleThoughts(); break;
-      case 'model':    focusOverrideSelect('chat-model-override'); break;
-      case 'effort':   focusOverrideSelect('chat-effort-override'); break;
+      case 'model':    showOverridePicker('model'); break;
+      case 'effort':   showOverridePicker('effort'); break;
       case 'memory':   openMemoryModal(); break;
       case 'compact':  compactSession(); break;
       case 'distill':  distillSession(); break;
@@ -2017,15 +2025,109 @@
     `);
   }
 
-  function focusOverrideSelect(id) {
-    const sel = document.getElementById(id);
-    if (sel) {
-      sel.focus();
-      // Open the native dropdown where supported (best-effort).
-      if (typeof sel.showPicker === 'function') {
-        try { sel.showPicker(); } catch (e) { /* ignore */ }
+  // showOverridePicker opens a keyboard-navigable modal for the per-conversation
+  // model (esc-o) or effort (esc-f) override, mirroring the hem TUI's pickers.
+  // The native <select> in the header remains for mouse users; this avoids
+  // relying on <select>.showPicker() which is unsupported in Firefox/Safari and
+  // flaky right after a modal closes (so esc-o/esc-f appeared to do nothing).
+  async function showOverridePicker(kind) {
+    if (!currentSession) return;
+    let options; // [{value, label}], value '' = default
+    if (kind === 'effort') {
+      options = effortOptions(currentSessionAgent).map(o => ({
+        value: o,
+        label: o === '' ? `Default (${sessionDefaultEffort || 'agent default'})` : o,
+      }));
+    } else {
+      renderWizardModal(`
+        <div class="cmd-palette" tabindex="-1" role="dialog" aria-modal="true" aria-label="Model override">
+          <h3>Model Override</h3>
+          <div class="cmd-list"><div class="loading">Loading models…</div></div>
+        </div>
+      `);
+      const sessAtStart = currentSession;
+      const models = await loadModels(currentSessionMP, currentSessionAgent);
+      if (currentSession !== sessAtStart) return;
+      options = [{ value: '', label: `Default (${sessionDefaultModel || 'agent default'})` }]
+        .concat(models.map(m => ({ value: m, label: m })));
+      if (overrideModel && !models.includes(overrideModel)) {
+        options.push({ value: overrideModel, label: `${overrideModel} (current)` });
       }
     }
+    const current = kind === 'effort' ? overrideEffort : overrideModel;
+    let cursor = options.findIndex(o => o.value === current);
+    if (cursor < 0) cursor = 0;
+    overridePicker = { kind, options, cursor };
+    renderOverridePicker();
+  }
+
+  function renderOverridePicker() {
+    if (!overridePicker) return;
+    const { kind, options, cursor } = overridePicker;
+    const title = kind === 'effort' ? 'Effort Override' : 'Model Override';
+    const items = options.map((o, i) => `
+      <button class="cmd-item override-item${i === cursor ? ' selected' : ''}" data-idx="${i}">${escapeHtml(o.label)}</button>
+    `).join('');
+    renderWizardModal(`
+      <div class="cmd-palette" tabindex="-1" role="dialog" aria-modal="true" aria-label="${title}">
+        <h3>${title}</h3>
+        <div class="cmd-list">${items}</div>
+        <div class="modal-actions"><button class="btn-muted" onclick="window._qewCloseOverridePicker()">Close (Esc)</button></div>
+      </div>
+    `);
+    const pal = document.querySelector('.cmd-palette');
+    if (pal) {
+      pal.addEventListener('click', (e) => {
+        const btn = e.target.closest('.override-item');
+        if (btn) applyOverride(parseInt(btn.dataset.idx, 10));
+      });
+      pal.focus();
+      const sel = pal.querySelector('.override-item.selected');
+      if (sel) sel.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  function applyOverride(idx) {
+    if (!overridePicker) return;
+    const { kind, options } = overridePicker;
+    const opt = options[idx];
+    if (opt) {
+      if (kind === 'effort') overrideEffort = opt.value;
+      else overrideModel = opt.value;
+      // Refresh the header dropdowns so they reflect the chosen override.
+      populateOverrideSelects();
+    }
+    closeOverridePicker(true);
+  }
+
+  function closeOverridePicker(focusInput) {
+    overridePicker = null;
+    closeWizard();
+    if (focusInput) {
+      const inp = document.getElementById('chat-input');
+      if (inp) inp.focus();
+    }
+  }
+  window._qewCloseOverridePicker = function() { closeOverridePicker(true); };
+
+  // handleOverridePickerKey gives the override picker keyboard navigation
+  // (j/k/arrows move, Enter applies, Esc closes). Returns true if it handled it.
+  function handleOverridePickerKey(e) {
+    if (!overridePicker) return false;
+    if (e.key === 'Escape') { e.preventDefault(); closeOverridePicker(true); return true; }
+    if (e.ctrlKey || e.metaKey || e.altKey) return true; // swallow while open
+    if (e.repeat && e.key === 'Enter') return true;
+    const n = overridePicker.options.length;
+    if (e.key === 'ArrowDown' || e.key === 'j') {
+      overridePicker.cursor = Math.min(n - 1, overridePicker.cursor + 1);
+      e.preventDefault(); renderOverridePicker(); return true;
+    }
+    if (e.key === 'ArrowUp' || e.key === 'k') {
+      overridePicker.cursor = Math.max(0, overridePicker.cursor - 1);
+      e.preventDefault(); renderOverridePicker(); return true;
+    }
+    if (e.key === 'Enter') { e.preventDefault(); applyOverride(overridePicker.cursor); return true; }
+    return true; // modal is exclusive; ignore other keys
   }
 
   // openMemoryModal shows the session's hierarchical memory as a browsable tree
@@ -3594,10 +3696,15 @@
     if (cmdPaletteOpen && document.querySelector('.cmd-palette')) {
       if (e.key === 'Escape') { e.preventDefault(); closeCmdPalette(true); return; }
       if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
-      const map = { c: 'complete', e: 'edit', y: 'duplicate', g: 'diff', t: 'thoughts', o: 'model', f: 'effort', m: 'memory', K: 'compact', D: 'distill', s: 'stop', d: 'delete', q: 'back' };
+      const map = { c: 'complete', e: 'edit', y: 'duplicate', a: 'subagent', p: 'project', g: 'diff', t: 'thoughts', o: 'model', f: 'effort', m: 'memory', K: 'compact', D: 'distill', s: 'stop', d: 'delete', q: 'back' };
       const cmd = map[e.key];
       if (cmd) { e.preventDefault(); runCmd(cmd); }
       return;
+    }
+
+    // The model/effort override picker (esc-o / esc-f) captures navigation keys.
+    if (overridePicker && document.querySelector('.cmd-palette')) {
+      if (handleOverridePickerKey(e)) return;
     }
 
     // While any other modal is open, Escape triggers its close button; the git
