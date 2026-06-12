@@ -2386,8 +2386,13 @@ func (h *Handler) gitCommit(_ context.Context, cmd *envelope.Command) *envelope.
 	if err := json.Unmarshal(cmd.Data, &data); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
 	}
-	if data.SessionID == "" || data.Message == "" {
-		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id and message are required")
+	// A no-edit amend reuses the previous commit message, so no message is
+	// required; every other commit (including a message-changing amend) needs one.
+	if data.SessionID == "" {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id is required")
+	}
+	if data.Message == "" && !(data.Amend && data.NoEdit) {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "message is required")
 	}
 
 	sess, err := h.store.GetSession(data.SessionID)
@@ -2408,7 +2413,11 @@ func (h *Handler) gitCommit(_ context.Context, cmd *envelope.Command) *envelope.
 	// Commit (or amend).
 	var commitArgs []string
 	if data.Amend {
-		commitArgs = []string{"commit", "--amend", "-m", data.Message}
+		if data.NoEdit {
+			commitArgs = []string{"commit", "--amend", "--no-edit"}
+		} else {
+			commitArgs = []string{"commit", "--amend", "-m", data.Message}
+		}
 	} else {
 		commitArgs = []string{"commit", "-m", data.Message}
 	}

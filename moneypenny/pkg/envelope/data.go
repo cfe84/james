@@ -361,6 +361,7 @@ type GitCommitData struct {
 	SessionID string `json:"session_id"`
 	Message   string `json:"message"`
 	Amend     bool   `json:"amend,omitempty"`
+	NoEdit    bool   `json:"no_edit,omitempty"`
 }
 
 // GitBranchData is the data payload for git_branch.

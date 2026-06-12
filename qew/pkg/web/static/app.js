@@ -1733,6 +1733,7 @@
         <button class="btn-muted" onclick="window._qewDiffShowAll()">View all</button>
         <button class="btn" onclick="window._qewCommitFromDiff()">Commit</button>
         <button class="btn" onclick="window._qewCommitAndPush()">Commit &amp; Push</button>
+        <button class="btn-muted" onclick="window._qewAmend()">Amend</button>
         <button class="btn" id="diff-send-comments" style="display:none" onclick="window._qewDiffSendStep()">Send comments</button>
       </div>
     `, 'modal-large');
@@ -1856,6 +1857,7 @@
         ${nav}
         <button class="btn" onclick="window._qewCommitFromDiff()">Commit</button>
         <button class="btn" onclick="window._qewCommitAndPush()">Commit &amp; Push</button>
+        <button class="btn-muted" onclick="window._qewAmend()">Amend</button>
         <button class="btn" id="diff-send-comments" style="display:none" onclick="window._qewDiffSendStep()">Send comments</button>`;
     }
     renderWizardModal(`
@@ -2319,6 +2321,22 @@
       alert('Error: ' + e.message);
       btn.disabled = false;
       btn.textContent = gitPushAfterCommit ? 'Commit & Push' : 'Commit';
+    }
+  }
+
+  // gitAmend stages all changes and amends the previous commit, reusing its
+  // message (git add -A; git commit --amend --no-edit). One-click, no message
+  // prompt; confirms first because it rewrites the last commit.
+  async function gitAmend() {
+    if (!currentSession) return;
+    if (!confirm('Stage all changes and amend the last commit (keeping its message)?')) return;
+    try {
+      const resp = await apiCall('commit', 'session', [currentSession, '--amend', '--no-edit']);
+      if (resp.status === 'error') { alert('Amend error: ' + resp.message); return; }
+      closeWizard();
+      showGitResult(resp.data && resp.data.message ? resp.data.message : 'Amended last commit');
+    } catch (e) {
+      alert('Error: ' + e.message);
     }
   }
 
@@ -2852,6 +2870,7 @@
 
   window._qewCommitFromDiff = function() { showCommitModal(false); };
   window._qewCommitAndPush = function() { showCommitModal(true); };
+  window._qewAmend = gitAmend;
   window._qewDiffSendStep = showSendCommentsStep;
   window._qewDiffBackToReview = renderDiffView;
   window._qewDiffSubmitReview = submitReview;
@@ -3942,6 +3961,7 @@
     else if (action === 'git-log') showGitLog();
     else if (action === 'commit') showCommitModal(false);
     else if (action === 'commit-push') showCommitModal(true);
+    else if (action === 'amend') gitAmend();
     else if (action === 'branch') showBranchModal();
     else if (action === 'push') gitPush();
     else if (action === 'new-subagent') createNewSubagent();

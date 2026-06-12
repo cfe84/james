@@ -6142,15 +6142,21 @@ func truncate(s string, n int) string {
 // CommitSession stages all changes and commits in a session's working directory.
 func (e *Executor) CommitSession(args []string) *protocol.Response {
 	var sessionID, message string
-	var amend bool
+	var amend, noEdit bool
 
 	remaining, err := parseFlagsFromArgs("commit-session", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&sessionID, "session-id", "", "session ID")
 		fs.StringVar(&message, "m", "", "commit message")
 		fs.BoolVar(&amend, "amend", false, "amend last commit")
+		fs.BoolVar(&noEdit, "no-edit", false, "reuse the previous commit message (implies --amend)")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
+	}
+
+	// --no-edit reuses the prior message, so it only makes sense as an amend.
+	if noEdit {
+		amend = true
 	}
 
 	if sessionID == "" && len(remaining) > 0 {
@@ -6163,7 +6169,7 @@ func (e *Executor) CommitSession(args []string) *protocol.Response {
 	if message == "" && len(remaining) > 0 {
 		message = strings.Join(remaining, " ")
 	}
-	if message == "" {
+	if message == "" && !(amend && noEdit) {
 		return protocol.ErrResponse("-m (commit message) is required")
 	}
 
@@ -6177,6 +6183,7 @@ func (e *Executor) CommitSession(args []string) *protocol.Response {
 		"session_id": sessionID,
 		"message":    message,
 		"amend":      amend,
+		"no_edit":    noEdit,
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
