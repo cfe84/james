@@ -356,6 +356,21 @@ header h1 span { color: var(--primary); }
 .diff-comment-saved .cmt-actions a { color: var(--info); cursor: pointer; font-size: 0.82em; }
 .diff-comment-saved .cmt-actions a:hover { text-decoration: underline; }
 
+/* Changed-files list (diff files view) */
+.diff-file-row {
+  display: flex; align-items: center; gap: 8px; padding: 4px 8px;
+  border-radius: 4px; cursor: pointer; white-space: nowrap;
+}
+.diff-file-row:hover { background: rgba(255,255,255,0.07); }
+.diff-file-row.selected { background: var(--surface2); outline: 1px solid var(--primary); outline-offset: -1px; }
+.diff-file-mark { width: 1.2em; display: inline-block; text-align: center; color: var(--success); }
+.diff-file-name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.diff-file-add { color: #4ade80; }
+.diff-file-del { color: #f87171; }
+.diff-file-bin { color: var(--muted); }
+.diff-file-cmt { color: var(--info); font-size: 0.85em; }
+.diff-file-title { color: var(--muted); font-size: 0.85em; }
+
 /* Git result output */
 .git-output {
   font-family: 'SF Mono', 'Menlo', 'Monaco', 'Consolas', monospace;

@@ -1584,8 +1584,20 @@
 
   // Git diff review state (clickable lines + inline comments). `mode` is
   // 'diff' (working-tree diff) or 'commit' (a specific commit's contents);
-  // `commit` holds the hash in commit mode.
-  let diffReview = { text: '', lines: [], comments: {}, branch: '', mode: 'diff', commit: '', cursor: 0 };
+  // `commit` holds the hash in commit mode. `view` is 'diff' (unified diff,
+  // whole tree or a single file) or 'files' (changed-files list). `selectedFile`
+  // filters the diff to one file; `fileList` holds the parsed per-file entries;
+  // `reviewed` tracks ephemeral per-file reviewed marks (lost on close, mirrors
+  // the hem TUI). `visibleSeqs` maps the currently rendered diff lines back to
+  // their global line index so the cursor/comments stay aligned when filtered.
+  const emptyDiffReview = () => ({
+    text: '', lines: [], comments: {}, branch: '', mode: 'diff', commit: '', cursor: 0,
+    view: 'diff', selectedFile: '', fileList: [], fileCursor: 0, reviewed: {}, visibleSeqs: [],
+  });
+  let diffReview = emptyDiffReview();
+  // Threshold (total changed lines) above which a multi-file diff opens on the
+  // files list rather than the full unified diff. Mirrors hem's filesAutoThreshold.
+  const FILES_AUTO_THRESHOLD = 400;
   // Monotonic token guarding against stale async responses (log -> commit ->
   // back -> another commit) overwriting the current view.
   let gitViewToken = 0;
@@ -1638,31 +1650,214 @@
     return out;
   }
 
+  // buildFileList walks parsed diff lines and produces one entry per changed
+  // file (in order of appearance) with +/- counts. Mirrors hem's buildFileList.
+  function buildFileList(lines) {
+    const entries = [];
+    const idx = {};
+    lines.forEach((lm) => {
+      if (!lm.file) return;
+      let pos = idx[lm.file];
+      if (pos === undefined) {
+        pos = entries.length; idx[lm.file] = pos;
+        entries.push({ name: lm.file, added: 0, removed: 0, binary: false });
+      }
+      const e = entries[pos];
+      if (lm.side === '+') e.added++;
+      else if (lm.side === '-') e.removed++;
+    });
+    // Files with no +/- lines are binary / mode-only changes.
+    entries.forEach(e => { if (e.added === 0 && e.removed === 0) e.binary = true; });
+    return entries;
+  }
+
+  function totalChangedLines(list) {
+    return (list || []).reduce((s, f) => s + f.added + f.removed, 0);
+  }
+
+  function commentCountForFile(file) {
+    let n = 0;
+    Object.keys(diffReview.comments).forEach(seq => {
+      const m = diffReview.lines[seq];
+      if (m && m.file === file) n++;
+    });
+    return n;
+  }
+
+  // renderDiffReview emits one .diff-line (+ comment slot) per diff line. When
+  // selectedFile is set, only that file's lines are rendered; visibleSeqs records
+  // the global line index for each rendered line so cursor nav and comment slots
+  // (keyed by global seq) stay correct even when filtered.
   function renderDiffReview() {
-    return diffReview.lines.map((m, seq) => {
+    diffReview.visibleSeqs = [];
+    const parts = [];
+    diffReview.lines.forEach((m, seq) => {
+      if (diffReview.selectedFile && m.file !== diffReview.selectedFile) return;
+      diffReview.visibleSeqs.push(seq);
       const escaped = escapeHtml(m.raw);
       const inner = m.cls ? `<span class="${m.cls}">${escaped}</span>` : escaped;
       const has = diffReview.comments[seq] != null;
       const cls = 'diff-line' + (m.commentable ? ' commentable' : '') + (has ? ' has-comment' : '');
       const attr = m.commentable ? ` data-seq="${seq}"` : '';
-      return `<div class="${cls}"${attr}>${inner || ' '}</div><div class="diff-comment-slot" id="dcs-${seq}"></div>`;
+      parts.push(`<div class="${cls}"${attr}>${inner || ' '}</div><div class="diff-comment-slot" id="dcs-${seq}"></div>`);
+    });
+    return parts.join('');
+  }
+
+  // renderFilesRows renders the changed-files list (✔ reviewed marker, +/- counts,
+  // and a comment count when the file has inline comments).
+  function renderFilesRows() {
+    return diffReview.fileList.map(f => {
+      const mark = diffReview.reviewed[f.name]
+        ? '<span class="diff-file-mark">\u2714</span>'
+        : '<span class="diff-file-mark"></span>';
+      const stats = f.binary
+        ? '<span class="diff-file-bin">binary</span>'
+        : `<span class="diff-file-add">+${f.added}</span> <span class="diff-file-del">-${f.removed}</span>`;
+      const cc = commentCountForFile(f.name);
+      const cmt = cc > 0 ? ` <span class="diff-file-cmt">[${cc} comment${cc > 1 ? 's' : ''}]</span>` : '';
+      return `<div class="diff-file-row" data-file="${escapeHtml(f.name)}">${mark}<span class="diff-file-name">${escapeHtml(f.name)}</span>${stats}${cmt}</div>`;
     }).join('');
   }
 
-  function renderDiffView() {
-    const isCommit = diffReview.mode === 'commit';
-    const title = isCommit
-      ? `Commit <span style="color:var(--muted);font-size:0.85em">${escapeHtml((diffReview.commit || '').slice(0, 12))}</span>`
-      : `Git Diff <span id="diff-branch-label" style="color:var(--muted);font-size:0.85em">${diffReview.branch ? '(' + escapeHtml(diffReview.branch) + ')' : ''}</span>`;
-    const actions = isCommit
-      ? `
-        <button class="btn-muted" onclick="window._qewBackToLog()">Back</button>
-        <button class="btn" id="diff-send-comments" style="display:none" onclick="window._qewDiffSendStep()">Send comments</button>`
-      : `
+  // renderFilesView shows the changed-files list; selecting a file opens its diff,
+  // and space toggles its (ephemeral) reviewed mark.
+  function renderFilesView() {
+    const reviewedCount = diffReview.fileList.filter(f => diffReview.reviewed[f.name]).length;
+    const branch = diffReview.branch ? '(' + escapeHtml(diffReview.branch) + ')' : '';
+    renderWizardModal(`
+      <h3>Changed files <span class="diff-file-title">${branch} ${reviewedCount}/${diffReview.fileList.length} reviewed</span></h3>
+      <div class="diff-content" id="diff-files-list">${renderFilesRows()}</div>
+      <div class="modal-actions">
         <button class="btn-muted" onclick="window._qewCloseWizard()">Close</button>
+        <button class="btn-muted" onclick="window._qewDiffShowAll()">View all</button>
+        <button class="btn" onclick="window._qewCommitFromDiff()">Commit</button>
+        <button class="btn" onclick="window._qewCommitAndPush()">Commit &amp; Push</button>
+        <button class="btn" id="diff-send-comments" style="display:none" onclick="window._qewDiffSendStep()">Send comments</button>
+      </div>
+    `, 'modal-large');
+    const list = document.getElementById('diff-files-list');
+    if (list) {
+      list.addEventListener('click', (e) => {
+        const row = e.target.closest('.diff-file-row');
+        if (!row || !list.contains(row)) return;
+        const idx = Array.prototype.indexOf.call(list.querySelectorAll('.diff-file-row'), row);
+        if (idx >= 0) { diffReview.fileCursor = idx; openSelectedFile(); }
+      });
+      list.addEventListener('mousemove', (e) => {
+        const row = e.target.closest('.diff-file-row');
+        if (!row || !list.contains(row)) return;
+        const idx = Array.prototype.indexOf.call(list.querySelectorAll('.diff-file-row'), row);
+        if (idx >= 0 && idx !== diffReview.fileCursor) { diffReview.fileCursor = idx; applyFileCursor(false); }
+      });
+    }
+    updateSendBtn();
+    if (diffReview.fileCursor == null || diffReview.fileCursor < 0) diffReview.fileCursor = 0;
+    if (diffReview.fileCursor >= diffReview.fileList.length) diffReview.fileCursor = Math.max(0, diffReview.fileList.length - 1);
+    applyFileCursor(false);
+  }
+
+  function applyFileCursor(scroll) {
+    const list = document.getElementById('diff-files-list');
+    if (!list) return;
+    list.querySelectorAll('.diff-file-row.selected').forEach(el => el.classList.remove('selected'));
+    const el = list.querySelectorAll('.diff-file-row')[diffReview.fileCursor];
+    if (!el) return;
+    el.classList.add('selected');
+    if (scroll) el.scrollIntoView({ block: 'nearest' });
+  }
+
+  function moveFileCursor(delta) {
+    const n = diffReview.fileList.length;
+    if (!n) return;
+    let c = diffReview.fileCursor;
+    if (c == null || c < 0) c = 0;
+    diffReview.fileCursor = Math.min(n - 1, Math.max(0, c + delta));
+    applyFileCursor(true);
+  }
+
+  function openSelectedFile() {
+    const f = diffReview.fileList[diffReview.fileCursor];
+    if (!f) return;
+    diffReview.selectedFile = f.name;
+    diffReview.view = 'diff';
+    renderDiffView();
+  }
+
+  function toggleReviewedFile() {
+    const f = diffReview.fileList[diffReview.fileCursor];
+    if (!f) return;
+    if (diffReview.reviewed[f.name]) delete diffReview.reviewed[f.name];
+    else diffReview.reviewed[f.name] = true;
+    renderFilesView();
+  }
+
+  function showFilesView() {
+    diffReview.view = 'files';
+    renderFilesView();
+  }
+
+  function showAllDiff() {
+    diffReview.view = 'diff';
+    diffReview.selectedFile = '';
+    renderDiffView();
+  }
+
+  // handleFilesListKey: keyboard nav for the changed-files list. j/k/arrows move
+  // (auto-repeat allowed), Enter opens the file, space toggles reviewed, Tab views
+  // the whole diff. Escape is handled upstream (closes the modal).
+  function handleFilesListKey(e) {
+    const list = diffReview.fileList || [];
+    if (!list.length) return false;
+    if (e.ctrlKey || e.metaKey || e.altKey) return false;
+    const isNav = (e.key === 'ArrowDown' || e.key === 'j' || e.key === 'ArrowUp' || e.key === 'k');
+    if (e.repeat && !isNav) return true;
+    switch (e.key) {
+      case 'ArrowDown': case 'j': e.preventDefault(); moveFileCursor(1); return true;
+      case 'ArrowUp':   case 'k': e.preventDefault(); moveFileCursor(-1); return true;
+      case 'Enter':     e.preventDefault(); openSelectedFile(); return true;
+      case ' ':         e.preventDefault(); toggleReviewedFile(); return true;
+      case 'Tab':       e.preventDefault(); showAllDiff(); return true;
+    }
+    return false;
+  }
+
+  // renderDiffView is the dispatcher: in working-tree diff mode it may show the
+  // changed-files list; otherwise it renders the unified diff (whole tree, a
+  // single file, or a commit) with the inline-comment review UI.
+  function renderDiffView() {
+    if (diffReview.mode === 'diff' && diffReview.view === 'files') { renderFilesView(); return; }
+    renderFileDiffView();
+  }
+
+  function renderFileDiffView() {
+    const isCommit = diffReview.mode === 'commit';
+    const single = diffReview.mode === 'diff' && !!diffReview.selectedFile;
+    const hasFiles = diffReview.mode === 'diff' && diffReview.fileList && diffReview.fileList.length > 0;
+    let title;
+    if (isCommit) {
+      title = `Commit <span style="color:var(--muted);font-size:0.85em">${escapeHtml((diffReview.commit || '').slice(0, 12))}</span>`;
+    } else if (single) {
+      title = `Git Diff <span class="diff-file-title">${escapeHtml(diffReview.selectedFile)}</span>`;
+    } else {
+      title = `Git Diff <span id="diff-branch-label" style="color:var(--muted);font-size:0.85em">${diffReview.branch ? '(' + escapeHtml(diffReview.branch) + ')' : ''}</span>`;
+    }
+    let actions;
+    if (isCommit) {
+      actions = `
+        <button class="btn-muted" onclick="window._qewBackToLog()">Back</button>
+        <button class="btn" id="diff-send-comments" style="display:none" onclick="window._qewDiffSendStep()">Send comments</button>`;
+    } else {
+      const nav = single
+        ? `<button class="btn-muted" onclick="window._qewDiffShowFiles()">Back</button>`
+        : `<button class="btn-muted" onclick="window._qewCloseWizard()">Close</button>` +
+          (hasFiles ? `<button class="btn-muted" onclick="window._qewDiffShowFiles()">Files</button>` : '');
+      actions = `
+        ${nav}
         <button class="btn" onclick="window._qewCommitFromDiff()">Commit</button>
         <button class="btn" onclick="window._qewCommitAndPush()">Commit &amp; Push</button>
         <button class="btn" id="diff-send-comments" style="display:none" onclick="window._qewDiffSendStep()">Send comments</button>`;
+    }
     renderWizardModal(`
       <h3>${title}</h3>
       <div class="diff-content" id="diff-review-content">${renderDiffReview()}</div>
@@ -1687,8 +1882,8 @@
     });
     Object.keys(diffReview.comments).forEach(seq => renderSavedComment(parseInt(seq, 10)));
     updateSendBtn();
-    // Start the keyboard cursor on the first commentable line.
-    diffReview.cursor = diffReview.lines.findIndex(m => m.commentable);
+    // Start the keyboard cursor on the first commentable visible line.
+    diffReview.cursor = diffReview.visibleSeqs.findIndex(seq => diffReview.lines[seq] && diffReview.lines[seq].commentable);
     if (diffReview.cursor < 0) diffReview.cursor = 0;
     applyDiffCursor(false);
   }
@@ -1715,7 +1910,8 @@
   }
 
   function moveDiffCursor(delta) {
-    const n = diffReview.lines.length;
+    const n = (diffReview.visibleSeqs && diffReview.visibleSeqs.length)
+      ? diffReview.visibleSeqs.length : diffReview.lines.length;
     if (!n) return;
     let c = diffReview.cursor;
     if (c == null || c < 0) c = 0;
@@ -1724,19 +1920,26 @@
   }
 
   function openCommentEditorAtCursor() {
-    const m = diffReview.lines[diffReview.cursor];
-    if (m && m.commentable) openCommentEditor(diffReview.cursor);
+    const seq = (diffReview.visibleSeqs && diffReview.visibleSeqs.length)
+      ? diffReview.visibleSeqs[diffReview.cursor] : diffReview.cursor;
+    const m = diffReview.lines[seq];
+    if (m && m.commentable) openCommentEditor(seq);
   }
 
   // handleDiffModalKey provides TUI-parity keyboard navigation for the git diff
   // review modal: j/k/arrows move one line, PageUp/Down a full page, ctrl+u/d a
-  // half page, r opens the comment editor on the cursor line. Returns true if it
-  // consumed the event. Typing in the inline comment editor is never hijacked.
+  // half page, r opens the comment editor on the cursor line, f/tab toggle the
+  // changed-files list. Returns true if it consumed the event. In files-list mode
+  // it delegates to handleFilesListKey. Typing in the inline comment editor is
+  // never hijacked.
   function handleDiffModalKey(e) {
-    const content = document.getElementById('diff-review-content');
-    if (!content || !diffReview.lines.length) return false;
+    if (!diffReview.lines || !diffReview.lines.length) return false;
     const tag = (e.target.tagName || '').toLowerCase();
     if (tag === 'textarea' || tag === 'input' || e.target.isContentEditable) return false;
+    // Files-list mode is only active when its container is actually mounted.
+    if (document.getElementById('diff-files-list')) return handleFilesListKey(e);
+    const content = document.getElementById('diff-review-content');
+    if (!content) return false;
     if (e.altKey) return false;
     if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D')) {
       e.preventDefault(); moveDiffCursor(Math.max(1, Math.floor(diffPageLines(content) / 2))); return true;
@@ -1745,12 +1948,16 @@
       e.preventDefault(); moveDiffCursor(-Math.max(1, Math.floor(diffPageLines(content) / 2))); return true;
     }
     if (e.ctrlKey || e.metaKey) return false;
+    const canFiles = diffReview.mode === 'diff' && diffReview.fileList && diffReview.fileList.length > 0;
     switch (e.key) {
       case 'PageDown': e.preventDefault(); moveDiffCursor(diffPageLines(content)); return true;
       case 'PageUp':   e.preventDefault(); moveDiffCursor(-diffPageLines(content)); return true;
       case 'ArrowDown': case 'j': e.preventDefault(); moveDiffCursor(1); return true;
       case 'ArrowUp':   case 'k': e.preventDefault(); moveDiffCursor(-1); return true;
       case 'r': e.preventDefault(); openCommentEditorAtCursor(); return true;
+      case 'f': case 'F': case 'Tab':
+        if (canFiles) { e.preventDefault(); showFilesView(); return true; }
+        break;
     }
     return false;
   }
@@ -1911,7 +2118,7 @@
 
   async function showDiff() {
     if (!currentSession) return;
-    diffReview = { text: '', lines: [], comments: {}, branch: '', mode: 'diff', commit: '', cursor: 0 };
+    diffReview = emptyDiffReview();
     const token = ++gitViewToken;
     const session = currentSession;
     renderWizardModal(`
@@ -1946,6 +2153,10 @@
       }
       diffReview.text = diffText;
       diffReview.lines = parseDiffLines(diffText);
+      diffReview.fileList = buildFileList(diffReview.lines);
+      // Large multi-file diffs open on the files list (mirrors the hem TUI).
+      diffReview.view = (diffReview.fileList.length > 1 &&
+        totalChangedLines(diffReview.fileList) > FILES_AUTO_THRESHOLD) ? 'files' : 'diff';
       renderDiffView();
     } catch (e) {
       if (token !== gitViewToken || currentSession !== session) return;
@@ -2006,7 +2217,11 @@
   // comments and send them to the agent.
   async function showCommit(hash) {
     if (!currentSession || !hash) return;
-    diffReview = { text: '', lines: [], comments: {}, branch: diffReview.branch, mode: 'commit', commit: hash, cursor: 0 };
+    const branch = diffReview.branch;
+    diffReview = emptyDiffReview();
+    diffReview.branch = branch;
+    diffReview.mode = 'commit';
+    diffReview.commit = hash;
     const token = ++gitViewToken;
     const session = currentSession;
     renderWizardModal(`
@@ -2644,6 +2859,8 @@
   window._qewDiffRemoveComment = removeComment;
   window._qewDiffCancelComment = cancelComment;
   window._qewDiffEditComment = openCommentEditor;
+  window._qewDiffShowFiles = showFilesView;
+  window._qewDiffShowAll = showAllDiff;
   window._qewBackToLog = function() {
     // Warn before discarding unsent commit comments (Back navigates away).
     if (Object.keys(diffReview.comments).length > 0 &&
