@@ -124,6 +124,16 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Reset sessions stuck in the working state. Agent processes are tracked in
+	// memory and do not survive a restart, so any session still marked working
+	// is stale; left as-is, the scheduler would queue due prompts behind a
+	// session that never drains its queue.
+	if n, err := st.ResetWorkingSessions(); err != nil {
+		log.Printf("startup: failed to reset working sessions: %v", err)
+	} else if n > 0 {
+		log.Printf("startup: reset %d stale working session(s) to idle", n)
+	}
+
 	// Start the scheduler for timed prompts.
 	h.StartScheduler(ctx)
 

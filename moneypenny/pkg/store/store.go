@@ -451,6 +451,28 @@ func (s *Store) UpdateSessionStatus(sessionID string, status string) error {
 	return nil
 }
 
+// ResetWorkingSessions resets all sessions stuck in the working state back to
+// idle. Agent processes are tracked in memory and do not survive a daemon
+// restart, so any session left as working at startup is stale. Resetting them
+// to idle lets the scheduler dispatch due prompts directly and prevents
+// sessions from being permanently stuck busy after a crash. Returns the number
+// of sessions reset.
+func (s *Store) ResetWorkingSessions() (int64, error) {
+	now := time.Now().UTC()
+	res, err := s.db.Exec(
+		`UPDATE sessions SET status = ?, updated_at = ? WHERE status = ?`,
+		StateIdle, now, StateWorking,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("reset working sessions: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("rows affected: %w", err)
+	}
+	return n, nil
+}
+
 // DeleteSession deletes a session and its conversation history.
 func (s *Store) DeleteSession(sessionID string) error {
 	tx, err := s.db.Begin()
