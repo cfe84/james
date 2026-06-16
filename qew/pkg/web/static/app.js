@@ -779,12 +779,6 @@
     chatRecentCount = recent.length;
   }
 
-  // recentServerTurns returns the latest poll window (the tail of chatConversation).
-  function recentServerTurns() {
-    if (chatRecentCount <= 0) return [];
-    return chatConversation.slice(chatConversation.length - chatRecentCount);
-  }
-
   // loadOlderHistory fetches the next older page and prepends it. Triggered when
   // the user scrolls to the top of the chat. Mirrors loadOlderHistory in the TUI.
   async function loadOlderHistory() {
@@ -819,13 +813,27 @@
     const subagents = lastSubagents;
     const activity = lastActivity;
 
-    // Remove queued messages that the server now has. Match only against the
-    // latest poll window (recent turns) — matching the whole loaded history
-    // could wrongly drop a freshly-queued message that merely repeats older text.
-    const recent = recentServerTurns();
+    // Remove queued (optimistic) messages once the server has the real turn.
+    // Each optimistic message is anchored to the server turn count at the moment
+    // it was queued (qm.since). We only match it against server turns that
+    // arrived *after* that anchor, so a prompt that was queued behind a busy
+    // agent and only materialized as a real turn several turns later is still
+    // reconciled (a fixed recent-window would have lost it, leaving a duplicate),
+    // while a freshly-queued message that merely repeats older text is never
+    // wrongly dropped (older turns precede the anchor). Consumed indices are
+    // tracked so two identical optimistic messages don't both match one turn.
+    const consumedTurns = new Set();
     queuedMessages = queuedMessages.filter(qm => {
-      for (const st of recent) {
-        if (st.role === 'user' && st.content === qm.content) return false;
+      const sinceCount = chatTotal - (qm.since || 0);
+      if (sinceCount <= 0) return true;
+      const start = Math.max(0, chatConversation.length - sinceCount);
+      for (let i = start; i < chatConversation.length; i++) {
+        if (consumedTurns.has(i)) continue;
+        const st = chatConversation[i];
+        if (st.role === 'user' && st.content === qm.content) {
+          consumedTurns.add(i);
+          return false;
+        }
       }
       return true;
     });
@@ -1089,7 +1097,7 @@
       await apiCall('continue', 'session', args);
       // Track as queued and re-render.
       const labelSuffix = hasAttachments ? ` 📎×${attachmentPaths.length}` : '';
-      queuedMessages.push({ content: promptText + labelSuffix });
+      queuedMessages.push({ content: promptText + labelSuffix, since: chatTotal });
       clearPendingAttachments();
       chatForceScrollBottom = true; // reveal the new message even if scrolled up
       lastChatHTML = ''; // force re-render
@@ -2106,7 +2114,7 @@
     try {
       await apiCall('continue', 'session', [currentSession, '--async', prompt]);
       closeWizard();
-      queuedMessages.push({ content: prompt });
+      queuedMessages.push({ content: prompt, since: chatTotal });
       lastChatHTML = '';
       await loadChat();
     } catch (e) {
@@ -3825,6 +3833,21 @@
     html = html.replace(/(^|\n)###\s+(.+)/g, '$1<h3>$2</h3>');
     html = html.replace(/(^|\n)##\s+(.+)/g, '$1<h2>$2</h2>');
     html = html.replace(/(^|\n)#\s+(.+)/g, '$1<h1>$2</h1>');
+    // Blockquotes: consecutive lines starting with "> " (escaped to "&gt; ").
+    // A bare "&gt;" is a blank quoted line. Group runs into one <blockquote>,
+    // splitting paragraphs on blank quoted lines.
+    html = html.replace(/(^|\n)((?:&gt;(?: .*)?(?:\n|$))+)/g, function(match, prefix, block) {
+      const lines = block.replace(/\n$/, '').split('\n').map(l => l.replace(/^&gt;( ?)/, ''));
+      const paras = [];
+      let cur = [];
+      for (const l of lines) {
+        if (l === '') { if (cur.length) { paras.push(cur.join('\n')); cur = []; } }
+        else cur.push(l);
+      }
+      if (cur.length) paras.push(cur.join('\n'));
+      const inner = paras.map(p => `<p>${p}</p>`).join('');
+      return prefix + '<blockquote>' + inner + '</blockquote>';
+    });
     // Tables: lines of | col | col |
     html = html.replace(/(^|\n)(\|.+\|(?:\n\|.+\|)+)/g, function(match, prefix, table) {
       const rows = table.trim().split('\n');

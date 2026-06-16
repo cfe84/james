@@ -154,6 +154,11 @@ header h1 span { color: var(--primary); }
 .msg-content th { background: var(--surface2); font-weight: 600; }
 .msg-content a { color: var(--primary); text-decoration: underline; }
 .msg-content a:hover { opacity: 0.8; }
+.msg-content blockquote {
+  margin: 8px 0; padding: 2px 12px; border-left: 3px solid var(--surface2);
+  color: var(--muted);
+}
+.msg-content blockquote p { margin: 4px 0; }
 .chat-input-row { display: flex; gap: 8px; padding-top: 12px; border-top: 1px solid var(--surface2); flex-shrink: 0; }
 .chat-input-row textarea {
   flex: 1; background: var(--surface); color: var(--text); border: 1px solid var(--surface2);
