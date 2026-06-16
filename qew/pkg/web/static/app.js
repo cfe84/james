@@ -2054,25 +2054,15 @@
 
   // formatReviewComment / buildReviewPrompt mirror hem/pkg/ui/diff.go so the
   // prompt sent to the agent is identical to the TUI's.
-  function formatReviewComment(n, file, lineNum, code, comment) {
-    let b = `\n## Comment ${n}\n\n`;
-    if (file) {
-      if (lineNum > 0) b += `Filename: \`${file}\`, line: ${lineNum}\n\n`;
-      else b += `Filename: \`${file}\` (file header)\n\n`;
-    } else if (lineNum > 0) {
-      b += `Line: ${lineNum}\n\n`;
-    }
+  function formatReviewComment(n, lineNum, code, comment) {
+    let b = lineNum > 0
+      ? `\n### Comment ${n} - line ${lineNum}\n\n`
+      : `\n### Comment ${n} - file header\n\n`;
     if (code && code.trim() !== '') {
       b += '```\n' + code + '\n```\n\n';
     }
-    b += blockquote(comment) + '\n';
+    b += comment.trim() + '\n';
     return b;
-  }
-
-  // blockquote renders text as a Markdown blockquote (mirrors diff.go).
-  function blockquote(s) {
-    s = s.replace(/\n+$/, '');
-    return s.split('\n').map(l => (l === '' ? '>' : '> ' + l)).join('\n');
   }
 
   function buildReviewPrompt(overall) {
@@ -2094,7 +2084,14 @@
       return { file: m.file, lineNum: m.lineNum, code: m.code, comment: diffReview.comments[seq] };
     });
     grouped.sort((a, c) => a.file !== c.file ? (a.file < c.file ? -1 : 1) : a.lineNum - c.lineNum);
-    grouped.forEach((fc, i) => { b += formatReviewComment(i + 1, fc.file, fc.lineNum, fc.code, fc.comment); });
+    let currentFile = null;
+    grouped.forEach((fc, i) => {
+      if (fc.file !== currentFile) {
+        currentFile = fc.file;
+        if (fc.file) b += `\n## ${fc.file}\n`;
+      }
+      b += formatReviewComment(i + 1, fc.lineNum, fc.code, fc.comment);
+    });
     return b;
   }
 

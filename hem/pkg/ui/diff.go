@@ -419,44 +419,24 @@ func parseHunkHeader(line string) (oldStart, newStart int) {
 	return
 }
 
-// formatReviewComment renders a single review comment as a flat, self-contained
-// record so the agent never loses the association between file, line, code and
-// comment. n is the 1-based comment index.
-func formatReviewComment(n int, file string, lineNum int, code, comment string) string {
+// formatReviewComment renders a single review comment under its file heading
+// (emitted by the caller). n is the 1-based comment index. The comment text is
+// rendered as plain prose rather than a blockquote so it reads cleanly in chat.
+func formatReviewComment(n int, lineNum int, code, comment string) string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("\n## Comment %d\n\n", n))
-	if file != "" {
-		if lineNum > 0 {
-			b.WriteString(fmt.Sprintf("Filename: `%s`, line: %d\n\n", file, lineNum))
-		} else {
-			b.WriteString(fmt.Sprintf("Filename: `%s` (file header)\n\n", file))
-		}
-	} else if lineNum > 0 {
-		b.WriteString(fmt.Sprintf("Line: %d\n\n", lineNum))
+	if lineNum > 0 {
+		b.WriteString(fmt.Sprintf("\n### Comment %d - line %d\n\n", n, lineNum))
+	} else {
+		b.WriteString(fmt.Sprintf("\n### Comment %d - file header\n\n", n))
 	}
 	if strings.TrimSpace(code) != "" {
 		b.WriteString("```\n")
 		b.WriteString(code)
 		b.WriteString("\n```\n\n")
 	}
-	b.WriteString(blockquote(comment))
+	b.WriteString(strings.TrimSpace(comment))
 	b.WriteString("\n")
 	return b.String()
-}
-
-// blockquote renders text as a Markdown blockquote, prefixing each line with
-// "> " (and a bare ">" for blank lines) so multi-line comments survive intact.
-func blockquote(s string) string {
-	s = strings.TrimRight(s, "\n")
-	lines := strings.Split(s, "\n")
-	for i, l := range lines {
-		if l == "" {
-			lines[i] = ">"
-		} else {
-			lines[i] = "> " + l
-		}
-	}
-	return strings.Join(lines, "\n")
 }
 
 // buildReviewPrompt generates the review prompt from comments.
@@ -503,8 +483,15 @@ func (m diffModel) buildReviewPrompt(overallComment string) string {
 		return grouped[i].lineNum < grouped[j].lineNum
 	})
 
+	currentFile := ""
 	for i, fc := range grouped {
-		b.WriteString(formatReviewComment(i+1, fc.file, fc.lineNum, fc.code, fc.comment))
+		if fc.file != currentFile {
+			currentFile = fc.file
+			if fc.file != "" {
+				b.WriteString(fmt.Sprintf("\n## %s\n", fc.file))
+			}
+		}
+		b.WriteString(formatReviewComment(i+1, fc.lineNum, fc.code, fc.comment))
 	}
 
 	return b.String()
