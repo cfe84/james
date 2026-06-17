@@ -1601,6 +1601,7 @@
   const emptyDiffReview = () => ({
     text: '', lines: [], comments: {}, branch: '', mode: 'diff', commit: '', cursor: 0,
     view: 'diff', selectedFile: '', fileList: [], fileCursor: 0, reviewed: {}, visibleSeqs: [],
+    marks: {},
   });
   let diffReview = emptyDiffReview();
   // Threshold (total changed lines) above which a multi-file diff opens on the
@@ -1896,6 +1897,7 @@
     diffReview.cursor = diffReview.visibleSeqs.findIndex(seq => diffReview.lines[seq] && diffReview.lines[seq].commentable);
     if (diffReview.cursor < 0) diffReview.cursor = 0;
     applyDiffCursor(false);
+    applyMarkBadges();
   }
 
   // applyDiffCursor highlights the line at diffReview.cursor and, when scroll is
@@ -1929,6 +1931,46 @@
     applyDiffCursor(true);
   }
 
+  // applyMarkBadges renders the numbered mark badges in the left gutter of the
+  // diff. Marks are keyed by mark number (1-9) -> global line seq; a badge is
+  // drawn on whichever visible line currently holds that seq.
+  function applyMarkBadges() {
+    const content = document.getElementById('diff-review-content');
+    if (!content) return;
+    content.querySelectorAll('.diff-mark').forEach(el => el.remove());
+    const seqToMark = {};
+    Object.keys(diffReview.marks).forEach(n => { seqToMark[diffReview.marks[n]] = n; });
+    const lineEls = content.querySelectorAll('.diff-line');
+    diffReview.visibleSeqs.forEach((seq, i) => {
+      const n = seqToMark[seq];
+      if (n != null && lineEls[i]) {
+        const badge = document.createElement('span');
+        badge.className = 'diff-mark';
+        badge.textContent = n;
+        lineEls[i].prepend(badge);
+      }
+    });
+  }
+
+  // setMark records mark n at the current cursor line (in-memory, view-scoped).
+  function setMark(n) {
+    if (!diffReview.visibleSeqs || !diffReview.visibleSeqs.length) return;
+    const seq = diffReview.visibleSeqs[diffReview.cursor];
+    if (seq == null) return;
+    diffReview.marks[n] = seq;
+    applyMarkBadges();
+  }
+
+  // jumpMark moves the cursor to mark n's line (if it is currently visible).
+  function jumpMark(n) {
+    const seq = diffReview.marks[n];
+    if (seq == null) return;
+    const idx = diffReview.visibleSeqs.indexOf(seq);
+    if (idx < 0) return;
+    diffReview.cursor = idx;
+    applyDiffCursor(true);
+  }
+
   function openCommentEditorAtCursor() {
     const seq = (diffReview.visibleSeqs && diffReview.visibleSeqs.length)
       ? diffReview.visibleSeqs[diffReview.cursor] : diffReview.cursor;
@@ -1958,6 +2000,14 @@
       e.preventDefault(); moveDiffCursor(-Math.max(1, Math.floor(diffPageLines(content) / 2))); return true;
     }
     if (e.ctrlKey || e.metaKey) return false;
+    // Numbered marks: Shift+N sets mark N at the cursor line; N jumps to it.
+    // Uses e.code so it is keyboard-layout independent (Shift+1 may be "!").
+    const dm = e.code && e.code.match(/^Digit([1-9])$/);
+    if (dm && !e.altKey) {
+      e.preventDefault();
+      if (e.shiftKey) setMark(dm[1]); else jumpMark(dm[1]);
+      return true;
+    }
     const canFiles = diffReview.mode === 'diff' && diffReview.fileList && diffReview.fileList.length > 0;
     switch (e.key) {
       case 'PageDown': e.preventDefault(); moveDiffCursor(diffPageLines(content)); return true;

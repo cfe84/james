@@ -124,6 +124,14 @@ type diffModel struct {
 	fileScroll   int             // top-of-view scroll for file list
 	selectedFile string          // when non-empty, viewDiff renders only this file
 	reviewed     map[string]bool // file path -> reviewed (in-memory, view-scoped)
+
+	// Numbered marks (1-9) for quick navigation within the diff-like view.
+	// In-memory only and view-scoped: marks[n] is a scroll (vline) offset, and
+	// marksKey records the selectedFile they belong to so switching between the
+	// whole-diff and a single-file view (which rebuilds the line set) discards
+	// stale marks automatically.
+	marks    map[int]int
+	marksKey string
 }
 
 type diffLoadedMsg struct {
@@ -167,6 +175,7 @@ func newDiffModel(c *client, sessionID string) diffModel {
 		commentInput: newTextInput(true),
 		reviewPrompt: newTextInput(true),
 		reviewed:     make(map[string]bool),
+		marks:        make(map[int]int),
 	}
 }
 
@@ -574,6 +583,8 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 		m.fileCursor = 0
 		m.fileScroll = 0
 		m.selectedFile = ""
+		m.marks = make(map[int]int)
+		m.marksKey = ""
 		if msg.diff != "" {
 			m.lineMeta = parseDiffMeta(msg.diff)
 			m.fileList = buildFileList(m.lineMeta)
@@ -697,6 +708,31 @@ func (m diffModel) Update(msg tea.Msg) (diffModel, tea.Cmd) {
 
 		// "diff-like" view = either the Diff tab or a Files-tab file detail.
 		diffLike := m.tab == diffTabDiff || (m.tab == diffTabFiles && m.selectedFile != "")
+
+		// Numbered marks (diff-like view only). Shift+N sets mark N at the
+		// current scroll position; N jumps back to it. State is in-memory and
+		// scoped to the current file selection (see marksKey).
+		if diffLike {
+			if n, ok := shiftDigitMark[msg.String()]; ok {
+				if m.marks == nil || m.marksKey != m.selectedFile {
+					m.marks = make(map[int]int)
+					m.marksKey = m.selectedFile
+				}
+				m.marks[n] = m.scroll
+				return m, nil
+			}
+			if ks := msg.String(); len(ks) == 1 && ks[0] >= '1' && ks[0] <= '9' {
+				if m.marksKey == m.selectedFile && m.marks != nil {
+					if s, ok := m.marks[int(ks[0]-'0')]; ok {
+						m.scroll = s
+						if m.scroll < 0 {
+							m.scroll = 0
+						}
+					}
+				}
+				return m, nil
+			}
+		}
 
 		switch msg.String() {
 		case "tab":
@@ -1222,6 +1258,13 @@ var (
 	lineNumStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#6B7280")).Width(5).Align(lipgloss.Right)
 	commentMarker  = lipgloss.NewStyle().Foreground(lipgloss.Color("#F59E0B")).Render("*")
 	noCommentSpace = " "
+	markStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("#60A5FA")).Bold(true)
+
+	// shiftDigitMark maps the shifted-number keys to mark slots 1-9 (bubbletea
+	// reports shift+1 as "!", etc.).
+	shiftDigitMark = map[string]int{
+		"!": 1, "@": 2, "#": 3, "$": 4, "%": 5, "^": 6, "&": 7, "*": 8, "(": 9,
+	}
 )
 
 func (m diffModel) viewDiff() string {
@@ -1271,8 +1314,9 @@ func (m diffModel) viewDiff() string {
 		viewHeight = 20
 	}
 
-	// Available width for diff content (after gutter: 5 linenum + 1 marker + 1 space).
-	gutterWidth := 7
+	// Available width for diff content (after gutter: 5 linenum + 1 comment
+	// marker + 1 mark slot + 1 space).
+	gutterWidth := 8
 	contentWidth := m.width - gutterWidth
 	if contentWidth < 20 {
 		contentWidth = 20
@@ -1330,6 +1374,15 @@ func (m diffModel) viewDiff() string {
 
 	blankGutter := strings.Repeat(" ", gutterWidth)
 
+	// Reverse-map marks (vline index -> mark number) for the gutter, only when
+	// the marks belong to the currently displayed file selection.
+	markAt := map[int]int{}
+	if m.marksKey == m.selectedFile {
+		for n, idx := range m.marks {
+			markAt[idx] = n
+		}
+	}
+
 	for i := m.scroll; i < end; i++ {
 		vl := vlines[i]
 		if vl.seqNum > 0 {
@@ -1338,7 +1391,11 @@ func (m diffModel) viewDiff() string {
 			if _, hasComment := m.comments[vl.seqNum]; hasComment {
 				marker = commentMarker
 			}
-			b.WriteString(numStr + marker + " " + colorDiffLine(vl.text) + "\n")
+			markCh := " "
+			if n, ok := markAt[i]; ok {
+				markCh = markStyle.Render(strconv.Itoa(n))
+			}
+			b.WriteString(numStr + marker + markCh + " " + colorDiffLine(vl.text) + "\n")
 		} else {
 			b.WriteString(blankGutter + colorDiffLine(vl.text) + "\n")
 		}
@@ -1362,6 +1419,7 @@ func (m diffModel) viewDiff() string {
 		} else {
 			statusParts = append(statusParts, "r=comment")
 		}
+		statusParts = append(statusParts, "⇧N=mark N=jump")
 		b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render(
 			"  " + strings.Join(statusParts, "  ")))
 		b.WriteString("\n")

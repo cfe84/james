@@ -339,7 +339,11 @@ header h1 span { color: var(--primary); }
 .log-commit:hover { background: rgba(255,255,255,0.07); }
 
 /* Diff review (clickable lines + inline comments) */
-.diff-line { display: block; white-space: pre-wrap; overflow-wrap: anywhere; }
+.diff-line { display: block; white-space: pre-wrap; overflow-wrap: anywhere; position: relative; padding-left: 1.7em; }
+.diff-mark {
+  position: absolute; left: 0; top: 0; width: 1.5em; text-align: center;
+  color: var(--info); font-weight: 700; user-select: none;
+}
 .diff-line.commentable { cursor: pointer; }
 .diff-line.commentable:hover { background: rgba(255,255,255,0.07); }
 .diff-line.cursor { background: rgba(255,255,255,0.12); outline: 1px solid var(--primary); outline-offset: -1px; }
