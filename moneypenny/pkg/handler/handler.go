@@ -2403,8 +2403,15 @@ func (h *Handler) gitCommit(_ context.Context, cmd *envelope.Command) *envelope.
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, fmt.Sprintf("session not found: %s", data.SessionID))
 	}
 
-	// Stage all changes.
-	addCmd := exec.Command("git", "add", "-A")
+	// Stage changes. When specific files are given, stage only those so the
+	// commit is restricted to the reviewed paths; otherwise stage everything.
+	var addArgs []string
+	if len(data.Files) > 0 {
+		addArgs = append([]string{"add", "--"}, data.Files...)
+	} else {
+		addArgs = []string{"add", "-A"}
+	}
+	addCmd := exec.Command("git", addArgs...)
 	addCmd.Dir = sess.Path
 	if out, err := addCmd.CombinedOutput(); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("git add failed: %s", string(out)))
@@ -2420,6 +2427,12 @@ func (h *Handler) gitCommit(_ context.Context, cmd *envelope.Command) *envelope.
 		}
 	} else {
 		commitArgs = []string{"commit", "-m", data.Message}
+	}
+	// Restrict the commit to the given files (partial commit) so unrelated
+	// already-staged changes are not included.
+	if len(data.Files) > 0 {
+		commitArgs = append(commitArgs, "--")
+		commitArgs = append(commitArgs, data.Files...)
 	}
 	commitCmd := exec.Command("git", commitArgs...)
 	commitCmd.Dir = sess.Path

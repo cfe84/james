@@ -1219,8 +1219,12 @@ func (c *client) moveSessionToProject(sessionID, projectNameOrID string) error {
 	return nil
 }
 
-func (c *client) commitSession(sessionID, message string) error {
-	resp, err := c.send("commit", "session", sessionID, "-m", message)
+func (c *client) commitSession(sessionID, message string, files []string) error {
+	args := []string{"commit", "session", sessionID, "-m", message}
+	for _, f := range files {
+		args = append(args, "--file", f)
+	}
+	resp, err := c.send(args[0], args[1], args[2:]...)
 	if err != nil {
 		return err
 	}
@@ -1230,8 +1234,12 @@ func (c *client) commitSession(sessionID, message string) error {
 	return nil
 }
 
-func (c *client) amendSession(sessionID, message string) error {
-	resp, err := c.send("commit", "session", sessionID, "-m", message, "--amend")
+func (c *client) amendSession(sessionID, message string, files []string) error {
+	args := []string{"commit", "session", sessionID, "-m", message, "--amend"}
+	for _, f := range files {
+		args = append(args, "--file", f)
+	}
+	resp, err := c.send(args[0], args[1], args[2:]...)
 	if err != nil {
 		return err
 	}

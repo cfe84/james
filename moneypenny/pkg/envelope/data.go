@@ -362,6 +362,9 @@ type GitCommitData struct {
 	Message   string `json:"message"`
 	Amend     bool   `json:"amend,omitempty"`
 	NoEdit    bool   `json:"no_edit,omitempty"`
+	// Files, when non-empty, restricts the commit to the given pathspecs
+	// (only these are staged and committed) instead of all changes.
+	Files []string `json:"files,omitempty"`
 }
 
 // GitBranchData is the data payload for git_branch.

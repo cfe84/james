@@ -6143,12 +6143,14 @@ func truncate(s string, n int) string {
 func (e *Executor) CommitSession(args []string) *protocol.Response {
 	var sessionID, message string
 	var amend, noEdit bool
+	var files stringListFlag
 
 	remaining, err := parseFlagsFromArgs("commit-session", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&sessionID, "session-id", "", "session ID")
 		fs.StringVar(&message, "m", "", "commit message")
 		fs.BoolVar(&amend, "amend", false, "amend last commit")
 		fs.BoolVar(&noEdit, "no-edit", false, "reuse the previous commit message (implies --amend)")
+		fs.Var(&files, "file", "restrict the commit to this path (repeatable); default stages all changes")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -6179,12 +6181,16 @@ func (e *Executor) CommitSession(args []string) *protocol.Response {
 	}
 
 	ctx := context.Background()
-	resp, err := e.sendCommand(ctx, mp, "git_commit", map[string]interface{}{
+	cmdData := map[string]interface{}{
 		"session_id": sessionID,
 		"message":    message,
 		"amend":      amend,
 		"no_edit":    noEdit,
-	})
+	}
+	if len(files) > 0 {
+		cmdData["files"] = []string(files)
+	}
+	resp, err := e.sendCommand(ctx, mp, "git_commit", cmdData)
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
 	}

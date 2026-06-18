@@ -228,12 +228,20 @@ func (m diffModel) doCommit() tea.Cmd {
 	msg := m.commitMsg
 	push := m.pushAfter
 	amend := m.amendMode
+	// If any files are marked reviewed, restrict the commit to those (only the
+	// reviewed paths that are part of the current diff). Otherwise commit all.
+	var files []string
+	for _, f := range m.fileList {
+		if m.reviewed[f.name] {
+			files = append(files, f.name)
+		}
+	}
 	return func() tea.Msg {
 		var err error
 		if amend {
-			err = m.client.amendSession(sessionID, msg)
+			err = m.client.amendSession(sessionID, msg, files)
 		} else {
-			err = m.client.commitSession(sessionID, msg)
+			err = m.client.commitSession(sessionID, msg, files)
 		}
 		if err != nil {
 			return diffCommitDoneMsg{err: err}

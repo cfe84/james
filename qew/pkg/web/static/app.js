@@ -2342,6 +2342,18 @@
     document.getElementById('git-commit-submit').addEventListener('click', submitCommit);
   }
 
+  // reviewedFileArgs returns ['--file', name, ...] for files currently marked
+  // reviewed in the changed-files view (intersected with the diff's file list so
+  // stale marks don't produce bad pathspecs). Empty when nothing is marked, in
+  // which case the commit/amend stages all changes as before.
+  function reviewedFileArgs() {
+    const args = [];
+    (diffReview.fileList || []).forEach(f => {
+      if (diffReview.reviewed[f.name]) args.push('--file', f.name);
+    });
+    return args;
+  }
+
   async function submitCommit() {
     const msg = document.getElementById('git-commit-msg').value.trim();
     if (!msg) { alert('Commit message is required'); return; }
@@ -2352,7 +2364,7 @@
     btn.textContent = 'Committing...';
 
     try {
-      const resp = await apiCall('commit', 'session', [currentSession, '-m', msg]);
+      const resp = await apiCall('commit', 'session', [currentSession, '-m', msg, ...reviewedFileArgs()]);
       if (resp.status === 'error') {
         alert('Commit error: ' + resp.message);
         btn.disabled = false;
@@ -2379,14 +2391,19 @@
     }
   }
 
-  // gitAmend stages all changes and amends the previous commit, reusing its
-  // message (git add -A; git commit --amend --no-edit). One-click, no message
-  // prompt; confirms first because it rewrites the last commit.
+  // gitAmend stages changes and amends the previous commit, reusing its
+  // message (git add; git commit --amend --no-edit). One-click, no message
+  // prompt; confirms first because it rewrites the last commit. If files are
+  // marked reviewed, only those are staged and amended; otherwise all changes.
   async function gitAmend() {
     if (!currentSession) return;
-    if (!confirm('Stage all changes and amend the last commit (keeping its message)?')) return;
+    const fileArgs = reviewedFileArgs();
+    const scope = fileArgs.length
+      ? `the ${fileArgs.length / 2} reviewed file(s)`
+      : 'all changes';
+    if (!confirm(`Stage ${scope} and amend the last commit (keeping its message)?`)) return;
     try {
-      const resp = await apiCall('commit', 'session', [currentSession, '--amend', '--no-edit']);
+      const resp = await apiCall('commit', 'session', [currentSession, '--amend', '--no-edit', ...fileArgs]);
       if (resp.status === 'error') { alert('Amend error: ' + resp.message); return; }
       closeWizard();
       showGitResult(resp.data && resp.data.message ? resp.data.message : 'Amended last commit');
