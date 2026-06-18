@@ -2184,7 +2184,7 @@ func (m Model) renderStatusBar() string {
 					return statusDescStyle.Render(" leave")
 				}(),
 				statusKeyStyle.Render("esc") + statusDescStyle.Render(" input"),
-				statusKeyStyle.Render("^U/^D") + statusDescStyle.Render(" scroll"),
+				statusKeyStyle.Render("j/k") + statusDescStyle.Render(" scroll"),
 			}
 		} else {
 			keys = []string{

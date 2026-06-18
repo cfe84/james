@@ -1492,7 +1492,9 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 
 		if m.commandMode {
 			// Most command mode keys are handled by updateChat in ui.go.
-			// Chat model only handles enter (resume) and scroll.
+			// Chat model only handles enter (resume) and scroll. j/k (and the
+			// arrow keys) scroll the conversation by a few lines so the
+			// transcript can be navigated without leaving command mode.
 			switch msg.String() {
 			case "enter":
 				m.commandMode = false
@@ -1505,6 +1507,17 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 				}
 			case "pgdown", "ctrl+d":
 				m.scroll -= 10
+				if m.scroll < 0 {
+					m.scroll = 0
+				}
+			case "up", "k":
+				m.scroll += 3
+				if m.scroll > 0 && !m.loadingMore && len(m.conversation) < m.totalTurns {
+					m.loadingMore = true
+					return m, m.loadOlderHistory()
+				}
+			case "down", "j":
+				m.scroll -= 3
 				if m.scroll < 0 {
 					m.scroll = 0
 				}

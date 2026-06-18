@@ -43,6 +43,7 @@
   let lastDashboardData = null; // most recent dashboard payload (for local re-filter)
   let mgmtCursor = 0;      // selected row index in the active mgmt list (moneypennies/traits)
   let cmdPaletteOpen = false; // the in-conversation command palette modal is open
+  let chatNavMode = false; // in-conversation keyboard nav mode (input blurred, j/k scroll)
   let overridePicker = null; // when set, the model/effort override picker is open: {kind, options, cursor}
   let traitsCache = []; // cached trait list [{id,name,preview}]
   let chatInputCache = {}; // sessionId → draft text
@@ -561,6 +562,32 @@
     if (c) c.scrollBy({ top: dir * c.clientHeight * 0.5, behavior: 'auto' });
   }
 
+  // Scroll the chat message pane by roughly a few lines (dir: -1 up, 1 down).
+  // Used by the in-conversation keyboard nav mode (j/k).
+  function chatScrollLine(dir) {
+    const c = document.getElementById('chat-messages');
+    if (c) c.scrollBy({ top: dir * 80, behavior: 'auto' });
+  }
+
+  // enterChatNavMode leaves the command palette (if open) and switches to a
+  // lightweight keyboard navigation mode: the message input is blurred and j/k
+  // (or arrows) scroll the transcript. Escape returns to the input.
+  function enterChatNavMode() {
+    cmdPaletteOpen = false;
+    closeWizard();
+    chatNavMode = true;
+    const inp = document.getElementById('chat-input');
+    if (inp) inp.blur();
+  }
+
+  function exitChatNavMode(focusInput) {
+    chatNavMode = false;
+    if (focusInput) {
+      const inp = document.getElementById('chat-input');
+      if (inp) inp.focus();
+    }
+  }
+
   // --- Chat ---
 
   let currentSessionName = '';
@@ -589,6 +616,7 @@
     autoResize(chatInput);
     // Focus the message input by default when opening a session.
     chatInput.focus();
+    chatNavMode = false;
     lastChatHTML = '';
     queuedMessages = [];
     chatConversation = [];
@@ -1167,6 +1195,7 @@
   // Escape closes it and returns focus to the chat input.
   function openCmdPalette() {
     if (!currentSession) return;
+    chatNavMode = false;
     // Close the Actions dropdown if it happens to be open.
     const menu = document.getElementById('chat-menu');
     if (menu) menu.classList.remove('open');
@@ -1190,7 +1219,7 @@
           <button class="cmd-item" data-cmd="delete" style="color:var(--danger)"><kbd>d</kbd> Delete session</button>
           <button class="cmd-item" data-cmd="back"><kbd>q</kbd> Back to session list</button>
         </div>
-        <div class="modal-actions"><button class="btn-muted" onclick="window._qewCloseCmdPalette()">Close (Esc)</button></div>
+        <div class="modal-actions"><span style="color:var(--muted);font-size:0.85em;margin-right:auto"><kbd>j</kbd>/<kbd>k</kbd> scroll transcript</span><button class="btn-muted" onclick="window._qewCloseCmdPalette()">Close (Esc)</button></div>
       </div>
     `);
     cmdPaletteOpen = true;
@@ -4076,6 +4105,8 @@
     }
   });
   chatInput.addEventListener('input', () => autoResize(chatInput));
+  // Clicking/focusing the input exits keyboard nav mode.
+  chatInput.addEventListener('focus', () => { chatNavMode = false; });
 
   // Attachments: 📎 button → hidden file input; paste images/files; drag-drop.
   const fileInput = document.getElementById('chat-file-input');
@@ -4203,7 +4234,12 @@
     // The in-conversation command palette captures single-key actions while open.
     if (cmdPaletteOpen && document.querySelector('.cmd-palette')) {
       if (e.key === 'Escape') { e.preventDefault(); closeCmdPalette(true); return; }
-      if (e.ctrlKey || e.metaKey || e.altKey || e.repeat) return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      // j/k (or arrows) leave the palette and enter keyboard nav mode, scrolling
+      // the transcript with the input blurred.
+      if (e.key === 'j' || e.key === 'ArrowDown') { e.preventDefault(); enterChatNavMode(); chatScrollLine(1); return; }
+      if (e.key === 'k' || e.key === 'ArrowUp') { e.preventDefault(); enterChatNavMode(); chatScrollLine(-1); return; }
+      if (e.repeat) return;
       const map = { c: 'complete', e: 'edit', y: 'duplicate', a: 'subagent', p: 'project', g: 'diff', t: 'thoughts', o: 'model', f: 'effort', m: 'memory', K: 'compact', D: 'distill', s: 'stop', d: 'delete', q: 'back' };
       const cmd = map[e.key];
       if (cmd) { e.preventDefault(); runCmd(cmd); }
@@ -4241,6 +4277,15 @@
       document.getElementById('chat-view').style.display !== 'none';
 
     if (chatActive) {
+      // Keyboard nav mode: input is blurred; j/k (or arrows) scroll the
+      // transcript, Escape returns to the input.
+      if (chatNavMode) {
+        if (e.key === 'Escape') { e.preventDefault(); exitChatNavMode(true); return; }
+        if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+          if (e.key === 'j' || e.key === 'ArrowDown') { e.preventDefault(); chatScrollLine(1); return; }
+          if (e.key === 'k' || e.key === 'ArrowUp') { e.preventDefault(); chatScrollLine(-1); return; }
+        }
+      }
       if (e.key === 'Escape') { e.preventDefault(); openCmdPalette(); return; }
       if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D')) {
         e.preventDefault(); chatScroll(1); return;
