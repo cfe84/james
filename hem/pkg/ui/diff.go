@@ -228,13 +228,19 @@ func (m diffModel) doCommit() tea.Cmd {
 	msg := m.commitMsg
 	push := m.pushAfter
 	amend := m.amendMode
-	// If any files are marked reviewed, restrict the commit to those (only the
-	// reviewed paths that are part of the current diff). Otherwise commit all.
+	// Scope the commit to: any files marked reviewed, plus the currently-open
+	// single file (m.selectedFile, set when viewing one file's diff). If none
+	// apply (whole-tree view, nothing marked) commit all changes.
+	seen := map[string]bool{}
 	var files []string
 	for _, f := range m.fileList {
-		if m.reviewed[f.name] {
+		if m.reviewed[f.name] && !seen[f.name] {
+			seen[f.name] = true
 			files = append(files, f.name)
 		}
+	}
+	if m.selectedFile != "" && !seen[m.selectedFile] {
+		files = append(files, m.selectedFile)
 	}
 	return func() tea.Msg {
 		var err error

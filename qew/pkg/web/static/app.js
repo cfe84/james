@@ -2371,15 +2371,23 @@
     document.getElementById('git-commit-submit').addEventListener('click', submitCommit);
   }
 
-  // reviewedFileArgs returns ['--file', name, ...] for files currently marked
-  // reviewed in the changed-files view (intersected with the diff's file list so
-  // stale marks don't produce bad pathspecs). Empty when nothing is marked, in
-  // which case the commit/amend stages all changes as before.
-  function reviewedFileArgs() {
-    const args = [];
+  // commitFileArgs returns ['--file', name, ...] for the files a commit/amend
+  // from the diff view should be scoped to: any files marked reviewed in the
+  // changed-files view (intersected with the diff's file list so stale marks
+  // don't produce bad pathspecs), plus the currently-open single file (so
+  // amending while viewing one file's diff only touches that file). Empty when
+  // viewing the whole tree with nothing marked, in which case the commit/amend
+  // stages all changes as before.
+  function commitFileArgs() {
+    const names = new Set();
     (diffReview.fileList || []).forEach(f => {
-      if (diffReview.reviewed[f.name]) args.push('--file', f.name);
+      if (diffReview.reviewed[f.name]) names.add(f.name);
     });
+    if (diffReview.mode === 'diff' && diffReview.selectedFile) {
+      names.add(diffReview.selectedFile);
+    }
+    const args = [];
+    names.forEach(name => args.push('--file', name));
     return args;
   }
 
@@ -2393,7 +2401,7 @@
     btn.textContent = 'Committing...';
 
     try {
-      const resp = await apiCall('commit', 'session', [currentSession, '-m', msg, ...reviewedFileArgs()]);
+      const resp = await apiCall('commit', 'session', [currentSession, '-m', msg, ...commitFileArgs()]);
       if (resp.status === 'error') {
         alert('Commit error: ' + resp.message);
         btn.disabled = false;
@@ -2422,13 +2430,14 @@
 
   // gitAmend stages changes and amends the previous commit, reusing its
   // message (git add; git commit --amend --no-edit). One-click, no message
-  // prompt; confirms first because it rewrites the last commit. If files are
-  // marked reviewed, only those are staged and amended; otherwise all changes.
+  // prompt; confirms first because it rewrites the last commit. When files are
+  // marked reviewed (or a single file's diff is open), only those are staged
+  // and amended; otherwise all changes.
   async function gitAmend() {
     if (!currentSession) return;
-    const fileArgs = reviewedFileArgs();
+    const fileArgs = commitFileArgs();
     const scope = fileArgs.length
-      ? `the ${fileArgs.length / 2} reviewed file(s)`
+      ? `the ${fileArgs.length / 2} selected file(s)`
       : 'all changes';
     if (!confirm(`Stage ${scope} and amend the last commit (keeping its message)?`)) return;
     try {
