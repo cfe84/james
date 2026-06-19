@@ -592,9 +592,21 @@
 
   let currentSessionName = '';
 
+  // sessionNameFromCache returns the known display name for a session id from the
+  // most recent dashboard payload, or '' if not found. Used so deep-link/hash and
+  // parent-stack opens show the real name immediately instead of the GUID.
+  function sessionNameFromCache(sessionId) {
+    if (lastDashboardData && Array.isArray(lastDashboardData.rows)) {
+      for (const row of lastDashboardData.rows) {
+        if (row[0] === sessionId && row[1]) return row[1];
+      }
+    }
+    return '';
+  }
+
   async function openChat(sessionId, name, mp) {
     currentSession = sessionId;
-    currentSessionName = name || sessionId.substring(0, 12);
+    currentSessionName = name || sessionNameFromCache(sessionId) || sessionId.substring(0, 12);
     currentSessionMP = mp || '';
     currentSessionAgent = '';
     sessionDefaultModel = '';
@@ -696,6 +708,14 @@
       currentSessionStatus = '';
       if (showResp && showResp.status === 'ok' && showResp.data) {
         currentSessionStatus = showResp.data.status || '';
+        // Backfill the session name when we opened without one (e.g. via a
+        // deep-link/hash route or the parent-stack), so the title shows the
+        // real name instead of the truncated session GUID fallback.
+        if (showResp.data.name && currentSessionName === currentSession.substring(0, 12)) {
+          currentSessionName = showResp.data.name;
+          document.getElementById('chat-title').textContent =
+            (parentSessionStack.length > 0 ? 'Subagent: ' : '') + currentSessionName;
+        }
         if (showResp.data.moneypenny && !currentSessionMP) {
           currentSessionMP = showResp.data.moneypenny;
           document.getElementById('chat-mp').textContent = '@ ' + currentSessionMP;
