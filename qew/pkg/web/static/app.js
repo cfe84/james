@@ -742,11 +742,12 @@
           populateOverrideSelects();
         }
       }
-      // Extract schedules.
+      // Extract schedules. The `list schedule` table is
+      // [ID, Status, Scheduled At, Prompt, Cron].
       let schedules = [];
       if (schedResp && schedResp.status === 'ok' && schedResp.data && schedResp.data.rows) {
         schedules = schedResp.data.rows.map(r => ({
-          id: r[0], sessionId: r[1], prompt: r[2], scheduledAt: r[3], status: r[4],
+          id: r[0], status: r[1], scheduledAt: r[2], prompt: r[3], cron: r[4] || '',
         })).filter(s => s.status === 'pending');
       }
       // Extract subagents.
@@ -966,7 +967,7 @@
     if (schedules && schedules.length > 0) {
       for (const s of schedules) {
         const prompt = s.prompt.length > 80 ? s.prompt.substring(0, 77) + '...' : s.prompt;
-        html += `<div class="msg schedule-indicator">⏰ ${escapeHtml(s.scheduledAt)} — ${escapeHtml(prompt)}</div>`;
+        html += `<div class="msg schedule-indicator">⏰ ${escapeHtml(formatScheduleTime(s.scheduledAt))}${s.cron ? ' ↻ ' + escapeHtml(s.cron) : ''} — ${escapeHtml(prompt)}</div>`;
       }
     }
     // Subagents.
@@ -1232,6 +1233,7 @@
           <button class="cmd-item" data-cmd="model"><kbd>o</kbd> Model override</button>
           <button class="cmd-item" data-cmd="effort"><kbd>f</kbd> Effort override</button>
           <button class="cmd-item" data-cmd="memory"><kbd>m</kbd> Memory</button>
+          <button class="cmd-item" data-cmd="schedules"><kbd>h</kbd> Scheduled tasks</button>
           <button class="cmd-item" data-cmd="compact"><kbd>K</kbd> Compact session</button>
           <button class="cmd-item" data-cmd="distill"><kbd>D</kbd> Distill to memory</button>
           <button class="cmd-item" data-cmd="thoughts"><kbd>t</kbd> Toggle train of thought</button>
@@ -1280,6 +1282,7 @@
       case 'model':    showOverridePicker('model'); break;
       case 'effort':   showOverridePicker('effort'); break;
       case 'memory':   openMemoryModal(); break;
+      case 'schedules': openSchedulesModal(); break;
       case 'compact':  compactSession(); break;
       case 'distill':  distillSession(); break;
       case 'stop':     stopSession(); break;
@@ -2937,6 +2940,118 @@
     }
   }
 
+  // openSchedulesModal lists the session's pending scheduled tasks and lets the
+  // user create new ones or delete existing ones. Mirrors the hem TUI schedule
+  // picker (chat.go), backed by the `list schedule` / `schedule session` /
+  // `cancel schedule` commands. Opened with `h` in the chat command palette.
+  async function openSchedulesModal() {
+    if (!currentSession) return;
+    const sid = currentSession;
+
+    renderWizardModal(`<h3>⏰ Scheduled Tasks</h3><div class="loading">Loading…</div>`, 'modal-mem');
+    await renderList();
+
+    async function loadSchedules() {
+      try {
+        const resp = await apiCall('list', 'schedule', ['--session-id', sid]);
+        if (resp.status === 'ok' && resp.data && Array.isArray(resp.data.rows)) {
+          return resp.data.rows.map(r => ({
+            id: r[0], status: r[1], scheduledAt: r[2], prompt: r[3], cron: r[4] || '',
+          }));
+        }
+      } catch (e) { /* ignore */ }
+      return [];
+    }
+
+    async function renderList() {
+      const all = await loadSchedules();
+      if (currentSession !== sid) return;
+      const pending = all.filter(s => s.status === 'pending');
+      const rowsHtml = pending.length
+        ? pending.map(s => `
+            <div class="sched-row">
+              <div class="sched-info">
+                <span class="sched-when">⏰ ${escapeHtml(formatScheduleTime(s.scheduledAt))}${s.cron ? ` <span class="sched-cron">↻ ${escapeHtml(s.cron)}</span>` : ''}</span>
+                <span class="sched-prompt">${escapeHtml(s.prompt)}</span>
+              </div>
+              <button class="btn-muted sched-del" data-id="${escapeAttr(String(s.id))}">Delete</button>
+            </div>`).join('')
+        : `<div class="mem-empty">(no scheduled tasks)</div>`;
+      renderWizardModal(`
+        <h3>⏰ Scheduled Tasks</h3>
+        <div class="sched-list">${rowsHtml}</div>
+        <div class="modal-actions">
+          <button class="btn-muted" onclick="window._qewCloseWizard()">Close</button>
+          <button class="btn" id="sched-new">+ New task</button>
+        </div>
+      `, 'modal-mem');
+      const newBtn = document.getElementById('sched-new');
+      if (newBtn) newBtn.addEventListener('click', () => renderForm());
+      document.querySelectorAll('.sched-del').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const id = btn.dataset.id;
+          if (!confirm('Delete this scheduled task?')) return;
+          btn.disabled = true;
+          try {
+            const resp = await apiCall('cancel', 'schedule', [id, '--session-id', sid]);
+            if (resp.status === 'error') { alert('Delete error: ' + resp.message); btn.disabled = false; return; }
+          } catch (e) { alert('Error: ' + e.message); btn.disabled = false; return; }
+          await renderList();
+        });
+      });
+    }
+
+    function renderForm() {
+      renderWizardModal(`
+        <h3>New Scheduled Task</h3>
+        <label for="sched-at">When</label>
+        <input id="sched-at" type="datetime-local" value="${escapeAttr(defaultScheduleLocal())}">
+        <label for="sched-cron">Repeat (cron, optional)</label>
+        <input id="sched-cron" type="text" placeholder="e.g. 0 9 * * *  (every day at 09:00)">
+        <label for="sched-prompt">Prompt</label>
+        <textarea id="sched-prompt" rows="4" placeholder="What should the agent do?"></textarea>
+        <div class="modal-actions">
+          <button class="btn-muted" id="sched-back">Back</button>
+          <button class="btn" id="sched-create">Create</button>
+        </div>
+      `, 'modal-mem');
+      document.getElementById('sched-back').addEventListener('click', () => renderList());
+      document.getElementById('sched-create').addEventListener('click', createSchedule);
+    }
+
+    async function createSchedule() {
+      const atLocal = document.getElementById('sched-at').value;
+      const cron = document.getElementById('sched-cron').value.trim();
+      const prompt = document.getElementById('sched-prompt').value.trim();
+      if (!atLocal) { alert('Please pick a date/time.'); return; }
+      if (!prompt) { alert('A prompt is required.'); return; }
+      const d = new Date(atLocal);
+      if (isNaN(d.getTime())) { alert('Invalid date/time.'); return; }
+      const iso = d.toISOString();
+      const btn = document.getElementById('sched-create');
+      btn.disabled = true;
+      btn.textContent = 'Creating…';
+      const args = [sid, '--at', iso];
+      if (cron) args.push('--cron', cron);
+      args.push('--prompt', prompt);
+      try {
+        const resp = await apiCall('schedule', 'session', args);
+        if (resp.status === 'error') {
+          alert('Schedule error: ' + resp.message);
+          btn.disabled = false; btn.textContent = 'Create';
+          return;
+        }
+      } catch (e) {
+        alert('Error: ' + e.message);
+        btn.disabled = false; btn.textContent = 'Create';
+        return;
+      }
+      await renderList();
+      lastChatHTML = '';
+      loadChat();
+    }
+  }
+
   async function stopSession() {
     if (!currentSession) return;
     try {
@@ -3935,6 +4050,25 @@
     return d.toLocaleDateString('en-US', { month: 'short', day: '2-digit' });
   }
 
+  // formatScheduleTime renders an RFC3339 schedule timestamp as a friendly local
+  // date/time (e.g. "Jun 23, 15:00"). Falls back to the raw string if unparsable.
+  function formatScheduleTime(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    return d.toLocaleString('en-US', {
+      month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+    });
+  }
+
+  // defaultScheduleLocal returns a "YYYY-MM-DDTHH:MM" string one hour from now in
+  // local time, for seeding the datetime-local input in the New task form.
+  function defaultScheduleLocal() {
+    const d = new Date(Date.now() + 3600000);
+    const pad = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
   function escapeHtml(s) {
     const div = document.createElement('div');
     div.textContent = s;
@@ -4110,6 +4244,7 @@
     else if (action === 'branch') showBranchModal();
     else if (action === 'push') gitPush();
     else if (action === 'new-subagent') createNewSubagent();
+    else if (action === 'schedules') openSchedulesModal();
     else if (action === 'memory') openMemoryModal();
     else if (action === 'compact') compactSession();
     else if (action === 'distill') distillSession();
@@ -4269,7 +4404,7 @@
       if (e.key === 'j' || e.key === 'ArrowDown') { e.preventDefault(); enterChatNavMode(); chatScrollLine(1); return; }
       if (e.key === 'k' || e.key === 'ArrowUp') { e.preventDefault(); enterChatNavMode(); chatScrollLine(-1); return; }
       if (e.repeat) return;
-      const map = { c: 'complete', e: 'edit', y: 'duplicate', a: 'subagent', p: 'project', g: 'diff', t: 'thoughts', o: 'model', f: 'effort', m: 'memory', K: 'compact', D: 'distill', s: 'stop', d: 'delete', q: 'back' };
+      const map = { c: 'complete', e: 'edit', y: 'duplicate', a: 'subagent', p: 'project', g: 'diff', t: 'thoughts', o: 'model', f: 'effort', m: 'memory', h: 'schedules', K: 'compact', D: 'distill', s: 'stop', d: 'delete', q: 'back' };
       const cmd = map[e.key];
       if (cmd) { e.preventDefault(); runCmd(cmd); }
       return;

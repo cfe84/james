@@ -268,6 +268,14 @@ header h1 span { color: var(--primary); }
 .mem-node .mem-path { flex: 0 0 40%; font-family: var(--mono, monospace); font-size: 0.9em; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mem-node .mem-desc { flex: 1; font-size: 0.85em; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mem-empty { padding: 16px; color: var(--muted); font-size: 0.9em; }
+.sched-list { flex: 1; overflow-y: auto; border: 1px solid var(--surface2); border-radius: 6px; padding: 4px; margin-bottom: 4px; }
+.sched-row { display: flex; align-items: center; gap: 10px; padding: 8px; border-bottom: 1px solid var(--surface2); }
+.sched-row:last-child { border-bottom: none; }
+.sched-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.sched-when { font-size: 0.9em; color: var(--text); }
+.sched-cron { color: var(--primary); font-size: 0.85em; }
+.sched-prompt { font-size: 0.85em; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sched-del { flex: 0 0 auto; }
 .modal h3 { margin-bottom: 16px; font-size: 1.1em; }
 .modal label { display: block; font-size: 0.85em; color: var(--muted); margin-bottom: 4px; margin-top: 12px; }
 .modal input, .modal select, .modal textarea {
@@ -488,6 +496,7 @@ header h1 span { color: var(--primary); }
           <button data-action="push">Git Push</button>
           <hr>
           <button data-action="new-subagent">New Subagent</button>
+          <button data-action="schedules">Scheduled Tasks</button>
           <button data-action="memory">Memory</button>
           <button data-action="compact">Compact Session</button>
           <button data-action="distill">Distill to Memory</button>

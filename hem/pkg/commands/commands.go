@@ -5557,11 +5557,12 @@ func (e *Executor) ListSchedules(args []string) *protocol.Response {
 			s.Status,
 			s.ScheduledAt,
 			truncPrompt,
+			s.CronExpr,
 		})
 	}
 
 	return protocol.OKResponse(TableResult{
-		Headers: []string{"ID", "Status", "Scheduled At", "Prompt"},
+		Headers: []string{"ID", "Status", "Scheduled At", "Prompt", "Cron"},
 		Rows:    rows,
 	})
 }
@@ -5623,6 +5624,7 @@ type ScheduleInfoResult struct {
 	Prompt      string `json:"prompt"`
 	ScheduledAt string `json:"scheduled_at"`
 	Status      string `json:"status"`
+	CronExpr    string `json:"cron_expr"`
 	CreatedAt   string `json:"created_at"`
 }
 
