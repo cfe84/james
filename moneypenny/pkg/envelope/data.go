@@ -286,6 +286,20 @@ type ListDirectoryResponse struct {
 	Entries []DirEntry `json:"entries"`
 }
 
+// CreateDirectoryData is the data payload for create_directory. Path is the
+// parent directory; Name is the new folder to create inside it. If Name is
+// empty, Path itself is created.
+type CreateDirectoryData struct {
+	Path string `json:"path"`
+	Name string `json:"name,omitempty"`
+}
+
+// CreateDirectoryResponse is returned by create_directory with the resolved
+// absolute path of the created directory.
+type CreateDirectoryResponse struct {
+	Path string `json:"path"`
+}
+
 // TransferFileData is the data payload for transfer_file.
 type TransferFileData struct {
 	Path string `json:"path"`

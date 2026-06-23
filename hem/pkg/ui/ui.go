@@ -448,7 +448,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.moneypennies.height = m.viewHeight()
 		return m, m.moneypennies.loadMoneypennies()
 
-	case wizardMPLoadedMsg, wizardDirLoadedMsg, wizardProjectLoadedMsg, wizardProjectsLoadedMsg, wizardModelsLoadedMsg, wizardSourceLoadedMsg, wizardTraitsLoadedMsg:
+	case wizardMPLoadedMsg, wizardDirLoadedMsg, wizardProjectLoadedMsg, wizardProjectsLoadedMsg, wizardModelsLoadedMsg, wizardSourceLoadedMsg, wizardTraitsLoadedMsg, wizardFolderCreatedMsg:
 		var cmd tea.Cmd
 		m.wizard, cmd = m.wizard.Update(msg)
 		return m, cmd
@@ -1860,6 +1860,13 @@ func (m Model) updateShell(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) updateWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "esc" {
+		// When the path step is in folder-name input mode, let the wizard model
+		// handle esc (cancel the input) rather than navigating back a step.
+		if m.wizard.step == wizardStepPath && m.wizard.creatingFolder {
+			var cmd tea.Cmd
+			m.wizard, cmd = m.wizard.Update(msg)
+			return m, cmd
+		}
 		switch m.wizard.step {
 		case wizardStepMoneypenny:
 			// Leave wizard entirely.
@@ -2327,6 +2334,13 @@ func (m Model) renderStatusBar() string {
 				statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
 			}
 		case wizardStepPath:
+			if m.wizard.creatingFolder {
+				keys = []string{
+					statusKeyStyle.Render("↵") + statusDescStyle.Render(" create folder"),
+					statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
+				}
+				break
+			}
 			keys = []string{
 				statusKeyStyle.Render("↵") + statusDescStyle.Render(" open"),
 				statusKeyStyle.Render("tab") + statusDescStyle.Render(" confirm path"),

@@ -1377,8 +1377,27 @@
         for (const entry of entries) {
           html += `<div class="dir-entry" data-path="${escapeAttr(entry.name)}">📁 ${escapeHtml(entry.name)}</div>`;
         }
+        html += `<div class="dir-entry dir-add" id="wizard-add-folder">➕ Add folder</div>`;
         document.getElementById('wizard-dirs').innerHTML = html;
         document.querySelectorAll('#wizard-dirs .dir-entry').forEach(el => {
+          if (el.id === 'wizard-add-folder') {
+            el.addEventListener('click', async () => {
+              const name = (prompt('New folder name:') || '').trim();
+              if (!name) return;
+              try {
+                const cr = await apiCall('create-directory', '', ['-m', wizardState.selectedMP, '--path', wizardState.currentPath, '--name', name]);
+                if (cr.status === 'ok' && cr.data && cr.data.path) {
+                  wizardState.currentPath = cr.data.path;
+                  renderPathBrowser();
+                } else {
+                  alert(cr.message ? cr.message : 'Could not create folder');
+                }
+              } catch (e) {
+                alert('Error: ' + e.message);
+              }
+            });
+            return;
+          }
           el.addEventListener('click', () => {
             const name = el.dataset.path;
             if (name === '..') {

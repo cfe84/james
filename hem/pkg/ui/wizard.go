@@ -45,6 +45,12 @@ type wizardModel struct {
 	pathCursor  int
 	pathLoading bool
 	showHidden  bool // toggle with 'a' to show/hide hidden directories
+	// Folder creation: when creatingFolder is set, the path step shows an inline
+	// text input for the new folder's name (triggered by the "+ Add folder"
+	// entry). folderName holds the in-progress name; folderErr a failure.
+	creatingFolder bool
+	folderName     string
+	folderErr      string
 	// pathTriedHome guards the one-shot fallback to the moneypenny's home when
 	// the prefilled path (e.g. an inherited source path on duplicate) no longer
 	// exists, so a home that also fails can't loop.
@@ -103,6 +109,11 @@ type wizardDirLoadedMsg struct {
 type wizardModelsLoadedMsg struct {
 	models []string // option names including "" for default
 	agent  string
+}
+
+type wizardFolderCreatedMsg struct {
+	path string
+	err  error
 }
 
 type wizardTraitsLoadedMsg struct {
@@ -250,6 +261,15 @@ func (m wizardModel) loadDirectory() tea.Cmd {
 	return func() tea.Msg {
 		entries, resolved, err := m.client.listDirectory(mp, path, showHidden)
 		return wizardDirLoadedMsg{entries: entries, resolvedPath: resolved, err: err}
+	}
+}
+
+func (m wizardModel) createFolder(name string) tea.Cmd {
+	mp := m.selectedMP
+	path := m.currentPath
+	return func() tea.Msg {
+		created, err := m.client.createDirectory(mp, path, name)
+		return wizardFolderCreatedMsg{path: created, err: err}
 	}
 }
 
@@ -572,6 +592,24 @@ func (m wizardModel) Update(msg tea.Msg) (wizardModel, tea.Cmd) {
 		m.dirEntries = entries
 		m.pathCursor = 0
 
+	case wizardFolderCreatedMsg:
+		m.pathLoading = false
+		if msg.err != nil {
+			m.creatingFolder = true
+			m.folderErr = msg.err.Error()
+			return m, nil
+		}
+		// Navigate into the freshly-created folder and refresh the listing.
+		m.creatingFolder = false
+		m.folderName = ""
+		m.folderErr = ""
+		if msg.path != "" {
+			m.currentPath = msg.path
+		}
+		m.pathLoading = true
+		m.pathCursor = 0
+		return m, m.loadDirectory()
+
 	case wizardModelsLoadedMsg:
 		if m.modelCache == nil {
 			m.modelCache = make(map[string][]string)
@@ -642,12 +680,45 @@ func (m wizardModel) updateMPStep(msg tea.KeyMsg) (wizardModel, tea.Cmd) {
 }
 
 func (m wizardModel) updatePathStep(msg tea.KeyMsg) (wizardModel, tea.Cmd) {
+	// Inline folder-name input mode (triggered by the "+ Add folder" entry).
+	if m.creatingFolder {
+		switch msg.String() {
+		case "esc":
+			m.creatingFolder = false
+			m.folderName = ""
+			m.folderErr = ""
+			return m, nil
+		case "enter":
+			name := strings.TrimSpace(m.folderName)
+			if name == "" {
+				m.creatingFolder = false
+				return m, nil
+			}
+			m.folderErr = ""
+			m.pathLoading = true
+			return m, m.createFolder(name)
+		case "backspace":
+			if len(m.folderName) > 0 {
+				r := []rune(m.folderName)
+				m.folderName = string(r[:len(r)-1])
+			}
+			return m, nil
+		default:
+			if msg.Type == tea.KeyRunes {
+				m.folderName += string(msg.Runes)
+			}
+			return m, nil
+		}
+	}
+
 	if m.pathLoading {
 		return m, nil
 	}
 
 	// Filter to only directories for navigation.
 	dirs := m.visibleDirs()
+	// List layout: 0=".."; 1..len(dirs)=dirs; len(dirs)+1="+ Add folder".
+	addFolderIdx := len(dirs) + 1
 
 	switch msg.String() {
 	case "up", "k":
@@ -655,7 +726,7 @@ func (m wizardModel) updatePathStep(msg tea.KeyMsg) (wizardModel, tea.Cmd) {
 			m.pathCursor--
 		}
 	case "down", "j":
-		if m.pathCursor < len(dirs) {
+		if m.pathCursor < addFolderIdx {
 			m.pathCursor++
 		}
 	case "enter":
@@ -667,6 +738,12 @@ func (m wizardModel) updatePathStep(msg tea.KeyMsg) (wizardModel, tea.Cmd) {
 				m.pathLoading = true
 				return m, m.loadDirectory()
 			}
+		} else if m.pathCursor == addFolderIdx {
+			// "+ Add folder" — enter inline name input.
+			m.creatingFolder = true
+			m.folderName = ""
+			m.folderErr = ""
+			return m, nil
 		} else {
 			idx := m.pathCursor - 1
 			if idx < len(dirs) {
@@ -1077,8 +1154,9 @@ func (m wizardModel) viewPathStep() string {
 		maxVisible = 5
 	}
 
-	// Item 0 is "..", rest are dirs.
-	totalItems := len(dirs) + 1
+	// Item 0 is "..", items 1..len(dirs) are dirs, last item is "+ Add folder".
+	addFolderIdx := len(dirs) + 1
+	totalItems := len(dirs) + 2
 	start := 0
 	if m.pathCursor >= maxVisible {
 		start = m.pathCursor - maxVisible + 1
@@ -1090,9 +1168,12 @@ func (m wizardModel) viewPathStep() string {
 
 	for i := start; i < end; i++ {
 		var line string
-		if i == 0 {
+		switch {
+		case i == 0:
 			line = "  ../"
-		} else {
+		case i == addFolderIdx:
+			line = "  + Add folder"
+		default:
 			line = fmt.Sprintf("  %s/", dirs[i-1].Name)
 		}
 		if i == m.pathCursor {
@@ -1100,6 +1181,8 @@ func (m wizardModel) viewPathStep() string {
 				line += strings.Repeat(" ", m.width-lipgloss.Width(line))
 			}
 			b.WriteString(sessionSelectedStyle.Render(line))
+		} else if i == addFolderIdx {
+			b.WriteString(lipgloss.NewStyle().Foreground(colorPrimary).Render(line))
 		} else {
 			b.WriteString(sessionNormalStyle.Render(line))
 		}
@@ -1109,6 +1192,18 @@ func (m wizardModel) viewPathStep() string {
 	if totalItems > maxVisible {
 		b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render(
 			fmt.Sprintf("  %d/%d directories", m.pathCursor+1, totalItems)))
+		b.WriteString("\n")
+	}
+
+	if m.creatingFolder {
+		b.WriteString("\n")
+		prompt := lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render("  New folder name: ")
+		b.WriteString(fmt.Sprintf("%s%s_\n", prompt, m.folderName))
+		if m.folderErr != "" {
+			b.WriteString(lipgloss.NewStyle().Foreground(colorDanger).Render("  " + m.folderErr))
+			b.WriteString("\n")
+		}
+		b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render("  enter: create · esc: cancel"))
 		b.WriteString("\n")
 	}
 

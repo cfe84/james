@@ -847,6 +847,33 @@ func (c *client) listDirectory(moneypenny, path string, showHidden ...bool) ([]d
 	return result.Entries, result.Path, nil
 }
 
+func (c *client) createDirectory(moneypenny, path, name string) (string, error) {
+	args := []string{}
+	if moneypenny != "" {
+		args = append(args, "-m", moneypenny)
+	}
+	if path != "" {
+		args = append(args, "--path", path)
+	}
+	if name != "" {
+		args = append(args, "--name", name)
+	}
+	resp, err := c.send("create-directory", "", args...)
+	if err != nil {
+		return "", err
+	}
+	if resp.Status == protocol.StatusError {
+		return "", fmt.Errorf("%s", resp.Message)
+	}
+	var result struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return "", fmt.Errorf("parsing result: %w", err)
+	}
+	return result.Path, nil
+}
+
 func (c *client) listModels(moneypenny, agent string) ([]string, error) {
 	args := []string{}
 	if moneypenny != "" {

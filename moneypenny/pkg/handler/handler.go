@@ -188,6 +188,8 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.executeCommand(ctx, cmd)
 	case "list_directory":
 		return h.listDirectory(ctx, cmd)
+	case "create_directory":
+		return h.createDirectory(ctx, cmd)
 	case "transfer_file":
 		return h.transferFile(ctx, cmd)
 	case "save_attachment":
@@ -1839,6 +1841,62 @@ func (h *Handler) listDirectory(_ context.Context, cmd *envelope.Command) *envel
 		Path:    path,
 		Entries: entries,
 	})
+}
+
+// createDirectory creates a new directory (including any missing parents) and
+// returns its resolved absolute path. Used by the path browsers' "Add folder"
+// action. The name is taken relative to the supplied path; absolute names and
+// "~" expansion are also honoured so callers can pass a full target path.
+func (h *Handler) createDirectory(_ context.Context, cmd *envelope.Command) *envelope.Response {
+	var data envelope.CreateDirectoryData
+	if err := json.Unmarshal(cmd.Data, &data); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
+	}
+
+	expand := func(p string) string {
+		if p == "~" {
+			if home, err := os.UserHomeDir(); err == nil {
+				return home
+			}
+		} else if len(p) > 1 && p[0] == '~' && p[1] == '/' {
+			if home, err := os.UserHomeDir(); err == nil {
+				return home + p[1:]
+			}
+		}
+		return p
+	}
+
+	base := expand(data.Path)
+	name := strings.TrimSpace(data.Name)
+
+	var target string
+	if name != "" {
+		// Reject path traversal / separators in the new folder name so a single
+		// browser action can't escape the chosen directory.
+		if strings.ContainsAny(name, "/\\") || name == ".." || name == "." {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "invalid folder name")
+		}
+		if base == "" {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "path is required")
+		}
+		target = filepath.Join(base, name)
+	} else {
+		// No name given: treat Path itself as the directory to create.
+		target = expand(data.Path)
+		if target == "" {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "path is required")
+		}
+	}
+
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("cannot create directory: %v", err))
+	}
+
+	if abs, err := filepath.Abs(target); err == nil {
+		target = abs
+	}
+
+	return envelope.SuccessResponse(cmd.RequestID, envelope.CreateDirectoryResponse{Path: target})
 }
 
 func (h *Handler) transferFile(_ context.Context, cmd *envelope.Command) *envelope.Response {
