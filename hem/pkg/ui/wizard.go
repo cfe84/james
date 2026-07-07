@@ -135,6 +135,7 @@ func newWizardModel(c *client) wizardModel {
 			{label: "Agent", flag: "--agent", value: "copilot", options: []string{"", "claude", "copilot"}},
 			{label: "Model", flag: "--model", value: "", options: []string{""}},
 			{label: "Effort", flag: "--effort", value: "", options: effortOptions("copilot")},
+			{label: "Context", flag: "--context", value: "", options: contextTierOptions()},
 			{label: "System Prompt", flag: "--system-prompt", value: "", input: &spInput},
 			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
 			{label: "Gadgets (James tooling)", flag: "--gadgets", isBool: true, value: "false"},
@@ -466,6 +467,18 @@ func (m wizardModel) Update(msg tea.Msg) (wizardModel, tea.Cmd) {
 				}
 				// Sync effort options to the (possibly inherited) agent.
 				m.fields[i].options = effortOptions(src.Agent)
+			case "--context":
+				if src.ContextTier != "" {
+					m.fields[i].value = src.ContextTier
+					m.fields[i].cursorPos = len(src.ContextTier)
+				}
+				// Context tier is copilot-only.
+				if src.Agent == "copilot" {
+					m.fields[i].options = contextTierOptions()
+				} else {
+					m.fields[i].options = []string{""}
+					m.fields[i].value = ""
+				}
 			case "--system-prompt":
 				if src.SystemPrompt != "" {
 					m.fields[i].value = src.SystemPrompt
@@ -950,6 +963,24 @@ func effortOptions(agent string) []string {
 	}
 }
 
+// contextTierOptions returns the copilot context-window tiers as internal
+// values (empty = default tier). Copilot-only.
+func contextTierOptions() []string {
+	return []string{"", "long_context"}
+}
+
+// contextTierLabel maps an internal context-tier value to a user-facing label.
+func contextTierLabel(v string) string {
+	switch v {
+	case "", "default":
+		return "default"
+	case "long_context":
+		return "1M (long context)"
+	default:
+		return v
+	}
+}
+
 // applyEffortOptions sets the Effort field's options based on the current
 // agent and clears the current value if it's no longer valid.
 func (m *wizardModel) applyEffortOptions(agent string) {
@@ -976,6 +1007,36 @@ func (m *wizardModel) applyEffortOptions(agent string) {
 	}
 }
 
+// applyContextTierOptions sets the Context field's options based on the current
+// agent. Context tier is copilot-only; other agents get a no-op default option.
+func (m *wizardModel) applyContextTierOptions(agent string) {
+	if agent == "" {
+		agent = "copilot"
+	}
+	var opts []string
+	if agent == "copilot" {
+		opts = contextTierOptions()
+	} else {
+		opts = []string{""}
+	}
+	for i := range m.fields {
+		if m.fields[i].flag == "--context" {
+			m.fields[i].options = opts
+			valid := false
+			for _, o := range opts {
+				if o == m.fields[i].value {
+					valid = true
+					break
+				}
+			}
+			if !valid {
+				m.fields[i].value = ""
+			}
+			break
+		}
+	}
+}
+
 // loadModelsIfNeeded returns a tea.Cmd to load models for the current agent,
 // using the cache if available.
 func (m *wizardModel) loadModelsIfNeeded() tea.Cmd {
@@ -987,6 +1048,8 @@ func (m *wizardModel) loadModelsIfNeeded() tea.Cmd {
 
 	// Effort options vary by agent — refresh on every agent change.
 	m.applyEffortOptions(agent)
+	// Context tier is copilot-only — refresh on every agent change.
+	m.applyContextTierOptions(agent)
 
 	if m.modelCache != nil {
 		if cached, ok := m.modelCache[agent]; ok {

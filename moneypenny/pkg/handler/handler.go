@@ -269,6 +269,7 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 		SystemPrompt:   systemPrompt,
 		Model:          data.Model,
 		Effort:         data.Effort,
+		ContextTier:    data.ContextTier,
 		Yolo:           data.Yolo,
 		Path:           data.Path,
 		AgentSessionID: data.SessionID,
@@ -325,6 +326,7 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 		SystemPrompt: systemPrompt,
 		Model:        data.Model,
 		Effort:       data.Effort,
+		ContextTier:  data.ContextTier,
 		Yolo:         data.Yolo,
 		Path:         data.Path,
 		Resume:       false,
@@ -398,6 +400,10 @@ func (h *Handler) continueSession(ctx context.Context, cmd *envelope.Command) *e
 	if data.Effort != "" {
 		effEffort = data.Effort
 	}
+	effTier := sess.ContextTier
+	if data.ContextTier != "" {
+		effTier = data.ContextTier
+	}
 
 	// If custom compaction is enabled and the context has grown past the
 	// threshold, compact first, seeding the fresh underlying session with this
@@ -418,6 +424,7 @@ func (h *Handler) continueSession(ctx context.Context, cmd *envelope.Command) *e
 		SystemPrompt: sess.SystemPrompt,
 		Model:        effModel,
 		Effort:       effEffort,
+		ContextTier:  effTier,
 		Yolo:         sess.Yolo,
 		Path:         sess.Path,
 		Resume:       true,
@@ -447,7 +454,7 @@ func (h *Handler) queuePrompt(_ context.Context, cmd *envelope.Command) *envelop
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, fmt.Sprintf("session not found: %s", data.SessionID))
 	}
 
-	if err := h.store.QueuePrompt(data.SessionID, data.Prompt, data.Model, data.Effort, ""); err != nil {
+	if err := h.store.QueuePrompt(data.SessionID, data.Prompt, data.Model, data.Effort, data.ContextTier, ""); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to queue prompt: %v", err))
 	}
 
@@ -527,6 +534,7 @@ Conversation:
 		Agent:        sess.Agent,
 		Model:        sess.Model,
 		Effort:       sess.Effort,
+		ContextTier:  sess.ContextTier,
 		Yolo:         sess.Yolo,
 		Path:         sess.Path,
 		Prompt:       prompt,
@@ -730,6 +738,10 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 		if first.Effort != "" {
 			effEffort = first.Effort
 		}
+		effTier := sess.ContextTier
+		if first.ContextTier != "" {
+			effTier = first.ContextTier
+		}
 
 		// Continue with this group's prompts joined for the agent.
 		combinedPrompt := strings.Join(texts, "\n")
@@ -751,6 +763,7 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 			SystemPrompt: sess.SystemPrompt,
 			Model:        effModel,
 			Effort:       effEffort,
+			ContextTier:  effTier,
 			Yolo:         sess.Yolo,
 			Path:         sess.Path,
 			Resume:       true,
@@ -826,6 +839,7 @@ func (h *Handler) getSession(_ context.Context, cmd *envelope.Command) *envelope
 		SystemPrompt:   sess.SystemPrompt,
 		Model:          sess.Model,
 		Effort:         sess.Effort,
+		ContextTier:    sess.ContextTier,
 		Yolo:           sess.Yolo,
 		Path:           sess.Path,
 		Memory:         sess.Memory,
@@ -964,7 +978,7 @@ func (h *Handler) updateSession(_ context.Context, cmd *envelope.Command) *envel
 		}
 	}
 
-	if err := h.store.UpdateSessionFields(data.SessionID, data.Name, data.SystemPrompt, data.Model, data.Effort, data.Path, data.CompactionMode, data.Yolo); err != nil {
+	if err := h.store.UpdateSessionFields(data.SessionID, data.Name, data.SystemPrompt, data.Model, data.Effort, data.ContextTier, data.Path, data.CompactionMode, data.Yolo); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to update session: %v", err))
 	}
 
@@ -1436,16 +1450,23 @@ var (
 )
 
 // copilotModelLogRe matches each "[id,Display Name]" pair on copilot's
-// debug-level "Listed models:" log line.
+// debug-level "Listed models:" log line (older builds).
 var copilotModelLogRe = regexp.MustCompile(`\[([^,\]]+),([^\]]*)\]`)
 
+// copilotModelIDRe validates a line looks like a copilot model identifier
+// (lowercase letters/digits/dots/hyphens, must contain a hyphen — every real
+// id does, e.g. "claude-sonnet-5", "gpt-5.3-codex"). Used to filter the
+// model's textual answer so prose/footer lines are rejected.
+var copilotModelIDRe = regexp.MustCompile(`^[a-z][a-z0-9.]*-[a-z0-9.-]+$`)
+
 // copilotModels queries copilot for its available models. Copilot has no
-// non-interactive "list models" command, so we run a trivial prompt with
-// debug logging enabled and parse the authoritative "Listed models:" line
-// the CLI emits after fetching /models (the real, complete list — dozens of
-// entries). If that parse fails we fall back to parsing the model's textual
-// answer to a "list the identifiers" prompt (older copilot builds, or a log
-// format change). Results are cached to avoid repeated slow queries.
+// non-interactive "list models" command, so we run a trivial prompt asking it
+// to list the --model identifiers and parse the answer, validating each line
+// looks like a model id. Older copilot builds emitted an authoritative
+// "Listed models:" debug-log line (with friendly display names); we still parse
+// it first when present, but copilot 1.0.69+ no longer writes it, so the
+// stdout answer is the reliable source. Results are cached to avoid repeated
+// slow queries.
 func copilotModels() []envelope.ModelInfo {
 	if len(copilotModelCache) > 0 && time.Since(copilotModelCacheTime) < copilotModelCacheTTL {
 		log.Printf("copilot models: returning %d cached models (age: %v)", len(copilotModelCache), time.Since(copilotModelCacheTime))
@@ -1471,8 +1492,8 @@ func copilotModels() []envelope.ModelInfo {
 	// Run a trivial prompt. --available-tools '' prevents tool use (no
 	// permission prompts, faster). --model auto lets copilot pick a current
 	// model so the query can't fail because a pinned identifier was retired.
-	// --log-level debug + --log-dir make the CLI write the "Listed models:"
-	// line we parse below.
+	// --log-level debug + --log-dir capture logs for the best-effort primary
+	// parse below.
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path,
@@ -1488,13 +1509,13 @@ func copilotModels() []envelope.ModelInfo {
 	cmd.Env = agent.PrependToPath(os.Environ(), filepath.Dir(path))
 	out, runErr := cmd.Output()
 	if runErr != nil {
-		// Don't bail yet: the model list is fetched and logged during startup,
-		// before the completion runs, so the log may hold the full list even
-		// when the prompt itself failed.
-		log.Printf("copilot models: query exited with error (will still parse logs): %v", runErr)
+		// Don't bail yet: the model list may still have been logged, and the
+		// stdout answer captured before the failure can also hold the list.
+		log.Printf("copilot models: query exited with error (will still parse output): %v", runErr)
 	}
 
-	// Primary: parse the authoritative debug-log model list.
+	// Best-effort: older copilot builds logged an authoritative model list with
+	// friendly display names. Parse it when present (it isn't on 1.0.69+).
 	if models := parseCopilotModelLog(logDir); len(models) > 0 {
 		copilotModelCache = models
 		copilotModelCacheTime = time.Now()
@@ -1502,29 +1523,25 @@ func copilotModels() []envelope.ModelInfo {
 		return models
 	}
 
-	// Fallback: parse the model's textual answer (older copilot, or a changed
-	// log format). Only meaningful if the prompt actually completed.
-	if runErr == nil {
-		log.Printf("copilot models: debug log empty, falling back to stdout (%d bytes)", len(out))
-		var models []envelope.ModelInfo
-		for _, line := range strings.Split(string(out), "\n") {
-			name := strings.TrimSpace(line)
-			if name == "" {
-				continue
-			}
-			// Stop at the summary footer (lines starting with "Total" or similar).
-			if strings.HasPrefix(name, "Total ") || strings.HasPrefix(name, "API ") ||
-				strings.HasPrefix(name, "Breakdown ") {
-				break
-			}
-			models = append(models, envelope.ModelInfo{Name: name, Value: name})
+	// Reliable path: parse the model's textual answer, keeping only lines that
+	// look like model identifiers (rejects the doc-check preamble, blank lines,
+	// and the run-summary footer — Changes/AI Credits/Tokens/Resume/etc.).
+	log.Printf("copilot models: debug log has no model list, parsing stdout (%d bytes)", len(out))
+	var models []envelope.ModelInfo
+	seen := make(map[string]bool)
+	for _, line := range strings.Split(string(out), "\n") {
+		id := strings.TrimSpace(line)
+		if id == "" || seen[id] || !copilotModelIDRe.MatchString(id) {
+			continue
 		}
-		if len(models) > 0 {
-			copilotModelCache = models
-			copilotModelCacheTime = time.Now()
-			log.Printf("copilot models: cached %d models (stdout fallback)", len(models))
-			return models
-		}
+		seen[id] = true
+		models = append(models, envelope.ModelInfo{Name: id, Value: id})
+	}
+	if len(models) > 0 {
+		copilotModelCache = models
+		copilotModelCacheTime = time.Now()
+		log.Printf("copilot models: cached %d models (stdout)", len(models))
+		return models
 	}
 
 	log.Printf("copilot models: no models parsed")
@@ -2297,13 +2314,14 @@ func (h *Handler) processDueSchedules() {
 				SystemPrompt: sess.SystemPrompt,
 				Model:        sess.Model,
 				Effort:       sess.Effort,
+				ContextTier:  sess.ContextTier,
 				Yolo:         sess.Yolo,
 				Path:         sess.Path,
 				Resume:       true,
 			})
 		} else {
 			// Session is busy — queue the prompt, it'll run after current task finishes.
-			if err := h.store.QueuePrompt(sch.SessionID, sch.Prompt, "", "", "scheduled"); err != nil {
+			if err := h.store.QueuePrompt(sch.SessionID, sch.Prompt, "", "", "", "scheduled"); err != nil {
 				h.vlog("scheduler: failed to queue prompt for session %s: %v", sch.SessionID, err)
 				_ = h.store.UpdateScheduleStatus(sch.ID, store.SchedulePending)
 				continue

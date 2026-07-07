@@ -146,6 +146,7 @@ func (h *Handler) runDistillation(sessionID string) {
 		SystemPrompt:   systemPrompt,
 		Model:          sess.Model,
 		Effort:         sess.Effort,
+		ContextTier:    sess.ContextTier,
 		Yolo:           sess.Yolo,
 		Path:           sess.Path,
 		Resume:         false,

@@ -17,6 +17,7 @@ type sessionParams struct {
 	Agent          string
 	Model          string
 	Effort         string
+	ContextTier    string
 	ProjectID      string
 	Yolo           bool
 	Gadgets        bool
@@ -133,6 +134,9 @@ func buildCreateSessionData(params *sessionParams, sessionID, prompt string) map
 	}
 	if params.Effort != "" {
 		cmdData["effort"] = params.Effort
+	}
+	if params.ContextTier != "" {
+		cmdData["context_tier"] = params.ContextTier
 	}
 	if params.Yolo {
 		cmdData["yolo"] = true

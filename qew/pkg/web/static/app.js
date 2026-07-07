@@ -14,8 +14,10 @@
   let currentSessionAgent = '';
   let sessionDefaultModel = '';
   let sessionDefaultEffort = '';
+  let sessionDefaultContext = '';
   let overrideModel = '';   // temporary per-conversation model override ('' = default)
   let overrideEffort = '';  // temporary per-conversation effort override ('' = default)
+  let overrideContext = ''; // temporary per-conversation context-tier override ('' = default)
   let queuedMessages = []; // optimistic messages not yet confirmed by server
   // Chat history pagination state (mirrors hem/pkg/ui/chat.go). chatConversation
   // holds ONLY server turns (queued messages are tracked separately above).
@@ -120,6 +122,31 @@
     }).join('');
   }
 
+  // contextTierOptions mirrors hem's contextTierOptions(): copilot-only context
+  // window tiers. Leading "" means "default / no long context".
+  function contextTierOptions(agent) {
+    if (agent === 'copilot') return ['', 'long_context'];
+    return [''];
+  }
+
+  // contextTierLabel maps an internal tier value to a friendly label.
+  function contextTierLabel(v) {
+    switch (v) {
+      case '':
+      case 'default': return 'default';
+      case 'long_context': return '1M (long context)';
+      default: return v;
+    }
+  }
+
+  // contextTierOptionsHtml builds <option> markup for a context-tier dropdown.
+  function contextTierOptionsHtml(agent, selected) {
+    return contextTierOptions(agent).map(o => {
+      const label = o === '' ? '(default)' : contextTierLabel(o);
+      return `<option value="${escapeAttr(o)}"${o === (selected || '') ? ' selected' : ''}>${escapeHtml(label)}</option>`;
+    }).join('');
+  }
+
   // modelOptionsHtml builds <option> markup for a model dropdown. A previously
   // selected model that's no longer in the fetched list is preserved so editing
   // an existing session never silently drops its model.
@@ -166,6 +193,22 @@
         : o;
       return `<option value="${escapeAttr(o)}"${o === overrideEffort ? ' selected' : ''}>${escapeHtml(label)}</option>`;
     }).join('');
+    // Context-tier options (copilot-only). Hidden for other agents.
+    const ctxSel = document.getElementById('chat-context-override');
+    if (ctxSel) {
+      if (agent === 'copilot') {
+        ctxSel.style.display = '';
+        ctxSel.innerHTML = contextTierOptions(agent).map(o => {
+          const label = o === ''
+            ? `Default (${contextTierLabel(sessionDefaultContext) || 'default'})`
+            : contextTierLabel(o);
+          return `<option value="${escapeAttr(o)}"${o === overrideContext ? ' selected' : ''}>${escapeHtml(label)}</option>`;
+        }).join('');
+      } else {
+        ctxSel.style.display = 'none';
+        ctxSel.innerHTML = '';
+      }
+    }
     // Model options (default entry first).
     const sessAtStart = currentSession;
     const models = await loadModels(currentSessionMP, agent);
@@ -611,8 +654,10 @@
     currentSessionAgent = '';
     sessionDefaultModel = '';
     sessionDefaultEffort = '';
+    sessionDefaultContext = '';
     overrideModel = '';
     overrideEffort = '';
+    overrideContext = '';
     document.getElementById('dashboard-view').style.display = 'none';
     document.getElementById('moneypennies-view').style.display = 'none';
     document.getElementById('projects-view').style.display = 'none';
@@ -673,8 +718,10 @@
     currentSessionAgent = '';
     sessionDefaultModel = '';
     sessionDefaultEffort = '';
+    sessionDefaultContext = '';
     overrideModel = '';
     overrideEffort = '';
+    overrideContext = '';
     document.getElementById('chat-view').style.display = 'none';
     document.getElementById('dashboard-view').style.display = 'flex';
     if (window.location.hash) history.replaceState(null, '', window.location.pathname);
@@ -739,6 +786,7 @@
           currentSessionAgent = showResp.data.agent || '';
           sessionDefaultModel = showResp.data.model || '';
           sessionDefaultEffort = showResp.data.effort || '';
+          sessionDefaultContext = showResp.data.context_tier || '';
           populateOverrideSelects();
         }
       }
@@ -1141,6 +1189,7 @@
       const args = [currentSession, '--async'];
       if (overrideModel) args.push('--model', overrideModel);
       if (overrideEffort) args.push('--effort', overrideEffort);
+      if (overrideContext) args.push('--context', overrideContext);
       for (const p of attachmentPaths) args.push('--attachment', p);
       args.push(promptText);
       await apiCall('continue', 'session', args);
@@ -1232,6 +1281,7 @@
           <button class="cmd-item" data-cmd="diff"><kbd>g</kbd> Git diff</button>
           <button class="cmd-item" data-cmd="model"><kbd>o</kbd> Model override</button>
           <button class="cmd-item" data-cmd="effort"><kbd>f</kbd> Effort override</button>
+          <button class="cmd-item" data-cmd="context"><kbd>w</kbd> Context override</button>
           <button class="cmd-item" data-cmd="memory"><kbd>m</kbd> Memory</button>
           <button class="cmd-item" data-cmd="schedules"><kbd>h</kbd> Scheduled tasks</button>
           <button class="cmd-item" data-cmd="compact"><kbd>K</kbd> Compact session</button>
@@ -1281,6 +1331,7 @@
       case 'thoughts': toggleThoughts(); break;
       case 'model':    showOverridePicker('model'); break;
       case 'effort':   showOverridePicker('effort'); break;
+      case 'context':  showOverridePicker('context'); break;
       case 'memory':   openMemoryModal(); break;
       case 'schedules': openSchedulesModal(); break;
       case 'compact':  compactSession(); break;
@@ -1472,6 +1523,8 @@
       <select id="wiz-model">${modelSeed}</select>
       <label for="wiz-effort">Effort</label>
       <select id="wiz-effort">${effortOptionsHtml(srcAgent, copy ? (src.effort || '') : '')}</select>
+      <label for="wiz-context" id="wiz-context-label">Context</label>
+      <select id="wiz-context">${contextTierOptionsHtml(srcAgent, copy ? (src.context_tier || '') : '')}</select>
       <label for="wiz-sysprompt">System Prompt (optional)</label>
       <textarea id="wiz-sysprompt" rows="2" placeholder="">${copy ? escapeHtml(src.system_prompt || '') : ''}</textarea>
       <div class="toggle-row">
@@ -1520,6 +1573,21 @@
     const agent = agentSel.value;
     const effortSel = document.getElementById('wiz-effort');
     if (effortSel) effortSel.innerHTML = effortOptionsHtml(agent, effortSel.value);
+    // Context tier is copilot-only — hide the field for other agents.
+    const contextSel = document.getElementById('wiz-context');
+    const contextLabel = document.getElementById('wiz-context-label');
+    if (contextSel) {
+      if (agent === 'copilot') {
+        contextSel.style.display = '';
+        if (contextLabel) contextLabel.style.display = '';
+        contextSel.innerHTML = contextTierOptionsHtml(agent, contextSel.value);
+      } else {
+        contextSel.style.display = 'none';
+        if (contextLabel) contextLabel.style.display = 'none';
+        contextSel.value = '';
+        contextSel.innerHTML = contextTierOptionsHtml(agent, '');
+      }
+    }
     const modelSel = document.getElementById('wiz-model');
     if (modelSel) {
       const cur = modelSel.value;
@@ -1558,6 +1626,9 @@
     if (model) args.push('--model', model);
     const effort = document.getElementById('wiz-effort').value;
     if (effort) args.push('--effort', effort);
+    const contextEl = document.getElementById('wiz-context');
+    const contextTier = contextEl ? contextEl.value : '';
+    if (contextTier && agent === 'copilot') args.push('--context', contextTier);
     const sysprompt = document.getElementById('wiz-sysprompt').value.trim();
     if (copy) {
       // Only override the system prompt when the user actually edited it;
@@ -2568,6 +2639,12 @@
         value: o,
         label: o === '' ? `Default (${sessionDefaultEffort || 'agent default'})` : o,
       }));
+    } else if (kind === 'context') {
+      if (currentSessionAgent !== 'copilot') return; // copilot-only
+      options = contextTierOptions(currentSessionAgent).map(o => ({
+        value: o,
+        label: o === '' ? `Default (${contextTierLabel(sessionDefaultContext) || 'default'})` : contextTierLabel(o),
+      }));
     } else {
       renderWizardModal(`
         <div class="cmd-palette" tabindex="-1" role="dialog" aria-modal="true" aria-label="Model override">
@@ -2584,7 +2661,7 @@
         options.push({ value: overrideModel, label: `${overrideModel} (current)` });
       }
     }
-    const current = kind === 'effort' ? overrideEffort : overrideModel;
+    const current = kind === 'effort' ? overrideEffort : (kind === 'context' ? overrideContext : overrideModel);
     let cursor = options.findIndex(o => o.value === current);
     if (cursor < 0) cursor = 0;
     overridePicker = { kind, options, cursor };
@@ -2594,7 +2671,7 @@
   function renderOverridePicker() {
     if (!overridePicker) return;
     const { kind, options, cursor } = overridePicker;
-    const title = kind === 'effort' ? 'Effort Override' : 'Model Override';
+    const title = kind === 'effort' ? 'Effort Override' : (kind === 'context' ? 'Context Override' : 'Model Override');
     const items = options.map((o, i) => `
       <button class="cmd-item override-item${i === cursor ? ' selected' : ''}" data-idx="${i}">${escapeHtml(o.label)}</button>
     `).join('');
@@ -2623,6 +2700,7 @@
     const opt = options[idx];
     if (opt) {
       if (kind === 'effort') overrideEffort = opt.value;
+      else if (kind === 'context') overrideContext = opt.value;
       else overrideModel = opt.value;
       // Refresh the header dropdowns so they reflect the chosen override.
       populateOverrideSelects();
@@ -3190,6 +3268,8 @@
         <select id="es-model"><option value="">(loading…)</option></select>
         <label for="es-effort">Effort</label>
         <select id="es-effort">${effortOptionsHtml(s.agent || 'copilot', s.effort || '')}</select>
+        ${(s.agent || 'copilot') === 'copilot' ? `<label for="es-context">Context</label>
+        <select id="es-context">${contextTierOptionsHtml(s.agent || 'copilot', s.context_tier || '')}</select>` : ''}
         <label for="es-sysprompt">System Prompt</label>
         <textarea id="es-sysprompt" rows="6">${escapeHtml(s.system_prompt || '')}</textarea>
         <div class="toggle-row">
@@ -3234,6 +3314,11 @@
         // Empty selection clears any override; the backend uses "none" as the
         // clear sentinel (an empty value is treated as "unchanged").
         if (effort !== (s.effort || '')) args.push('--effort', effort === '' ? 'none' : effort);
+        const contextEl = document.getElementById('es-context');
+        if (contextEl) {
+          const contextTier = contextEl.value;
+          if (contextTier !== (s.context_tier || '')) args.push('--context', contextTier === '' ? 'none' : contextTier);
+        }
         const sysprompt = document.getElementById('es-sysprompt').value.trim();
         const yolo = document.getElementById('es-yolo').checked;
         if (yolo !== !!s.yolo) args.push('--yolo', yolo ? 'true' : 'false');
@@ -4343,6 +4428,13 @@
       chatInput.focus();
     });
   }
+  const contextOverrideSel = document.getElementById('chat-context-override');
+  if (contextOverrideSel) {
+    contextOverrideSel.addEventListener('change', (e) => {
+      overrideContext = e.target.value;
+      chatInput.focus();
+    });
+  }
 
   // Load older history when the user scrolls to the top of the chat.
   const chatMessagesEl = document.getElementById('chat-messages');
@@ -4423,7 +4515,7 @@
       if (e.key === 'j' || e.key === 'ArrowDown') { e.preventDefault(); enterChatNavMode(); chatScrollLine(1); return; }
       if (e.key === 'k' || e.key === 'ArrowUp') { e.preventDefault(); enterChatNavMode(); chatScrollLine(-1); return; }
       if (e.repeat) return;
-      const map = { c: 'complete', e: 'edit', y: 'duplicate', a: 'subagent', p: 'project', g: 'diff', t: 'thoughts', o: 'model', f: 'effort', m: 'memory', h: 'schedules', K: 'compact', D: 'distill', s: 'stop', d: 'delete', q: 'back' };
+      const map = { c: 'complete', e: 'edit', y: 'duplicate', a: 'subagent', p: 'project', g: 'diff', t: 'thoughts', o: 'model', f: 'effort', w: 'context', m: 'memory', h: 'schedules', K: 'compact', D: 'distill', s: 'stop', d: 'delete', q: 'back' };
       const cmd = map[e.key];
       if (cmd) { e.preventDefault(); runCmd(cmd); }
       return;

@@ -62,6 +62,7 @@ func newEditModel(c *client, sessionID string) editModel {
 			{label: "Project", flag: "--project", value: "", options: []string{""}},
 			{label: "Model", flag: "--model", value: "", options: []string{""}},
 			{label: "Effort", flag: "--effort", value: "", options: []string{"", "low", "medium", "high"}},
+			{label: "Context", flag: "--context", value: "", options: contextTierOptions()},
 			{label: "System Prompt", flag: "--system-prompt", value: "", input: &spInput},
 			{label: "Path", flag: "--path", value: ""},
 			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
@@ -150,6 +151,10 @@ func (m editModel) save() tea.Cmd {
 		if v, ok := fields["--effort"]; ok && v == "" {
 			fields["--effort"] = "none"
 		}
+		// If context tier is being cleared (empty value), send "none" sentinel.
+		if v, ok := fields["--context"]; ok && v == "" {
+			fields["--context"] = "none"
+		}
 		// If gadgets changed, don't also send system-prompt (the server handles it).
 		if _, ok := fields["--gadgets"]; ok {
 			delete(fields, "--system-prompt")
@@ -196,26 +201,39 @@ func (m editModel) Update(msg tea.Msg) (editModel, tea.Cmd) {
 				break
 			}
 		}
+		// Context tier is copilot-only; other agents get a no-op default option.
+		for i := range m.fields {
+			if m.fields[i].flag == "--context" {
+				if m.agent == "copilot" {
+					m.fields[i].options = contextTierOptions()
+				} else {
+					m.fields[i].options = []string{""}
+					d.ContextTier = ""
+				}
+				break
+			}
+		}
 		m.fields[0].value = d.Name
 		m.fields[1].value = d.Project
 		m.fields[2].value = d.Model
 		m.fields[3].value = d.Effort
-		m.fields[4].value = d.SystemPrompt
-		m.fields[5].value = d.Path
+		m.fields[4].value = d.ContextTier
+		m.fields[5].value = d.SystemPrompt
+		m.fields[6].value = d.Path
 		if d.Yolo {
-			m.fields[6].value = "true"
-		} else {
-			m.fields[6].value = "false"
-		}
-		if d.Gadgets {
 			m.fields[7].value = "true"
 		} else {
 			m.fields[7].value = "false"
 		}
-		if d.CompactionMode != "" {
-			m.fields[8].value = d.CompactionMode
+		if d.Gadgets {
+			m.fields[8].value = "true"
 		} else {
-			m.fields[8].value = "agent"
+			m.fields[8].value = "false"
+		}
+		if d.CompactionMode != "" {
+			m.fields[9].value = d.CompactionMode
+		} else {
+			m.fields[9].value = "agent"
 		}
 		// Place cursors at end of values and sync textInput fields.
 		for i := range m.fields {

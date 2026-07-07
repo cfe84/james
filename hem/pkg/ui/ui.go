@@ -225,9 +225,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.chat.pickingSubagent = false
 					return m, nil
 				}
-				if m.chat.pickingModel || m.chat.pickingEffort {
+				if m.chat.pickingModel || m.chat.pickingEffort || m.chat.pickingContext {
 					m.chat.pickingModel = false
 					m.chat.pickingEffort = false
+					m.chat.pickingContext = false
 					return m, nil
 				}
 				if m.chat.pickingSchedule {
@@ -1619,6 +1620,7 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.chat.confirmDelete = false
 			m.chat.pickingModel = true
 			m.chat.pickingEffort = false
+			m.chat.pickingContext = false
 			m.chat.overrideCursor = 0
 			if len(m.chat.availableModels) == 0 {
 				return m, m.chat.loadOverrideConfig()
@@ -1629,7 +1631,23 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.chat.confirmDelete = false
 			m.chat.pickingEffort = true
 			m.chat.pickingModel = false
+			m.chat.pickingContext = false
 			m.chat.overrideCursor = 0
+			return m, nil
+		case "w":
+			// Copilot context-window tier override picker (esc-w). Copilot only;
+			// loads the session's default tier if not yet known.
+			if m.chat.sessionAgent != "" && m.chat.sessionAgent != "copilot" {
+				return m, nil
+			}
+			m.chat.confirmDelete = false
+			m.chat.pickingContext = true
+			m.chat.pickingModel = false
+			m.chat.pickingEffort = false
+			m.chat.overrideCursor = 0
+			if m.chat.sessionAgent == "" {
+				return m, m.chat.loadOverrideConfig()
+			}
 			return m, nil
 		case "b":
 			m.chat.confirmDelete = false
@@ -2179,6 +2197,12 @@ func (m Model) renderStatusBar() string {
 				statusKeyStyle.Render("b") + statusDescStyle.Render(" browse"),
 				statusKeyStyle.Render("o") + statusDescStyle.Render(" model"),
 				statusKeyStyle.Render("f") + statusDescStyle.Render(" effort"),
+				func() string {
+					if m.chat.sessionAgent == "copilot" {
+						return statusKeyStyle.Render("w") + statusDescStyle.Render(" context")
+					}
+					return ""
+				}(),
 				statusKeyStyle.Render("m") + statusDescStyle.Render(" memory"),
 				statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
 				statusKeyStyle.Render("x") + statusDescStyle.Render(" shell"),

@@ -122,12 +122,15 @@ type chatModel struct {
 	sessionAgent   string   // agent type (copilot/claude), for effort option list
 	defaultModel   string   // session's stored model ("" = agent default)
 	defaultEffort  string   // session's stored effort ("" = agent default)
+	defaultContextTier string // session's stored copilot context tier ("" = default)
 	overrideModel  string   // active temporary model override
 	overrideEffort string   // active temporary effort override
+	overrideContextTier string // active temporary copilot context-tier override
 	availableModels []string // models discovered for this session's mp+agent
 	pickingModel   bool     // model override picker overlay
 	pickingEffort  bool     // effort override picker overlay
-	overrideCursor int      // cursor in the model/effort picker
+	pickingContext bool     // copilot context-tier override picker overlay
+	overrideCursor int      // cursor in the model/effort/context picker
 	browsingFiles      bool       // file browser overlay
 	browserPath        string     // current directory in browser
 	browserEntries     []dirEntry // directory listing
@@ -489,10 +492,11 @@ func (m chatModel) loadOlderHistory() tea.Cmd {
 
 func (m chatModel) sendMessage(prompt string) tea.Cmd {
 	model, effort := m.overrideModel, m.overrideEffort
+	contextTier := m.overrideContextTier
 	sessionID := m.sessionID
 	client := m.client
 	return func() tea.Msg {
-		result, err := client.continueSession(sessionID, prompt, model, effort)
+		result, err := client.continueSession(sessionID, prompt, model, effort, contextTier)
 		return messageSentMsg{response: result.Response, queued: result.Queued, err: err}
 	}
 }
@@ -558,12 +562,13 @@ type overrideConfigLoadedMsg struct {
 	agent         string
 	defaultModel  string
 	defaultEffort string
+	defaultContextTier string
 	models        []string
 	err           error
 }
 
-// loadOverrideConfig fetches the session's agent + default model/effort and the
-// list of available models for the model-override picker.
+// loadOverrideConfig fetches the session's agent + default model/effort/context
+// tier and the list of available models for the model-override picker.
 func (m chatModel) loadOverrideConfig() tea.Cmd {
 	sessionID := m.sessionID
 	mp := m.moneypennyName
@@ -578,6 +583,7 @@ func (m chatModel) loadOverrideConfig() tea.Cmd {
 			agent:         detail.Agent,
 			defaultModel:  detail.Model,
 			defaultEffort: detail.Effort,
+			defaultContextTier: detail.ContextTier,
 			models:        models,
 		}
 	}
@@ -1006,6 +1012,7 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 			m.sessionAgent = msg.agent
 			m.defaultModel = msg.defaultModel
 			m.defaultEffort = msg.defaultEffort
+			m.defaultContextTier = msg.defaultContextTier
 			m.availableModels = msg.models
 		}
 
@@ -1243,20 +1250,23 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 			return m, nil
 		}
 
-		if m.pickingModel || m.pickingEffort {
+		if m.pickingModel || m.pickingEffort || m.pickingContext {
 			var options []string
 			if m.pickingModel {
 				options = m.availableModels
 				if len(options) == 0 {
 					options = []string{""}
 				}
-			} else {
+			} else if m.pickingEffort {
 				options = effortOptions(m.sessionAgent)
+			} else {
+				options = contextTierOptions()
 			}
 			switch msg.String() {
 			case "esc":
 				m.pickingModel = false
 				m.pickingEffort = false
+				m.pickingContext = false
 				return m, nil
 			case "up", "k":
 				if m.overrideCursor > 0 {
@@ -1271,12 +1281,15 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 					sel := options[m.overrideCursor]
 					if m.pickingModel {
 						m.overrideModel = sel
-					} else {
+					} else if m.pickingEffort {
 						m.overrideEffort = sel
+					} else {
+						m.overrideContextTier = sel
 					}
 				}
 				m.pickingModel = false
 				m.pickingEffort = false
+				m.pickingContext = false
 				m.commandMode = false
 				return m, nil
 			}
@@ -1602,8 +1615,18 @@ func (m chatModel) View() string {
 		curEffort = "default"
 	}
 	ovLabel := fmt.Sprintf(" 🧠 %s · ⚙ %s", curModel, curEffort)
+	// Copilot context-window tier indicator (only when non-default).
+	if m.sessionAgent == "copilot" {
+		curTier := m.overrideContextTier
+		if curTier == "" {
+			curTier = m.defaultContextTier
+		}
+		if curTier != "" && curTier != "default" {
+			ovLabel += fmt.Sprintf(" · 🪟 %s", contextTierLabel(curTier))
+		}
+	}
 	ovStyle := lipgloss.NewStyle().Foreground(colorMuted)
-	if m.overrideModel != "" || m.overrideEffort != "" {
+	if m.overrideModel != "" || m.overrideEffort != "" || m.overrideContextTier != "" {
 		ovStyle = lipgloss.NewStyle().Foreground(colorWarning).Bold(true)
 	}
 	b.WriteString(ovStyle.Render(ovLabel))
@@ -1894,8 +1917,8 @@ func (m chatModel) View() string {
 		b.WriteString("\n")
 	}
 
-	// Model/effort override picker overlay
-	if m.pickingModel || m.pickingEffort {
+	// Model/effort/context override picker overlay
+	if m.pickingModel || m.pickingEffort || m.pickingContext {
 		var options []string
 		var title string
 		if m.pickingModel {
@@ -1904,15 +1927,28 @@ func (m chatModel) View() string {
 			if len(options) == 0 {
 				options = []string{""}
 			}
-		} else {
+		} else if m.pickingEffort {
 			title = " ⚙ Effort override: "
 			options = effortOptions(m.sessionAgent)
+		} else {
+			title = " 🪟 Context tier override: "
+			options = contextTierOptions()
 		}
 		b.WriteString(lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render(title))
 		b.WriteString("\n")
 		for i, opt := range options {
 			label := opt
-			if opt == "" {
+			if m.pickingContext {
+				if opt == "" {
+					dflt := m.defaultContextTier
+					if dflt == "" {
+						dflt = "default"
+					}
+					label = "Default (" + contextTierLabel(dflt) + ")"
+				} else {
+					label = contextTierLabel(opt)
+				}
+			} else if opt == "" {
 				dflt := m.defaultModel
 				if m.pickingEffort {
 					dflt = m.defaultEffort

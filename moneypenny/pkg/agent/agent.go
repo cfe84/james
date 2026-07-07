@@ -214,6 +214,10 @@ type RunParams struct {
 	SystemPrompt string // only used on first invocation
 	Model        string // model override (e.g. "sonnet", "opus")
 	Effort       string // reasoning effort level (e.g. "low", "medium", "high")
+	// ContextTier selects copilot's context-window tier via --context (e.g.
+	// "long_context" for the 1M window). Copilot-only; empty means the default
+	// tier (no flag). Claude has no equivalent and ignores this.
+	ContextTier  string
 	Yolo         bool
 	Path         string // working directory for the agent
 	Resume       bool   // true for continue_session
@@ -972,6 +976,9 @@ func buildCopilotOneShotArgs(params RunParams) agentInvocation {
 	if params.Effort != "" {
 		args = append(args, "--effort", params.Effort)
 	}
+	if params.ContextTier != "" {
+		args = append(args, "--context", params.ContextTier)
+	}
 	if params.Yolo {
 		args = append(args, "--yolo")
 	}
@@ -1148,6 +1155,9 @@ func buildCopilotArgs(params RunParams) agentInvocation {
 	}
 	if params.Effort != "" {
 		args = append(args, "--effort", params.Effort)
+	}
+	if params.ContextTier != "" {
+		args = append(args, "--context", params.ContextTier)
 	}
 	if params.Yolo {
 		args = append(args, "--yolo")

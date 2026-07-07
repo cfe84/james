@@ -944,6 +944,7 @@ type SessionShowResult struct {
 	SystemPrompt string `json:"system_prompt"`
 	Model        string `json:"model,omitempty"`
 	Effort       string `json:"effort,omitempty"`
+	ContextTier  string `json:"context_tier,omitempty"`
 	Yolo         bool   `json:"yolo"`
 	Gadgets      bool   `json:"gadgets"`
 	Memory       bool   `json:"memory"`
@@ -1566,6 +1567,7 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 		fs.StringVar(&params.Agent, "agent", "", "agent to use")
 		fs.StringVar(&params.Model, "model", "", "model to use (e.g. sonnet, opus)")
 		fs.StringVar(&params.Effort, "effort", "", "reasoning effort level (e.g. low, medium, high)")
+		fs.StringVar(&params.ContextTier, "context", "", "copilot context-window tier: default or long_context (copilot only)")
 		fs.StringVar(&params.SessionName, "name", "", "session name")
 		fs.StringVar(&params.SystemPrompt, "system-prompt", "", "system prompt")
 		fs.BoolVar(&params.Yolo, "yolo", false, "enable yolo mode")
@@ -1694,7 +1696,7 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 }
 
 func (e *Executor) ContinueSession(args []string) *protocol.Response {
-	var sessionID, callbackPrompt, model, effort string
+	var sessionID, callbackPrompt, model, effort, contextTier string
 	var async bool
 	var attachments stringListFlag
 
@@ -1704,6 +1706,7 @@ func (e *Executor) ContinueSession(args []string) *protocol.Response {
 		fs.StringVar(&callbackPrompt, "callback", "", "prompt to queue to parent when session completes (use with --async on sub-sessions)")
 		fs.StringVar(&model, "model", "", "temporary model override for this prompt (empty = session default)")
 		fs.StringVar(&effort, "effort", "", "temporary effort/complexity override for this prompt (empty = session default)")
+		fs.StringVar(&contextTier, "context", "", "temporary copilot context-tier override for this prompt: default or long_context (empty = session default)")
 		fs.Var(&attachments, "attachment", "absolute path of an attachment saved on the moneypenny (repeatable)")
 	})
 	if err != nil {
@@ -1745,6 +1748,9 @@ func (e *Executor) ContinueSession(args []string) *protocol.Response {
 	}
 	if effort != "" {
 		cmdData["effort"] = effort
+	}
+	if contextTier != "" {
+		cmdData["context_tier"] = contextTier
 	}
 	if len(attachments) > 0 {
 		cmdData["attachments"] = []string(attachments)
@@ -2075,6 +2081,9 @@ func (e *Executor) ShowSession(args []string) *protocol.Response {
 	if v, ok := raw["effort"].(string); ok {
 		result.Effort = v
 	}
+	if v, ok := raw["context_tier"].(string); ok {
+		result.ContextTier = v
+	}
 	if v, ok := raw["compaction_mode"].(string); ok {
 		result.CompactionMode = v
 	}
@@ -2101,7 +2110,7 @@ func (e *Executor) ShowSession(args []string) *protocol.Response {
 }
 
 func (e *Executor) UpdateSession(args []string) *protocol.Response {
-	var sessionID, name, systemPrompt, pathArg, modelStr, effortStr string
+	var sessionID, name, systemPrompt, pathArg, modelStr, effortStr, contextStr string
 	var yoloStr, projectNameOrID, gadgetsStr, traitsStr, compactionStr string
 
 	// Detect whether --traits was explicitly provided so an empty value can
@@ -2120,6 +2129,7 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 		fs.StringVar(&systemPrompt, "system-prompt", "", "system prompt")
 		fs.StringVar(&modelStr, "model", "", "model (e.g. sonnet, opus)")
 		fs.StringVar(&effortStr, "effort", "", "reasoning effort level (e.g. low, medium, high)")
+		fs.StringVar(&contextStr, "context", "", "copilot context tier: default/long_context (or 'none' to clear)")
 		fs.StringVar(&yoloStr, "yolo", "", "yolo mode (true/false)")
 		fs.StringVar(&pathArg, "path", "", "working directory path")
 		fs.StringVar(&projectNameOrID, "project", "", "move to project (name or ID)")
@@ -2170,6 +2180,14 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 			cmdData["effort"] = "" // clear effort
 		} else {
 			cmdData["effort"] = effortStr
+		}
+		hasUpdate = true
+	}
+	if contextStr != "" {
+		if contextStr == "none" || contextStr == "default" {
+			cmdData["context_tier"] = "" // clear (use default tier)
+		} else {
+			cmdData["context_tier"] = contextStr
 		}
 		hasUpdate = true
 	}
@@ -2309,7 +2327,7 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 	}
 
 	// Only send to moneypenny if there are moneypenny-level fields to update.
-	if name != "" || spChanged || modelStr != "" || effortStr != "" || pathArg != "" || yoloStr != "" {
+	if name != "" || spChanged || modelStr != "" || effortStr != "" || contextStr != "" || pathArg != "" || yoloStr != "" {
 		ctx := context.Background()
 		if _, err := e.sendCommand(ctx, mp, "update_session", cmdData); err != nil {
 			return protocol.ErrResponse(err.Error())
@@ -4684,6 +4702,7 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 		fs.StringVar(&params.Agent, "agent", "", "agent to use")
 		fs.StringVar(&params.Model, "model", "", "model to use")
 		fs.StringVar(&params.Effort, "effort", "", "reasoning effort level")
+		fs.StringVar(&params.ContextTier, "context", "", "copilot context tier: default or long_context (defaults to source's)")
 		fs.StringVar(&params.SessionName, "name", "", "session name")
 		fs.StringVar(&params.SystemPrompt, "system-prompt", "", "system prompt")
 		fs.BoolVar(&params.Yolo, "yolo", false, "enable yolo mode")
@@ -4736,6 +4755,7 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 		SystemPrompt   string `json:"system_prompt"`
 		Model          string `json:"model"`
 		Effort         string `json:"effort"`
+		ContextTier    string `json:"context_tier"`
 		Yolo           bool   `json:"yolo"`
 		Path           string `json:"path"`
 		CompactionMode string `json:"compaction_mode"`
@@ -4773,6 +4793,9 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	}
 	if params.Effort == "" {
 		params.Effort = src.Effort
+	}
+	if params.ContextTier == "" {
+		params.ContextTier = src.ContextTier
 	}
 	if params.SystemPrompt == "" {
 		params.SystemPrompt = sp
@@ -5790,7 +5813,7 @@ func (e *Executor) ActivitySession(args []string) *protocol.Response {
 
 // CreateSubSession creates a sub-session under a parent session.
 func (e *Executor) CreateSubSession(args []string) *protocol.Response {
-	var mpName, sessionName, systemPrompt, pathArg, agentName, parentSessionID, modelName, effortName, callbackPrompt string
+	var mpName, sessionName, systemPrompt, pathArg, agentName, parentSessionID, modelName, effortName, contextTierName, callbackPrompt string
 	var yolo, async, gadgets bool
 
 	remaining, err := parseFlagsFromArgs("create-subsession", args, func(fs *flag.FlagSet) {
@@ -5800,6 +5823,7 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 		fs.StringVar(&agentName, "agent", "", "agent to use")
 		fs.StringVar(&modelName, "model", "", "model to use (e.g. sonnet, opus)")
 		fs.StringVar(&effortName, "effort", "", "reasoning effort level (e.g. low, medium, high)")
+		fs.StringVar(&contextTierName, "context", "", "copilot context tier: default or long_context")
 		fs.StringVar(&sessionName, "name", "", "sub-session name")
 		fs.StringVar(&systemPrompt, "system-prompt", "", "system prompt")
 		fs.BoolVar(&yolo, "yolo", false, "enable yolo mode")
@@ -5915,6 +5939,9 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 	}
 	if effortName != "" {
 		cmdData["effort"] = effortName
+	}
+	if contextTierName != "" {
+		cmdData["context_tier"] = contextTierName
 	}
 	if yolo {
 		cmdData["yolo"] = true

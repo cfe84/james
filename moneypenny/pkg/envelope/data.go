@@ -18,6 +18,7 @@ type CreateSessionData struct {
 	SystemPrompt string `json:"system_prompt"`
 	Model        string `json:"model,omitempty"`
 	Effort       string `json:"effort,omitempty"`
+	ContextTier  string `json:"context_tier,omitempty"`
 	Yolo         bool   `json:"yolo"`
 	Prompt       string `json:"prompt"`
 	SessionID    string `json:"session_id"`
@@ -35,13 +36,14 @@ type CreateSessionData struct {
 }
 
 // ContinueSessionData is the data payload for continue_session.
-// Model and Effort are optional per-prompt overrides (empty = use the
-// session's stored default).
+// Model, Effort and ContextTier are optional per-prompt overrides (empty = use
+// the session's stored default).
 type ContinueSessionData struct {
 	SessionID   string   `json:"session_id"`
 	Prompt      string   `json:"prompt"`
 	Model       string   `json:"model,omitempty"`
 	Effort      string   `json:"effort,omitempty"`
+	ContextTier string   `json:"context_tier,omitempty"`
 	Attachments []string `json:"attachments,omitempty"` // absolute paths of saved attachments
 }
 
@@ -53,6 +55,7 @@ type UpdateSessionData struct {
 	SystemPrompt   *string `json:"system_prompt,omitempty"`
 	Model          *string `json:"model,omitempty"`
 	Effort         *string `json:"effort,omitempty"`
+	ContextTier    *string `json:"context_tier,omitempty"`
 	Yolo           *bool   `json:"yolo,omitempty"`
 	Path           *string `json:"path,omitempty"`
 	CompactionMode *string `json:"compaction_mode,omitempty"`
@@ -102,6 +105,7 @@ type SessionDetail struct {
 	SystemPrompt string `json:"system_prompt"`
 	Model        string `json:"model,omitempty"`
 	Effort       string `json:"effort,omitempty"`
+	ContextTier  string `json:"context_tier,omitempty"`
 	Yolo         bool   `json:"yolo"`
 	Path         string `json:"path"`
 	Memory       string `json:"memory,omitempty"`

@@ -63,6 +63,7 @@ type sessionDetail struct {
 	SystemPrompt string             `json:"system_prompt"`
 	Model        string             `json:"model"`
 	Effort       string             `json:"effort"`
+	ContextTier  string             `json:"context_tier"`
 	Yolo         bool               `json:"yolo"`
 	Gadgets      bool               `json:"gadgets"`
 	Path         string             `json:"path"`
@@ -380,13 +381,16 @@ type continueResult struct {
 	Queued   bool
 }
 
-func (c *client) continueSession(sessionID, prompt, model, effort string) (continueResult, error) {
+func (c *client) continueSession(sessionID, prompt, model, effort, contextTier string) (continueResult, error) {
 	args := []string{sessionID, "--async"}
 	if model != "" {
 		args = append(args, "--model", model)
 	}
 	if effort != "" {
 		args = append(args, "--effort", effort)
+	}
+	if contextTier != "" {
+		args = append(args, "--context", contextTier)
 	}
 	args = append(args, prompt)
 	resp, err := c.send("continue", "session", args...)

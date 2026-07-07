@@ -24,6 +24,9 @@ type Session struct {
 	SystemPrompt string
 	Model        string
 	Effort       string
+	// ContextTier selects copilot's context-window tier (e.g. "long_context"
+	// for the 1M window). Copilot-only; empty means the default tier.
+	ContextTier  string
 	Yolo         bool
 	Path         string
 	Status       string
@@ -192,6 +195,10 @@ CREATE INDEX IF NOT EXISTS idx_memory_nodes_session ON memory_nodes(session_id);
 	// Migration: add effort column to sessions if missing.
 	db.Exec(`ALTER TABLE sessions ADD COLUMN effort TEXT NOT NULL DEFAULT ''`)
 
+	// Migration: add context_tier column to sessions if missing. Selects
+	// copilot's context-window tier (e.g. "long_context"); empty = default.
+	db.Exec(`ALTER TABLE sessions ADD COLUMN context_tier TEXT NOT NULL DEFAULT ''`)
+
 	// Migration: add memory column to sessions if missing.
 	db.Exec(`ALTER TABLE sessions ADD COLUMN memory TEXT NOT NULL DEFAULT ''`)
 
@@ -200,6 +207,7 @@ CREATE INDEX IF NOT EXISTS idx_memory_nodes_session ON memory_nodes(session_id);
 	// it is honored when the queue is later drained (empty = use session default).
 	db.Exec(`ALTER TABLE prompt_queue ADD COLUMN model TEXT NOT NULL DEFAULT ''`)
 	db.Exec(`ALTER TABLE prompt_queue ADD COLUMN effort TEXT NOT NULL DEFAULT ''`)
+	db.Exec(`ALTER TABLE prompt_queue ADD COLUMN context_tier TEXT NOT NULL DEFAULT ''`)
 
 	// Migration: add a source column to prompt_queue so the drain path can tell
 	// scheduler-originated prompts apart from user-typed ones (empty = user).
@@ -247,9 +255,9 @@ func (s *Store) CreateSession(sess *Session) error {
 	}
 
 	_, err := s.db.Exec(
-		`INSERT INTO sessions (session_id, name, agent, system_prompt, model, effort, yolo, path, status, agent_session_id, compaction_mode, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sess.SessionID, sess.Name, sess.Agent, sess.SystemPrompt, sess.Model, sess.Effort, yolo, sess.Path, sess.Status, sess.AgentSessionID, sess.CompactionMode, now, now,
+		`INSERT INTO sessions (session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, status, agent_session_id, compaction_mode, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sess.SessionID, sess.Name, sess.Agent, sess.SystemPrompt, sess.Model, sess.Effort, sess.ContextTier, yolo, sess.Path, sess.Status, sess.AgentSessionID, sess.CompactionMode, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("create session: %w", err)
@@ -260,14 +268,14 @@ func (s *Store) CreateSession(sess *Session) error {
 // GetSession retrieves a session by ID. Returns nil, nil if not found.
 func (s *Store) GetSession(sessionID string) (*Session, error) {
 	row := s.db.QueryRow(
-		`SELECT session_id, name, agent, system_prompt, model, effort, yolo, path, status, memory, agent_session_id, compaction_mode, context_tokens, context_window, created_at, updated_at
+		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, status, memory, agent_session_id, compaction_mode, context_tokens, context_window, created_at, updated_at
 		 FROM sessions WHERE session_id = ?`, sessionID,
 	)
 
 	sess := &Session{}
 	var yolo int
 	err := row.Scan(
-		&sess.SessionID, &sess.Name, &sess.Agent, &sess.SystemPrompt, &sess.Model, &sess.Effort,
+		&sess.SessionID, &sess.Name, &sess.Agent, &sess.SystemPrompt, &sess.Model, &sess.Effort, &sess.ContextTier,
 		&yolo, &sess.Path, &sess.Status, &sess.Memory, &sess.AgentSessionID, &sess.CompactionMode,
 		&sess.ContextTokens, &sess.ContextWindow, &sess.CreatedAt, &sess.UpdatedAt,
 	)
@@ -287,7 +295,7 @@ func (s *Store) GetSession(sessionID string) (*Session, error) {
 // ListSessions returns all sessions.
 func (s *Store) ListSessions() ([]*Session, error) {
 	rows, err := s.db.Query(
-		`SELECT session_id, name, agent, system_prompt, model, effort, yolo, path, status, memory, agent_session_id, compaction_mode, context_tokens, context_window, created_at, updated_at
+		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, status, memory, agent_session_id, compaction_mode, context_tokens, context_window, created_at, updated_at
 		 FROM sessions ORDER BY created_at`,
 	)
 	if err != nil {
@@ -300,7 +308,7 @@ func (s *Store) ListSessions() ([]*Session, error) {
 		sess := &Session{}
 		var yolo int
 		if err := rows.Scan(
-			&sess.SessionID, &sess.Name, &sess.Agent, &sess.SystemPrompt, &sess.Model, &sess.Effort,
+			&sess.SessionID, &sess.Name, &sess.Agent, &sess.SystemPrompt, &sess.Model, &sess.Effort, &sess.ContextTier,
 			&yolo, &sess.Path, &sess.Status, &sess.Memory, &sess.AgentSessionID, &sess.CompactionMode,
 			&sess.ContextTokens, &sess.ContextWindow, &sess.CreatedAt, &sess.UpdatedAt,
 		); err != nil {
@@ -316,7 +324,7 @@ func (s *Store) ListSessions() ([]*Session, error) {
 }
 
 // UpdateSessionFields updates specific fields of a session.
-func (s *Store) UpdateSessionFields(sessionID string, name, systemPrompt, model, effort, path, compactionMode *string, yolo *bool) error {
+func (s *Store) UpdateSessionFields(sessionID string, name, systemPrompt, model, effort, contextTier, path, compactionMode *string, yolo *bool) error {
 	sess, err := s.GetSession(sessionID)
 	if err != nil {
 		return err
@@ -337,6 +345,9 @@ func (s *Store) UpdateSessionFields(sessionID string, name, systemPrompt, model,
 	if effort != nil {
 		sess.Effort = *effort
 	}
+	if contextTier != nil {
+		sess.ContextTier = *contextTier
+	}
 	if path != nil {
 		sess.Path = *path
 	}
@@ -353,8 +364,8 @@ func (s *Store) UpdateSessionFields(sessionID string, name, systemPrompt, model,
 		yoloInt = 1
 	}
 	res, err := s.db.Exec(
-		`UPDATE sessions SET name = ?, system_prompt = ?, model = ?, effort = ?, yolo = ?, path = ?, compaction_mode = ?, updated_at = ? WHERE session_id = ?`,
-		sess.Name, sess.SystemPrompt, sess.Model, sess.Effort, yoloInt, sess.Path, sess.CompactionMode, now, sessionID,
+		`UPDATE sessions SET name = ?, system_prompt = ?, model = ?, effort = ?, context_tier = ?, yolo = ?, path = ?, compaction_mode = ?, updated_at = ? WHERE session_id = ?`,
+		sess.Name, sess.SystemPrompt, sess.Model, sess.Effort, sess.ContextTier, yoloInt, sess.Path, sess.CompactionMode, now, sessionID,
 	)
 	if err != nil {
 		return fmt.Errorf("update session: %w", err)
@@ -639,20 +650,22 @@ func (s *Store) GetConversationPaginated(sessionID string, limit, offset int) ([
 // prompt's origin ("" = user-typed, "scheduled" = scheduler-fired) so the drain
 // path can classify the resulting conversation turn.
 type QueuedPrompt struct {
-	Prompt string
-	Model  string
-	Effort string
-	Source string
+	Prompt      string
+	Model       string
+	Effort      string
+	ContextTier string
+	Source      string
 }
 
-// QueuePrompt adds a prompt to the queue for a session. The model/effort
-// override (may be empty) is stored so a temporary override chosen while the
-// session was busy is honored when the queue is drained. source records the
-// prompt's origin ("" for user-typed, "scheduled" for scheduler-fired).
-func (s *Store) QueuePrompt(sessionID, prompt, model, effort, source string) error {
+// QueuePrompt adds a prompt to the queue for a session. The model/effort/
+// context-tier override (may be empty) is stored so a temporary override chosen
+// while the session was busy is honored when the queue is drained. source
+// records the prompt's origin ("" for user-typed, "scheduled" for
+// scheduler-fired).
+func (s *Store) QueuePrompt(sessionID, prompt, model, effort, contextTier, source string) error {
 	_, err := s.db.Exec(
-		`INSERT INTO prompt_queue (session_id, prompt, model, effort, source) VALUES (?, ?, ?, ?, ?)`,
-		sessionID, prompt, model, effort, source,
+		`INSERT INTO prompt_queue (session_id, prompt, model, effort, context_tier, source) VALUES (?, ?, ?, ?, ?, ?)`,
+		sessionID, prompt, model, effort, contextTier, source,
 	)
 	if err != nil {
 		return fmt.Errorf("queue prompt: %w", err)
@@ -675,7 +688,7 @@ func (s *Store) DrainQueueGroup(sessionID string) ([]QueuedPrompt, error) {
 	defer tx.Rollback()
 
 	rows, err := tx.Query(
-		`SELECT id, prompt, model, effort, source FROM prompt_queue WHERE session_id = ? ORDER BY created_at, id`, sessionID,
+		`SELECT id, prompt, model, effort, context_tier, source FROM prompt_queue WHERE session_id = ? ORDER BY created_at, id`, sessionID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("drain queue group: %w", err)
@@ -684,18 +697,18 @@ func (s *Store) DrainQueueGroup(sessionID string) ([]QueuedPrompt, error) {
 	var ids []int64
 	var prompts []QueuedPrompt
 	var haveFirst bool
-	var firstModel, firstEffort string
+	var firstModel, firstEffort, firstTier string
 	for rows.Next() {
 		var id int64
 		var qp QueuedPrompt
-		if err := rows.Scan(&id, &qp.Prompt, &qp.Model, &qp.Effort, &qp.Source); err != nil {
+		if err := rows.Scan(&id, &qp.Prompt, &qp.Model, &qp.Effort, &qp.ContextTier, &qp.Source); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("scan queued prompt: %w", err)
 		}
 		if !haveFirst {
 			haveFirst = true
-			firstModel, firstEffort = qp.Model, qp.Effort
-		} else if qp.Model != firstModel || qp.Effort != firstEffort {
+			firstModel, firstEffort, firstTier = qp.Model, qp.Effort, qp.ContextTier
+		} else if qp.Model != firstModel || qp.Effort != firstEffort || qp.ContextTier != firstTier {
 			// Different override: end of the leading group.
 			break
 		}
@@ -722,7 +735,7 @@ func (s *Store) DrainQueueGroup(sessionID string) ([]QueuedPrompt, error) {
 // DrainQueue removes and returns all queued prompts for a session, ordered by creation time.
 func (s *Store) DrainQueue(sessionID string) ([]QueuedPrompt, error) {
 	rows, err := s.db.Query(
-		`SELECT id, prompt, model, effort, source FROM prompt_queue WHERE session_id = ? ORDER BY created_at, id`, sessionID,
+		`SELECT id, prompt, model, effort, context_tier, source FROM prompt_queue WHERE session_id = ? ORDER BY created_at, id`, sessionID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("drain queue: %w", err)
@@ -734,7 +747,7 @@ func (s *Store) DrainQueue(sessionID string) ([]QueuedPrompt, error) {
 	for rows.Next() {
 		var id int64
 		var qp QueuedPrompt
-		if err := rows.Scan(&id, &qp.Prompt, &qp.Model, &qp.Effort, &qp.Source); err != nil {
+		if err := rows.Scan(&id, &qp.Prompt, &qp.Model, &qp.Effort, &qp.ContextTier, &qp.Source); err != nil {
 			return nil, fmt.Errorf("scan queued prompt: %w", err)
 		}
 		ids = append(ids, id)

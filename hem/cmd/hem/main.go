@@ -540,6 +540,15 @@ func printResponse(data json.RawMessage, outputFmt string) {
 					{"status", result.Status},
 				},
 			}
+			if result.Model != "" {
+				td.Rows = append(td.Rows, []string{"model", result.Model})
+			}
+			if result.Effort != "" {
+				td.Rows = append(td.Rows, []string{"effort", result.Effort})
+			}
+			if result.ContextTier != "" {
+				td.Rows = append(td.Rows, []string{"context_tier", result.ContextTier})
+			}
 			showFmt := outputFmt
 			if showFmt == output.FormatText {
 				showFmt = output.FormatTable
