@@ -482,6 +482,7 @@ func printResponse(data json.RawMessage, outputFmt string) {
 			if td.Rows == nil {
 				td.Rows = [][]string{}
 			}
+			localizeTableTimestamps(&td)
 			// Default to table format for tabular data.
 			tableFmt := outputFmt
 			if tableFmt == output.FormatText {
@@ -1008,4 +1009,42 @@ func generateAndSaveKey(keyPath string) (ssh.PublicKey, error) {
 	}
 	log.Printf("generated new ECDSA key at %s", keyPath)
 	return pub, nil
+}
+
+// localizeTableTimestamps converts raw UTC ISO timestamps in known timestamp
+// columns ("Created", "Last Active", "Last Activity") into friendly local-time
+// strings for CLI display. The server sends raw UTC so each client localizes to
+// its own timezone.
+func localizeTableTimestamps(td *output.TableData) {
+	tsCols := map[int]bool{}
+	for i, h := range td.Headers {
+		switch h {
+		case "Created", "Last Active", "Last Activity":
+			tsCols[i] = true
+		}
+	}
+	if len(tsCols) == 0 {
+		return
+	}
+	for _, row := range td.Rows {
+		for i := range row {
+			if tsCols[i] {
+				row[i] = localizeISOTimestamp(row[i])
+			}
+		}
+	}
+}
+
+// localizeISOTimestamp parses a raw UTC ISO timestamp and formats it in the local
+// timezone as "Jan 02 15:04". Returns the input unchanged if empty/unparseable.
+func localizeISOTimestamp(ts string) string {
+	if ts == "" {
+		return ""
+	}
+	for _, layout := range []string{"2006-01-02T15:04:05Z", time.RFC3339} {
+		if t, err := time.Parse(layout, ts); err == nil {
+			return t.Local().Format("Jan 02 15:04")
+		}
+	}
+	return ts
 }

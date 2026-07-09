@@ -985,7 +985,7 @@
       const roleClass = turn.role;
       html += `
         <div class="msg">
-          <div class="msg-role ${roleClass}">${roleLabel}${turn.created_at ? ` <span style="color:var(--muted);font-weight:normal">${escapeHtml(turn.created_at)}</span>` : ''}</div>
+          <div class="msg-role ${roleClass}">${roleLabel}${turn.created_at ? ` <span style="color:var(--muted);font-weight:normal">${escapeHtml(formatTurnTime(turn.created_at))}</span>` : ''}</div>
           <div class="msg-content">${formatContent(content)}</div>
         </div>`;
     }
@@ -4152,6 +4152,17 @@
     if (secs < 86400) return Math.floor(secs / 3600) + 'h ago';
     if (secs < 604800) return Math.floor(secs / 86400) + 'd ago';
     return d.toLocaleDateString('en-US', { month: 'short', day: '2-digit' });
+  }
+
+  // formatTurnTime renders a raw UTC ISO turn timestamp as local wall-clock time
+  // (e.g. "15:04:05"). Falls back to the raw string if unparsable.
+  function formatTurnTime(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return iso;
+    return d.toLocaleTimeString('en-US', {
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+    });
   }
 
   // formatScheduleTime renders an RFC3339 schedule timestamp as a friendly local

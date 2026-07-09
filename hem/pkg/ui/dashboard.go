@@ -773,8 +773,8 @@ func relativeTime(ts string) string {
 	}
 
 	// "Jan 02 15:04" has no year — assume current year (or last year if in the future).
-	// Note: formatTimestamp already converts to local time before stripping timezone,
-	// so we interpret the parsed time as local (not UTC) to avoid double-conversion.
+	// The server now sends raw UTC ISO; this yearless branch is a legacy fallback and
+	// interprets the parsed time as local.
 	if t.Year() == 0 {
 		now := time.Now()
 		t = time.Date(now.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), 0, time.Local)

@@ -279,6 +279,7 @@ Line-delimited JSON, one request/response per connection:
 - `hem get-default agent|path|moneypenny|server` shows the current default for a given key.
 - `hem list defaults` shows all configured defaults.
 - The `--local` global flag forces local Unix socket connection, overriding any stored default server.
+- **Timestamps** are transmitted as raw UTC RFC3339 (`2006-01-02T15:04:05Z`) in all table results (dashboard, session list, subsessions) and chat turns; localization to the viewer's timezone happens at each display layer (the CLI table printer, the hem TUI, and the qew browser) — never on the server, whose process timezone may differ from the user's.
 
 ## Server
 

@@ -847,16 +847,20 @@ func versionLessThan(a, b string) bool {
 	return false // equal
 }
 
-// formatTimestamp formats an ISO timestamp into a human-friendly format.
-func formatTimestamp(ts string) string {
+// timestampForClient normalizes an ISO timestamp to raw UTC RFC3339 ("...Z") for
+// transmission to clients. Localization to the viewer's timezone happens at each
+// display layer (CLI printer, hem TUI, qew browser) — never on the server, whose
+// process timezone may differ from the user's. Returns "" if empty/unparseable.
+func timestampForClient(ts string) string {
 	if ts == "" {
 		return ""
 	}
-	t, err := time.Parse("2006-01-02T15:04:05Z", ts)
-	if err != nil {
-		return ts
+	for _, layout := range []string{"2006-01-02T15:04:05Z", time.RFC3339} {
+		if t, err := time.Parse(layout, ts); err == nil {
+			return t.UTC().Format("2006-01-02T15:04:05Z")
+		}
 	}
-	return t.Local().Format("Jan 02 15:04")
+	return ts
 }
 
 // moneypennyAddress returns a display address for a moneypenny.
@@ -3001,13 +3005,12 @@ func (e *Executor) ListSessions(args []string) *protocol.Response {
 				}
 			}
 
-			created := formatTimestamp(s.CreatedAt)
-			lastActive := formatTimestamp(s.LastAccessed)
+			created := timestampForClient(s.CreatedAt)
+			lastActive := timestampForClient(s.LastAccessed)
 			// Fallback to hem's tracked creation time if moneypenny didn't send timestamps.
 			if created == "" {
 				if t, ok := hemCreatedAt[s.SessionID]; ok && !t.IsZero() {
 					created = t.UTC().Format("2006-01-02T15:04:05Z")
-					created = formatTimestamp(created)
 				}
 			}
 			allSessions = append(allSessions, sessionInfo{
@@ -5161,8 +5164,8 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 			}
 		}
 
-		createdAtFormatted := formatTimestamp(createdAt)
-		lastActiveFormatted := formatTimestamp(lastAccessed)
+		createdAtFormatted := timestampForClient(createdAt)
+		lastActiveFormatted := timestampForClient(lastAccessed)
 
 		entries = append(entries, dashboardEntry{
 			SessionID:    sess.SessionID,
@@ -5217,8 +5220,8 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 				MPStatus:        subDisplayStatus,
 				HemStatus:       sub.HemStatus,
 				Moneypenny:      sub.MoneypennyName,
-				CreatedAt:       formatTimestamp(subCreated),
-				LastActive:      formatTimestamp(subLastAccessed),
+				CreatedAt:       timestampForClient(subCreated),
+				LastActive:      timestampForClient(subLastAccessed),
 				LastActiveRaw:   subLastAccessed,
 				CreatedAtRaw:    subCreated,
 				SortKey:         sortKey, // same category as parent
@@ -6033,7 +6036,7 @@ func (e *Executor) ListSubSessions(args []string) *protocol.Response {
 	for _, sub := range subs {
 		mp, err := e.store.GetMoneypenny(sub.MoneypennyName)
 		if err != nil || mp == nil {
-			result.Rows = append(result.Rows, []string{sub.SessionID, "", "unknown", "", sub.MoneypennyName, sub.CreatedAt.Format("Jan 02 15:04")})
+			result.Rows = append(result.Rows, []string{sub.SessionID, "", "unknown", "", sub.MoneypennyName, sub.CreatedAt.UTC().Format("2006-01-02T15:04:05Z")})
 			continue
 		}
 
@@ -6060,7 +6063,7 @@ func (e *Executor) ListSubSessions(args []string) *protocol.Response {
 			status = status + " (completed)"
 		}
 
-		result.Rows = append(result.Rows, []string{sub.SessionID, name, status, yolo, sub.MoneypennyName, sub.CreatedAt.Format("Jan 02 15:04")})
+		result.Rows = append(result.Rows, []string{sub.SessionID, name, status, yolo, sub.MoneypennyName, sub.CreatedAt.UTC().Format("2006-01-02T15:04:05Z")})
 	}
 
 	return protocol.OKResponse(result)
