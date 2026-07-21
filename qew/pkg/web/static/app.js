@@ -4020,7 +4020,7 @@
       <label for="trait-name">Name *</label>
       <input id="trait-name" type="text" placeholder="e.g. Concise commits">
       <label for="trait-prompt">Prompt</label>
-      <textarea id="trait-prompt" rows="6" placeholder="System-prompt snippet describing how the agent should behave..."></textarea>
+      <textarea id="trait-prompt" rows="14" placeholder="System-prompt snippet describing how the agent should behave..."></textarea>
       <div class="toggle-row"><input type="checkbox" id="trait-default"><label for="trait-default" style="margin:0;color:var(--text)">Enable by default for new agents</label></div>
       <div class="modal-actions">
         <button class="btn-muted" onclick="window._qewCloseWizard()">Cancel</button>
@@ -4072,7 +4072,7 @@
       <label for="trait-name">Name</label>
       <input id="trait-name" type="text" value="${escapeAttr(t.name || '')}">
       <label for="trait-prompt">Prompt</label>
-      <textarea id="trait-prompt" rows="6">${escapeHtml(t.prompt || '')}</textarea>
+      <textarea id="trait-prompt" rows="14">${escapeHtml(t.prompt || '')}</textarea>
       <div class="toggle-row"><input type="checkbox" id="trait-default"${t.enabled_by_default ? ' checked' : ''}><label for="trait-default" style="margin:0;color:var(--text)">Enable by default for new agents</label></div>
       <div class="modal-actions">
         <button class="btn-muted" onclick="window._qewCloseWizard()">Cancel</button>
