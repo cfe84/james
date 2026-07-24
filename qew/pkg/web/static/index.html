@@ -97,31 +97,31 @@ header h1 span { color: var(--primary); }
 #chat-view { display: none; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
 #dashboard-view { flex: 1; overflow-y: auto; display: flex; flex-direction: column; min-height: 0; }
 .chat-header {
-  display: flex; align-items: center; padding: 12px 0;
+  display: flex; flex-direction: column; align-items: stretch; gap: 8px;
+  padding: 12px 0;
   border-bottom: 1px solid var(--surface2); margin-bottom: 12px; flex-shrink: 0;
-  /* Wrap when the row overflows so the Actions menu is never pushed off the
-     right edge (its dropdown is right-aligned to the button). Only wraps when
-     items don't fit, so wide desktops keep a single row. */
-  flex-wrap: wrap; row-gap: 8px;
+}
+/* Line 1: back arrow, agent name, moneypenny. */
+.chat-header-line1 { display: flex; align-items: center; min-width: 0; }
+/* Line 2: context %, override selects, thoughts toggle, Actions menu (right-aligned). */
+.chat-header-line2 {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0;
 }
 .chat-header .back { cursor: pointer; margin-right: 12px; font-size: 1.2em; }
 .chat-header h2 { font-size: 1.1em; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-header .chat-mp { color: var(--muted); font-size: 0.85em; margin-left: 8px; }
+.chat-header-line1 .chat-mp { flex-shrink: 0; }
 .chat-header .chat-override {
   background: var(--surface); color: var(--text); border: 1px solid var(--surface2);
   border-radius: 6px; padding: 6px 10px; font-size: 0.9em; font-family: inherit;
-  margin-right: 8px; max-width: 180px; min-width: 0;
+  max-width: 180px; min-width: 0;
 }
 .chat-header .chat-override:focus { outline: none; border-color: var(--primary); }
-/* Keep the toggle + Actions menu from ever shrinking or being cropped. */
+/* Keep the toggle + Actions menu from ever shrinking or being cropped, and push
+   the Actions dropdown to the right edge of line 2 so its right-aligned menu
+   opens on-screen. */
 .chat-header #thoughts-toggle, .chat-header .dropdown { flex-shrink: 0; }
-/* On narrow screens the override selects would otherwise push the Actions
-   menu off the right edge. Move the selects to their own row (order:10) so the
-   back/title/toggle/Actions stay visible on the first. */
-@media (max-width: 640px) {
-  .chat-header { column-gap: 8px; }
-  .chat-header .chat-override { order: 10; flex: 1 1 calc(50% - 4px); max-width: none; margin-right: 0; }
-}
+.chat-header-line2 .dropdown { margin-left: auto; }
 .chat-messages { flex: 1; overflow-y: auto; padding-bottom: 12px; min-height: 0; }
 .msg { margin-bottom: 12px; }
 .msg-role {
@@ -486,15 +486,18 @@ header h1 span { color: var(--primary); }
 
   <div id="chat-view">
     <div class="chat-header">
-      <span class="back" id="chat-back">←</span>
-      <h2 id="chat-title">Chat</h2>
-      <span class="chat-mp" id="chat-mp"></span>
-      <span class="chat-mp" id="chat-context" title="Context usage (custom compaction)"></span>
-      <select id="chat-model-override" class="chat-override" title="Model override — esc-o"></select>
-      <select id="chat-effort-override" class="chat-override" title="Effort override — esc-f"></select>
-      <select id="chat-context-override" class="chat-override" title="Context override — esc-w" style="display:none"></select>
-      <button id="thoughts-toggle" title="Train of thought hidden (click to show) — T" style="background:none;border:none;font-size:1.2em;cursor:pointer;margin-right:4px">💤</button>
-      <div class="dropdown" id="chat-menu-wrap">
+      <div class="chat-header-line1">
+        <span class="back" id="chat-back">←</span>
+        <h2 id="chat-title">Chat</h2>
+        <span class="chat-mp" id="chat-mp"></span>
+      </div>
+      <div class="chat-header-line2">
+        <span class="chat-mp" id="chat-context" title="Context usage (custom compaction)"></span>
+        <select id="chat-model-override" class="chat-override" title="Model override — esc-o"></select>
+        <select id="chat-effort-override" class="chat-override" title="Effort override — esc-f"></select>
+        <select id="chat-context-override" class="chat-override" title="Context override — esc-w" style="display:none"></select>
+        <button id="thoughts-toggle" title="Train of thought hidden (click to show) — T" style="background:none;border:none;font-size:1.2em;cursor:pointer;margin-right:4px">💤</button>
+        <div class="dropdown" id="chat-menu-wrap">
         <button class="btn-muted" id="chat-menu-btn">Actions ▾</button>
         <div class="dropdown-menu" id="chat-menu">
           <button data-action="diff">Git Diff</button>
@@ -518,6 +521,7 @@ header h1 span { color: var(--primary); }
           <hr>
           <button data-action="delete" style="color:var(--danger)">Delete Session</button>
         </div>
+      </div>
       </div>
     </div>
     <div class="chat-messages" id="chat-messages"></div>
