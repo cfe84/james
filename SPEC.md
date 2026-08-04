@@ -638,7 +638,9 @@ advances, so it is never reprocessed):
   enqueued in `channel_outbox`; a drainer sends it via the provider. Every outbound message carries
   an agent-attribution prefix `[🤖 <name>]` rendered in the provider's native format — for
   Teams the message is sent as HTML with the prefix italicized and gray on its own line above the
-  body (the body is HTML-escaped, newlines preserved as `<br>`). `<name>` is the channel's configured
+  body. The Markdown body is converted to the HTML subset Teams supports (`markdownToTeamsHTML`:
+  headings→bold, bold/italic/strike, inline `code` and fenced blocks→`<pre>`, blockquotes, ordered/
+  unordered lists, links; all literal text HTML-escaped). `<name>` is the channel's configured
   `--mention` when set, otherwise the session name.
 - **Reply routing**: `ReplyChannelID` flows as metadata through the run/queue/schedule paths. A
   scheduled prompt created with `--channel` delivers its output to that channel. Queued prompts

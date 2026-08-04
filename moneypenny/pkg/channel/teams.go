@@ -96,10 +96,10 @@ func (t *teamsProvider) ListMessages(ctx context.Context, targetID, sinceTS stri
 // Send posts content and returns the created message id. When senderName is
 // set, an attribution prefix "[🤖 name]" is rendered italicized and gray on its
 // own line above the body. The message is sent as HTML so the formatting
-// renders; the body is HTML-escaped and its newlines become <br> so plain agent
-// output is preserved verbatim.
+// renders; the Markdown body is converted to the HTML subset Teams supports
+// (headings, bold/italic, code, quotes, lists, links).
 func (t *teamsProvider) Send(ctx context.Context, targetID, senderName, content string) (string, error) {
-	body := htmlEscapeMultiline(content)
+	body := markdownToTeamsHTML(content)
 	msg := body
 	if strings.TrimSpace(senderName) != "" {
 		prefix := `<i><span style="color:#808080">[🤖 ` + htmlEscape(senderName) + `]</span></i>`
@@ -305,15 +305,6 @@ func cleanHTML(s string) string {
 // interpreted as markup when sending HTML content to Teams.
 func htmlEscape(s string) string {
 	return html.EscapeString(s)
-}
-
-// htmlEscapeMultiline escapes s for HTML and converts newlines to <br> so plain
-// (or markdown) agent output keeps its line breaks when sent as HTML.
-func htmlEscapeMultiline(s string) string {
-	s = html.EscapeString(s)
-	s = strings.ReplaceAll(s, "\r\n", "\n")
-	s = strings.ReplaceAll(s, "\n", "<br>")
-	return s
 }
 
 func parseSentID(text string) string {

@@ -19,10 +19,10 @@ func TestAsRecordsToleratesTrailingText(t *testing.T) {
 	}
 }
 
-func TestHTMLEscapeMultiline(t *testing.T) {
-	got := htmlEscapeMultiline("a < b & c\nline2")
-	want := "a &lt; b &amp; c<br>line2"
+func TestHTMLEscapeMarkdown(t *testing.T) {
+	got := markdownToTeamsHTML("a < b & c")
+	want := "<p>a &lt; b &amp; c</p>"
 	if got != want {
-		t.Fatalf("htmlEscapeMultiline = %q want %q", got, want)
+		t.Fatalf("markdownToTeamsHTML = %q want %q", got, want)
 	}
 }

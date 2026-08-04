@@ -384,10 +384,16 @@ moneypenny/pkg/handler/channels.go  # ChannelManager (poll/forward/drain) + CRUD
 
 2. **Provider abstraction.** `Provider` (Name, Caps, Search, Resolve, ListMessages, Send,
    LatestCursor, Self, Close) decouples the manager from Teams specifics so email/WhatsApp/etc. can be
-   added later. A `Registry` shares one subprocess per moneypenny. `teams.go` maps to the Teams
+   added later. `Send(ctx, targetID, senderName, content)` takes the attribution name so each provider
+   renders it natively. A `Registry` shares one subprocess per moneypenny. `teams.go` maps to the Teams
    tools `ListChats`, `SearchTeamsMessages`, `GetChat`, `ListChatMessages`, `SendMessageToChat`,
    `GetUserPresence` (for owner identity), with **defensive multi-field-name JSON parsing** because
-   the `agency` output shape is not verifiable on the dev box. **Result blocks:** agency returns
+   the `agency` output shape is not verifiable on the dev box. **Outbound formatting:** agent output is
+   Markdown; `markdownToTeamsHTML` (`markdown.go`) converts it to the HTML subset Teams supports
+   (contentType=html) — headings→`<b>` (Teams has no `<h1>`-`<h6>`), bold/italic/`<strike>`, inline
+   `<code>` and fenced blocks→`<pre>`, `<blockquote>`, `<ul>`/`<ol>`, `<a>` links — with all literal
+   text HTML-escaped and code spans extracted before escaping so their contents aren't re-parsed.
+   **Result blocks:** agency returns
    tool results as multiple MCP content blocks — the JSON payload plus a trailing telemetry block
    (`CorrelationId: ..., TimeStamp: ...`). `callTool` drops the `CorrelationId:` trailer block, and
    `asRecords` decodes with a streaming `json.Decoder` (parses the leading JSON value, ignores any
