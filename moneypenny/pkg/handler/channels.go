@@ -457,11 +457,17 @@ func (h *Handler) drainOutbox(ctx context.Context) {
 }
 
 // channelDisplayName returns the agent name used to attribute a channel's
-// outbound messages, falling back to the agent type and finally a generic tag.
+// outbound messages. When the channel has a configured mention, that name is
+// used (so the agent signs replies with the name people address it by);
+// otherwise it falls back to the session name, then the agent type, then a
+// generic tag.
 func (h *Handler) channelDisplayName(channelID int64) string {
 	ch, err := h.store.GetChannel(channelID)
 	if err != nil || ch == nil {
 		return ""
+	}
+	if ch.Mention != "" {
+		return ch.Mention
 	}
 	name := ""
 	if sess, err := h.store.GetSession(ch.SessionID); err == nil && sess != nil {
