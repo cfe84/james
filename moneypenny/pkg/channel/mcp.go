@@ -256,6 +256,13 @@ func (c *mcpClient) callTool(_ context.Context, name string, args map[string]int
 	}
 	var sb strings.Builder
 	for _, ct := range res.Content {
+		// agency appends a telemetry trailer content block
+		// ("CorrelationId: ..., TimeStamp: ...") to tool results. It is not part
+		// of the payload and would corrupt JSON parsing if concatenated with the
+		// data block, so drop it.
+		if strings.HasPrefix(strings.TrimSpace(ct.Text), "CorrelationId:") {
+			continue
+		}
 		sb.WriteString(ct.Text)
 	}
 	text := sb.String()

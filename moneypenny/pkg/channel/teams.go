@@ -170,7 +170,11 @@ func asRecords(text string) []map[string]interface{} {
 		return nil
 	}
 	var any interface{}
-	if err := json.Unmarshal([]byte(text), &any); err != nil {
+	// Use a streaming decoder so a single leading JSON value is parsed even if
+	// the provider appended trailing non-JSON text (e.g. a telemetry trailer);
+	// json.Unmarshal would reject trailing bytes.
+	dec := json.NewDecoder(strings.NewReader(text))
+	if err := dec.Decode(&any); err != nil {
 		return nil
 	}
 	return recordsFrom(any)

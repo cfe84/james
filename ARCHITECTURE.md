@@ -387,7 +387,12 @@ moneypenny/pkg/handler/channels.go  # ChannelManager (poll/forward/drain) + CRUD
    added later. A `Registry` shares one subprocess per moneypenny. `teams.go` maps to the Teams
    tools `ListChats`, `SearchTeamsMessages`, `GetChat`, `ListChatMessages`, `SendMessageToChat`,
    `GetUserPresence` (for owner identity), with **defensive multi-field-name JSON parsing** because
-   the `agency` output shape is not verifiable on the dev box.
+   the `agency` output shape is not verifiable on the dev box. **Result blocks:** agency returns
+   tool results as multiple MCP content blocks — the JSON payload plus a trailing telemetry block
+   (`CorrelationId: ..., TimeStamp: ...`). `callTool` drops the `CorrelationId:` trailer block, and
+   `asRecords` decodes with a streaming `json.Decoder` (parses the leading JSON value, ignores any
+   trailing text) so payload parsing is robust to this. Concatenating the trailer previously produced
+   invalid JSON, silently emptying every parse and leaving channels stuck in cursor bootstrap.
 
 3. **Polling cadence & cursor bootstrap.** A single 5s master tick drives the `ChannelManager`. Each
    enabled channel is polled every 60s normally, or every 10s for 5 minutes after any activity (sent
