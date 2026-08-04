@@ -3214,7 +3214,7 @@
 
     async function loadProviders() {
       try {
-        const resp = await apiCall('list', 'channel-providers', ['--session-id', sid]);
+        const resp = await apiCall('list', 'channel-provider', ['--session-id', sid]);
         if (resp.status === 'error') {
           alert(resp.message);
           return [];
