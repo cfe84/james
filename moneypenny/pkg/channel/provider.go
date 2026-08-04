@@ -51,8 +51,12 @@ type Provider interface {
 	// (RFC3339). When sinceTS is empty, providers should return only the most
 	// recent messages so a freshly-bound channel doesn't replay history.
 	ListMessages(ctx context.Context, targetID, sinceTS string) ([]Message, error)
-	// Send posts content to the target and returns the created message id.
-	Send(ctx context.Context, targetID, content string) (string, error)
+	// Send posts a message to the target and returns the created message id.
+	// senderName, when non-empty, identifies the agent that produced the message
+	// so the provider can render an attribution prefix in its native format
+	// (e.g. Teams renders "[🤖 name]" italicized above the body). content is the
+	// raw message body.
+	Send(ctx context.Context, targetID, senderName, content string) (string, error)
 	// LatestCursor returns the id and timestamp (RFC3339) of the most recent
 	// message on the target, used to initialize a channel's poll cursor at bind
 	// time so pre-existing history is not replayed. Empty strings mean the

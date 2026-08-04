@@ -301,7 +301,7 @@ func (h *Handler) pollChannel(ctx context.Context, ch *store.Channel) {
 	}
 
 	sent, _ := h.store.SentMessageIDs(ch.ID)
-	selfPrefix := strings.TrimRight(h.prefixForChannel(ch.ID), "\n")
+	selfPrefix := h.channelEchoMarker(ch.ID)
 	newestID, newestTS := ch.LastSeenID, ch.LastSeenTS
 	var inbound []channel.Message
 	for _, m := range msgs {
@@ -443,8 +443,8 @@ func (h *Handler) drainOutbox(ctx context.Context) {
 			_ = h.store.MarkOutboxError(it.ID, err.Error())
 			continue
 		}
-		content := h.prefixForChannel(it.ChannelID) + it.Content
-		msgID, err := prov.Send(ctx, it.TargetID, content)
+		name := h.channelDisplayName(it.ChannelID)
+		msgID, err := prov.Send(ctx, it.TargetID, name, it.Content)
 		if err != nil {
 			_ = h.store.MarkOutboxError(it.ID, err.Error())
 			_ = h.store.SetChannelError(it.ChannelID, err.Error())
@@ -456,9 +456,9 @@ func (h *Handler) drainOutbox(ctx context.Context) {
 	}
 }
 
-// prefixForChannel returns the "[<session name>]\n" prefix for a channel's
+// channelDisplayName returns the agent name used to attribute a channel's
 // outbound messages, falling back to the agent type and finally a generic tag.
-func (h *Handler) prefixForChannel(channelID int64) string {
+func (h *Handler) channelDisplayName(channelID int64) string {
 	ch, err := h.store.GetChannel(channelID)
 	if err != nil || ch == nil {
 		return ""
@@ -473,5 +473,17 @@ func (h *Handler) prefixForChannel(channelID int64) string {
 	if name == "" {
 		name = "agent"
 	}
-	return "[" + name + "]\n"
+	return name
+}
+
+// channelEchoMarker returns the plaintext attribution marker ("[🤖 name]") that
+// prefixes a channel's outbound messages once HTML is stripped. It is used to
+// suppress echoes: a polled message whose cleaned text starts with this marker
+// is one of our own sends.
+func (h *Handler) channelEchoMarker(channelID int64) string {
+	name := h.channelDisplayName(channelID)
+	if name == "" {
+		return ""
+	}
+	return "[🤖 " + name + "]"
 }

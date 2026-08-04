@@ -18,3 +18,11 @@ func TestAsRecordsToleratesTrailingText(t *testing.T) {
 		t.Fatalf("unexpected text: %q", msgs[0].Text)
 	}
 }
+
+func TestHTMLEscapeMultiline(t *testing.T) {
+	got := htmlEscapeMultiline("a < b & c\nline2")
+	want := "a &lt; b &amp; c<br>line2"
+	if got != want {
+		t.Fatalf("htmlEscapeMultiline = %q want %q", got, want)
+	}
+}

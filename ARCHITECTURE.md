@@ -403,8 +403,10 @@ moneypenny/pkg/handler/channels.go  # ChannelManager (poll/forward/drain) + CRUD
 
 4. **Echo suppression + cursor advancement.** Messages the agent itself sent are recorded in
    `channel_outbox.sent_msg_id` and filtered on poll; a **secondary guard** also skips any message
-   whose text carries the channel's own `[<session name>]` outbound prefix, covering providers that
-   don't return a parseable sent id (which would otherwise cause a reply→re-ingest loop). The cursor
+   whose cleaned text carries the channel's own `[🤖 <session name>]` attribution marker, covering
+   providers that don't return a parseable sent id (which would otherwise cause a reply→re-ingest
+   loop). Because the marker survives HTML stripping (`cleanHTML`), it still matches echoes of the
+   HTML-formatted Teams send. The cursor
    is advanced only **after** the inbound messages are handed off (run started or queued) — a
    transient forward failure retries next poll instead of dropping messages — except for self-only
    polls and unrecoverable cases (missing session), which advance to avoid infinite reprocessing.

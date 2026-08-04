@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"regexp"
 	"strings"
 	"sync"
@@ -92,11 +93,22 @@ func (t *teamsProvider) ListMessages(ctx context.Context, targetID, sinceTS stri
 	return res, nil
 }
 
-// Send posts content and returns the created message id.
-func (t *teamsProvider) Send(ctx context.Context, targetID, content string) (string, error) {
+// Send posts content and returns the created message id. When senderName is
+// set, an attribution prefix "[🤖 name]" is rendered italicized and gray on its
+// own line above the body. The message is sent as HTML so the formatting
+// renders; the body is HTML-escaped and its newlines become <br> so plain agent
+// output is preserved verbatim.
+func (t *teamsProvider) Send(ctx context.Context, targetID, senderName, content string) (string, error) {
+	body := htmlEscapeMultiline(content)
+	msg := body
+	if strings.TrimSpace(senderName) != "" {
+		prefix := `<i><span style="color:#808080">[🤖 ` + htmlEscape(senderName) + `]</span></i>`
+		msg = prefix + "<br><br>" + body
+	}
 	out, err := t.mc.callTool(ctx, "SendMessageToChat", map[string]interface{}{
-		"chatId":  targetID,
-		"content": content,
+		"chatId":      targetID,
+		"content":     msg,
+		"contentType": "html",
 	})
 	if err != nil {
 		return "", err
@@ -287,6 +299,21 @@ func cleanHTML(s string) string {
 	s = strings.ReplaceAll(s, "&lt;", "<")
 	s = strings.ReplaceAll(s, "&gt;", ">")
 	return strings.TrimSpace(s)
+}
+
+// htmlEscape escapes the minimal set of characters that would otherwise be
+// interpreted as markup when sending HTML content to Teams.
+func htmlEscape(s string) string {
+	return html.EscapeString(s)
+}
+
+// htmlEscapeMultiline escapes s for HTML and converts newlines to <br> so plain
+// (or markdown) agent output keeps its line breaks when sent as HTML.
+func htmlEscapeMultiline(s string) string {
+	s = html.EscapeString(s)
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\n", "<br>")
+	return s
 }
 
 func parseSentID(text string) string {

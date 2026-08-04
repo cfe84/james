@@ -635,8 +635,10 @@ advances, so it is never reprocessed):
   continuation prompt. The cursor advances past every message examined so nothing is reprocessed.
   At bind time the cursor is initialised to the latest message so history is not replayed.
 - **Outbound**: When the agent finishes a run whose reply is routed to a channel, the response is
-  enqueued in `channel_outbox`; a drainer sends it via the provider. Every outbound message is
-  prefixed with `[<session name>]\n` so channel participants can tell which agent replied.
+  enqueued in `channel_outbox`; a drainer sends it via the provider. Every outbound message carries
+  an agent-attribution prefix `[🤖 <session name>]` rendered in the provider's native format — for
+  Teams the message is sent as HTML with the prefix italicized and gray on its own line above the
+  body (the body is HTML-escaped, newlines preserved as `<br>`).
 - **Reply routing**: `ReplyChannelID` flows as metadata through the run/queue/schedule paths. A
   scheduled prompt created with `--channel` delivers its output to that channel. Queued prompts
   are only grouped together when they share a reply channel.
