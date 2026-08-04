@@ -240,6 +240,11 @@ type RunParams struct {
 	// attachment flag, so their containing directories are granted via
 	// --add-dir and the paths are referenced in the prompt text.
 	Attachments []string
+	// ReplyChannelID, when non-zero, is the id of the channel (external
+	// communication binding) whose reply should receive this run's final
+	// assistant text. It is pure routing metadata: the runner ignores it, and
+	// the handler enqueues the response to that channel's outbox on completion.
+	ReplyChannelID int64
 }
 
 // agentSessionID returns the id to hand to the underlying agent CLI.

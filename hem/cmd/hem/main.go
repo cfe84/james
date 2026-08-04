@@ -906,7 +906,7 @@ Session management:
   upload attachment --session-id ID --name NAME --content BASE64  (used by Qew to stage files for the next prompt)
 
 Scheduling:
-  schedule session SESSION_ID --at TIME --prompt PROMPT [--cron EXPR]
+  schedule session SESSION_ID --at TIME --prompt PROMPT [--cron EXPR] [--channel CHANNEL_ID]
   list schedule --session-id SESSION_ID
   cancel schedule SCHEDULE_ID --session-id SESSION_ID
 
@@ -920,6 +920,15 @@ Scheduling:
     '0 9 * * 1'           Mon at 9am
     '@every 2h'           Every 2 hours
     '@daily'              Once a day
+
+Channels (bind a session to external communication like Teams):
+  list channel-providers [-m MONEYPENNY]
+  search channel --provider teams --query TEXT [-m MONEYPENNY]
+  create channel --session-id ID --provider teams --target-id TARGET [--label LABEL]
+  list channel --session-id ID
+  enable channel CHANNEL_ID --session-id ID
+  disable channel CHANNEL_ID --session-id ID
+  delete channel CHANNEL_ID --session-id ID
 
 Subagents:
   create subsession PARENT_SESSION_ID PROMPT [--name, --moneypenny, --agent, --system-prompt, --yolo, --path, --async, --gadgets]

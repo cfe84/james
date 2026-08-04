@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"james/moneypenny/pkg/agent"
+	"james/moneypenny/pkg/channel"
 	"james/moneypenny/pkg/envelope"
 	"james/moneypenny/pkg/memory"
 	"james/moneypenny/pkg/store"
@@ -38,6 +39,8 @@ type Handler struct {
 	updateStatusFunc  func() envelope.UpdateStatusResponse
 	triggerUpdateFunc func() bool                  // returns true if check was queued
 	notifyWriter      *envelope.NotificationWriter // for sending async notifications to hem
+	channels          *channel.Registry            // external communication channel providers
+	channelCmd        string                       // base command for provider MCP servers (default "agency")
 }
 
 // resultCallback is called when an async agent execution completes.
@@ -49,6 +52,11 @@ type resultCallback func(sessionID, response string, err error)
 // used to allocate per-session persistent directories (sessions/<sessionID>/).
 func New(s *store.Store, runner *agent.Runner, version, dataDir string) *Handler {
 	h := &Handler{store: s, runner: runner, version: version, dataDir: dataDir, vlog: func(string, ...interface{}) {}}
+	h.channelCmd = os.Getenv("MONEYPENNY_CHANNEL_CMD")
+	if h.channelCmd == "" {
+		h.channelCmd = "agency"
+	}
+	h.channels = channel.NewRegistry(h.channelCmd)
 	// Persist thinking and intermediate-text activity events as conversation
 	// turns so the train of thought survives across reloads.
 	runner.SetPersistentActivityFunc(func(sessionID, eventType, content string) {
@@ -228,6 +236,20 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.compactSessionCmd(ctx, cmd)
 	case "distill_session":
 		return h.distillSessionCmd(ctx, cmd)
+	case "list_channel_providers":
+		return h.listChannelProviders(ctx, cmd)
+	case "search_channel_targets":
+		return h.searchChannelTargets(ctx, cmd)
+	case "create_channel":
+		return h.createChannel(ctx, cmd)
+	case "list_channels":
+		return h.listChannels(ctx, cmd)
+	case "delete_channel":
+		return h.deleteChannel(ctx, cmd)
+	case "set_channel_enabled":
+		return h.setChannelEnabled(ctx, cmd)
+	case "update_channel":
+		return h.updateChannel(ctx, cmd)
 	default:
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("unknown method: %s", cmd.Method))
 	}
@@ -685,6 +707,15 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 		h.vlog("skipping empty assistant turn for session %s (agent produced no final text)", sessionID)
 	}
 
+	// Mirror the response to an external channel when this run was routed there
+	// (channel-originated message or a scheduled prompt with --channel). The
+	// outbox drainer adds the "[<session name>]\n" prefix and performs the send.
+	if params.ReplyChannelID != 0 && strings.TrimSpace(responseText) != "" {
+		if err := h.store.EnqueueOutbox(params.ReplyChannelID, responseText); err != nil {
+			h.vlog("failed to enqueue channel reply for session %s: %v", sessionID, err)
+		}
+	}
+
 	h.vlog("agent completed for session %s", sessionID)
 
 	// Record context usage for this turn so custom compaction can be triggered
@@ -757,16 +788,17 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 		}
 
 		h.runAgent(sessionID, agent.RunParams{
-			SessionID:    sessionID,
-			Agent:        sess.Agent,
-			Prompt:       combinedPrompt,
-			SystemPrompt: sess.SystemPrompt,
-			Model:        effModel,
-			Effort:       effEffort,
-			ContextTier:  effTier,
-			Yolo:         sess.Yolo,
-			Path:         sess.Path,
-			Resume:       true,
+			SessionID:      sessionID,
+			Agent:          sess.Agent,
+			Prompt:         combinedPrompt,
+			SystemPrompt:   sess.SystemPrompt,
+			Model:          effModel,
+			Effort:         effEffort,
+			ContextTier:    effTier,
+			Yolo:           sess.Yolo,
+			Path:           sess.Path,
+			Resume:         true,
+			ReplyChannelID: first.ReplyChannelID,
 		})
 		return
 	}
@@ -2086,7 +2118,7 @@ func (h *Handler) schedule(_ context.Context, cmd *envelope.Command) *envelope.R
 		}
 	}
 
-	id, err := h.store.CreateScheduleWithCron(data.SessionID, data.Prompt, scheduledAt, data.CronExpr)
+	id, err := h.store.CreateScheduleFull(data.SessionID, data.Prompt, scheduledAt, data.CronExpr, data.ReplyChannelID)
 	if err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to create schedule: %v", err))
 	}
@@ -2128,13 +2160,14 @@ func (h *Handler) listSchedules(_ context.Context, cmd *envelope.Command) *envel
 	var infos []envelope.ScheduleInfo
 	for _, s := range schedules {
 		infos = append(infos, envelope.ScheduleInfo{
-			ID:          s.ID,
-			SessionID:   s.SessionID,
-			Prompt:      s.Prompt,
-			ScheduledAt: s.ScheduledAt.UTC().Format(time.RFC3339),
-			Status:      s.Status,
-			CronExpr:    s.CronExpr,
-			CreatedAt:   s.CreatedAt.UTC().Format(time.RFC3339),
+			ID:             s.ID,
+			SessionID:      s.SessionID,
+			Prompt:         s.Prompt,
+			ScheduledAt:    s.ScheduledAt.UTC().Format(time.RFC3339),
+			Status:         s.Status,
+			CronExpr:       s.CronExpr,
+			ReplyChannelID: s.ReplyChannelID,
+			CreatedAt:      s.CreatedAt.UTC().Format(time.RFC3339),
 		})
 	}
 
@@ -2308,20 +2341,21 @@ func (h *Handler) processDueSchedules() {
 			}
 
 			go h.runAgent(sch.SessionID, agent.RunParams{
-				SessionID:    sch.SessionID,
-				Agent:        sess.Agent,
-				Prompt:       sch.Prompt,
-				SystemPrompt: sess.SystemPrompt,
-				Model:        sess.Model,
-				Effort:       sess.Effort,
-				ContextTier:  sess.ContextTier,
-				Yolo:         sess.Yolo,
-				Path:         sess.Path,
-				Resume:       true,
+				SessionID:      sch.SessionID,
+				Agent:          sess.Agent,
+				Prompt:         sch.Prompt,
+				SystemPrompt:   sess.SystemPrompt,
+				Model:          sess.Model,
+				Effort:         sess.Effort,
+				ContextTier:    sess.ContextTier,
+				Yolo:           sess.Yolo,
+				Path:           sess.Path,
+				Resume:         true,
+				ReplyChannelID: sch.ReplyChannelID,
 			})
 		} else {
 			// Session is busy — queue the prompt, it'll run after current task finishes.
-			if err := h.store.QueuePrompt(sch.SessionID, sch.Prompt, "", "", "", "scheduled"); err != nil {
+			if err := h.store.QueuePromptChannel(sch.SessionID, sch.Prompt, "", "", "", "scheduled", sch.ReplyChannelID); err != nil {
 				h.vlog("scheduler: failed to queue prompt for session %s: %v", sch.SessionID, err)
 				_ = h.store.UpdateScheduleStatus(sch.ID, store.SchedulePending)
 				continue
@@ -2345,7 +2379,7 @@ func (h *Handler) scheduleNextCron(sch *store.Schedule) {
 		h.vlog("scheduler: invalid cron expression %q for schedule %d: %v", sch.CronExpr, sch.ID, err)
 		return
 	}
-	id, err := h.store.CreateScheduleWithCron(sch.SessionID, sch.Prompt, next, sch.CronExpr)
+	id, err := h.store.CreateScheduleFull(sch.SessionID, sch.Prompt, next, sch.CronExpr, sch.ReplyChannelID)
 	if err != nil {
 		h.vlog("scheduler: failed to create next cron occurrence for schedule %d: %v", sch.ID, err)
 		return

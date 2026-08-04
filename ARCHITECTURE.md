@@ -358,6 +358,91 @@ The Executor (hem/pkg/commands) has been refactored to follow Single Responsibil
 - Better thread safety encapsulation
 - Simpler to extend and maintain
 
+## Channels - External Communication
+
+Channels bind a session to an external conversation surface (Microsoft Teams first) and mirror the
+agent's replies back. The feature is **moneypenny-owned**; hem/TUI/Qew are thin management clients.
+
+### Project Structure
+
+```
+moneypenny/pkg/channel/
+├── mcp.go        # Dependency-free JSON-RPC-2.0-over-stdio MCP client
+├── provider.go   # Provider interface + Registry (one shared subprocess per moneypenny)
+└── teams.go      # Teams provider mapping to the agency Teams MCP tools
+moneypenny/pkg/handler/channels.go  # ChannelManager (poll/forward/drain) + CRUD handlers
+```
+
+### Key Technical Decisions
+
+1. **MCP client is handwritten and dependency-free.** Moneypenny's `go.mod` is deliberately minimal
+   (only go-sqlite3 + x/crypto), so the MCP client (`mcp.go`) implements JSON-RPC 2.0 over stdio by
+   hand: lazy subprocess spawn, `initialize` handshake (protocol `2024-11-05`), `tools/call`
+   returning concatenated text content, 15s backoff on failure. The subprocess command is
+   configurable via `MONEYPENNY_CHANNEL_CMD` (default `agency`); the Teams provider runs
+   `agency mcp teams`.
+
+2. **Provider abstraction.** `Provider` (Name, Caps, Search, Resolve, ListMessages, Send,
+   LatestCursor, Self, Close) decouples the manager from Teams specifics so email/WhatsApp/etc. can be
+   added later. A `Registry` shares one subprocess per moneypenny. `teams.go` maps to the Teams
+   tools `ListChats`, `SearchTeamsMessages`, `GetChat`, `ListChatMessages`, `SendMessageToChat`,
+   `GetUserPresence` (for owner identity), with **defensive multi-field-name JSON parsing** because
+   the `agency` output shape is not verifiable on the dev box.
+
+3. **Polling cadence & cursor bootstrap.** A single 5s master tick drives the `ChannelManager`. Each
+   enabled channel is polled every 60s normally, or every 10s for 5 minutes after any activity (sent
+   or received), then reverts. Because a provider's `ListMessages` returns nothing for an empty cursor
+   (to avoid replaying history), the first poll of a channel whose bind-time cursor is empty seeds it
+   from the target's latest message (`LatestCursor`) rather than forwarding — so a channel can never
+   get stuck permanently dead.
+
+4. **Echo suppression + cursor advancement.** Messages the agent itself sent are recorded in
+   `channel_outbox.sent_msg_id` and filtered on poll; a **secondary guard** also skips any message
+   whose text carries the channel's own `[<session name>]` outbound prefix, covering providers that
+   don't return a parseable sent id (which would otherwise cause a reply→re-ingest loop). The cursor
+   is advanced only **after** the inbound messages are handed off (run started or queued) — a
+   transient forward failure retries next poll instead of dropping messages — except for self-only
+   polls and unrecoverable cases (missing session), which advance to avoid infinite reprocessing.
+
+5. **Reply routing as metadata.** `ReplyChannelID` is threaded through `RunParams`, the prompt queue,
+   and the scheduler purely as metadata — the agent runner ignores it. On run completion, `runAgent`
+   enqueues the response text in `channel_outbox`; the drainer prepends `[<session name>]\n`
+   (fallback: agent type, then "agent") at **send** time and calls `provider.Send`. Queued prompts
+   only group together when they share a reply channel (`DrainQueueGroup` breaks on `ReplyChannelID`
+   alongside model/effort/tier). A schedule created with `--channel` carries the id via the new
+   `reply_channel_id` columns on `prompt_queue`/`schedules`.
+
+6. **Error surfacing & bounded reads.** `tools/call` `isError` results are surfaced verbatim as Go
+   errors, becoming a channel `last_error` and (for inbound) a session system turn — so auth prompts
+   ("run `agency` to sign in") reach the operator instead of being swallowed. The MCP client's blocking
+   line read is bounded by the per-call deadline via a reader goroutine + timer select (capturing the
+   reader locally so a timed-out read that later unblocks can't race the respawned subprocess), so a
+   silent/hung `agency` process can't deadlock the poller (which holds the client mutex). Store:
+   `channels` + `channel_outbox` tables in moneypenny SQLite with full CRUD/outbox/echo methods.
+
+7. **Inbound gating (mention + sender).** Two opt-in gates run inside `pollChannel`, after echo
+   suppression and before forwarding. A message failing either gate is treated like a self-message:
+   examined and skipped, with the cursor still advancing (only genuine forward failures hold it
+   back). (a) **Sender gate** — unless `allow_anyone` is set, only messages from the signed-in owner
+   are forwarded. The owner's id is resolved once per process via `Provider.Self` (Teams
+   `GetUserPresence` with no user → the account's AAD `id`); on lookup failure the channel **fails
+   open** and records the error to `last_error`, so a broken presence tool degrades visibly rather
+   than silently muting. Because the agent's own sends share the owner id but are already removed by
+   echo suppression, the surviving owner-id messages are exactly the human owner's. (b) **Mention
+   gate** — a pure `MatchAndStripMention` (`channel/mention.go`) tests a case-insensitive,
+   whole-word, optional-`@` regex; on match the mention token(s) are stripped and whitespace
+   collapsed before forwarding. Optional-`@` is deliberate: Teams-native mentions arrive HTML-cleaned
+   to the bare display name, so requiring a literal `@` would miss them. Both attributes are editable
+   post-bind via `update_channel` / `hem set channel` without recreating the binding.
+
+8. **Thin clients.** Hem exposes `list/create/delete/enable/disable/set channel`, `search channel`,
+   and `list channel-providers` (provider-scoped commands resolve the moneypenny from `--session-id`
+   when present, else `-m`/default). The TUI adds a session-scoped Channels view (`C` in chat command
+   mode) with a provider→method→gating→bind wizard (`m`/`a` edit gating on the list); Qew adds an
+   equivalent modal with an Edit action plus a channel selector on the scheduled-task form. Known v1
+   gap: the `runCompaction` early-return path in `runAgent` drops `ReplyChannelID` (rare, documented,
+   not fixed).
+
 ## Qew - Web UI for Remote Access
 
 Qew is a web-based UI that connects to a Hem server via MI6, enabling remote access from phones and other computers.

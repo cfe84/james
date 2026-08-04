@@ -339,6 +339,9 @@ type ScheduleData struct {
 	Prompt      string `json:"prompt"`
 	ScheduledAt string `json:"scheduled_at"` // RFC3339 UTC
 	CronExpr    string `json:"cron_expr,omitempty"`
+	// ReplyChannelID routes the scheduled prompt's output to a channel
+	// (channels.id). 0 = no channel routing.
+	ReplyChannelID int64 `json:"reply_channel_id,omitempty"`
 }
 
 // ScheduleResponse is returned by schedule on success.
@@ -355,13 +358,14 @@ type ListSchedulesData struct {
 
 // ScheduleInfo represents a schedule in list responses.
 type ScheduleInfo struct {
-	ID          int64  `json:"id"`
-	SessionID   string `json:"session_id"`
-	Prompt      string `json:"prompt"`
-	ScheduledAt string `json:"scheduled_at"`
-	Status      string `json:"status"`
-	CronExpr    string `json:"cron_expr,omitempty"`
-	CreatedAt   string `json:"created_at"`
+	ID             int64  `json:"id"`
+	SessionID      string `json:"session_id"`
+	Prompt         string `json:"prompt"`
+	ScheduledAt    string `json:"scheduled_at"`
+	Status         string `json:"status"`
+	CronExpr       string `json:"cron_expr,omitempty"`
+	ReplyChannelID int64  `json:"reply_channel_id,omitempty"`
+	CreatedAt      string `json:"created_at"`
 }
 
 // ListSchedulesResponse is returned by list_schedules.
@@ -469,4 +473,97 @@ type UpdateStatusResponse struct {
 // CheckUpdateResponse is returned by check_update.
 type CheckUpdateResponse struct {
 	Queued bool `json:"queued"` // true if a check was queued, false if already pending
+}
+
+// --- Channels: bind a session to external communication (Teams, ...) ---
+
+// ChannelProviderInfo describes an available channel provider and the target
+// selection methods it supports.
+type ChannelProviderInfo struct {
+	Name      string `json:"name"`
+	Search    bool   `json:"search"`     // supports search_channel_targets
+	ProvideID bool   `json:"provide_id"` // supports directly-provided target ids
+}
+
+// ListChannelProvidersResponse is returned by list_channel_providers.
+type ListChannelProvidersResponse struct {
+	Providers []ChannelProviderInfo `json:"providers"`
+}
+
+// SearchChannelTargetsData is the payload for search_channel_targets.
+type SearchChannelTargetsData struct {
+	Provider string `json:"provider"`
+	Query    string `json:"query"`
+}
+
+// ChannelTargetInfo is a candidate target within a provider (a Teams chat, ...).
+type ChannelTargetInfo struct {
+	ID     string `json:"id"`
+	Label  string `json:"label"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// SearchChannelTargetsResponse is returned by search_channel_targets.
+type SearchChannelTargetsResponse struct {
+	Targets []ChannelTargetInfo `json:"targets"`
+}
+
+// CreateChannelData is the payload for create_channel. When TargetLabel is
+// empty and the provider supports id resolution, moneypenny resolves a label.
+type CreateChannelData struct {
+	SessionID   string `json:"session_id"`
+	Provider    string `json:"provider"`
+	TargetID    string `json:"target_id"`
+	TargetLabel string `json:"target_label,omitempty"`
+	Mention     string `json:"mention,omitempty"`
+	AllowAnyone bool   `json:"allow_anyone,omitempty"`
+}
+
+// ChannelInfo represents a channel binding in responses.
+type ChannelInfo struct {
+	ID           int64  `json:"id"`
+	SessionID    string `json:"session_id"`
+	Provider     string `json:"provider"`
+	TargetID     string `json:"target_id"`
+	TargetLabel  string `json:"target_label"`
+	Enabled      bool   `json:"enabled"`
+	Mention      string `json:"mention"`
+	AllowAnyone  bool   `json:"allow_anyone"`
+	LastError    string `json:"last_error,omitempty"`
+	LastActivity string `json:"last_activity,omitempty"` // RFC3339 UTC, empty if none
+	CreatedAt    string `json:"created_at"`
+}
+
+// CreateChannelResponse is returned by create_channel.
+type CreateChannelResponse struct {
+	Channel ChannelInfo `json:"channel"`
+}
+
+// ListChannelsData is the payload for list_channels (empty session = all).
+type ListChannelsData struct {
+	SessionID string `json:"session_id,omitempty"`
+}
+
+// ListChannelsResponse is returned by list_channels.
+type ListChannelsResponse struct {
+	Channels []ChannelInfo `json:"channels"`
+}
+
+// ChannelIDData is a payload carrying just a channel id.
+type ChannelIDData struct {
+	ChannelID int64 `json:"channel_id"`
+}
+
+// SetChannelEnabledData is the payload for set_channel_enabled.
+type SetChannelEnabledData struct {
+	ChannelID int64 `json:"channel_id"`
+	Enabled   bool  `json:"enabled"`
+}
+
+// UpdateChannelData is the payload for update_channel. Fields are pointers so a
+// nil value leaves that attribute unchanged (partial update).
+type UpdateChannelData struct {
+	ChannelID   int64   `json:"channel_id"`
+	Mention     *string `json:"mention,omitempty"`
+	AllowAnyone *bool   `json:"allow_anyone,omitempty"`
 }

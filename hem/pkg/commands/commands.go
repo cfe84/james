@@ -585,6 +585,24 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 	case "cancel schedule":
 		return e.CancelSchedule(args)
 
+	// Channel commands (external communication: Teams, ...)
+	case "list channel":
+		return e.ListChannels(args)
+	case "create channel":
+		return e.CreateChannel(args)
+	case "delete channel":
+		return e.DeleteChannel(args)
+	case "enable channel":
+		return e.SetChannelEnabled(args, true)
+	case "disable channel":
+		return e.SetChannelEnabled(args, false)
+	case "set channel":
+		return e.UpdateChannel(args)
+	case "search channel":
+		return e.SearchChannelTargets(args)
+	case "list channel-provider":
+		return e.ListChannelProviders(args)
+
 	// Subsession commands
 	case "create subsession":
 		return e.CreateSubSession(args)
@@ -5531,12 +5549,14 @@ func (e *Executor) MI6DeleteKey(args []string) *protocol.Response {
 // ScheduleSession schedules a prompt for a session at a future time.
 func (e *Executor) ScheduleSession(args []string) *protocol.Response {
 	var sessionID, atStr, prompt, cronExpr string
+	var channelID int64
 
 	remaining, err := parseFlagsFromArgs("schedule-session", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&sessionID, "session-id", "", "session ID")
 		fs.StringVar(&atStr, "at", "", "when to send (RFC3339 or relative like +2h)")
 		fs.StringVar(&prompt, "prompt", "", "prompt to send")
 		fs.StringVar(&cronExpr, "cron", "", "cron expression for recurring schedules")
+		fs.Int64Var(&channelID, "channel", 0, "channel ID to deliver the output to")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -5579,6 +5599,9 @@ func (e *Executor) ScheduleSession(args []string) *protocol.Response {
 	}
 	if cronExpr != "" {
 		cmdData["cron_expr"] = cronExpr
+	}
+	if channelID != 0 {
+		cmdData["reply_channel_id"] = channelID
 	}
 
 	ctx := context.Background()

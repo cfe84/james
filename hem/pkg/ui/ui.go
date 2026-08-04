@@ -60,6 +60,7 @@ const (
 	viewSummary
 	viewTraits
 	viewEditTrait
+	viewChannels
 )
 
 // Model is the top-level bubbletea model.
@@ -84,6 +85,7 @@ type Model struct {
 	summary        summaryModel
 	traits         traitsModel
 	editTrait      editTraitModel
+	channels       channelsModel
 	parentChats       []chatModel       // stack for subagent navigation
 	chatDrafts        map[string]string // sessionID → unsent input text
 	width             int
@@ -186,6 +188,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.traits.height = h
 		m.editTrait.width = msg.Width
 		m.editTrait.height = h
+		m.channels.width = msg.Width
+		m.channels.height = h
 		return m, nil
 
 	case tea.KeyMsg:
@@ -332,6 +336,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.memory.confirmDelete = false
 				return m, nil
 			}
+			// Channels view: when in the create flow, Esc returns to the list.
+			if m.currentView == viewChannels && m.channels.stage != chStageList {
+				m.channels = m.channels.backToList()
+				return m, nil
+			}
 			return m.handleEsc()
 		}
 
@@ -381,6 +390,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateTraits(msg)
 		case viewEditTrait:
 			return m.updateEditTrait(msg)
+		case viewChannels:
+			return m.updateChannels(msg)
 		}
 
 	case tea.MouseMsg:
@@ -462,6 +473,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case traitsLoadedMsg, traitDeletedMsg:
 		var cmd tea.Cmd
 		m.traits, cmd = m.traits.Update(msg)
+		return m, cmd
+
+	case channelsLoadedMsg, channelProvidersLoadedMsg, channelSearchMsg, channelActionMsg:
+		var cmd tea.Cmd
+		m.channels, cmd = m.channels.Update(msg)
 		return m, cmd
 
 	case traitCreatedMsg:
@@ -978,6 +994,10 @@ func (m Model) handleEsc() (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.dashboard.loadDashboard(), m.dashboard.dashboardPollTickAdaptive())
 		}
 	case viewMemory:
+		m.currentView = viewChat
+		m.statusMsg = ""
+		return m, nil
+	case viewChannels:
 		m.currentView = viewChat
 		m.statusMsg = ""
 		return m, nil
@@ -1574,6 +1594,16 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.currentView = viewMemory
 			m.previousView = viewChat
 			return m, m.memory.loadMemory()
+		case "C":
+			// Channels: bind this session to external comms (Teams, ...).
+			m.chat.confirmDelete = false
+			m.chat.commandMode = false
+			m.channels = newChannelsModel(m.client, m.chat.sessionID, m.chat.sessionName)
+			m.channels.width = m.width
+			m.channels.height = m.viewHeight()
+			m.currentView = viewChannels
+			m.previousView = viewChat
+			return m, m.channels.loadChannels()
 		case "S":
 			// Summarize: run `hem summarize session` and show the result.
 			// Uppercase to avoid the lowercase `s`=stop binding above.
@@ -1734,6 +1764,12 @@ func (m Model) updateEdit(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) updateMemory(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.memory, cmd = m.memory.Update(msg)
+	return m, cmd
+}
+
+func (m Model) updateChannels(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.channels, cmd = m.channels.Update(msg)
 	return m, cmd
 }
 
@@ -1969,6 +2005,8 @@ func (m Model) View() string {
 		content = m.traits.View()
 	case viewEditTrait:
 		content = m.editTrait.View()
+	case viewChannels:
+		content = m.channels.View()
 	}
 
 	statusBar := m.renderStatusBar()
@@ -2204,6 +2242,7 @@ func (m Model) renderStatusBar() string {
 					return ""
 				}(),
 				statusKeyStyle.Render("m") + statusDescStyle.Render(" memory"),
+				statusKeyStyle.Render("C") + statusDescStyle.Render(" channels"),
 				statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
 				statusKeyStyle.Render("x") + statusDescStyle.Render(" shell"),
 				statusKeyStyle.Render("1-9") + statusDescStyle.Render(" sub#"),
@@ -2343,6 +2382,56 @@ func (m Model) renderStatusBar() string {
 		keys = []string{
 			statusKeyStyle.Render("^S") + statusDescStyle.Render(" save"),
 			statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
+		}
+	case viewChannels:
+		switch m.channels.stage {
+		case chStageList:
+			if m.channels.confirmDelete {
+				keys = []string{
+					statusKeyStyle.Render("d") + statusDescStyle.Render(" confirm delete"),
+					statusKeyStyle.Render("any") + statusDescStyle.Render(" cancel"),
+				}
+			} else {
+				keys = []string{
+					statusKeyStyle.Render("n") + statusDescStyle.Render(" new"),
+					statusKeyStyle.Render("e") + statusDescStyle.Render(" toggle enabled"),
+					statusKeyStyle.Render("m") + statusDescStyle.Render(" mention"),
+					statusKeyStyle.Render("a") + statusDescStyle.Render(" senders"),
+					statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
+					statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
+					statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
+				}
+			}
+		case chStageProvider, chStageSearchResults:
+			keys = []string{
+				statusKeyStyle.Render("↑↓") + statusDescStyle.Render(" move"),
+				statusKeyStyle.Render("↵") + statusDescStyle.Render(" select"),
+				statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
+			}
+		case chStageMethod:
+			keys = []string{
+				statusKeyStyle.Render("s") + statusDescStyle.Render(" search"),
+				statusKeyStyle.Render("i") + statusDescStyle.Render(" enter id"),
+				statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
+			}
+		case chStageSearchInput:
+			keys = []string{
+				statusKeyStyle.Render("↵") + statusDescStyle.Render(" search"),
+				statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
+			}
+		case chStageIDInput:
+			keys = []string{
+				statusKeyStyle.Render("tab") + statusDescStyle.Render(" next field"),
+				statusKeyStyle.Render("↵") + statusDescStyle.Render(" next"),
+				statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
+			}
+		case chStageOptions:
+			keys = []string{
+				statusKeyStyle.Render("tab") + statusDescStyle.Render(" next field"),
+				statusKeyStyle.Render("spc") + statusDescStyle.Render(" toggle senders"),
+				statusKeyStyle.Render("↵") + statusDescStyle.Render(" save"),
+				statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
+			}
 		}
 	case viewSummary:
 		keys = []string{

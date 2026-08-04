@@ -1352,3 +1352,214 @@ func (c *client) gitInfo(sessionID string) (string, error) {
 	}
 	return result.Branch, nil
 }
+
+// --- Channels ---
+
+type channelInfo struct {
+	ID          int64
+	Provider    string
+	Label       string
+	TargetID    string
+	Enabled     bool
+	Mention     string
+	AllowAnyone bool
+	LastErr     string
+}
+
+type channelProviderInfo struct {
+	Name   string
+	Search bool
+	ByID   bool
+}
+
+type channelTargetInfo struct {
+	ID     string
+	Label  string
+	Detail string
+}
+
+// parseTable is a small helper returning a TableResult's rows, or nil when the
+// response is a TextResult (e.g. an empty list).
+func parseTable(resp *protocol.Response) ([][]string, error) {
+	if resp.Status == protocol.StatusError {
+		return nil, fmt.Errorf("%s", resp.Message)
+	}
+	var text struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal(resp.Data, &text) == nil && text.Message != "" {
+		return nil, nil
+	}
+	var table struct {
+		Headers []string   `json:"headers"`
+		Rows    [][]string `json:"rows"`
+	}
+	if err := json.Unmarshal(resp.Data, &table); err != nil {
+		return nil, err
+	}
+	return table.Rows, nil
+}
+
+func (c *client) listChannels(sessionID string) ([]channelInfo, error) {
+	resp, err := c.send("list", "channel", "--session-id", sessionID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := parseTable(resp)
+	if err != nil {
+		return nil, err
+	}
+	var out []channelInfo
+	for _, row := range rows {
+		ci := channelInfo{}
+		if len(row) > 0 {
+			fmt.Sscanf(row[0], "%d", &ci.ID)
+		}
+		if len(row) > 1 {
+			ci.Provider = row[1]
+		}
+		if len(row) > 2 {
+			ci.Label = row[2]
+		}
+		if len(row) > 3 {
+			ci.TargetID = row[3]
+		}
+		if len(row) > 4 {
+			ci.Enabled = row[4] == "yes"
+		}
+		if len(row) > 5 {
+			ci.Mention = strings.TrimPrefix(row[5], "@")
+		}
+		if len(row) > 6 {
+			ci.AllowAnyone = row[6] == "anyone"
+		}
+		if len(row) > 7 {
+			ci.LastErr = row[7]
+		}
+		out = append(out, ci)
+	}
+	return out, nil
+}
+
+func (c *client) listChannelProviders(sessionID string) ([]channelProviderInfo, error) {
+	resp, err := c.send("list", "channel-provider", "--session-id", sessionID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := parseTable(resp)
+	if err != nil {
+		return nil, err
+	}
+	var out []channelProviderInfo
+	for _, row := range rows {
+		p := channelProviderInfo{}
+		if len(row) > 0 {
+			p.Name = row[0]
+		}
+		if len(row) > 1 {
+			p.Search = row[1] == "yes"
+		}
+		if len(row) > 2 {
+			p.ByID = row[2] == "yes"
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+func (c *client) searchChannelTargets(sessionID, provider, query string) ([]channelTargetInfo, error) {
+	resp, err := c.send("search", "channel", "--session-id", sessionID, "--provider", provider, "--query", query)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := parseTable(resp)
+	if err != nil {
+		return nil, err
+	}
+	var out []channelTargetInfo
+	for _, row := range rows {
+		t := channelTargetInfo{}
+		if len(row) > 0 {
+			t.ID = row[0]
+		}
+		if len(row) > 1 {
+			t.Label = row[1]
+		}
+		if len(row) > 2 {
+			t.Detail = row[2]
+		}
+		out = append(out, t)
+	}
+	return out, nil
+}
+
+func (c *client) createChannel(sessionID, provider, targetID, label, mention string, allowAnyone bool) error {
+	args := []string{"create", "channel", "--session-id", sessionID, "--provider", provider, "--target-id", targetID}
+	if label != "" {
+		args = append(args, "--label", label)
+	}
+	if mention != "" {
+		args = append(args, "--mention", mention)
+	}
+	if allowAnyone {
+		args = append(args, "--allow-anyone")
+	}
+	resp, err := c.send(args[0], args[1], args[2:]...)
+	if err != nil {
+		return err
+	}
+	if resp.Status == protocol.StatusError {
+		return fmt.Errorf("%s", resp.Message)
+	}
+	return nil
+}
+
+// updateChannel sets a channel's mention gate and/or sender policy. mentionSet
+// controls whether the mention is sent (allowing it to be cleared to "").
+func (c *client) updateChannel(sessionID string, channelID int64, mention string, mentionSet bool, allowAnyone bool, allowAnyoneSet bool) error {
+	args := []string{"set", "channel", fmt.Sprintf("%d", channelID), "--session-id", sessionID}
+	if mentionSet {
+		args = append(args, "--mention", mention)
+	}
+	if allowAnyoneSet {
+		if allowAnyone {
+			args = append(args, "--allow-anyone")
+		} else {
+			args = append(args, "--owner-only")
+		}
+	}
+	resp, err := c.send(args[0], args[1], args[2:]...)
+	if err != nil {
+		return err
+	}
+	if resp.Status == protocol.StatusError {
+		return fmt.Errorf("%s", resp.Message)
+	}
+	return nil
+}
+
+func (c *client) deleteChannel(sessionID string, channelID int64) error {
+	resp, err := c.send("delete", "channel", fmt.Sprintf("%d", channelID), "--session-id", sessionID)
+	if err != nil {
+		return err
+	}
+	if resp.Status == protocol.StatusError {
+		return fmt.Errorf("%s", resp.Message)
+	}
+	return nil
+}
+
+func (c *client) setChannelEnabled(sessionID string, channelID int64, enabled bool) error {
+	verb := "enable"
+	if !enabled {
+		verb = "disable"
+	}
+	resp, err := c.send(verb, "channel", fmt.Sprintf("%d", channelID), "--session-id", sessionID)
+	if err != nil {
+		return err
+	}
+	if resp.Status == protocol.StatusError {
+		return fmt.Errorf("%s", resp.Message)
+	}
+	return nil
+}

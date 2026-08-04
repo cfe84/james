@@ -1283,6 +1283,7 @@
           <button class="cmd-item" data-cmd="effort"><kbd>f</kbd> Effort override</button>
           <button class="cmd-item" data-cmd="context"><kbd>w</kbd> Context override</button>
           <button class="cmd-item" data-cmd="memory"><kbd>m</kbd> Memory</button>
+          <button class="cmd-item" data-cmd="channels"><kbd>n</kbd> Channels</button>
           <button class="cmd-item" data-cmd="schedules"><kbd>h</kbd> Scheduled tasks</button>
           <button class="cmd-item" data-cmd="compact"><kbd>K</kbd> Compact session</button>
           <button class="cmd-item" data-cmd="distill"><kbd>D</kbd> Distill to memory</button>
@@ -1333,6 +1334,7 @@
       case 'effort':   showOverridePicker('effort'); break;
       case 'context':  showOverridePicker('context'); break;
       case 'memory':   openMemoryModal(); break;
+      case 'channels': openChannelsModal(); break;
       case 'schedules': openSchedulesModal(); break;
       case 'compact':  compactSession(); break;
       case 'distill':  distillSession(); break;
@@ -3060,6 +3062,22 @@
       return [];
     }
 
+    async function loadScheduleChannels() {
+      try {
+        const resp = await apiCall('list', 'channel', ['--session-id', sid]);
+        if (resp.status === 'error') {
+          alert(resp.message);
+          return [];
+        }
+        if (resp.status === 'ok' && resp.data && Array.isArray(resp.data.rows)) {
+          return resp.data.rows.map(r => ({
+            id: r[0], provider: r[1], label: r[2], targetId: r[3],
+          }));
+        }
+      } catch (e) { alert('Error: ' + e.message); }
+      return [];
+    }
+
     async function renderList() {
       const all = await loadSchedules();
       if (currentSession !== sid) return;
@@ -3098,13 +3116,26 @@
       });
     }
 
-    function renderForm() {
+    async function renderForm() {
+      renderWizardModal(`<h3>New Scheduled Task</h3><div class="loading">Loading…</div>`, 'modal-mem');
+      const channels = await loadScheduleChannels();
+      if (currentSession !== sid) return;
+      const channelSelect = channels.length ? `
+        <label for="sched-channel">Channel (optional)</label>
+        <select id="sched-channel">
+          <option value="">(no channel)</option>
+          ${channels.map(c => {
+            const label = c.label || c.targetId || c.id;
+            return `<option value="${escapeAttr(String(c.id))}">${escapeHtml(`${c.provider}: ${label}`)}</option>`;
+          }).join('')}
+        </select>` : '';
       renderWizardModal(`
         <h3>New Scheduled Task</h3>
         <label for="sched-at">When</label>
         <input id="sched-at" type="datetime-local" value="${escapeAttr(defaultScheduleLocal())}">
         <label for="sched-cron">Repeat (cron, optional)</label>
         <input id="sched-cron" type="text" placeholder="e.g. 0 9 * * *  (every day at 09:00)">
+        ${channelSelect}
         <label for="sched-prompt">Prompt</label>
         <textarea id="sched-prompt" rows="4" placeholder="What should the agent do?"></textarea>
         <div class="modal-actions">
@@ -3130,6 +3161,8 @@
       btn.textContent = 'Creating…';
       const args = [sid, '--at', iso];
       if (cron) args.push('--cron', cron);
+      const channelEl = document.getElementById('sched-channel');
+      if (channelEl && channelEl.value) args.push('--channel', channelEl.value);
       args.push('--prompt', prompt);
       try {
         const resp = await apiCall('schedule', 'session', args);
@@ -3146,6 +3179,312 @@
       await renderList();
       lastChatHTML = '';
       loadChat();
+    }
+  }
+
+  // openChannelsModal manages the external communication channels bound to the
+  // current session. Backed by the `list/create/search/enable/disable/delete channel`
+  // hem commands exposed through /api.
+  async function openChannelsModal() {
+    if (!currentSession) return;
+    const sid = currentSession;
+
+    renderWizardModal(`<h3>📣 Channels</h3><div class="loading">Loading…</div>`, 'modal-mem');
+    await renderList();
+
+    async function loadChannels() {
+      try {
+        const resp = await apiCall('list', 'channel', ['--session-id', sid]);
+        if (resp.status === 'error') {
+          alert(resp.message);
+          return [];
+        }
+        if (resp.status === 'ok' && resp.data && Array.isArray(resp.data.rows)) {
+          return resp.data.rows.map(r => ({
+            id: r[0], provider: r[1], label: r[2], targetId: r[3],
+            enabled: r[4] === 'yes',
+            mention: (r[5] && r[5] !== '' ? String(r[5]).replace(/^@/, '') : ''),
+            allowAnyone: r[6] === 'anyone',
+            error: r[7] || '',
+          }));
+        }
+      } catch (e) { alert('Error: ' + e.message); }
+      return [];
+    }
+
+    async function loadProviders() {
+      try {
+        const resp = await apiCall('list', 'channel-providers', ['--session-id', sid]);
+        if (resp.status === 'error') {
+          alert(resp.message);
+          return [];
+        }
+        if (resp.status === 'ok' && resp.data && Array.isArray(resp.data.rows)) {
+          return resp.data.rows.map(r => ({
+            name: r[0], search: r[1] === 'yes', byId: r[2] === 'yes',
+          }));
+        }
+      } catch (e) { alert('Error: ' + e.message); }
+      return [];
+    }
+
+    async function renderList() {
+      const channels = await loadChannels();
+      if (currentSession !== sid) return;
+      const rowsHtml = channels.length
+        ? channels.map(c => `
+            <div class="sched-row">
+              <div class="sched-info">
+                <span class="sched-when">${escapeHtml(c.provider)}: ${escapeHtml(c.label || '(no label)')} <span style="color:var(--muted)">(${escapeHtml(c.enabled ? 'enabled' : 'disabled')})</span></span>
+                <span class="sched-prompt" title="${escapeAttr(String(c.targetId || ''))}">${escapeHtml(c.targetId || '')}</span>
+                <span style="color:var(--muted);font-size:0.85em">Mention: ${c.mention ? escapeHtml('@' + c.mention) : '(any)'} · Senders: ${c.allowAnyone ? 'anyone' : 'owner only'}</span>
+                ${c.error ? `<span style="color:var(--danger);font-size:0.85em">${escapeHtml(c.error)}</span>` : ''}
+              </div>
+              <button class="btn-muted chan-edit" data-id="${escapeAttr(String(c.id))}">Edit</button>
+              <button class="btn-muted chan-toggle" data-id="${escapeAttr(String(c.id))}" data-enabled="${c.enabled ? 'yes' : 'no'}">${c.enabled ? 'Disable' : 'Enable'}</button>
+              <button class="btn-muted chan-del" data-id="${escapeAttr(String(c.id))}">Delete</button>
+            </div>`).join('')
+        : `<div class="mem-empty">(no channels)</div>`;
+      renderWizardModal(`
+        <h3>📣 Channels</h3>
+        <div class="sched-list">${rowsHtml}</div>
+        <div class="modal-actions">
+          <button class="btn-muted" onclick="window._qewCloseWizard()">Close</button>
+          <button class="btn" id="chan-add">+ Add channel</button>
+        </div>
+      `, 'modal-mem');
+      const addBtn = document.getElementById('chan-add');
+      if (addBtn) addBtn.addEventListener('click', () => renderProviderStep());
+      document.querySelectorAll('.chan-edit').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const c = channels.find(x => String(x.id) === String(btn.dataset.id));
+          if (c) renderEditStep(c);
+        });
+      });
+      document.querySelectorAll('.chan-toggle').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const id = btn.dataset.id;
+          const verb = btn.dataset.enabled === 'yes' ? 'disable' : 'enable';
+          btn.disabled = true;
+          try {
+            const resp = await apiCall(verb, 'channel', [id, '--session-id', sid]);
+            if (resp.status === 'error') { alert(resp.message); btn.disabled = false; return; }
+          } catch (e) { alert('Error: ' + e.message); btn.disabled = false; return; }
+          await renderList();
+        });
+      });
+      document.querySelectorAll('.chan-del').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const id = btn.dataset.id;
+          if (!confirm('Delete this channel?')) return;
+          btn.disabled = true;
+          try {
+            const resp = await apiCall('delete', 'channel', [id, '--session-id', sid]);
+            if (resp.status === 'error') { alert(resp.message); btn.disabled = false; return; }
+          } catch (e) { alert('Error: ' + e.message); btn.disabled = false; return; }
+          await renderList();
+        });
+      });
+    }
+
+    async function renderProviderStep() {
+      renderWizardModal(`<h3>Add Channel</h3><div class="loading">Loading providers…</div>`, 'modal-mem');
+      const providers = await loadProviders();
+      if (currentSession !== sid) return;
+      const rowsHtml = providers.length
+        ? providers.map(p => `
+            <button class="cmd-item chan-provider" data-provider="${escapeAttr(p.name)}">
+              ${escapeHtml(p.name)} <span style="color:var(--muted);margin-left:auto">Search: ${p.search ? 'yes' : 'no'} · By-ID: ${p.byId ? 'yes' : 'no'}</span>
+            </button>`).join('')
+        : `<div class="mem-empty">(no channel providers)</div>`;
+      renderWizardModal(`
+        <h3>Add Channel</h3>
+        <label>Provider</label>
+        <div class="cmd-list">${rowsHtml}</div>
+        <div class="modal-actions">
+          <button class="btn-muted" id="chan-back">Back</button>
+        </div>
+      `, 'modal-mem');
+      document.getElementById('chan-back').addEventListener('click', () => renderList());
+      document.querySelectorAll('.chan-provider').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const provider = providers.find(p => p.name === btn.dataset.provider);
+          if (provider) renderMethodStep(provider);
+        });
+      });
+    }
+
+    function renderMethodStep(provider) {
+      if (provider.search && !provider.byId) { renderSearchStep(provider, null, '', false); return; }
+      if (!provider.search && provider.byId) { renderByIdStep(provider, false); return; }
+      if (!provider.search && !provider.byId) {
+        renderWizardModal(`
+          <h3>Add Channel</h3>
+          <div class="mem-empty">Provider "${escapeHtml(provider.name)}" has no available selection methods.</div>
+          <div class="modal-actions">
+            <button class="btn-muted" id="chan-provider-back">Back</button>
+          </div>
+        `, 'modal-mem');
+        document.getElementById('chan-provider-back').addEventListener('click', () => renderProviderStep());
+        return;
+      }
+      renderWizardModal(`
+        <h3>Add Channel</h3>
+        <label>${escapeHtml(provider.name)} selection method</label>
+        <div class="cmd-list">
+          <button class="cmd-item" id="chan-method-search">Search</button>
+          <button class="cmd-item" id="chan-method-id">Provide ID</button>
+        </div>
+        <div class="modal-actions">
+          <button class="btn-muted" id="chan-provider-back">Back</button>
+        </div>
+      `, 'modal-mem');
+      document.getElementById('chan-provider-back').addEventListener('click', () => renderProviderStep());
+      document.getElementById('chan-method-search').addEventListener('click', () => renderSearchStep(provider, null, '', true));
+      document.getElementById('chan-method-id').addEventListener('click', () => renderByIdStep(provider, true));
+    }
+
+    function renderSearchStep(provider, results, query, backToMethods) {
+      const resultRows = results && results.length
+        ? results.map(t => `
+            <button class="cmd-item chan-target" data-id="${escapeAttr(String(t.id))}" data-label="${escapeAttr(String(t.label || ''))}">
+              <span>${escapeHtml(t.label || t.id)}</span>
+              <span style="color:var(--muted);margin-left:auto">${escapeHtml(t.detail || t.id)}</span>
+            </button>`).join('')
+        : (query ? `<div class="mem-empty">(no targets found)</div>` : '');
+      renderWizardModal(`
+        <h3>Add ${escapeHtml(provider.name)} Channel</h3>
+        <label for="chan-query">Search</label>
+        <div style="display:flex;gap:8px">
+          <input id="chan-query" type="text" value="${escapeAttr(query || '')}" placeholder="Search chats or channels">
+          <button class="btn" id="chan-search" style="flex:0 0 auto">Search</button>
+        </div>
+        <div class="cmd-list" style="margin-top:12px">${resultRows}</div>
+        <div class="modal-actions">
+          <button class="btn-muted" id="chan-method-back">Back</button>
+        </div>
+      `, 'modal-mem');
+      const input = document.getElementById('chan-query');
+      const runSearch = async () => {
+        const q = input.value.trim();
+        if (!q) { alert('Search text is required.'); return; }
+        const btn = document.getElementById('chan-search');
+        btn.disabled = true; btn.textContent = 'Searching…';
+        try {
+          const resp = await apiCall('search', 'channel', ['--provider', provider.name, '--query', q, '--session-id', sid]);
+          if (resp.status === 'error') { alert(resp.message); btn.disabled = false; btn.textContent = 'Search'; return; }
+          const targets = (resp.data && Array.isArray(resp.data.rows))
+            ? resp.data.rows.map(r => ({ id: r[0], label: r[1], detail: r[2] }))
+            : [];
+          renderSearchStep(provider, targets, q, backToMethods);
+        } catch (e) {
+          alert('Error: ' + e.message);
+          btn.disabled = false; btn.textContent = 'Search';
+        }
+      };
+      document.getElementById('chan-search').addEventListener('click', runSearch);
+      input.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.preventDefault(); runSearch(); }
+      });
+      document.getElementById('chan-method-back').addEventListener('click', () => {
+        if (backToMethods) renderMethodStep(provider); else renderProviderStep();
+      });
+      document.querySelectorAll('.chan-target').forEach(btn => {
+        btn.addEventListener('click', () => renderGatingStep(provider, btn.dataset.id, btn.dataset.label, () => renderSearchStep(provider, results, query, backToMethods)));
+      });
+    }
+
+    // renderGatingStep collects the optional @mention gate and sender policy
+    // before binding a new channel.
+    function renderGatingStep(provider, targetId, label, back) {
+      renderWizardModal(`
+        <h3>Add ${escapeHtml(provider.name)} Channel</h3>
+        <label for="chan-mention">Reply to @mention (optional)</label>
+        <input id="chan-mention" type="text" placeholder="e.g. james — blank forwards all messages">
+        <label style="display:flex;align-items:center;gap:8px;margin-top:12px">
+          <input id="chan-allow-anyone" type="checkbox">
+          Accept messages from anyone (default: only me)
+        </label>
+        <div class="modal-actions">
+          <button class="btn-muted" id="chan-gating-back">Back</button>
+          <button class="btn" id="chan-gating-create">Create</button>
+        </div>
+      `, 'modal-mem');
+      document.getElementById('chan-gating-back').addEventListener('click', back);
+      document.getElementById('chan-gating-create').addEventListener('click', () => {
+        const mention = document.getElementById('chan-mention').value.trim();
+        const allowAnyone = document.getElementById('chan-allow-anyone').checked;
+        createChannel(provider, targetId, label, mention, allowAnyone);
+      });
+    }
+
+    // renderEditStep updates an existing channel's mention gate and sender policy.
+    function renderEditStep(c) {
+      renderWizardModal(`
+        <h3>Edit Channel</h3>
+        <div style="color:var(--muted);margin-bottom:8px">${escapeHtml(c.provider)}: ${escapeHtml(c.label || c.targetId)}</div>
+        <label for="chan-mention">Reply to @mention (optional)</label>
+        <input id="chan-mention" type="text" value="${escapeAttr(c.mention || '')}" placeholder="e.g. james — blank forwards all messages">
+        <label style="display:flex;align-items:center;gap:8px;margin-top:12px">
+          <input id="chan-allow-anyone" type="checkbox" ${c.allowAnyone ? 'checked' : ''}>
+          Accept messages from anyone (default: only me)
+        </label>
+        <div class="modal-actions">
+          <button class="btn-muted" id="chan-edit-back">Back</button>
+          <button class="btn" id="chan-edit-save">Save</button>
+        </div>
+      `, 'modal-mem');
+      document.getElementById('chan-edit-back').addEventListener('click', () => renderList());
+      document.getElementById('chan-edit-save').addEventListener('click', async () => {
+        const mention = document.getElementById('chan-mention').value.trim();
+        const allowAnyone = document.getElementById('chan-allow-anyone').checked;
+        const args = [String(c.id), '--session-id', sid, '--mention', mention];
+        args.push(allowAnyone ? '--allow-anyone' : '--owner-only');
+        const btn = document.getElementById('chan-edit-save');
+        btn.disabled = true;
+        try {
+          const resp = await apiCall('set', 'channel', args);
+          if (resp.status === 'error') { alert(resp.message); btn.disabled = false; return; }
+        } catch (e) { alert('Error: ' + e.message); btn.disabled = false; return; }
+        await renderList();
+      });
+    }
+
+    function renderByIdStep(provider, backToMethods) {
+      renderWizardModal(`
+        <h3>Add ${escapeHtml(provider.name)} Channel</h3>
+        <label for="chan-target-id">Target ID</label>
+        <input id="chan-target-id" type="text" placeholder="External channel/chat id">
+        <label for="chan-label">Label (optional)</label>
+        <input id="chan-label" type="text" placeholder="Friendly name">
+        <div class="modal-actions">
+          <button class="btn-muted" id="chan-method-back">Back</button>
+          <button class="btn" id="chan-create">Create</button>
+        </div>
+      `, 'modal-mem');
+      document.getElementById('chan-method-back').addEventListener('click', () => {
+        if (backToMethods) renderMethodStep(provider); else renderProviderStep();
+      });
+      document.getElementById('chan-create').addEventListener('click', () => {
+        const targetId = document.getElementById('chan-target-id').value.trim();
+        const label = document.getElementById('chan-label').value.trim();
+        if (!targetId) { alert('Target ID is required.'); return; }
+        renderGatingStep(provider, targetId, label, () => renderByIdStep(provider, backToMethods));
+      });
+    }
+
+    async function createChannel(provider, targetId, label, mention, allowAnyone) {
+      const args = ['--session-id', sid, '--provider', provider.name, '--target-id', targetId];
+      if (label) args.push('--label', label);
+      if (mention) args.push('--mention', mention);
+      if (allowAnyone) args.push('--allow-anyone');
+      const btn = document.getElementById('chan-gating-create') || document.getElementById('chan-create') || document.querySelector('.chan-target:focus');
+      if (btn) btn.disabled = true;
+      try {
+        const resp = await apiCall('create', 'channel', args);
+        if (resp.status === 'error') { alert(resp.message); if (btn) btn.disabled = false; return; }
+      } catch (e) { alert('Error: ' + e.message); if (btn) btn.disabled = false; return; }
+      await renderList();
     }
   }
 
@@ -4359,6 +4698,7 @@
     else if (action === 'branch') showBranchModal();
     else if (action === 'push') gitPush();
     else if (action === 'new-subagent') createNewSubagent();
+    else if (action === 'channels') openChannelsModal();
     else if (action === 'schedules') openSchedulesModal();
     else if (action === 'memory') openMemoryModal();
     else if (action === 'compact') compactSession();
@@ -4526,7 +4866,7 @@
       if (e.key === 'j' || e.key === 'ArrowDown') { e.preventDefault(); enterChatNavMode(); chatScrollLine(1); return; }
       if (e.key === 'k' || e.key === 'ArrowUp') { e.preventDefault(); enterChatNavMode(); chatScrollLine(-1); return; }
       if (e.repeat) return;
-      const map = { c: 'complete', e: 'edit', y: 'duplicate', a: 'subagent', p: 'project', g: 'diff', t: 'thoughts', o: 'model', f: 'effort', w: 'context', m: 'memory', h: 'schedules', K: 'compact', D: 'distill', s: 'stop', d: 'delete', q: 'back' };
+      const map = { c: 'complete', e: 'edit', y: 'duplicate', a: 'subagent', p: 'project', g: 'diff', t: 'thoughts', o: 'model', f: 'effort', w: 'context', m: 'memory', n: 'channels', h: 'schedules', K: 'compact', D: 'distill', s: 'stop', d: 'delete', q: 'back' };
       const cmd = map[e.key];
       if (cmd) { e.preventDefault(); runCmd(cmd); }
       return;

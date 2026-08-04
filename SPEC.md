@@ -543,7 +543,7 @@ Sessions can have scheduled continuations — prompts that are automatically sen
 
 ### CLI Commands
 
-`hem schedule session SESSION_ID --at TIME --prompt PROMPT [--cron EXPR]` — creates a scheduled continuation.
+`hem schedule session SESSION_ID --at TIME --prompt PROMPT [--cron EXPR] [--channel CHANNEL_ID]` — creates a scheduled continuation.
 
 - `--at` accepts multiple time formats:
   - RFC3339 timestamps (`2026-03-06T14:30:00Z`)
@@ -555,6 +555,7 @@ Sessions can have scheduled continuations — prompts that are automatically sen
   - Shorthands: `@hourly`, `@daily`, `@every 2h`
   - When a recurring schedule fires, a new occurrence is automatically created for the next matching time.
   - The `cron_expr` is stored in the schedules table.
+- `--channel CHANNEL_ID` routes the agent's response for this scheduled prompt to a bound channel (see **Channels**), in addition to the normal session transcript.
 - Sends `schedule` to the moneypenny that owns the session.
 
 `hem list schedules --session-id ID` — lists pending schedules for a session. Sends `list_schedules` to the moneypenny.
@@ -590,6 +591,86 @@ Schedule instructions are appended to every session's system prompt automaticall
 
 - In the chat view, pending schedules are displayed with a ⏰ icon.
 - In command mode, `t` creates a new schedule (two-step input: first the time, then the prompt).
+
+## Channels
+
+Channels bind a session (hem agent) to an external communication channel, letting the
+agent participate in conversations outside the James UI. The first provider is **Microsoft
+Teams** (via the `agency mcp teams` MCP server). Channels are a **moneypenny-level** concept:
+the daemon owns the polling loop, the binding, and the outbound relay. Hem/TUI/Qew are thin
+management clients.
+
+### Model
+
+- A **channel** binds a session to a `(provider, target_id)` pair, e.g. a Teams chat id. It
+  carries an optional display label, an enabled flag, a per-channel cursor, the last error, and
+  two gating attributes: an optional **@mention** and an **allow-anyone** flag (default off).
+- A **provider** exposes capabilities: `search` (find targets by query) and/or `by-id` (bind a
+  known id directly). Teams supports both.
+- Bindings and an outbound relay queue live in moneypenny's SQLite (`channels`, `channel_outbox`).
+
+### Gating (who and what is forwarded)
+
+Two independent, opt-in gates decide which inbound messages reach the agent. Both are evaluated
+during polling; a message that fails either gate is examined and ignored (its cursor still
+advances, so it is never reprocessed):
+
+- **Sender gate (allow-anyone)**: by default a channel only forwards messages from the signed-in
+  owner (the account driving the provider — its identity is resolved once via the provider, e.g.
+  Teams `GetUserPresence`). Set **allow-anyone** to forward messages from every participant. If the
+  owner's identity cannot be resolved the channel fails open (forwards all) and records the lookup
+  error so the degraded state is visible.
+- **@mention gate**: when a channel has a configured mention name, only messages that address it
+  are forwarded, and the mention token is stripped before forwarding. Matching is case-insensitive,
+  whole-word, and the leading `@` is optional — so both a user-typed `@james ...` and a Teams-native
+  mention (which arrives cleaned to the bare name `james`) match. An empty mention forwards everything.
+
+### Behaviour
+
+- **Polling**: A `ChannelManager` goroutine ticks every 5s. Each enabled channel is polled every
+  60s normally, dropping to every 10s for 5 minutes after any activity (a message sent or
+  received), then reverting to 60s.
+- **Inbound**: New messages (timestamp beyond the stored cursor, excluding messages the agent
+  itself sent — tracked in `channel_outbox.sent_msg_id`) are forwarded to the bound session as a
+  continuation prompt. The cursor advances past every message examined so nothing is reprocessed.
+  At bind time the cursor is initialised to the latest message so history is not replayed.
+- **Outbound**: When the agent finishes a run whose reply is routed to a channel, the response is
+  enqueued in `channel_outbox`; a drainer sends it via the provider. Every outbound message is
+  prefixed with `[<session name>]\n` so channel participants can tell which agent replied.
+- **Reply routing**: `ReplyChannelID` flows as metadata through the run/queue/schedule paths. A
+  scheduled prompt created with `--channel` delivers its output to that channel. Queued prompts
+  are only grouped together when they share a reply channel.
+- **Errors**: Provider/auth failures (e.g. `agency` needs sign-in) surface verbatim as a channel
+  `last_error` and, for inbound processing, a system turn in the session. The user resolves them
+  by authenticating `agency` on the moneypenny host.
+
+### CLI Commands
+
+- `hem list channel-providers [-m MP | --session-id ID]` — lists available providers and their capabilities.
+- `hem search channel --query TEXT [--provider teams] [--session-id ID | -m MP]` — searches a provider for candidate targets (returns id/label/detail rows).
+- `hem create channel --session-id ID --target-id TARGET [--provider teams] [--label LABEL] [--mention @name] [--allow-anyone]` — binds a session to a channel.
+- `hem list channel --session-id ID` — lists a session's channels (with mention and sender policy).
+- `hem set channel CHANNEL_ID --session-id ID [--mention @name] [--allow-anyone | --owner-only]` — updates a channel's mention gate and/or sender policy (`--mention ""` clears the mention).
+- `hem enable channel CHANNEL_ID --session-id ID` / `hem disable channel CHANNEL_ID --session-id ID` — toggles a channel.
+- `hem delete channel CHANNEL_ID --session-id ID` — removes a binding.
+
+Provider-scoped commands (`list channel-providers`, `search channel`) resolve the moneypenny from
+`--session-id` when given (so UI in a chat context needs no moneypenny name), else from `-m`/default.
+
+### TUI
+
+- In the chat view command mode, `C` opens the Channels view for the session.
+- The view lists bound channels (with enabled state, mention, sender policy, and last error) and
+  supports `n` new, `e` toggle enabled, `m` edit mention/senders, `a` toggle sender policy, `d`
+  delete (two-step), `r` refresh. The add flow walks provider → method (search vs. id) →
+  search-and-pick or type-id → gating (mention + sender policy) → bind.
+
+### Qew
+
+- The command palette (`n`) and Actions menu expose **Channels**, opening a modal that mirrors the
+  TUI flow: list/enable/disable/delete/**edit** plus an add wizard (provider → search/id → gating →
+  bind). Each channel row shows its mention and sender policy; **Edit** updates them in place.
+- The scheduled-task modal gains an optional channel selector that passes `--channel`.
 
 ## Session Memory
 

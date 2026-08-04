@@ -137,6 +137,10 @@ func main() {
 	// Start the scheduler for timed prompts.
 	h.StartScheduler(ctx)
 
+	// Start the channel manager to poll external communication channels and
+	// mirror session replies back through them.
+	h.StartChannelManager(ctx)
+
 	// Start auto-updater if enabled.
 	if *autoUpdate {
 		ulog := log.New(io.Discard, "[updater] ", log.LstdFlags)

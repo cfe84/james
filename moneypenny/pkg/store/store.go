@@ -78,7 +78,10 @@ type Schedule struct {
 	ScheduledAt time.Time
 	Status      string
 	CronExpr    string // cron expression for recurring schedules (empty = one-shot)
-	CreatedAt   time.Time
+	// ReplyChannelID routes this scheduled prompt's output to an external
+	// communication channel (channels.id). 0 = no channel routing.
+	ReplyChannelID int64
+	CreatedAt      time.Time
 }
 
 // Store manages the SQLite database.
@@ -180,6 +183,38 @@ CREATE TABLE IF NOT EXISTS memory_nodes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_memory_nodes_session ON memory_nodes(session_id);
+
+CREATE TABLE IF NOT EXISTS channels (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+    provider TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    target_label TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    mention TEXT NOT NULL DEFAULT '',
+    allow_anyone INTEGER NOT NULL DEFAULT 0,
+    last_seen_id TEXT NOT NULL DEFAULT '',
+    last_seen_ts TEXT NOT NULL DEFAULT '',
+    last_activity_at DATETIME,
+    last_error TEXT NOT NULL DEFAULT '',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_channels_session ON channels(session_id);
+CREATE INDEX IF NOT EXISTS idx_channels_enabled ON channels(enabled);
+
+CREATE TABLE IF NOT EXISTS channel_outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_id INTEGER NOT NULL REFERENCES channels(id) ON DELETE CASCADE,
+    content TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    sent_msg_id TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT '',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_channel_outbox_pending ON channel_outbox(status);
 `
 	_, err := db.Exec(schema)
 	if err != nil {
@@ -226,6 +261,19 @@ CREATE INDEX IF NOT EXISTS idx_memory_nodes_session ON memory_nodes(session_id);
 	db.Exec(`ALTER TABLE sessions ADD COLUMN compaction_mode TEXT NOT NULL DEFAULT 'agent'`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN context_tokens INTEGER NOT NULL DEFAULT 0`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN context_window INTEGER NOT NULL DEFAULT 0`)
+
+	// Migration: reply_channel_id routes a run's final response to an external
+	// communication channel (channels.id). 0 = no channel routing. Present on
+	// prompt_queue (channel-originated or channel-routed queued prompts) and on
+	// schedules (scheduled prompt whose output is delivered to a channel).
+	db.Exec(`ALTER TABLE prompt_queue ADD COLUMN reply_channel_id INTEGER NOT NULL DEFAULT 0`)
+	db.Exec(`ALTER TABLE schedules ADD COLUMN reply_channel_id INTEGER NOT NULL DEFAULT 0`)
+
+	// Channel @mention gating: only forward inbound messages containing the
+	// configured mention (empty = forward all); allow_anyone controls whether
+	// messages from senders other than the signed-in owner are accepted.
+	db.Exec(`ALTER TABLE channels ADD COLUMN mention TEXT NOT NULL DEFAULT ''`)
+	db.Exec(`ALTER TABLE channels ADD COLUMN allow_anyone INTEGER NOT NULL DEFAULT 0`)
 
 	return nil
 }
@@ -655,17 +703,25 @@ type QueuedPrompt struct {
 	Effort      string
 	ContextTier string
 	Source      string
+	// ReplyChannelID routes this prompt's response to an external channel
+	// (channels.id). 0 = no channel routing.
+	ReplyChannelID int64
 }
 
 // QueuePrompt adds a prompt to the queue for a session. The model/effort/
 // context-tier override (may be empty) is stored so a temporary override chosen
 // while the session was busy is honored when the queue is drained. source
 // records the prompt's origin ("" for user-typed, "scheduled" for
-// scheduler-fired).
+// scheduler-fired, "channel" for external-channel-originated).
 func (s *Store) QueuePrompt(sessionID, prompt, model, effort, contextTier, source string) error {
+	return s.QueuePromptChannel(sessionID, prompt, model, effort, contextTier, source, 0)
+}
+
+// QueuePromptChannel is QueuePrompt with an explicit reply channel id (0 = none).
+func (s *Store) QueuePromptChannel(sessionID, prompt, model, effort, contextTier, source string, replyChannelID int64) error {
 	_, err := s.db.Exec(
-		`INSERT INTO prompt_queue (session_id, prompt, model, effort, context_tier, source) VALUES (?, ?, ?, ?, ?, ?)`,
-		sessionID, prompt, model, effort, contextTier, source,
+		`INSERT INTO prompt_queue (session_id, prompt, model, effort, context_tier, source, reply_channel_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		sessionID, prompt, model, effort, contextTier, source, replyChannelID,
 	)
 	if err != nil {
 		return fmt.Errorf("queue prompt: %w", err)
@@ -688,7 +744,7 @@ func (s *Store) DrainQueueGroup(sessionID string) ([]QueuedPrompt, error) {
 	defer tx.Rollback()
 
 	rows, err := tx.Query(
-		`SELECT id, prompt, model, effort, context_tier, source FROM prompt_queue WHERE session_id = ? ORDER BY created_at, id`, sessionID,
+		`SELECT id, prompt, model, effort, context_tier, source, reply_channel_id FROM prompt_queue WHERE session_id = ? ORDER BY created_at, id`, sessionID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("drain queue group: %w", err)
@@ -698,18 +754,22 @@ func (s *Store) DrainQueueGroup(sessionID string) ([]QueuedPrompt, error) {
 	var prompts []QueuedPrompt
 	var haveFirst bool
 	var firstModel, firstEffort, firstTier string
+	var firstChannel int64
 	for rows.Next() {
 		var id int64
 		var qp QueuedPrompt
-		if err := rows.Scan(&id, &qp.Prompt, &qp.Model, &qp.Effort, &qp.ContextTier, &qp.Source); err != nil {
+		if err := rows.Scan(&id, &qp.Prompt, &qp.Model, &qp.Effort, &qp.ContextTier, &qp.Source, &qp.ReplyChannelID); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("scan queued prompt: %w", err)
 		}
 		if !haveFirst {
 			haveFirst = true
 			firstModel, firstEffort, firstTier = qp.Model, qp.Effort, qp.ContextTier
-		} else if qp.Model != firstModel || qp.Effort != firstEffort || qp.ContextTier != firstTier {
-			// Different override: end of the leading group.
+			firstChannel = qp.ReplyChannelID
+		} else if qp.Model != firstModel || qp.Effort != firstEffort || qp.ContextTier != firstTier || qp.ReplyChannelID != firstChannel {
+			// Different override or reply channel: end of the leading group. Keeping
+			// reply channel in the grouping key ensures a group's response is routed
+			// to exactly one channel (or none).
 			break
 		}
 		ids = append(ids, id)
@@ -735,7 +795,7 @@ func (s *Store) DrainQueueGroup(sessionID string) ([]QueuedPrompt, error) {
 // DrainQueue removes and returns all queued prompts for a session, ordered by creation time.
 func (s *Store) DrainQueue(sessionID string) ([]QueuedPrompt, error) {
 	rows, err := s.db.Query(
-		`SELECT id, prompt, model, effort, context_tier, source FROM prompt_queue WHERE session_id = ? ORDER BY created_at, id`, sessionID,
+		`SELECT id, prompt, model, effort, context_tier, source, reply_channel_id FROM prompt_queue WHERE session_id = ? ORDER BY created_at, id`, sessionID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("drain queue: %w", err)
@@ -747,7 +807,7 @@ func (s *Store) DrainQueue(sessionID string) ([]QueuedPrompt, error) {
 	for rows.Next() {
 		var id int64
 		var qp QueuedPrompt
-		if err := rows.Scan(&id, &qp.Prompt, &qp.Model, &qp.Effort, &qp.ContextTier, &qp.Source); err != nil {
+		if err := rows.Scan(&id, &qp.Prompt, &qp.Model, &qp.Effort, &qp.ContextTier, &qp.Source, &qp.ReplyChannelID); err != nil {
 			return nil, fmt.Errorf("scan queued prompt: %w", err)
 		}
 		ids = append(ids, id)
@@ -779,14 +839,20 @@ func (s *Store) QueueLength(sessionID string) (int, error) {
 
 // CreateSchedule adds a scheduled prompt for a session.
 func (s *Store) CreateSchedule(sessionID, prompt string, scheduledAt time.Time) (int64, error) {
-	return s.CreateScheduleWithCron(sessionID, prompt, scheduledAt, "")
+	return s.CreateScheduleFull(sessionID, prompt, scheduledAt, "", 0)
 }
 
 // CreateScheduleWithCron adds a scheduled prompt with an optional cron expression for recurrence.
 func (s *Store) CreateScheduleWithCron(sessionID, prompt string, scheduledAt time.Time, cronExpr string) (int64, error) {
+	return s.CreateScheduleFull(sessionID, prompt, scheduledAt, cronExpr, 0)
+}
+
+// CreateScheduleFull adds a scheduled prompt with optional cron recurrence and an
+// optional reply channel id (0 = none) whose output is delivered to that channel.
+func (s *Store) CreateScheduleFull(sessionID, prompt string, scheduledAt time.Time, cronExpr string, replyChannelID int64) (int64, error) {
 	res, err := s.db.Exec(
-		`INSERT INTO schedules (session_id, prompt, scheduled_at, status, cron_expr) VALUES (?, ?, ?, ?, ?)`,
-		sessionID, prompt, scheduledAt.UTC(), SchedulePending, cronExpr,
+		`INSERT INTO schedules (session_id, prompt, scheduled_at, status, cron_expr, reply_channel_id) VALUES (?, ?, ?, ?, ?, ?)`,
+		sessionID, prompt, scheduledAt.UTC(), SchedulePending, cronExpr, replyChannelID,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("create schedule: %w", err)
@@ -797,10 +863,10 @@ func (s *Store) CreateScheduleWithCron(sessionID, prompt string, scheduledAt tim
 // GetSchedule retrieves a schedule by ID.
 func (s *Store) GetSchedule(id int64) (*Schedule, error) {
 	row := s.db.QueryRow(
-		`SELECT id, session_id, prompt, scheduled_at, status, cron_expr, created_at FROM schedules WHERE id = ?`, id,
+		`SELECT id, session_id, prompt, scheduled_at, status, cron_expr, reply_channel_id, created_at FROM schedules WHERE id = ?`, id,
 	)
 	sch := &Schedule{}
-	err := row.Scan(&sch.ID, &sch.SessionID, &sch.Prompt, &sch.ScheduledAt, &sch.Status, &sch.CronExpr, &sch.CreatedAt)
+	err := row.Scan(&sch.ID, &sch.SessionID, &sch.Prompt, &sch.ScheduledAt, &sch.Status, &sch.CronExpr, &sch.ReplyChannelID, &sch.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -816,12 +882,12 @@ func (s *Store) ListSchedules(sessionID string, statusFilter string) ([]*Schedul
 	var err error
 	if statusFilter != "" {
 		rows, err = s.db.Query(
-			`SELECT id, session_id, prompt, scheduled_at, status, cron_expr, created_at
+			`SELECT id, session_id, prompt, scheduled_at, status, cron_expr, reply_channel_id, created_at
 			 FROM schedules WHERE session_id = ? AND status = ? ORDER BY scheduled_at`, sessionID, statusFilter,
 		)
 	} else {
 		rows, err = s.db.Query(
-			`SELECT id, session_id, prompt, scheduled_at, status, cron_expr, created_at
+			`SELECT id, session_id, prompt, scheduled_at, status, cron_expr, reply_channel_id, created_at
 			 FROM schedules WHERE session_id = ? ORDER BY scheduled_at`, sessionID,
 		)
 	}
@@ -833,7 +899,7 @@ func (s *Store) ListSchedules(sessionID string, statusFilter string) ([]*Schedul
 	var schedules []*Schedule
 	for rows.Next() {
 		sch := &Schedule{}
-		if err := rows.Scan(&sch.ID, &sch.SessionID, &sch.Prompt, &sch.ScheduledAt, &sch.Status, &sch.CronExpr, &sch.CreatedAt); err != nil {
+		if err := rows.Scan(&sch.ID, &sch.SessionID, &sch.Prompt, &sch.ScheduledAt, &sch.Status, &sch.CronExpr, &sch.ReplyChannelID, &sch.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan schedule: %w", err)
 		}
 		schedules = append(schedules, sch)
@@ -845,7 +911,7 @@ func (s *Store) ListSchedules(sessionID string, statusFilter string) ([]*Schedul
 func (s *Store) DueSchedules() ([]*Schedule, error) {
 	now := time.Now().UTC()
 	rows, err := s.db.Query(
-		`SELECT id, session_id, prompt, scheduled_at, status, cron_expr, created_at
+		`SELECT id, session_id, prompt, scheduled_at, status, cron_expr, reply_channel_id, created_at
 		 FROM schedules WHERE status = ? AND scheduled_at <= ? ORDER BY scheduled_at`,
 		SchedulePending, now,
 	)
@@ -857,7 +923,7 @@ func (s *Store) DueSchedules() ([]*Schedule, error) {
 	var schedules []*Schedule
 	for rows.Next() {
 		sch := &Schedule{}
-		if err := rows.Scan(&sch.ID, &sch.SessionID, &sch.Prompt, &sch.ScheduledAt, &sch.Status, &sch.CronExpr, &sch.CreatedAt); err != nil {
+		if err := rows.Scan(&sch.ID, &sch.SessionID, &sch.Prompt, &sch.ScheduledAt, &sch.Status, &sch.CronExpr, &sch.ReplyChannelID, &sch.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan schedule: %w", err)
 		}
 		schedules = append(schedules, sch)
@@ -889,4 +955,299 @@ func (s *Store) CancelSchedule(id int64) error {
 		return fmt.Errorf("schedule %d not found or not pending", id)
 	}
 	return nil
+}
+
+// Channel binds a session to an external communication channel (a Teams chat,
+// email thread, ...). The manager polls enabled channels for new messages and
+// mirrors the session's responses back through channel_outbox.
+type Channel struct {
+	ID          int64
+	SessionID   string
+	Provider    string
+	TargetID    string
+	TargetLabel string
+	Enabled     bool
+	// Mention, when non-empty, gates inbound forwarding: only messages whose
+	// text contains this name (optionally prefixed with '@') are forwarded, and
+	// the mention token is stripped before forwarding. Empty = forward all.
+	Mention string
+	// AllowAnyone, when false (default), only forwards messages from the
+	// signed-in owner (the account driving the provider). When true, messages
+	// from any sender are forwarded.
+	AllowAnyone bool
+	// LastSeenID/LastSeenTS form the poll cursor: only messages strictly newer
+	// than LastSeenTS are forwarded. Initialized at bind time to the target's
+	// latest message so pre-existing history is not replayed.
+	LastSeenID string
+	LastSeenTS string
+	// LastActivity is when a message was last seen or sent on this channel;
+	// drives the fast (active) vs slow (idle) polling cadence.
+	LastActivity time.Time
+	LastError    string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+}
+
+// CreateChannel inserts a channel binding and returns its id.
+func (s *Store) CreateChannel(ch *Channel) (int64, error) {
+	enabled := 1
+	if !ch.Enabled {
+		enabled = 0
+	}
+	allowAnyone := 0
+	if ch.AllowAnyone {
+		allowAnyone = 1
+	}
+	res, err := s.db.Exec(
+		`INSERT INTO channels (session_id, provider, target_id, target_label, enabled, mention, allow_anyone, last_seen_id, last_seen_ts)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ch.SessionID, ch.Provider, ch.TargetID, ch.TargetLabel, enabled, ch.Mention, allowAnyone, ch.LastSeenID, ch.LastSeenTS,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("create channel: %w", err)
+	}
+	return res.LastInsertId()
+}
+
+func scanChannel(sc interface {
+	Scan(dest ...interface{}) error
+}) (*Channel, error) {
+	ch := &Channel{}
+	var enabled int
+	var allowAnyone int
+	var lastActivity sql.NullTime
+	if err := sc.Scan(&ch.ID, &ch.SessionID, &ch.Provider, &ch.TargetID, &ch.TargetLabel, &enabled,
+		&ch.Mention, &allowAnyone, &ch.LastSeenID, &ch.LastSeenTS, &lastActivity, &ch.LastError, &ch.CreatedAt, &ch.UpdatedAt); err != nil {
+		return nil, err
+	}
+	ch.Enabled = enabled != 0
+	ch.AllowAnyone = allowAnyone != 0
+	if lastActivity.Valid {
+		ch.LastActivity = lastActivity.Time
+	}
+	return ch, nil
+}
+
+const channelColumns = `id, session_id, provider, target_id, target_label, enabled, mention, allow_anyone, last_seen_id, last_seen_ts, last_activity_at, last_error, created_at, updated_at`
+
+// GetChannel retrieves a channel by id (nil if not found).
+func (s *Store) GetChannel(id int64) (*Channel, error) {
+	row := s.db.QueryRow(`SELECT `+channelColumns+` FROM channels WHERE id = ?`, id)
+	ch, err := scanChannel(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get channel: %w", err)
+	}
+	return ch, nil
+}
+
+// ListChannels returns channels for a session, or all channels when sessionID
+// is empty.
+func (s *Store) ListChannels(sessionID string) ([]*Channel, error) {
+	var rows *sql.Rows
+	var err error
+	if sessionID == "" {
+		rows, err = s.db.Query(`SELECT ` + channelColumns + ` FROM channels ORDER BY id`)
+	} else {
+		rows, err = s.db.Query(`SELECT `+channelColumns+` FROM channels WHERE session_id = ? ORDER BY id`, sessionID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list channels: %w", err)
+	}
+	defer rows.Close()
+	var out []*Channel
+	for rows.Next() {
+		ch, err := scanChannel(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan channel: %w", err)
+		}
+		out = append(out, ch)
+	}
+	return out, rows.Err()
+}
+
+// ListEnabledChannels returns all enabled channels (for the poll loop).
+func (s *Store) ListEnabledChannels() ([]*Channel, error) {
+	rows, err := s.db.Query(`SELECT ` + channelColumns + ` FROM channels WHERE enabled = 1 ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("list enabled channels: %w", err)
+	}
+	defer rows.Close()
+	var out []*Channel
+	for rows.Next() {
+		ch, err := scanChannel(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan channel: %w", err)
+		}
+		out = append(out, ch)
+	}
+	return out, rows.Err()
+}
+
+// DeleteChannel removes a channel binding (and its outbox via cascade).
+func (s *Store) DeleteChannel(id int64) error {
+	res, err := s.db.Exec(`DELETE FROM channels WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("delete channel: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("channel %d not found", id)
+	}
+	return nil
+}
+
+// SetChannelEnabled toggles a channel's enabled flag.
+func (s *Store) SetChannelEnabled(id int64, enabled bool) error {
+	e := 0
+	if enabled {
+		e = 1
+	}
+	res, err := s.db.Exec(`UPDATE channels SET enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, e, id)
+	if err != nil {
+		return fmt.Errorf("set channel enabled: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("channel %d not found", id)
+	}
+	return nil
+}
+
+// UpdateChannelMention sets a channel's @mention gate (empty = forward all).
+func (s *Store) UpdateChannelMention(id int64, mention string) error {
+	res, err := s.db.Exec(`UPDATE channels SET mention = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, mention, id)
+	if err != nil {
+		return fmt.Errorf("update channel mention: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("channel %d not found", id)
+	}
+	return nil
+}
+
+// SetChannelAllowAnyone toggles whether messages from senders other than the
+// signed-in owner are forwarded.
+func (s *Store) SetChannelAllowAnyone(id int64, allow bool) error {
+	a := 0
+	if allow {
+		a = 1
+	}
+	res, err := s.db.Exec(`UPDATE channels SET allow_anyone = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, a, id)
+	if err != nil {
+		return fmt.Errorf("set channel allow_anyone: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("channel %d not found", id)
+	}
+	return nil
+}
+
+// UpdateChannelCursor advances a channel's poll cursor.
+func (s *Store) UpdateChannelCursor(id int64, lastSeenID, lastSeenTS string) error {
+	_, err := s.db.Exec(
+		`UPDATE channels SET last_seen_id = ?, last_seen_ts = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+		lastSeenID, lastSeenTS, id,
+	)
+	if err != nil {
+		return fmt.Errorf("update channel cursor: %w", err)
+	}
+	return nil
+}
+
+// TouchChannelActivity records channel activity now (drives fast polling).
+func (s *Store) TouchChannelActivity(id int64) error {
+	_, err := s.db.Exec(`UPDATE channels SET last_activity_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, time.Now().UTC(), id)
+	if err != nil {
+		return fmt.Errorf("touch channel activity: %w", err)
+	}
+	return nil
+}
+
+// SetChannelError records (or clears, when msg is empty) a channel's last error.
+func (s *Store) SetChannelError(id int64, msg string) error {
+	_, err := s.db.Exec(`UPDATE channels SET last_error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, msg, id)
+	if err != nil {
+		return fmt.Errorf("set channel error: %w", err)
+	}
+	return nil
+}
+
+// OutboxItem is a pending outbound channel message joined with its channel's
+// provider/target context.
+type OutboxItem struct {
+	ID        int64
+	ChannelID int64
+	Provider  string
+	TargetID  string
+	Content   string
+}
+
+// EnqueueOutbox queues an outbound message for a channel.
+func (s *Store) EnqueueOutbox(channelID int64, content string) error {
+	_, err := s.db.Exec(`INSERT INTO channel_outbox (channel_id, content) VALUES (?, ?)`, channelID, content)
+	if err != nil {
+		return fmt.Errorf("enqueue outbox: %w", err)
+	}
+	return nil
+}
+
+// PendingOutbox returns pending outbound messages with channel context, oldest
+// first. Only messages for enabled channels are returned.
+func (s *Store) PendingOutbox() ([]OutboxItem, error) {
+	rows, err := s.db.Query(
+		`SELECT o.id, o.channel_id, c.provider, c.target_id, o.content
+		 FROM channel_outbox o JOIN channels c ON c.id = o.channel_id
+		 WHERE o.status = 'pending' AND c.enabled = 1 ORDER BY o.id`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("pending outbox: %w", err)
+	}
+	defer rows.Close()
+	var out []OutboxItem
+	for rows.Next() {
+		var it OutboxItem
+		if err := rows.Scan(&it.ID, &it.ChannelID, &it.Provider, &it.TargetID, &it.Content); err != nil {
+			return nil, fmt.Errorf("scan outbox: %w", err)
+		}
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
+// MarkOutboxSent marks an outbox item as sent, recording the provider message id.
+func (s *Store) MarkOutboxSent(id int64, sentMsgID string) error {
+	_, err := s.db.Exec(`UPDATE channel_outbox SET status = 'sent', sent_msg_id = ? WHERE id = ?`, sentMsgID, id)
+	if err != nil {
+		return fmt.Errorf("mark outbox sent: %w", err)
+	}
+	return nil
+}
+
+// MarkOutboxError marks an outbox item as failed with an error message.
+func (s *Store) MarkOutboxError(id int64, msg string) error {
+	_, err := s.db.Exec(`UPDATE channel_outbox SET status = 'error', error = ? WHERE id = ?`, msg, id)
+	if err != nil {
+		return fmt.Errorf("mark outbox error: %w", err)
+	}
+	return nil
+}
+
+// SentMessageIDs returns the set of provider message ids sent by us for a
+// channel, used to suppress echo (skip our own messages during polling).
+func (s *Store) SentMessageIDs(channelID int64) (map[string]bool, error) {
+	rows, err := s.db.Query(`SELECT sent_msg_id FROM channel_outbox WHERE channel_id = ? AND sent_msg_id != ''`, channelID)
+	if err != nil {
+		return nil, fmt.Errorf("sent message ids: %w", err)
+	}
+	defer rows.Close()
+	ids := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids[id] = true
+	}
+	return ids, rows.Err()
 }
