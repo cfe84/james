@@ -643,6 +643,10 @@ advances, so it is never reprocessed):
 - **Errors**: Provider/auth failures (e.g. `agency` needs sign-in) surface verbatim as a channel
   `last_error` and, for inbound processing, a system turn in the session. The user resolves them
   by authenticating `agency` on the moneypenny host.
+- **Command resolution**: the provider MCP command (default `agency`) is resolved to an absolute
+  path at startup so it launches even when moneypenny runs under a minimal PATH (launchd/systemd):
+  PATH is tried first, then well-known install locations (`~/.config/agency/CurrentVersion/agency`,
+  `~/.local/bin`, `~/bin`, Homebrew, `/usr/local/bin`). Override with `MONEYPENNY_CHANNEL_CMD`.
 
 ### CLI Commands
 

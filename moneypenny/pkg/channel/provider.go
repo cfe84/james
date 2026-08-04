@@ -3,7 +3,11 @@ package channel
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 )
 
@@ -77,7 +81,40 @@ func NewRegistry(command string) *Registry {
 	if command == "" {
 		command = "agency"
 	}
-	return &Registry{command: command, providers: map[string]Provider{}}
+	return &Registry{command: resolveCommand(command), providers: map[string]Provider{}}
+}
+
+// resolveCommand turns a bare command name into an absolute path so provider
+// subprocesses can be launched even when the process PATH is minimal (e.g. under
+// launchd/systemd). If command already contains a path separator it is returned
+// unchanged. Otherwise we try PATH, then a set of well-known install locations
+// (notably the versioned agency install under ~/.config/agency). If nothing is
+// found the original name is returned so exec still produces a clear error.
+func resolveCommand(command string) string {
+	if strings.ContainsRune(command, os.PathSeparator) {
+		return command
+	}
+	if p, err := exec.LookPath(command); err == nil {
+		return p
+	}
+	var candidates []string
+	if home, err := os.UserHomeDir(); err == nil {
+		candidates = append(candidates,
+			filepath.Join(home, ".config", command, "CurrentVersion", command),
+			filepath.Join(home, ".local", "bin", command),
+			filepath.Join(home, "bin", command),
+		)
+	}
+	candidates = append(candidates,
+		filepath.Join("/opt/homebrew/bin", command),
+		filepath.Join("/usr/local/bin", command),
+	)
+	for _, c := range candidates {
+		if info, err := os.Stat(c); err == nil && !info.IsDir() {
+			return c
+		}
+	}
+	return command
 }
 
 // Get returns (constructing if needed) the provider for name.
