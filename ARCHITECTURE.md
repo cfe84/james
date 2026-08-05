@@ -456,6 +456,21 @@ moneypenny/pkg/handler/channels.go  # ChannelManager (poll/forward/drain) + CRUD
    gap: the `runCompaction` early-return path in `runAgent` drops `ReplyChannelID` (rare, documented,
    not fixed).
 
+9. **Poll optimization via ListChats snapshot (Teams-only, internal).** As a pure implementation
+   detail inside the Teams adapter (not exposed on the `Provider` interface or to the
+   `ChannelManager`), `teamsProvider.ListMessages` first consults a shared, short-lived snapshot of
+   `ListChats` (one call returns every recent chat with `lastMessagePreview.createdDateTime`, newest
+   first). The snapshot (`recentMap`: chatId → latest timestamp) is cached under a mutex and refreshed
+   at most once per `teamsRecentTTL` (3s) — shorter than the 5s master tick, so all channels polled
+   within one tick share a single `ListChats` call instead of each issuing a `ListChatMessages`. For an
+   established channel (non-empty cursor), if the target either isn't in the snapshot (didn't bubble to
+   page 1) or its latest message is not newer than the stored cursor, the per-chat fetch is skipped
+   entirely; otherwise it falls through to `ListChatMessages` as before. The optimization is best
+   effort: a `ListChats` error or cold cache falls back to a direct fetch, so correctness never depends
+   on it. Bootstrap channels (empty cursor) are unaffected — they still seed via `LatestCursor`. Only
+   page 1 is consulted (`hasMoreResults` ignored); a chat pushed off page 1 by a burst of other
+   activity is simply picked up on a later tick.
+
 ## Qew - Web UI for Remote Access
 
 Qew is a web-based UI that connects to a Hem server via MI6, enabling remote access from phones and other computers.

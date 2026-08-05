@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 )
 
 // teamsProvider drives Microsoft Teams via the tools exposed by
@@ -21,6 +22,14 @@ type teamsProvider struct {
 	selfID   string
 	selfName string
 	selfSet  bool
+
+	// recentActivity caches a single ListChats snapshot (chatId → latest message
+	// timestamp) shared across all channels on this moneypenny, so one poll tick
+	// makes at most one ListChats call instead of one ListChatMessages call per
+	// channel. See recentActivitySnapshot.
+	recentMu  sync.Mutex
+	recentAt  time.Time
+	recentMap map[string]string
 }
 
 func newTeamsProvider(mc *mcpClient) *teamsProvider { return &teamsProvider{mc: mc} }
@@ -68,11 +77,38 @@ func (t *teamsProvider) Resolve(ctx context.Context, targetID string) (Target, e
 	return Target{ID: targetID, Label: targetID}, nil
 }
 
+// teamsRecentTTL bounds how long a ListChats snapshot is reused. It is shorter
+// than the channel manager's poll tick (5s) so all channels polled within one
+// tick share a single ListChats call, while the snapshot still refreshes on the
+// next tick. New activity is therefore surfaced within at most this delay.
+const teamsRecentTTL = 3 * time.Second
+
 // ListMessages returns messages newer than sinceTS. It fetches a single page of
 // the most-recent messages (Graph's max is 50); in the rare case that a chat
 // receives more than that between polls, the older overflow is not delivered.
 // The active-poll cadence (10s while a conversation is live) keeps this unlikely.
+//
+// As an internal optimization it first consults a shared ListChats snapshot: if
+// that snapshot is available and the target either isn't present (didn't bubble
+// up to the recent page) or its latest message is provably not newer than
+// sinceTS, the per-chat ListChatMessages call is skipped entirely. The snapshot
+// is best effort — any error, a cold cache, or a timestamp that can't be parsed
+// falls through to a direct fetch, so correctness never depends on it.
 func (t *teamsProvider) ListMessages(ctx context.Context, targetID, sinceTS string) ([]Message, error) {
+	if sinceTS != "" {
+		if recent, ok := t.recentActivitySnapshot(ctx); ok {
+			latest, present := recent[targetID]
+			// Skip the per-chat fetch only when we are confident there is no
+			// newer message: either the chat didn't appear on the recent page
+			// at all, or its latest activity parses to a time that is not after
+			// the cursor. Unparseable timestamps deliberately fall through so a
+			// format mismatch between endpoints can never suppress a real message.
+			if !present || tsNotNewer(latest, sinceTS) {
+				return nil, nil
+			}
+		}
+	}
+
 	args := map[string]interface{}{"chatId": targetID, "top": 50}
 	out, err := t.mc.callTool(ctx, "ListChatMessages", args)
 	if err != nil {
@@ -91,6 +127,71 @@ func (t *teamsProvider) ListMessages(ctx context.Context, targetID, sinceTS stri
 		}
 	}
 	return res, nil
+}
+
+// recentActivitySnapshot returns a chatId → latest-message-timestamp map derived
+// from a cached ListChats call, refreshing it when older than teamsRecentTTL.
+// The second return is false when no usable snapshot could be produced (e.g. the
+// ListChats call failed), signalling callers to fall back to a direct fetch.
+func (t *teamsProvider) recentActivitySnapshot(ctx context.Context) (map[string]string, bool) {
+	t.recentMu.Lock()
+	defer t.recentMu.Unlock()
+	if t.recentMap != nil && time.Since(t.recentAt) < teamsRecentTTL {
+		return t.recentMap, true
+	}
+	out, err := t.mc.callTool(ctx, "ListChats", map[string]interface{}{})
+	if err != nil {
+		return nil, false
+	}
+	m := parseChatActivity(out)
+	if m == nil {
+		return nil, false
+	}
+	t.recentMap = m
+	t.recentAt = time.Now()
+	return m, true
+}
+
+// parseChatActivity maps each chat's id to the timestamp of its most recent
+// message, read from lastMessagePreview.createdDateTime (falling back to a
+// top-level timestamp field).
+func parseChatActivity(text string) map[string]string {
+	recs := asRecords(text)
+	if recs == nil {
+		return nil
+	}
+	m := make(map[string]string, len(recs))
+	for _, r := range recs {
+		id := str(r, "id", "chatId", "conversationId")
+		if id == "" {
+			continue
+		}
+		ts := ""
+		if prev, ok := r["lastMessagePreview"].(map[string]interface{}); ok {
+			ts = str(prev, "createdDateTime", "timestamp", "createdAt")
+		}
+		if ts == "" {
+			ts = str(r, "lastUpdatedDateTime", "createdDateTime")
+		}
+		if ts != "" {
+			m[id] = ts
+		}
+	}
+	return m
+}
+
+// tsNotNewer reports whether latest is provably not newer than since, comparing
+// them as RFC3339 instants (Go's parser tolerates optional fractional seconds
+// and differing zone spellings, so "...05Z" and "...05.123+00:00" compare
+// correctly). If either value can't be parsed it returns false, so the caller
+// falls through to a real fetch rather than risk suppressing a genuine message.
+func tsNotNewer(latest, since string) bool {
+	lt, err1 := time.Parse(time.RFC3339, latest)
+	st, err2 := time.Parse(time.RFC3339, since)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return !lt.After(st)
 }
 
 // Send posts content and returns the created message id. When senderName is

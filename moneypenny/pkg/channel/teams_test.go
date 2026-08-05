@@ -26,3 +26,45 @@ func TestHTMLEscapeMarkdown(t *testing.T) {
 		t.Fatalf("markdownToTeamsHTML = %q want %q", got, want)
 	}
 }
+
+// parseChatActivity maps chat ids to their most recent message timestamp,
+// tolerating the telemetry trailer and reading from lastMessagePreview.
+func TestParseChatActivity(t *testing.T) {
+	payload := `{"chats":[` +
+		`{"id":"c1","topic":"A","lastMessagePreview":{"createdDateTime":"2026-08-05T10:00:00Z"}},` +
+		`{"id":"c2","lastMessagePreview":{"createdDateTime":"2026-08-05T09:00:00Z"}},` +
+		`{"id":"c3"}` +
+		`]}CorrelationId: abc, TimeStamp: x`
+	m := parseChatActivity(payload)
+	if m["c1"] != "2026-08-05T10:00:00Z" {
+		t.Fatalf("c1 = %q", m["c1"])
+	}
+	if m["c2"] != "2026-08-05T09:00:00Z" {
+		t.Fatalf("c2 = %q", m["c2"])
+	}
+	if _, ok := m["c3"]; ok {
+		t.Fatalf("c3 should be absent (no timestamp), got %q", m["c3"])
+	}
+}
+
+// tsNotNewer must compare RFC3339 instants (not raw strings) so fractional
+// seconds and differing zone spellings don't cause a false skip.
+func TestTsNotNewer(t *testing.T) {
+	cases := []struct {
+		latest, since string
+		want          bool
+	}{
+		{"2026-08-05T10:00:00Z", "2026-08-05T10:00:00Z", true},          // equal → not newer
+		{"2026-08-05T10:00:01Z", "2026-08-05T10:00:00Z", false},         // newer
+		{"2026-08-05T09:59:59Z", "2026-08-05T10:00:00Z", true},          // older
+		{"2026-08-05T10:00:00.123Z", "2026-08-05T10:00:00Z", false},     // fractional newer (string-sorts before!)
+		{"2026-08-05T10:00:00+00:00", "2026-08-05T10:00:00Z", true},     // zone spelling, equal
+		{"not-a-time", "2026-08-05T10:00:00Z", false},                   // unparseable → fetch
+		{"2026-08-05T10:00:00Z", "garbage", false},                      // unparseable → fetch
+	}
+	for _, c := range cases {
+		if got := tsNotNewer(c.latest, c.since); got != c.want {
+			t.Errorf("tsNotNewer(%q,%q)=%v want %v", c.latest, c.since, got, c.want)
+		}
+	}
+}

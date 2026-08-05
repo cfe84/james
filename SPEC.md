@@ -629,7 +629,9 @@ advances, so it is never reprocessed):
 
 - **Polling**: A `ChannelManager` goroutine ticks every 5s. Each enabled channel is polled every
   60s normally, dropping to every 10s for 5 minutes after any activity (a message sent or
-  received), then reverting to 60s.
+  received), then reverting to 60s. For Teams, the adapter internally shares one `ListChats` call
+  per tick (cached ~3s) as a cheap change-detector, skipping the per-chat message fetch for any
+  channel whose latest chat activity is not newer than its cursor.
 - **Inbound**: New messages (timestamp beyond the stored cursor, excluding messages the agent
   itself sent — tracked in `channel_outbox.sent_msg_id`) are forwarded to the bound session as a
   continuation prompt. The cursor advances past every message examined so nothing is reprocessed.
