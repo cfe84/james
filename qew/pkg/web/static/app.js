@@ -43,6 +43,8 @@
   let dashSelectedId = ''; // session id of keyboard-selected dashboard row
   let dashFilter = '';     // fuzzy filter term for the session list ('' = no filter)
   let lastDashboardData = null; // most recent dashboard payload (for local re-filter)
+  let lastDashRenderSig = null; // structural signature of the last full dashboard render (skip rebuilds when unchanged)
+  let dashRowSigs = {};    // sessionId -> mutable-content signature of the currently rendered row (for in-place patching)
   let mgmtCursor = 0;      // selected row index in the active mgmt list (moneypennies/traits)
   let cmdPaletteOpen = false; // the in-conversation command palette modal is open
   let chatNavMode = false; // in-conversation keyboard nav mode (input blurred, j/k scroll)
@@ -270,6 +272,8 @@
       container.innerHTML = '<div class="empty-state">No sessions</div>';
       dashEntries = [];
       dashSelectedId = '';
+      lastDashRenderSig = null;
+      dashRowSigs = {};
       return;
     }
 
@@ -313,9 +317,50 @@
     if (filtered.length === 0) {
       container.innerHTML = `<div class="empty-state">No sessions match "${escapeHtml(dashFilter)}"</div>`;
       dashEntries = [];
+      lastDashRenderSig = null;
       applyDashSelection();
       return;
     }
+
+    // Structural signature: category grouping + row identity/order only. When this
+    // is unchanged we keep every existing row element (and its click handler) and
+    // patch only the rows whose mutable content actually changed — so a single
+    // status transition touches one row instead of rebuilding the whole list.
+    const structSig = JSON.stringify(filtered.map(e => [e.category, e.sessionId]));
+
+    // Per-row content signature: everything the row's inner HTML depends on.
+    const rowSig = e => e.name + '\x1f' + e.nick + '\x1f' + e.project + '\x1f' +
+      e.mpStatus + '\x1f' + e.subInfo + '\x1f' + e.agent + '\x1f' +
+      e.moneypenny + '\x1f' + relativeTime(e.lastActive || '') + '\x1f' + (e.lastActive ? '1' : '0');
+
+    // Update the shared navigation state (cheap; order matches the DOM either path).
+    dashEntries = filtered.map(e => ({
+      sessionId: e.sessionId,
+      name: e.name || e.sessionId.substring(0, 12),
+      mp: e.moneypenny,
+      parent: e.parentSessionId,
+      agent: e.agent,
+    }));
+
+    if (structSig === lastDashRenderSig && container.querySelector('.session-row')) {
+      const rowById = {};
+      container.querySelectorAll('.session-row').forEach(r => { rowById[r.dataset.sessionId] = r; });
+      const newSigs = {};
+      for (const e of filtered) {
+        const s = rowSig(e);
+        newSigs[e.sessionId] = s;
+        if (dashRowSigs[e.sessionId] === s) continue; // unchanged: leave the DOM alone
+        const row = rowById[e.sessionId];
+        if (!row) continue;
+        row.setAttribute('data-session-name', e.name || e.sessionId.substring(0, 12));
+        row.setAttribute('data-mp', e.moneypenny);
+        row.innerHTML = dashRowInner(e);
+      }
+      dashRowSigs = newSigs;
+      applyDashSelection();
+      return;
+    }
+    lastDashRenderSig = structSig;
 
     const catLabels = [
       { cls: 'cat-ready', label: 'Ready' },
@@ -324,6 +369,7 @@
       { cls: 'cat-completed', label: 'Completed' },
     ];
 
+    const newSigs = {};
     let html = '';
     let lastCat = -1;
     for (const e of filtered) {
@@ -333,31 +379,14 @@
         html += `<div class="category"><span class="category-label ${cat.cls}">${cat.label}</span>`;
         lastCat = e.category;
       }
-      const displayName = e.name || e.sessionId.substring(0, 12);
-      const nickPrefix = e.nick ? `<span class="session-nick">${escapeHtml(e.nick)}</span> ` : '';
-      const statusCls = e.mpStatus === 'working' ? 'working' : (e.mpStatus === 'ready' ? 'ready' : 'idle');
+      newSigs[e.sessionId] = rowSig(e);
       html += `
-        <div class="session-row" data-session-id="${escapeAttr(e.sessionId)}" data-session-name="${escapeAttr(e.name || e.sessionId.substring(0, 12))}" data-mp="${escapeAttr(e.moneypenny)}" data-parent="${escapeAttr(e.parentSessionId)}">
-          <span class="session-name">${nickPrefix}${escapeHtml(displayName)}</span>
-          ${e.project ? `<span class="session-project">${escapeHtml(e.project)}</span>` : ''}
-          <span class="session-status ${statusCls}">${escapeHtml(e.mpStatus)}${e.subInfo ? ' <span style="opacity:0.7">' + escapeHtml(e.subInfo) + '</span>' : ''}</span>
-          ${e.agent ? `<span class="session-agent agent-${escapeAttr(e.agent)}">${escapeHtml(e.agent)}</span>` : ''}
-          <span class="session-mp">${escapeHtml(e.moneypenny)}</span>
-          ${e.lastActive ? `<span class="session-time">${escapeHtml(relativeTime(e.lastActive))}</span>` : ''}
-        </div>`;
+        <div class="session-row" data-session-id="${escapeAttr(e.sessionId)}" data-session-name="${escapeAttr(e.name || e.sessionId.substring(0, 12))}" data-mp="${escapeAttr(e.moneypenny)}" data-parent="${escapeAttr(e.parentSessionId)}">${dashRowInner(e)}</div>`;
     }
     if (lastCat !== -1) html += '</div>';
 
     container.innerHTML = html;
-
-    // Record rows in display order for keyboard navigation.
-    dashEntries = filtered.map(e => ({
-      sessionId: e.sessionId,
-      name: e.name || e.sessionId.substring(0, 12),
-      mp: e.moneypenny,
-      parent: e.parentSessionId,
-      agent: e.agent,
-    }));
+    dashRowSigs = newSigs;
 
     // Click handlers.
     container.querySelectorAll('.session-row').forEach((row, i) => {
@@ -365,6 +394,20 @@
     });
 
     applyDashSelection();
+  }
+
+  // Inner HTML of a single dashboard session row (everything inside .session-row).
+  function dashRowInner(e) {
+    const displayName = e.name || e.sessionId.substring(0, 12);
+    const nickPrefix = e.nick ? `<span class="session-nick">${escapeHtml(e.nick)}</span> ` : '';
+    const statusCls = e.mpStatus === 'working' ? 'working' : (e.mpStatus === 'ready' ? 'ready' : 'idle');
+    return `
+          <span class="session-name">${nickPrefix}${escapeHtml(displayName)}</span>
+          ${e.project ? `<span class="session-project">${escapeHtml(e.project)}</span>` : ''}
+          <span class="session-status ${statusCls}">${escapeHtml(e.mpStatus)}${e.subInfo ? ' <span style="opacity:0.7">' + escapeHtml(e.subInfo) + '</span>' : ''}</span>
+          ${e.agent ? `<span class="session-agent agent-${escapeAttr(e.agent)}">${escapeHtml(e.agent)}</span>` : ''}
+          <span class="session-mp">${escapeHtml(e.moneypenny)}</span>
+          ${e.lastActive ? `<span class="session-time">${escapeHtml(relativeTime(e.lastActive))}</span>` : ''}`;
   }
 
   // Open a dashboard entry, handling subagents (open parent then the sub).
