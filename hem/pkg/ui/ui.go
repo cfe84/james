@@ -2217,6 +2217,20 @@ func (m Model) renderStatusBar() string {
 				statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
 			}
 		} else if m.chat.pickingSchedule {
+			if m.chat.confirmDeleteSchedule {
+				keys = []string{
+					statusKeyStyle.Render("d") + statusDescStyle.Render(" confirm cancel"),
+					statusKeyStyle.Render("any") + statusDescStyle.Render(" back"),
+				}
+			} else {
+				keys = []string{
+					statusKeyStyle.Render("↵") + statusDescStyle.Render(" new/select"),
+					statusKeyStyle.Render("j/k") + statusDescStyle.Render(" move"),
+					statusKeyStyle.Render("d") + statusDescStyle.Render(" cancel schedule"),
+					statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
+				}
+			}
+		} else if m.chat.commandMode {
 			keys = []string{
 				statusKeyStyle.Render("a") + statusDescStyle.Render(" subagents"),
 				statusKeyStyle.Render("c") + statusDescStyle.Render(" complete"),
