@@ -75,6 +75,7 @@ type dashboardEntry struct {
 	LastActive      string
 	Category        int // 0=READY, 1=WORKING, 2=IDLE, 3=COMPLETED
 	ParentSessionID string // non-empty for subagent entries
+	Nick            string // optional short nickname/alias
 }
 
 // dashboardModel displays the attention-based dashboard.
@@ -185,6 +186,9 @@ func (m dashboardModel) loadDashboard() tea.Cmd {
 			}
 			if len(row) > 8 {
 				e.Agent = row[8]
+			}
+			if len(row) > 9 {
+				e.Nick = row[9]
 			}
 
 			// Determine category from parsed status.
@@ -385,7 +389,7 @@ func (m dashboardModel) filteredEntries() []dashboardEntry {
 	ft := strings.ToLower(m.filterText)
 	var result []dashboardEntry
 	for _, e := range m.entries {
-		if strings.Contains(strings.ToLower(e.Name), ft) {
+		if strings.Contains(strings.ToLower(e.Name), ft) || strings.Contains(strings.ToLower(e.Nick), ft) {
 			result = append(result, e)
 		}
 	}
@@ -663,10 +667,14 @@ func (m dashboardModel) View() string {
 		}
 
 		// Entry line.
-		name := truncate(e.Name, nameWidth)
-		if name == "" {
-			name = truncate(e.SessionID, nameWidth)
+		displayName := e.Name
+		if displayName == "" {
+			displayName = e.SessionID
 		}
+		if e.Nick != "" {
+			displayName = e.Nick + " · " + displayName
+		}
+		name := truncate(displayName, nameWidth)
 		mp := truncate(e.Moneypenny, mpWidth)
 		lastActive := relativeTime(e.LastActive)
 		if lastActive == "" {

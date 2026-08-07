@@ -284,6 +284,7 @@
         lastActive: row[5] || '',
         parentSessionId: row[7] || '',
         agent: row[8] || '',
+        nick: row[9] || '',
       };
       e.mpStatus = e.statusRaw;
       e.hemStatus = 'active';
@@ -306,7 +307,7 @@
 
     // Apply the fuzzy filter (if any) against name/project/agent/moneypenny/id.
     const filtered = dashFilter
-      ? entries.filter(e => fuzzyMatch(dashFilter, `${e.name} ${e.project} ${e.agent} ${e.moneypenny} ${e.sessionId}`))
+      ? entries.filter(e => fuzzyMatch(dashFilter, `${e.nick} ${e.name} ${e.project} ${e.agent} ${e.moneypenny} ${e.sessionId}`))
       : entries;
 
     if (filtered.length === 0) {
@@ -333,10 +334,11 @@
         lastCat = e.category;
       }
       const displayName = e.name || e.sessionId.substring(0, 12);
+      const nickPrefix = e.nick ? `<span class="session-nick">${escapeHtml(e.nick)}</span> ` : '';
       const statusCls = e.mpStatus === 'working' ? 'working' : (e.mpStatus === 'ready' ? 'ready' : 'idle');
       html += `
         <div class="session-row" data-session-id="${escapeAttr(e.sessionId)}" data-session-name="${escapeAttr(e.name || e.sessionId.substring(0, 12))}" data-mp="${escapeAttr(e.moneypenny)}" data-parent="${escapeAttr(e.parentSessionId)}">
-          <span class="session-name">${escapeHtml(displayName)}</span>
+          <span class="session-name">${nickPrefix}${escapeHtml(displayName)}</span>
           ${e.project ? `<span class="session-project">${escapeHtml(e.project)}</span>` : ''}
           <span class="session-status ${statusCls}">${escapeHtml(e.mpStatus)}${e.subInfo ? ' <span style="opacity:0.7">' + escapeHtml(e.subInfo) + '</span>' : ''}</span>
           ${e.agent ? `<span class="session-agent agent-${escapeAttr(e.agent)}">${escapeHtml(e.agent)}</span>` : ''}
@@ -1517,6 +1519,8 @@
       <textarea id="wiz-prompt" rows="3" placeholder="${escapeAttr(promptPlaceholder)}"></textarea>
       <label for="wiz-name">Name (optional)</label>
       <input id="wiz-name" type="text" placeholder="Auto-generated from prompt" value="${escapeAttr(defName)}">
+      <label for="wiz-nick">Nick (optional)</label>
+      <input id="wiz-nick" type="text" placeholder="short alias">
       <label for="wiz-project">Project</label>
       <select id="wiz-project"><option value="">(none)</option>${projectOpts}</select>
       <label for="wiz-agent">Agent</label>
@@ -1620,6 +1624,12 @@
     args.push('-m', wizardState.selectedMP, '--path', wizardState.currentPath, '--async');
     const name = document.getElementById('wiz-name').value.trim();
     if (name) args.push('--name', name);
+    // Nick is a create-only field (the copy verb has no --nick flag).
+    if (!copy) {
+      const nickEl = document.getElementById('wiz-nick');
+      const nick = nickEl ? nickEl.value.trim() : '';
+      if (nick) args.push('--nick', nick);
+    }
     const project = document.getElementById('wiz-project').value;
     if (project) args.push('--project', project);
     const agent = document.getElementById('wiz-agent').value.trim();
@@ -3601,6 +3611,8 @@
         </div>
         <label for="es-name">Name</label>
         <input id="es-name" type="text" value="${escapeAttr(s.name || '')}">
+        <label for="es-nick">Nick</label>
+        <input id="es-nick" type="text" value="${escapeAttr(s.nick || '')}" placeholder="short alias (optional)">
         <label for="es-project">Project</label>
         <select id="es-project"><option value="">(none)</option>${projectOpts}</select>
         <label for="es-model">Model</label>
@@ -3645,6 +3657,8 @@
         const args = [sid];
         const name = document.getElementById('es-name').value.trim();
         if (name && name !== (s.name || '')) args.push('--name', name);
+        const nick = document.getElementById('es-nick').value.trim();
+        if (nick !== (s.nick || '')) args.push('--nick', nick);
         const project = document.getElementById('es-project').value;
         if (project !== (s.project || '')) args.push('--project', project);
         const model = document.getElementById('es-model').value;

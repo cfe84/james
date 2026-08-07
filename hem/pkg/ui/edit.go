@@ -59,6 +59,7 @@ func newEditModel(c *client, sessionID string) editModel {
 		loading:   true,
 		fields: []formField{
 			{label: "Name", flag: "--name", value: ""},
+			{label: "Nick", flag: "--nick", value: ""},
 			{label: "Project", flag: "--project", value: "", options: []string{""}},
 			{label: "Model", flag: "--model", value: "", options: []string{""}},
 			{label: "Effort", flag: "--effort", value: "", options: []string{"", "low", "medium", "high"}},
@@ -214,26 +215,27 @@ func (m editModel) Update(msg tea.Msg) (editModel, tea.Cmd) {
 			}
 		}
 		m.fields[0].value = d.Name
-		m.fields[1].value = d.Project
-		m.fields[2].value = d.Model
-		m.fields[3].value = d.Effort
-		m.fields[4].value = d.ContextTier
-		m.fields[5].value = d.SystemPrompt
-		m.fields[6].value = d.Path
+		m.fields[1].value = d.Nick
+		m.fields[2].value = d.Project
+		m.fields[3].value = d.Model
+		m.fields[4].value = d.Effort
+		m.fields[5].value = d.ContextTier
+		m.fields[6].value = d.SystemPrompt
+		m.fields[7].value = d.Path
 		if d.Yolo {
-			m.fields[7].value = "true"
-		} else {
-			m.fields[7].value = "false"
-		}
-		if d.Gadgets {
 			m.fields[8].value = "true"
 		} else {
 			m.fields[8].value = "false"
 		}
-		if d.CompactionMode != "" {
-			m.fields[9].value = d.CompactionMode
+		if d.Gadgets {
+			m.fields[9].value = "true"
 		} else {
-			m.fields[9].value = "agent"
+			m.fields[9].value = "false"
+		}
+		if d.CompactionMode != "" {
+			m.fields[10].value = d.CompactionMode
+		} else {
+			m.fields[10].value = "agent"
 		}
 		// Place cursors at end of values and sync textInput fields.
 		for i := range m.fields {

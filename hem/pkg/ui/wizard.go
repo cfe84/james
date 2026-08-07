@@ -131,6 +131,7 @@ func newWizardModel(c *client) wizardModel {
 		fields: []formField{
 			{label: "Prompt", flag: "", value: ""},
 			{label: "Name", flag: "--name", value: ""},
+			{label: "Nick", flag: "--nick", value: ""},
 			{label: "Project", flag: "--project", value: ""},
 			{label: "Agent", flag: "--agent", value: "copilot", options: []string{"", "claude", "copilot"}},
 			{label: "Model", flag: "--model", value: "", options: []string{""}},

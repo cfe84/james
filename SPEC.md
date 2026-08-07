@@ -410,7 +410,7 @@ Hem manages sessions on moneypennies. It tracks which moneypenny each session li
 - Hem generates a session_id (UUID) and sends `create_session` to the moneypenny.
 - By default: waits for the agent to complete, prints the session_id and the response.
 - With `--async`: prints the session_id and returns immediately without waiting.
-- Flags: `--agent NAME` (default "claude"), `--name NAME` (session name, default empty), `--system-prompt TEXT`, `--traits ID1,ID2` (apply reusable traits, see Traits; when omitted, default-enabled traits are applied), `--yolo` (skip permissions), `--path PATH` (working directory for the agent), `--gadgets` (include James tooling instructions in system prompt), `--model VALUE` (agent model), `--effort VALUE` (reasoning effort), `--context VALUE` (copilot context-window tier, see [Context tier](#context-tier)).
+- Flags: `--agent NAME` (default "claude"), `--name NAME` (session name, default empty), `--nick NICK` (optional short nickname/alias, see [Nicknames](#nicknames)), `--system-prompt TEXT`, `--traits ID1,ID2` (apply reusable traits, see Traits; when omitted, default-enabled traits are applied), `--yolo` (skip permissions), `--path PATH` (working directory for the agent), `--gadgets` (include James tooling instructions in system prompt), `--model VALUE` (agent model), `--effort VALUE` (reasoning effort), `--context VALUE` (copilot context-window tier, see [Context tier](#context-tier)).
 - `--gadgets`: Appends instructions telling the agent about `hem` CLI access and scheduling. For MI6-connected moneypennies, includes the MI6 server address so the agent can connect back.
 
 ### Continue
@@ -451,11 +451,11 @@ Hem manages sessions on moneypennies. It tracks which moneypenny each session li
 
 ### Show
 
-`hem show session SESSION_ID` — shows session parameters (agent, system_prompt, yolo, path, name, status, traits).
+`hem show session SESSION_ID` — shows session parameters (agent, system_prompt, yolo, path, name, nick, status, traits).
 
 ### Update
 
-`hem update session SESSION_ID [--name NAME] [--system-prompt TEXT] [--traits ID1,ID2] [--gadgets true/false] [--yolo true/false] [--path PATH] [--model VALUE] [--effort VALUE] [--context VALUE] [--project NAME_OR_ID]` — updates session parameters. Only specified fields are changed. `--project` moves the session to a project (hem-local operation, not sent to moneypenny). `--traits` recomposes the session's system prompt (empty value clears all traits). `--effort`/`--context` accept `none` (or `default`) to clear the stored override back to the agent default.
+`hem update session SESSION_ID [--name NAME] [--nick NICK] [--system-prompt TEXT] [--traits ID1,ID2] [--gadgets true/false] [--yolo true/false] [--path PATH] [--model VALUE] [--effort VALUE] [--context VALUE] [--project NAME_OR_ID]` — updates session parameters. Only specified fields are changed. `--project` moves the session to a project (hem-local operation, not sent to moneypenny). `--traits` recomposes the session's system prompt (empty value clears all traits). `--nick` sets or clears (empty value) the session's nickname, recomposing the identity block at the top of the system prompt. `--effort`/`--context` accept `none` (or `default`) to clear the stored override back to the agent default.
 
 ### History / Log
 
@@ -824,6 +824,27 @@ Projects provide context for organizing sessions — a project groups related se
 ### Delete
 
 `hem delete project NAME_OR_ID` — deletes a project. Sessions linked to it are unlinked but kept.
+
+## Nicknames
+
+A session may have an optional short **nickname** (e.g. `ian`) — a hem-level alias that makes sessions easier to reference and identify.
+
+Nicknames serve three purposes:
+
+1. **Targeting sessions in hem CLI:** any session-targeting command accepts `--nick NICK` in place of `--session-id`. Hem resolves the nick to the underlying session ID before dispatching (e.g. `hem continue session --nick ian "do X"`, `hem show session --nick ian`). Resolution is nick-only — there is no fallback to matching session names. An unknown nick is an error. The two assignment commands (`create session`, `update session`) treat `--nick` as a value to write, not a selector.
+2. **Display + filtering:** the nick is shown in front of the session name in the hem TUI (dashboard, sessions list) and Qew dashboard, styled dim/italic (e.g. `ian · Bernard`). Filtering in both UIs matches against the nick in addition to the name.
+3. **Identity in the system prompt:** when a nick is set, a short identity block is composed at the **very top** of the session's system prompt: `Your name is Ian, you may refer to yourself as such.` (the nick is title-cased for the sentence). This lets the agent refer to itself by the nickname.
+
+Nicknames are a hem-level concept (like projects and traits); moneypenny is unaware of them. The nick is persisted in hem's SQLite (`sessions.nick` column) and is **unique case-insensitively** across sessions — assigning a nick already used by another session is an error.
+
+### Setting / clearing a nick
+
+- `hem create session … --nick NICK` assigns the nick and prepends the identity block.
+- `hem update session SESSION_ID --nick NICK` assigns (or, with an empty value, clears) the nick and recomposes the identity block. The mapping is persisted only after moneypenny accepts the prompt update.
+- The nick is settable without the CLI via the TUI create wizard / edit form and the Qew create/edit dialogs (a **Nick** field).
+- `copy session` does **not** inherit the source's nick (nicks are unique); any nick block in the inherited system prompt is stripped.
+
+**System prompt composition order** with a nick becomes: nick → base → traits → gadgets → memory. The nick block is wrapped in `<!--james:nick:begin-->` / `<!--james:nick:end-->` sentinel markers so it can be stripped and recomposed independently.
 
 ## Traits
 

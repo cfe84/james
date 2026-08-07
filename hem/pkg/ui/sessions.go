@@ -146,7 +146,7 @@ func (m sessionsModel) filteredSessions() []sessionInfo {
 	ft := strings.ToLower(m.filterText)
 	var result []sessionInfo
 	for _, s := range m.sessions {
-		if strings.Contains(strings.ToLower(s.Name), ft) {
+		if strings.Contains(strings.ToLower(s.Name), ft) || strings.Contains(strings.ToLower(s.Nick), ft) {
 			result = append(result, s)
 		}
 	}
@@ -224,7 +224,11 @@ func (m sessionsModel) View() string {
 			subInfo = s.Status[idx+1:]
 		}
 		id := truncate(s.SessionID, 12)
-		name := truncate(s.Name, 18)
+		displayName := s.Name
+		if s.Nick != "" {
+			displayName = s.Nick + " · " + displayName
+		}
+		name := truncate(displayName, 18)
 		mp := truncate(s.Moneypenny, 10)
 		lastActive := relativeTime(s.LastAccessed)
 		if lastActive == "" {

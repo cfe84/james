@@ -25,6 +25,7 @@ type sessionParams struct {
 	CompactionMode string // "agent" or "custom" (empty = moneypenny default)
 	TraitsSpec     string // comma-separated trait IDs/names; resolved to TraitIDs
 	TraitIDs       []string
+	Nick           string // optional short nickname/alias for the session
 }
 
 // resolveMoneypennyForSession resolves the moneypenny to use for a session.

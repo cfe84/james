@@ -422,10 +422,22 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		}
 	}
 
+	// Resolve a --nick selector to --session-id for session-targeting commands.
+	// Nicknames are a hem-level alias; the assignment commands (create/update
+	// session) use --nick as a value to write, so they are excluded here.
+	cmdKey := verb + " " + noun
+	if cmdKey != "create session" && cmdKey != "update session" {
+		if newArgs, err, handled := e.resolveNickArg(args); handled {
+			if err != nil {
+				return protocol.ErrResponse(err.Error())
+			}
+			args = newArgs
+		}
+	}
+
 	if verb == "dashboard" {
 		return e.Dashboard(args)
 	}
-
 	if verb == "run" {
 		return e.RunCommand(noun, args)
 	}
@@ -745,6 +757,54 @@ func (e *Executor) pollUntilIdle(ctx context.Context, mp *store.Moneypenny, sess
 	}
 }
 
+// resolveNickArg looks for a --nick/-nick selector in args. When present it
+// resolves the nick to a session ID and returns args with the nick flag replaced
+// by --session-id <id>. The third return is true when a nick flag was found (so
+// the caller applies the result), false when there was nothing to do.
+func (e *Executor) resolveNickArg(args []string) ([]string, error, bool) {
+	nick := ""
+	found := false
+	var rest []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--nick" || a == "-nick":
+			found = true
+			if i+1 < len(args) {
+				nick = args[i+1]
+				i++
+			}
+		case strings.HasPrefix(a, "--nick="):
+			found = true
+			nick = strings.TrimPrefix(a, "--nick=")
+		case strings.HasPrefix(a, "-nick="):
+			found = true
+			nick = strings.TrimPrefix(a, "-nick=")
+		default:
+			rest = append(rest, a)
+		}
+	}
+	if !found {
+		return args, nil, false
+	}
+	nick = strings.TrimSpace(nick)
+	if nick == "" {
+		return nil, fmt.Errorf("--nick requires a value"), true
+	}
+	sess, err := e.store.GetSessionByNick(nick)
+	if err != nil {
+		return nil, err, true
+	}
+	if sess == nil {
+		return nil, fmt.Errorf("no session with nick %q", nick), true
+	}
+	// Prepend --session-id so commands that parse positionals in order (e.g.
+	// update memory) still receive their positional args intact; parseFlagsFromArgs
+	// reorders flags ahead of positionals anyway, so front placement is safe there too.
+	rest = append([]string{"--session-id", sess.SessionID}, rest...)
+	return rest, nil, true
+}
+
 // resolveSessionMoneypenny looks up which moneypenny a session belongs to.
 // First checks local tracking, then scans all moneypennies as fallback.
 func (e *Executor) resolveSessionMoneypenny(sessionID string) (*store.Moneypenny, error) {
@@ -974,6 +1034,7 @@ type SessionShowResult struct {
 	Status       string `json:"status"`
 	Project      string `json:"project,omitempty"`
 	Traits       []string `json:"traits"`
+	Nick         string `json:"nick,omitempty"`
 	CompactionMode string `json:"compaction_mode,omitempty"`
 	ContextTokens  int    `json:"context_tokens,omitempty"`
 	ContextWindow  int    `json:"context_window,omitempty"`
@@ -992,6 +1053,71 @@ func findMemoryMarker(s string) int {
 		return idx
 	}
 	return strings.Index(s, memoryMarkerLegacy)
+}
+
+// Nickname block: a short identity line composed at the very top of the system
+// prompt (before the base prompt), wrapped in sentinel markers so it can be
+// stripped and recomposed independently. Canonical order becomes:
+// nick → base → traits → gadgets → memory.
+const nickBeginMarker = "<!--james:nick:begin-->"
+const nickEndMarker = "<!--james:nick:end-->"
+
+// nickTitle title-cases the nick for display in the identity line (e.g. "ian" →
+// "Ian"). Multi-word nicks capitalize each word.
+func nickTitle(nick string) string {
+	nick = strings.TrimSpace(nick)
+	if nick == "" {
+		return ""
+	}
+	parts := strings.Fields(nick)
+	for i, p := range parts {
+		r := []rune(p)
+		r[0] = []rune(strings.ToUpper(string(r[0])))[0]
+		parts[i] = string(r)
+	}
+	return strings.Join(parts, " ")
+}
+
+// nickSystemPrompt renders the identity block for a nick. Returns "" when empty.
+func nickSystemPrompt(nick string) string {
+	title := nickTitle(nick)
+	if title == "" {
+		return ""
+	}
+	// Sanitize so a nick containing our markers can't corrupt later strips.
+	title = strings.ReplaceAll(title, nickBeginMarker, "")
+	title = strings.ReplaceAll(title, nickEndMarker, "")
+	return fmt.Sprintf("%s\nYour name is %s, you may refer to yourself as such.\n%s\n\n", nickBeginMarker, title, nickEndMarker)
+}
+
+// stripNickBlock removes the nick block (markers inclusive) from a system prompt.
+// Returns the prompt unchanged if no complete block is present.
+func stripNickBlock(sp string) string {
+	bi := strings.Index(sp, nickBeginMarker)
+	if bi < 0 {
+		return sp
+	}
+	ei := strings.Index(sp[bi:], nickEndMarker)
+	if ei < 0 {
+		return sp
+	}
+	end := bi + ei + len(nickEndMarker)
+	// Also consume the trailing newlines we append after the end marker.
+	for end < len(sp) && sp[end] == '\n' {
+		end++
+	}
+	return sp[:bi] + sp[end:]
+}
+
+// applyNickBlock strips any existing nick block and, when nick is non-empty,
+// prepends a fresh one at the very top of the system prompt.
+func applyNickBlock(sp, nick string) string {
+	sp = stripNickBlock(sp)
+	block := nickSystemPrompt(nick)
+	if block == "" {
+		return sp
+	}
+	return block + sp
 }
 
 // Traits are reusable, hem-level system-prompt snippets composed into the
@@ -1599,6 +1725,7 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 		fs.BoolVar(&params.Async, "async", false, "return immediately without waiting for response")
 		fs.StringVar(&projectNameOrID, "project", "", "project name or ID")
 		fs.StringVar(&params.TraitsSpec, "traits", "", "comma-separated trait IDs/names to apply")
+		fs.StringVar(&params.Nick, "nick", "", "optional short nickname/alias for the session")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -1661,6 +1788,18 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 	// Memory instructions are injected by the moneypenny at runtime now that
 	// memory is a file-based folder it manages directly (no hem dependency).
 
+	// Prepend the nickname block at the very top so ordering is
+	// nick → base → traits → gadgets → memory.
+	params.Nick = strings.TrimSpace(params.Nick)
+	if params.Nick != "" {
+		if existing, nerr := e.store.GetSessionByNick(params.Nick); nerr != nil {
+			return protocol.ErrResponse(nerr.Error())
+		} else if existing != nil {
+			return protocol.ErrResponse(fmt.Sprintf("nick %q is already used by another session", params.Nick))
+		}
+		params.SystemPrompt = applyNickBlock(params.SystemPrompt, params.Nick)
+	}
+
 	// Build command data.
 	cmdData := buildCreateSessionData(params, sessionID, prompt)
 
@@ -1686,6 +1825,12 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 	if len(params.TraitIDs) > 0 {
 		if err := e.store.SetSessionTraits(sessionID, params.TraitIDs); err != nil {
 			return protocol.ErrResponse(fmt.Sprintf("persisting session traits: %v", err))
+		}
+	}
+	// Persist the nickname after the create succeeds.
+	if params.Nick != "" {
+		if err := e.store.SetSessionNick(sessionID, params.Nick); err != nil {
+			return protocol.ErrResponse(fmt.Sprintf("persisting session nick: %v", err))
 		}
 	}
 	e.invalidateMPCache(mp.Name)
@@ -2074,6 +2219,7 @@ func (e *Executor) ShowSession(args []string) *protocol.Response {
 	}
 	if v, ok := raw["system_prompt"].(string); ok {
 		sp := v
+		sp = stripNickBlock(sp)
 		sp = stripTraitsBlock(sp)
 		if idx := strings.Index(sp, gadgetsMarker); idx >= 0 {
 			sp = sp[:idx]
@@ -2128,20 +2274,28 @@ func (e *Executor) ShowSession(args []string) *protocol.Response {
 		result.Traits = ids
 	}
 
+	// Look up the nickname from hem's local store.
+	if hemSess, err := e.store.GetSession(sessionID); err == nil && hemSess != nil {
+		result.Nick = hemSess.Nick
+	}
+
 	return protocol.OKResponse(result)
 }
 
 func (e *Executor) UpdateSession(args []string) *protocol.Response {
 	var sessionID, name, systemPrompt, pathArg, modelStr, effortStr, contextStr string
-	var yoloStr, projectNameOrID, gadgetsStr, traitsStr, compactionStr string
+	var yoloStr, projectNameOrID, gadgetsStr, traitsStr, compactionStr, nickStr string
 
 	// Detect whether --traits was explicitly provided so an empty value can
 	// clear all traits (vs. "not specified" which leaves them untouched).
 	traitsExplicit := false
+	nickExplicit := false
 	for _, a := range args {
 		if a == "--traits" || a == "-traits" || strings.HasPrefix(a, "--traits=") || strings.HasPrefix(a, "-traits=") {
 			traitsExplicit = true
-			break
+		}
+		if a == "--nick" || a == "-nick" || strings.HasPrefix(a, "--nick=") || strings.HasPrefix(a, "-nick=") {
+			nickExplicit = true
 		}
 	}
 
@@ -2158,6 +2312,7 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 		fs.StringVar(&gadgetsStr, "gadgets", "", "enable/disable gadgets (true/false)")
 		fs.StringVar(&traitsStr, "traits", "", "comma-separated trait IDs/names (empty clears all)")
 		fs.StringVar(&compactionStr, "compaction", "", "compaction mode: agent or custom")
+		fs.StringVar(&nickStr, "nick", "", "short nickname/alias (empty clears)")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -2306,6 +2461,7 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 			}
 			systemPrompt = base + gadgetsSystemPrompt(e.MI6Control, sessionID) + memorySuffix
 			cmdData["system_prompt"] = systemPrompt
+			fetchedSP = systemPrompt // keep cache current for the nick block below
 			hasUpdate = true
 			spChanged = true
 		} else if gadgetsStr == "false" && hasGadgets {
@@ -2324,9 +2480,38 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 				systemPrompt = currentSP
 			}
 			cmdData["system_prompt"] = systemPrompt
+			fetchedSP = systemPrompt // keep cache current for the nick block below
 			hasUpdate = true
 			spChanged = true
 		}
+	}
+
+	// Handle nickname change — strip the old nick block and prepend the new one
+	// at the very top. The mapping is persisted only after the moneypenny accepts
+	// the prompt update (below).
+	nickChanged := false
+	pendingNick := ""
+	if nickExplicit {
+		newNick := strings.TrimSpace(nickStr)
+		if newNick != "" {
+			if existing, nerr := e.store.GetSessionByNick(newNick); nerr != nil {
+				return protocol.ErrResponse(nerr.Error())
+			} else if existing != nil && existing.SessionID != sessionID {
+				return protocol.ErrResponse(fmt.Sprintf("nick %q is already used by another session", newNick))
+			}
+		}
+		cur, err := getCurrentSP()
+		if err != nil {
+			return protocol.ErrResponse(fmt.Sprintf("failed to get session for nick update: %v", err))
+		}
+		cur = applyNickBlock(cur, newNick)
+		fetchedSP = cur
+		systemPrompt = cur
+		cmdData["system_prompt"] = systemPrompt
+		hasUpdate = true
+		spChanged = true
+		nickChanged = true
+		pendingNick = newNick
 	}
 
 	// Handle project assignment (local to hem, not sent to moneypenny).
@@ -2345,7 +2530,7 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 	}
 
 	if !hasUpdate {
-		return protocol.ErrResponse("no fields to update (use --name, --system-prompt, --yolo, --path, --project, --gadgets, --traits)")
+		return protocol.ErrResponse("no fields to update (use --name, --system-prompt, --yolo, --path, --project, --gadgets, --traits, --nick)")
 	}
 
 	// Only send to moneypenny if there are moneypenny-level fields to update.
@@ -2359,6 +2544,12 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 	// Persist the trait mapping only after the moneypenny prompt update landed.
 	if traitsChanged {
 		if err := e.store.SetSessionTraits(sessionID, pendingTraitIDs); err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+	}
+	// Persist the nickname only after the moneypenny prompt update landed.
+	if nickChanged {
+		if err := e.store.SetSessionNick(sessionID, pendingNick); err != nil {
 			return protocol.ErrResponse(err.Error())
 		}
 	}
@@ -2939,11 +3130,13 @@ func (e *Executor) ListSessions(args []string) *protocol.Response {
 	trackedSessions, _ := e.store.ListTrackedSessions("")
 	hemStatusMap := make(map[string]string)
 	hemCreatedAt := make(map[string]time.Time)
+	nickMap := make(map[string]string)
 	subSessionSet := make(map[string]bool) // hide sub-sessions from main listing
 	subsByParent := make(map[string][]*store.Session)
 	for _, ts := range trackedSessions {
 		hemStatusMap[ts.SessionID] = ts.HemStatus
 		hemCreatedAt[ts.SessionID] = ts.CreatedAt
+		nickMap[ts.SessionID] = ts.Nick
 		if ts.ParentSessionID != "" {
 			subSessionSet[ts.SessionID] = true
 			subsByParent[ts.ParentSessionID] = append(subsByParent[ts.ParentSessionID], ts)
@@ -2951,7 +3144,7 @@ func (e *Executor) ListSessions(args []string) *protocol.Response {
 	}
 
 	result := TableResult{
-		Headers: []string{"SessionID", "Name", "Status", "Moneypenny", "Created", "Last Active"},
+		Headers: []string{"SessionID", "Name", "Status", "Moneypenny", "Created", "Last Active", "Nick"},
 	}
 
 	// Use cached moneypenny data for instant response; refresh in background.
@@ -3067,7 +3260,7 @@ func (e *Executor) ListSessions(args []string) *protocol.Response {
 				status += fmt.Sprintf(" [%d subs]", subTotal)
 			}
 		}
-		result.Rows = append(result.Rows, []string{s.SessionID, s.Name, status, s.MPName, s.Created, s.LastActive})
+		result.Rows = append(result.Rows, []string{s.SessionID, s.Name, status, s.MPName, s.Created, s.LastActive, nickMap[s.SessionID]})
 	}
 
 	if len(warnings) > 0 {
@@ -4788,6 +4981,7 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	// Strip injected gadgets/memory markers from the inherited system prompt
 	// so we don't double-inject them when the new session is created.
 	sp := src.SystemPrompt
+	sp = stripNickBlock(sp)
 	sp = stripTraitsBlock(sp)
 	if idx := strings.Index(sp, gadgetsMarker); idx >= 0 {
 		sp = sp[:idx]
@@ -5040,6 +5234,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 		CreatedAtRaw    string // ISO timestamp for sorting (not formatted)
 		SortKey         int // 0=REVIEW, 1=WORKING, 2=COMPLETED
 		ParentSessionID string // non-empty for subagent entries
+		Nick            string // optional short nickname/alias
 	}
 
 	// Filter tracked sessions first.
@@ -5198,6 +5393,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 			LastActiveRaw: lastAccessed,
 			CreatedAtRaw:  createdAt,
 			SortKey:      sortKey,
+			Nick:         sess.Nick,
 		})
 
 		// Add subagent entries right after parent.
@@ -5244,6 +5440,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 				CreatedAtRaw:    subCreated,
 				SortKey:         sortKey, // same category as parent
 				ParentSessionID: sess.SessionID,
+				Nick:            sub.Nick,
 			})
 		}
 	}
@@ -5302,7 +5499,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 	}
 
 	result := TableResult{
-		Headers: []string{"SessionID", "Name", "Project", "Status", "Moneypenny", "Created", "Last Activity", "ParentSessionID", "Agent"},
+		Headers: []string{"SessionID", "Name", "Project", "Status", "Moneypenny", "Created", "Last Activity", "ParentSessionID", "Agent", "Nick"},
 	}
 	for _, entry := range entries {
 		status := entry.MPStatus + " (" + entry.HemStatus + ")"
@@ -5338,7 +5535,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 		}
 
 		result.Rows = append(result.Rows, []string{
-			entry.SessionID, entry.Name, entry.Project, status, entry.Moneypenny, entry.CreatedAt, entry.LastActive, entry.ParentSessionID, entry.Agent,
+			entry.SessionID, entry.Name, entry.Project, status, entry.Moneypenny, entry.CreatedAt, entry.LastActive, entry.ParentSessionID, entry.Agent, entry.Nick,
 		})
 	}
 

@@ -52,6 +52,7 @@ type sessionInfo struct {
 	Moneypenny   string `json:"-"` // filled in by caller
 	CreatedAt    string `json:"created_at"`
 	LastAccessed string `json:"last_accessed"`
+	Nick         string `json:"nick"`
 }
 
 // sessionDetail is a parsed session detail.
@@ -70,6 +71,7 @@ type sessionDetail struct {
 	Status       string             `json:"status"`
 	Project      string             `json:"project"`
 	Traits       []string           `json:"traits"`
+	Nick         string             `json:"nick"`
 	CompactionMode string           `json:"compaction_mode"`
 	ContextTokens  int              `json:"context_tokens"`
 	ContextWindow  int              `json:"context_window"`
@@ -125,6 +127,9 @@ func (c *client) listSessions(mpFilter string) ([]sessionInfo, error) {
 		}
 		if len(row) > 5 {
 			s.LastAccessed = row[5]
+		}
+		if len(row) > 6 {
+			s.Nick = row[6]
 		}
 		sessions = append(sessions, s)
 	}

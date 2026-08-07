@@ -37,6 +37,7 @@ type Session struct {
 	HemStatus       string // "active" or "completed"
 	Reviewed        bool   // true if user has seen latest response
 	CallbackPrompt  string // prompt to queue to parent when this sub-session completes
+	Nick            string // optional short nickname/alias for the session
 	CreatedAt       time.Time
 }
 
@@ -121,6 +122,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     hem_status TEXT NOT NULL DEFAULT 'active',
     reviewed INTEGER NOT NULL DEFAULT 0,
     callback_prompt TEXT NOT NULL DEFAULT '',
+    nick TEXT NOT NULL DEFAULT '',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -392,11 +394,11 @@ func (s *Store) ListTrackedSessions(moneypennyFilter string) ([]*Session, error)
 	var err error
 	if moneypennyFilter == "" {
 		rows, err = s.db.Query(
-			`SELECT session_id, moneypenny_name, project_id, parent_session_id, hem_status, reviewed, callback_prompt, created_at FROM sessions ORDER BY session_id`,
+			`SELECT session_id, moneypenny_name, project_id, parent_session_id, hem_status, reviewed, callback_prompt, nick, created_at FROM sessions ORDER BY session_id`,
 		)
 	} else {
 		rows, err = s.db.Query(
-			`SELECT session_id, moneypenny_name, project_id, parent_session_id, hem_status, reviewed, callback_prompt, created_at FROM sessions WHERE moneypenny_name = ? ORDER BY session_id`,
+			`SELECT session_id, moneypenny_name, project_id, parent_session_id, hem_status, reviewed, callback_prompt, nick, created_at FROM sessions WHERE moneypenny_name = ? ORDER BY session_id`,
 			moneypennyFilter,
 		)
 	}
@@ -409,7 +411,7 @@ func (s *Store) ListTrackedSessions(moneypennyFilter string) ([]*Session, error)
 	for rows.Next() {
 		var sess Session
 		var reviewed int
-		if err := rows.Scan(&sess.SessionID, &sess.MoneypennyName, &sess.ProjectID, &sess.ParentSessionID, &sess.HemStatus, &reviewed, &sess.CallbackPrompt, &sess.CreatedAt); err != nil {
+		if err := rows.Scan(&sess.SessionID, &sess.MoneypennyName, &sess.ProjectID, &sess.ParentSessionID, &sess.HemStatus, &reviewed, &sess.CallbackPrompt, &sess.Nick, &sess.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
 		sess.Reviewed = reviewed != 0
@@ -444,10 +446,57 @@ func (s *Store) SetSessionCallback(sessionID, callbackPrompt string) error {
 	return nil
 }
 
+// SetSessionNick sets (or clears, when nick is empty) the nickname for a session.
+// Nicknames are unique case-insensitively across sessions; assigning a nick that
+// another session already uses returns an error.
+func (s *Store) SetSessionNick(sessionID, nick string) error {
+	nick = strings.TrimSpace(nick)
+	if nick != "" {
+		var existing string
+		err := s.db.QueryRow(
+			`SELECT session_id FROM sessions WHERE nick <> '' AND LOWER(nick) = LOWER(?) AND session_id <> ?`,
+			nick, sessionID,
+		).Scan(&existing)
+		if err != nil && err != sql.ErrNoRows {
+			return fmt.Errorf("check nick %q: %w", nick, err)
+		}
+		if err == nil && existing != "" {
+			return fmt.Errorf("nick %q is already used by session %s", nick, existing)
+		}
+	}
+	if _, err := s.db.Exec(`UPDATE sessions SET nick = ? WHERE session_id = ?`, nick, sessionID); err != nil {
+		return fmt.Errorf("set nick for %q: %w", sessionID, err)
+	}
+	return nil
+}
+
+// GetSessionByNick returns the tracked session whose nick matches (case
+// insensitively). Returns nil, nil when no session has that nick.
+func (s *Store) GetSessionByNick(nick string) (*Session, error) {
+	nick = strings.TrimSpace(nick)
+	if nick == "" {
+		return nil, nil
+	}
+	var sess Session
+	var reviewed int
+	err := s.db.QueryRow(
+		`SELECT session_id, moneypenny_name, project_id, parent_session_id, hem_status, reviewed, callback_prompt, nick, created_at FROM sessions WHERE nick <> '' AND LOWER(nick) = LOWER(?)`,
+		nick,
+	).Scan(&sess.SessionID, &sess.MoneypennyName, &sess.ProjectID, &sess.ParentSessionID, &sess.HemStatus, &reviewed, &sess.CallbackPrompt, &sess.Nick, &sess.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get session by nick %q: %w", nick, err)
+	}
+	sess.Reviewed = reviewed != 0
+	return &sess, nil
+}
+
 // ListSubSessions returns all sub-sessions for a given parent session.
 func (s *Store) ListSubSessions(parentSessionID string) ([]*Session, error) {
 	rows, err := s.db.Query(
-		`SELECT session_id, moneypenny_name, project_id, parent_session_id, hem_status, reviewed, callback_prompt, created_at FROM sessions WHERE parent_session_id = ? ORDER BY created_at`,
+		`SELECT session_id, moneypenny_name, project_id, parent_session_id, hem_status, reviewed, callback_prompt, nick, created_at FROM sessions WHERE parent_session_id = ? ORDER BY created_at`,
 		parentSessionID,
 	)
 	if err != nil {
@@ -459,7 +508,7 @@ func (s *Store) ListSubSessions(parentSessionID string) ([]*Session, error) {
 	for rows.Next() {
 		var sess Session
 		var reviewed int
-		if err := rows.Scan(&sess.SessionID, &sess.MoneypennyName, &sess.ProjectID, &sess.ParentSessionID, &sess.HemStatus, &reviewed, &sess.CallbackPrompt, &sess.CreatedAt); err != nil {
+		if err := rows.Scan(&sess.SessionID, &sess.MoneypennyName, &sess.ProjectID, &sess.ParentSessionID, &sess.HemStatus, &reviewed, &sess.CallbackPrompt, &sess.Nick, &sess.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan sub-session: %w", err)
 		}
 		sess.Reviewed = reviewed != 0
@@ -473,9 +522,9 @@ func (s *Store) GetSession(sessionID string) (*Session, error) {
 	var sess Session
 	var reviewed int
 	err := s.db.QueryRow(
-		`SELECT session_id, moneypenny_name, project_id, parent_session_id, hem_status, reviewed, callback_prompt, created_at FROM sessions WHERE session_id = ?`,
+		`SELECT session_id, moneypenny_name, project_id, parent_session_id, hem_status, reviewed, callback_prompt, nick, created_at FROM sessions WHERE session_id = ?`,
 		sessionID,
-	).Scan(&sess.SessionID, &sess.MoneypennyName, &sess.ProjectID, &sess.ParentSessionID, &sess.HemStatus, &reviewed, &sess.CallbackPrompt, &sess.CreatedAt)
+	).Scan(&sess.SessionID, &sess.MoneypennyName, &sess.ProjectID, &sess.ParentSessionID, &sess.HemStatus, &reviewed, &sess.CallbackPrompt, &sess.Nick, &sess.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -975,6 +1024,7 @@ func (s *Store) migrateSchema() error {
 		`ALTER TABLE moneypennies ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`,
 		`ALTER TABLE sessions ADD COLUMN callback_prompt TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE traits ADD COLUMN enabled_by_default INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE sessions ADD COLUMN nick TEXT NOT NULL DEFAULT ''`,
 	}
 	for _, m := range migrations {
 		_, err := s.db.Exec(m)
