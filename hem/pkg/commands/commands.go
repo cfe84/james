@@ -84,7 +84,7 @@ type Executor struct {
 	cacheManager  *CacheManager
 	watchManager  *WatchManager
 	Version       string
-	MI6Control    string // MI6 control address (host/session_id) for hem server
+	MI6Control    string                        // MI6 control address (host/session_id) for hem server
 	BroadcastFunc func(resp *protocol.Response) // optional: push broadcasts to connected MI6 clients
 }
 
@@ -1019,25 +1019,25 @@ type SessionLastResult struct {
 }
 
 type SessionShowResult struct {
-	SessionID    string `json:"session_id"`
-	Moneypenny   string `json:"moneypenny"`
-	Name         string `json:"name"`
-	Agent        string `json:"agent"`
-	SystemPrompt string `json:"system_prompt"`
-	Model        string `json:"model,omitempty"`
-	Effort       string `json:"effort,omitempty"`
-	ContextTier  string `json:"context_tier,omitempty"`
-	Yolo         bool   `json:"yolo"`
-	Gadgets      bool   `json:"gadgets"`
-	Memory       bool   `json:"memory"`
-	Path         string `json:"path"`
-	Status       string `json:"status"`
-	Project      string `json:"project,omitempty"`
-	Traits       []string `json:"traits"`
-	Nick         string `json:"nick,omitempty"`
-	CompactionMode string `json:"compaction_mode,omitempty"`
-	ContextTokens  int    `json:"context_tokens,omitempty"`
-	ContextWindow  int    `json:"context_window,omitempty"`
+	SessionID      string   `json:"session_id"`
+	Moneypenny     string   `json:"moneypenny"`
+	Name           string   `json:"name"`
+	Agent          string   `json:"agent"`
+	SystemPrompt   string   `json:"system_prompt"`
+	Model          string   `json:"model,omitempty"`
+	Effort         string   `json:"effort,omitempty"`
+	ContextTier    string   `json:"context_tier,omitempty"`
+	Yolo           bool     `json:"yolo"`
+	Gadgets        bool     `json:"gadgets"`
+	Memory         bool     `json:"memory"`
+	Path           string   `json:"path"`
+	Status         string   `json:"status"`
+	Project        string   `json:"project,omitempty"`
+	Traits         []string `json:"traits"`
+	Nick           string   `json:"nick,omitempty"`
+	CompactionMode string   `json:"compaction_mode,omitempty"`
+	ContextTokens  int      `json:"context_tokens,omitempty"`
+	ContextWindow  int      `json:"context_window,omitempty"`
 }
 
 const gadgetsMarker = "\nYou have access to agent orchestration using the"
@@ -4001,8 +4001,8 @@ func (e *Executor) RunCommand(noun string, args []string) *protocol.Response {
 
 // ListDirectoryResult is returned by ListDirectory.
 type ListDirectoryResult struct {
-	Path    string          `json:"path"`
-	Entries []DirEntryInfo  `json:"entries"`
+	Path    string         `json:"path"`
+	Entries []DirEntryInfo `json:"entries"`
 }
 
 type DirEntryInfo struct {
@@ -4941,6 +4941,26 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 		}
 	}
 
+	// Detect explicit --agent/--model/--effort/--context so that switching the
+	// agent on copy doesn't silently inherit the source agent's model/effort/
+	// context (which belong to a different model namespace and would be invalid
+	// for the new agent). We only inherit those source values when the agent
+	// is unchanged OR the caller explicitly provided them.
+	flagSeen := func(names ...string) bool {
+		for _, a := range args {
+			for _, n := range names {
+				if a == "--"+n || a == "-"+n || strings.HasPrefix(a, "--"+n+"=") || strings.HasPrefix(a, "-"+n+"=") {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	agentExplicit := flagSeen("agent")
+	modelExplicit := flagSeen("model")
+	effortExplicit := flagSeen("effort")
+	contextExplicit := flagSeen("context")
+
 	if sourceSessionID == "" {
 		if len(remaining) == 0 {
 			return protocol.ErrResponse("source session_id is required")
@@ -5003,13 +5023,19 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	if params.Agent == "" {
 		params.Agent = src.Agent
 	}
-	if params.Model == "" {
+	// Only inherit the source's model/effort/context when the effective agent
+	// matches the source agent (or the caller explicitly set the flag). When
+	// the agent changed, these belong to a different model namespace, so we
+	// leave them empty and let the new agent pick its own defaults rather than
+	// carry over an invalid source model.
+	agentChanged := agentExplicit && params.Agent != src.Agent
+	if params.Model == "" && (!agentChanged || modelExplicit) {
 		params.Model = src.Model
 	}
-	if params.Effort == "" {
+	if params.Effort == "" && (!agentChanged || effortExplicit) {
 		params.Effort = src.Effort
 	}
-	if params.ContextTier == "" {
+	if params.ContextTier == "" && (!agentChanged || contextExplicit) {
 		params.ContextTier = src.ContextTier
 	}
 	if params.SystemPrompt == "" {
@@ -5056,10 +5082,23 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	// Summarization is the whole point of a copy — if it fails we surface
 	// the error and abort rather than creating a session with a degraded
 	// preamble, since that's almost never what the caller wants.
+	//
+	// Generate the summary with the *target* agent's parameters, not the
+	// source's. The summary is just text-processing of the stored transcript,
+	// and the target agent is the one the caller knows they want (and, when
+	// duplicating away from a broken/unavailable source agent, the only one
+	// that works). Falls back to source values inside the moneypenny for any
+	// field we leave empty.
 	sumCtx, sumCancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	sumResp, err := e.sendCommand(sumCtx, sourceMP, "summarize_session", map[string]interface{}{
-		"session_id": sourceSessionID,
-	})
+	sumPayload := map[string]interface{}{
+		"session_id":   sourceSessionID,
+		"agent":        params.Agent,
+		"model":        params.Model,
+		"effort":       params.Effort,
+		"context_tier": params.ContextTier,
+		"yolo":         params.Yolo,
+	}
+	sumResp, err := e.sendCommand(sumCtx, sourceMP, "summarize_session", sumPayload)
 	sumCancel()
 	if err != nil {
 		return protocol.ErrResponse(fmt.Sprintf("summarizing source session: %v", err))
@@ -5232,7 +5271,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 		LastActive      string
 		LastActiveRaw   string // ISO timestamp for sorting (not formatted)
 		CreatedAtRaw    string // ISO timestamp for sorting (not formatted)
-		SortKey         int // 0=REVIEW, 1=WORKING, 2=COMPLETED
+		SortKey         int    // 0=REVIEW, 1=WORKING, 2=COMPLETED
 		ParentSessionID string // non-empty for subagent entries
 		Nick            string // optional short nickname/alias
 	}
@@ -5381,19 +5420,19 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 		lastActiveFormatted := timestampForClient(lastAccessed)
 
 		entries = append(entries, dashboardEntry{
-			SessionID:    sess.SessionID,
-			Name:         displayName,
-			Project:      projectName,
-			Agent:        agentName,
-			MPStatus:     displayStatus,
-			HemStatus:    sess.HemStatus,
-			Moneypenny:   sess.MoneypennyName,
-			CreatedAt:    createdAtFormatted,
-			LastActive:   lastActiveFormatted,
+			SessionID:     sess.SessionID,
+			Name:          displayName,
+			Project:       projectName,
+			Agent:         agentName,
+			MPStatus:      displayStatus,
+			HemStatus:     sess.HemStatus,
+			Moneypenny:    sess.MoneypennyName,
+			CreatedAt:     createdAtFormatted,
+			LastActive:    lastActiveFormatted,
 			LastActiveRaw: lastAccessed,
 			CreatedAtRaw:  createdAt,
-			SortKey:      sortKey,
-			Nick:         sess.Nick,
+			SortKey:       sortKey,
+			Nick:          sess.Nick,
 		})
 
 		// Add subagent entries right after parent.

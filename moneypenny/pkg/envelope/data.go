@@ -129,7 +129,7 @@ type SessionConversation struct {
 
 // ConversationTurn represents a single prompt/response pair.
 type ConversationTurn struct {
-	Role      string `json:"role"`    // "user" or "assistant"
+	Role      string `json:"role"` // "user" or "assistant"
 	Content   string `json:"content"`
 	CreatedAt string `json:"created_at,omitempty"`
 }
@@ -148,9 +148,20 @@ type ContinueSessionResponse struct {
 
 // SummarizeSessionData is the data payload for summarize_session.
 // Asks the moneypenny to compact the session's conversation history into a
-// standalone summary using the session's configured agent.
+// standalone summary. By default the session's own configured agent generates
+// the summary, but the optional override fields let a caller (e.g. copy-session
+// duplicating to a different agent) run the one-shot with the target agent
+// instead — useful when the source agent is unavailable. All override fields
+// are optional; empty/nil means "use the source session's value".
 type SummarizeSessionData struct {
-	SessionID string `json:"session_id"`
+	SessionID   string `json:"session_id"`
+	Agent       string `json:"agent,omitempty"`
+	Model       string `json:"model,omitempty"`
+	Effort      string `json:"effort,omitempty"`
+	ContextTier string `json:"context_tier,omitempty"`
+	// Yolo is a pointer so an absent field inherits the source's yolo setting,
+	// while an explicit true/false overrides it.
+	Yolo *bool `json:"yolo,omitempty"`
 }
 
 // SummarizeSessionResponse is returned by summarize_session.

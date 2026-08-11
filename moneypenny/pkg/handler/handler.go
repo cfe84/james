@@ -514,7 +514,23 @@ func isSessionNotFoundErr(err error) bool {
 // the conversation history stored in moneypenny. Reusable for recovery (when
 // the agent-side session is gone) and future uses (e.g. explicit user-driven
 // compaction). Returns "" if there's no history to compact.
-func (h *Handler) CompactSession(ctx context.Context, sessionID string) (string, int, error) {
+// summarizeOverrides optionally replaces the agent/model used to generate a
+// session summary. Any empty (or nil, for Yolo) field falls back to the source
+// session's configured value. Used by copy-session so a duplicate targeting a
+// different agent doesn't depend on the source agent being available.
+type summarizeOverrides struct {
+	Agent       string
+	Model       string
+	Effort      string
+	ContextTier string
+	Yolo        *bool
+}
+
+// CompactSession summarizes the session's conversation history into a
+// standalone summary. When ov is non-nil, its set fields override the agent
+// parameters used for the one-shot (otherwise the source session's own agent
+// configuration is used).
+func (h *Handler) CompactSession(ctx context.Context, sessionID string, ov *summarizeOverrides) (string, int, error) {
 	sess, err := h.store.GetSession(sessionID)
 	if err != nil {
 		return "", 0, fmt.Errorf("get session: %w", err)
@@ -528,6 +544,37 @@ func (h *Handler) CompactSession(ctx context.Context, sessionID string) (string,
 	}
 	if len(turns) == 0 {
 		return "", 0, nil
+	}
+
+	// Resolve the effective agent parameters: start from the source session's
+	// config, then apply any overrides.
+	agentName := sess.Agent
+	model := sess.Model
+	effort := sess.Effort
+	contextTier := sess.ContextTier
+	yolo := sess.Yolo
+	if ov != nil {
+		if ov.Agent != "" {
+			agentName = ov.Agent
+			// The overriding agent has its own model namespace, so don't carry
+			// the source model/effort/context forward unless explicitly given.
+			model = ov.Model
+			effort = ov.Effort
+			contextTier = ov.ContextTier
+		} else {
+			if ov.Model != "" {
+				model = ov.Model
+			}
+			if ov.Effort != "" {
+				effort = ov.Effort
+			}
+			if ov.ContextTier != "" {
+				contextTier = ov.ContextTier
+			}
+		}
+		if ov.Yolo != nil {
+			yolo = *ov.Yolo
+		}
 	}
 
 	// Build a clean transcript. Skip thinking/agent_text noise — keep only
@@ -547,17 +594,18 @@ Conversation:
 %s`, transcript)
 
 	// For copilot, system-prompt-via-AGENTS.md isn't available for one-shots,
-	// so prepend any system prompt directly into the user prompt.
-	if sess.Agent == "copilot" && sess.SystemPrompt != "" {
+	// so prepend any system prompt directly into the user prompt. Gate on the
+	// effective agent (which may be an override) rather than the source's.
+	if agentName == "copilot" && sess.SystemPrompt != "" {
 		prompt = "Context for this task:\n" + sess.SystemPrompt + "\n\n---\n\n" + prompt
 	}
 
 	summary, err := h.runner.RunOneShot(ctx, agent.RunParams{
-		Agent:        sess.Agent,
-		Model:        sess.Model,
-		Effort:       sess.Effort,
-		ContextTier:  sess.ContextTier,
-		Yolo:         sess.Yolo,
+		Agent:        agentName,
+		Model:        model,
+		Effort:       effort,
+		ContextTier:  contextTier,
+		Yolo:         yolo,
 		Path:         sess.Path,
 		Prompt:       prompt,
 		SystemPrompt: sess.SystemPrompt, // used by claude one-shot
@@ -582,7 +630,21 @@ func (h *Handler) summarizeSession(ctx context.Context, cmd *envelope.Command) *
 	sumCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
-	summary, turnCount, err := h.CompactSession(sumCtx, data.SessionID)
+	// Optional agent overrides (e.g. copy-session summarizing with the target
+	// agent when the source agent is unavailable). All fields default to the
+	// source session's own config when unset.
+	var ov *summarizeOverrides
+	if data.Agent != "" || data.Model != "" || data.Effort != "" || data.ContextTier != "" || data.Yolo != nil {
+		ov = &summarizeOverrides{
+			Agent:       data.Agent,
+			Model:       data.Model,
+			Effort:      data.Effort,
+			ContextTier: data.ContextTier,
+			Yolo:        data.Yolo,
+		}
+	}
+
+	summary, turnCount, err := h.CompactSession(sumCtx, data.SessionID, ov)
 	if err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
 	}
@@ -636,7 +698,7 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 		_ = h.store.AddConversationTurn(sessionID, "system",
 			"Underlying agent session was lost. Compacting prior conversation and starting fresh…")
 		compactCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-		summary, turnCount, sumErr := h.CompactSession(compactCtx, sessionID)
+		summary, turnCount, sumErr := h.CompactSession(compactCtx, sessionID, nil)
 		cancel()
 		if sumErr != nil {
 			h.vlog("compaction failed for session %s: %v", sessionID, sumErr)
