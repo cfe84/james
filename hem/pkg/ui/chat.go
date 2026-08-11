@@ -81,6 +81,7 @@ type fileReviewSubmitMsg struct {
 type chatModel struct {
 	sessionID     string
 	sessionName   string
+	sessionNick   string // optional short nickname/alias
 	moneypennyName string
 	sessionStatus string // moneypenny status (ready, working, etc.)
 	contextTokens  int    // current context usage (tokens)
@@ -374,6 +375,7 @@ type historyLoadedMsg struct {
 	conversation []conversationTurn
 	total        int
 	status       string // session status from moneypenny
+	nick         string // session nickname (from detail)
 	contextTokens  int
 	contextWindow  int
 	compactionMode string
@@ -456,15 +458,17 @@ func (m chatModel) loadHistory() tea.Cmd {
 		var status string
 		var ctxTokens, ctxWindow int
 		var compactionMode string
+		var nick string
 		detail, err := m.client.showSession(m.sessionID)
 		if err == nil {
 			status = detail.Status
 			ctxTokens = detail.ContextTokens
 			ctxWindow = detail.ContextWindow
 			compactionMode = detail.CompactionMode
+			nick = detail.Nick
 		}
 		uilog("loadHistory: done in %v, turns=%d total=%d status=%s", time.Since(start), len(page.Conversation), page.Total, status)
-		return historyLoadedMsg{conversation: page.Conversation, total: page.Total, status: status, contextTokens: ctxTokens, contextWindow: ctxWindow, compactionMode: compactionMode}
+		return historyLoadedMsg{conversation: page.Conversation, total: page.Total, status: status, nick: nick, contextTokens: ctxTokens, contextWindow: ctxWindow, compactionMode: compactionMode}
 	}
 }
 
@@ -834,6 +838,7 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 		if msg.err == nil {
 			uilog("history loaded: status=%s turns=%d total=%d", msg.status, len(msg.conversation), msg.total)
 			m.sessionStatus = msg.status
+			m.sessionNick = msg.nick
 			m.contextTokens = msg.contextTokens
 			m.contextWindow = msg.contextWindow
 			m.compactionMode = msg.compactionMode
@@ -1588,6 +1593,9 @@ func (m chatModel) View() string {
 	name := m.sessionName
 	if name == "" {
 		name = truncate(m.sessionID, 20)
+	}
+	if m.sessionNick != "" {
+		name = m.sessionNick + " · " + name
 	}
 	var title string
 	if m.isSubagent {

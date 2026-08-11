@@ -679,6 +679,7 @@
   // --- Chat ---
 
   let currentSessionName = '';
+  let currentSessionNick = '';
 
   // sessionNameFromCache returns the known display name for a session id from the
   // most recent dashboard payload, or '' if not found. Used so deep-link/hash and
@@ -692,9 +693,32 @@
     return '';
   }
 
+  // sessionNickFromCache returns the known nickname for a session id from the most
+  // recent dashboard payload, or '' if not found.
+  function sessionNickFromCache(sessionId) {
+    if (lastDashboardData && Array.isArray(lastDashboardData.rows)) {
+      for (const row of lastDashboardData.rows) {
+        if (row[0] === sessionId) return row[9] || '';
+      }
+    }
+    return '';
+  }
+
+  // setChatTitle renders the chat header title, prefixing the (styled) nickname
+  // and a Subagent marker when applicable.
+  function setChatTitle() {
+    const prefix = parentSessionStack.length > 0 ? 'Subagent: ' : '';
+    const nickHtml = currentSessionNick
+      ? `<span class="session-nick">${escapeHtml(currentSessionNick)}</span> · `
+      : '';
+    document.getElementById('chat-title').innerHTML =
+      escapeHtml(prefix) + nickHtml + escapeHtml(currentSessionName);
+  }
+
   async function openChat(sessionId, name, mp) {
     currentSession = sessionId;
     currentSessionName = name || sessionNameFromCache(sessionId) || sessionId.substring(0, 12);
+    currentSessionNick = sessionNickFromCache(sessionId);
     currentSessionMP = mp || '';
     currentSessionAgent = '';
     sessionDefaultModel = '';
@@ -708,7 +732,7 @@
     document.getElementById('projects-view').style.display = 'none';
     document.getElementById('traits-view').style.display = 'none';
     document.getElementById('chat-view').style.display = 'flex';
-    document.getElementById('chat-title').textContent = (parentSessionStack.length > 0 ? 'Subagent: ' : '') + currentSessionName;
+    setChatTitle();
     document.getElementById('chat-mp').textContent = currentSessionMP ? '@ ' + currentSessionMP : '';
     document.getElementById('chat-context').textContent = '';
     document.getElementById('chat-messages').innerHTML = '<div class="loading">Loading...</div>';
@@ -800,13 +824,20 @@
       currentSessionStatus = '';
       if (showResp && showResp.status === 'ok' && showResp.data) {
         currentSessionStatus = showResp.data.status || '';
-        // Backfill the session name when we opened without one (e.g. via a
+        // Backfill the session name/nick when we opened without one (e.g. via a
         // deep-link/hash route or the parent-stack), so the title shows the
         // real name instead of the truncated session GUID fallback.
+        let titleDirty = false;
         if (showResp.data.name && currentSessionName === currentSession.substring(0, 12)) {
           currentSessionName = showResp.data.name;
-          document.getElementById('chat-title').textContent =
-            (parentSessionStack.length > 0 ? 'Subagent: ' : '') + currentSessionName;
+          titleDirty = true;
+        }
+        if (typeof showResp.data.nick === 'string' && showResp.data.nick !== currentSessionNick) {
+          currentSessionNick = showResp.data.nick;
+          titleDirty = true;
+        }
+        if (titleDirty) {
+          setChatTitle();
         }
         if (showResp.data.moneypenny && !currentSessionMP) {
           currentSessionMP = showResp.data.moneypenny;
@@ -3751,11 +3782,19 @@
             return;
           }
           closeWizard();
-          // Update displayed name if changed (only when editing the open chat).
-          if (sid === currentSession && name && name !== currentSessionName) {
-            currentSessionName = name;
-            document.getElementById('chat-title').textContent = name;
-          } else if (sid !== currentSession) {
+          // Update displayed name/nick if changed (only when editing the open chat).
+          if (sid === currentSession) {
+            let titleDirty = false;
+            if (name && name !== currentSessionName) {
+              currentSessionName = name;
+              titleDirty = true;
+            }
+            if (nick !== currentSessionNick) {
+              currentSessionNick = nick;
+              titleDirty = true;
+            }
+            if (titleDirty) setChatTitle();
+          } else {
             loadDashboard();
           }
         } catch (e) {

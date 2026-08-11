@@ -834,7 +834,7 @@ A session may have an optional short **nickname** (e.g. `ian`) — a hem-level a
 Nicknames serve three purposes:
 
 1. **Targeting sessions in hem CLI:** any session-targeting command accepts `--nick NICK` in place of `--session-id`. Hem resolves the nick to the underlying session ID before dispatching (e.g. `hem continue session --nick ian "do X"`, `hem show session --nick ian`). Resolution is nick-only — there is no fallback to matching session names. An unknown nick is an error. The two assignment commands (`create session`, `update session`) treat `--nick` as a value to write, not a selector.
-2. **Display + filtering:** the nick is shown in front of the session name in the hem TUI (dashboard, sessions list) and Qew dashboard, styled dim/italic (e.g. `ian · Bernard`). Filtering in both UIs matches against the nick in addition to the name.
+2. **Display + filtering:** the nick is shown in front of the session name in the hem TUI (dashboard, sessions list, and chat/conversation title bar) and Qew (dashboard and chat title bar), styled dim/italic in the TUI and bold `#60a5fa` in Qew (e.g. `ian · Bernard`). Filtering in both UIs matches against the nick in addition to the name.
 3. **Identity in the system prompt:** when a nick is set, a short identity block is composed at the **very top** of the session's system prompt: `Your name is Ian, you may refer to yourself as such.` (the nick is title-cased for the sentence). This lets the agent refer to itself by the nickname.
 
 Nicknames are a hem-level concept (like projects and traits); moneypenny is unaware of them. The nick is persisted in hem's SQLite (`sessions.nick` column) and is **unique case-insensitively** across sessions — assigning a nick already used by another session is an error.
