@@ -12,6 +12,21 @@ import (
 	"james/hem/pkg/store"
 )
 
+// flagSeenIn reports whether any of the given flag names appears in args,
+// matching --name, -name, --name=..., or -name=... forms. Used to distinguish
+// "flag omitted" from "flag set to empty" so an absent flag can apply a default
+// while an explicit empty value is respected.
+func flagSeenIn(args []string, names ...string) bool {
+	for _, a := range args {
+		for _, n := range names {
+			if a == "--"+n || a == "-"+n || strings.HasPrefix(a, "--"+n+"=") || strings.HasPrefix(a, "-"+n+"=") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // channelInfoWire mirrors moneypenny's envelope.ChannelInfo.
 type channelInfoWire struct {
 	ID           int64  `json:"id"`
@@ -163,12 +178,16 @@ func (e *Executor) SearchChannelTargets(args []string) *protocol.Response {
 func (e *Executor) CreateChannel(args []string) *protocol.Response {
 	var sessionID, provider, targetID, targetLabel, mention string
 	var allowAnyone bool
+	// Detect whether --mention was explicitly supplied. When it is absent we
+	// default the gate to the session's nick (if any); an explicit empty value
+	// (--mention "") still means "forward all".
+	mentionExplicit := flagSeenIn(args, "mention")
 	remaining, err := parseFlagsFromArgs("create-channel", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&sessionID, "session-id", "", "session ID")
 		fs.StringVar(&provider, "provider", "teams", "channel provider (e.g. teams)")
 		fs.StringVar(&targetID, "target-id", "", "target id (e.g. Teams chat id)")
 		fs.StringVar(&targetLabel, "label", "", "optional display label")
-		fs.StringVar(&mention, "mention", "", "only forward messages containing this @name (stripped before forwarding); empty = forward all")
+		fs.StringVar(&mention, "mention", "", "only forward messages containing this @name (stripped before forwarding); empty = forward all. Defaults to the session's nick when omitted")
 		fs.BoolVar(&allowAnyone, "allow-anyone", false, "forward messages from any sender (default: only the signed-in owner)")
 	})
 	if err != nil {
@@ -186,6 +205,14 @@ func (e *Executor) CreateChannel(args []string) *protocol.Response {
 	}
 	if targetID == "" {
 		return protocol.ErrResponse("--target-id is required")
+	}
+
+	// When no --mention was given, default the gate to the session's nick so a
+	// nicknamed session only replies when addressed by its nick.
+	if !mentionExplicit {
+		if sess, gerr := e.store.GetSession(sessionID); gerr == nil && sess != nil {
+			mention = sess.Nick
+		}
 	}
 
 	mp, err := e.resolveSessionMoneypenny(sessionID)

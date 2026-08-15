@@ -4947,14 +4947,7 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	// for the new agent). We only inherit those source values when the agent
 	// is unchanged OR the caller explicitly provided them.
 	flagSeen := func(names ...string) bool {
-		for _, a := range args {
-			for _, n := range names {
-				if a == "--"+n || a == "-"+n || strings.HasPrefix(a, "--"+n+"=") || strings.HasPrefix(a, "-"+n+"=") {
-					return true
-				}
-			}
-		}
-		return false
+		return flagSeenIn(args, names...)
 	}
 	agentExplicit := flagSeen("agent")
 	modelExplicit := flagSeen("model")

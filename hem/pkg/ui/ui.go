@@ -1598,7 +1598,7 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Channels: bind this session to external comms (Teams, ...).
 			m.chat.confirmDelete = false
 			m.chat.commandMode = false
-			m.channels = newChannelsModel(m.client, m.chat.sessionID, m.chat.sessionName)
+			m.channels = newChannelsModel(m.client, m.chat.sessionID, m.chat.sessionName, m.chat.sessionNick)
 			m.channels.width = m.width
 			m.channels.height = m.viewHeight()
 			m.currentView = viewChannels

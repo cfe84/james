@@ -3484,7 +3484,8 @@
       renderWizardModal(`
         <h3>Add ${escapeHtml(provider.name)} Channel</h3>
         <label for="chan-mention">Reply to @mention (optional)</label>
-        <input id="chan-mention" type="text" placeholder="e.g. james — blank forwards all messages">
+        <input id="chan-mention" type="text" value="${escapeAttr(currentSessionNick || '')}" placeholder="e.g. james — blank forwards all messages">
+        <div style="font-size:0.8em;color:var(--muted);margin:-4px 0 8px">${currentSessionNick ? 'Defaulted to this session\u2019s nick. ' : ''}Blank forwards all messages.</div>
         <label style="display:flex;align-items:center;gap:8px;margin-top:12px">
           <input id="chan-allow-anyone" type="checkbox">
           Accept messages from anyone (default: only me)
@@ -3560,7 +3561,9 @@
     async function createChannel(provider, targetId, label, mention, allowAnyone) {
       const args = ['--session-id', sid, '--provider', provider.name, '--target-id', targetId];
       if (label) args.push('--label', label);
-      if (mention) args.push('--mention', mention);
+      // Always send --mention (even empty) so a cleared field forwards all
+      // messages instead of the backend re-defaulting the gate to the nick.
+      args.push('--mention', mention);
       if (allowAnyone) args.push('--allow-anyone');
       const btn = document.getElementById('chan-gating-create') || document.getElementById('chan-create') || document.querySelector('.chan-target:focus');
       if (btn) btn.disabled = true;

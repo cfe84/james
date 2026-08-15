@@ -626,6 +626,10 @@ advances, so it is never reprocessed):
   are forwarded, and the mention token is stripped before forwarding. Matching is case-insensitive,
   whole-word, and the leading `@` is optional — so both a user-typed `@james ...` and a Teams-native
   mention (which arrives cleaned to the bare name `james`) match. An empty mention forwards everything.
+  When creating a channel for a session that has a **nickname**, the mention gate defaults to that nick
+  (hem TUI/Qew pre-fill the field; the `hem create channel` CLI applies the nick when `--mention` is
+  omitted entirely). This is only a default — clearing the field (or passing `--mention ""`) still
+  forwards all messages. The edit/`set channel` flow never re-applies the nick.
 
 ### Behaviour
 
@@ -661,7 +665,7 @@ advances, so it is never reprocessed):
 
 - `hem list channel-providers [-m MP | --session-id ID]` — lists available providers and their capabilities.
 - `hem search channel --query TEXT [--provider teams] [--session-id ID | -m MP]` — searches a provider for candidate targets (returns id/label/detail rows).
-- `hem create channel --session-id ID --target-id TARGET [--provider teams] [--label LABEL] [--mention @name] [--allow-anyone]` — binds a session to a channel.
+- `hem create channel --session-id ID --target-id TARGET [--provider teams] [--label LABEL] [--mention @name] [--allow-anyone]` — binds a session to a channel. When `--mention` is omitted and the session has a nickname, the mention gate defaults to the nick; pass `--mention ""` to force forward-all.
 - `hem list channel --session-id ID` — lists a session's channels (with mention and sender policy).
 - `hem set channel CHANNEL_ID --session-id ID [--mention @name] [--allow-anyone | --owner-only]` — updates a channel's mention gate and/or sender policy (`--mention ""` clears the mention).
 - `hem enable channel CHANNEL_ID --session-id ID` / `hem disable channel CHANNEL_ID --session-id ID` — toggles a channel.

@@ -28,6 +28,7 @@ type channelsModel struct {
 	client      *client
 	sessionID   string
 	sessionName string
+	sessionNick string
 	width       int
 	height      int
 	loading     bool
@@ -81,11 +82,12 @@ type channelActionMsg struct {
 	err    error
 }
 
-func newChannelsModel(c *client, sessionID, sessionName string) channelsModel {
+func newChannelsModel(c *client, sessionID, sessionName, sessionNick string) channelsModel {
 	return channelsModel{
 		client:      c,
 		sessionID:   sessionID,
 		sessionName: sessionName,
+		sessionNick: sessionNick,
 		loading:     true,
 		stage:       chStageList,
 	}
@@ -402,7 +404,7 @@ func (m channelsModel) handleResultsKey(msg tea.KeyMsg) (channelsModel, tea.Cmd)
 			}
 			m.pendingTargetID = t.ID
 			m.pendingLabel = label
-			m.mentionInput = ""
+			m.mentionInput = m.sessionNick
 			m.optAllowAnyone = false
 			m.optField = 0
 			m.editingID = 0
@@ -423,7 +425,7 @@ func (m channelsModel) handleIDInputKey(msg tea.KeyMsg) (channelsModel, tea.Cmd)
 		}
 		m.pendingTargetID = id
 		m.pendingLabel = strings.TrimSpace(m.labelInput)
-		m.mentionInput = ""
+		m.mentionInput = m.sessionNick
 		m.optAllowAnyone = false
 		m.optField = 0
 		m.editingID = 0
