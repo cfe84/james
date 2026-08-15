@@ -3681,12 +3681,15 @@
       renderWizardModal(`
         <h3>Edit Session</h3>
         <div style="font-size:0.85em;color:var(--muted);margin-bottom:8px">
-          🕴️ ${escapeHtml(s.agent || 'copilot')} &nbsp; 📡 ${escapeHtml(s.moneypenny || '')} &nbsp; 📂 ${escapeHtml(s.path || '')}
+          🕴️ ${escapeHtml(s.agent || 'copilot')} &nbsp; 📡 ${escapeHtml(s.moneypenny || '')}
         </div>
         <label for="es-name">Name</label>
         <input id="es-name" type="text" value="${escapeAttr(s.name || '')}">
         <label for="es-nick">Nick</label>
         <input id="es-nick" type="text" value="${escapeAttr(s.nick || '')}" placeholder="short alias (optional)">
+        <label for="es-path">Path 📂</label>
+        <input id="es-path" type="text" value="${escapeAttr(s.path || '')}">
+        <div style="font-size:0.8em;color:var(--muted);margin:-4px 0 8px">Only repoints James to the folder — move the folder yourself first. The moneypenny rejects a path that doesn't exist.</div>
         <label for="es-project">Project</label>
         <select id="es-project"><option value="">(none)</option>${projectOpts}</select>
         <label for="es-model">Model</label>
@@ -3733,6 +3736,8 @@
         if (name && name !== (s.name || '')) args.push('--name', name);
         const nick = document.getElementById('es-nick').value.trim();
         if (nick !== (s.nick || '')) args.push('--nick', nick);
+        const path = document.getElementById('es-path').value.trim();
+        if (path && path !== (s.path || '')) args.push('--path', path);
         const project = document.getElementById('es-project').value;
         if (project !== (s.project || '')) args.push('--project', project);
         const model = document.getElementById('es-model').value;
