@@ -553,7 +553,7 @@ Sessions can have scheduled continuations — prompts that are automatically sen
   - Local time with date (`2026-03-06 14:30`)
   - Local time without date (`14:30` — assumes today, or tomorrow if the time has passed)
 - `--cron` creates a recurring schedule using a cron expression:
-  - Standard 5-field format: `minute hour dom month dow` (numbers and `*`)
+  - Standard 5-field format: `minute hour dom month dow`. Each field supports `*`, single values, comma-separated lists (`9,13,17`), ranges (`1-5`), and steps (`*/2`, `0-30/10`). Day-of-week is `0-7` where both `0` and `7` mean Sunday.
   - Shorthands: `@hourly`, `@daily`, `@every 2h`
   - When a recurring schedule fires, a new occurrence is automatically created for the next matching time.
   - The `cron_expr` is stored in the schedules table.

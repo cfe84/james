@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -2477,42 +2479,24 @@ func nextCronTime(expr string, after time.Time) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("expected 5 fields in cron expression, got %d", len(fields))
 	}
 
-	// Simple cron parser: supports numbers and * only (no ranges/steps for now).
-	parseField := func(s string, min, max int) ([]int, error) {
-		if s == "*" {
-			vals := make([]int, max-min+1)
-			for i := range vals {
-				vals[i] = min + i
-			}
-			return vals, nil
-		}
-		var val int
-		if _, err := fmt.Sscanf(s, "%d", &val); err != nil {
-			return nil, fmt.Errorf("invalid cron field %q", s)
-		}
-		if val < min || val > max {
-			return nil, fmt.Errorf("cron field %d out of range [%d-%d]", val, min, max)
-		}
-		return []int{val}, nil
-	}
-
-	minutes, err := parseField(fields[0], 0, 59)
+	minutes, err := parseCronField(fields[0], 0, 59)
 	if err != nil {
 		return time.Time{}, err
 	}
-	hours, err := parseField(fields[1], 0, 23)
+	hours, err := parseCronField(fields[1], 0, 23)
 	if err != nil {
 		return time.Time{}, err
 	}
-	doms, err := parseField(fields[2], 1, 31)
+	doms, err := parseCronField(fields[2], 1, 31)
 	if err != nil {
 		return time.Time{}, err
 	}
-	months, err := parseField(fields[3], 1, 12)
+	months, err := parseCronField(fields[3], 1, 12)
 	if err != nil {
 		return time.Time{}, err
 	}
-	dows, err := parseField(fields[4], 0, 6)
+	// Day-of-week accepts 0-7 where both 0 and 7 mean Sunday.
+	dows, err := parseCronField(fields[4], 0, 7)
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -2527,7 +2511,7 @@ func nextCronTime(expr string, after time.Time) (time.Time, error) {
 	}
 	dowSet := make(map[int]bool)
 	for _, v := range dows {
-		dowSet[v] = true
+		dowSet[v%7] = true // normalize 7 -> 0 (Sunday)
 	}
 
 	// Iterate minute by minute from after+1min, up to 1 year.
@@ -2549,6 +2533,86 @@ func nextCronTime(expr string, after time.Time) (time.Time, error) {
 	}
 
 	return time.Time{}, fmt.Errorf("no matching time found within 1 year for cron %q", expr)
+}
+
+// parseCronField parses a single cron field into the sorted, de-duplicated set
+// of matching integers in [min,max]. It supports standard cron syntax:
+//
+//	*            every value
+//	*/n          every nth value across the whole range
+//	a            a single value
+//	a-b          an inclusive range
+//	a-b/n        an inclusive range with a step
+//	a/n          from a to max with a step
+//	a,b,c-d,...  a comma-separated list of any of the above terms
+func parseCronField(s string, min, max int) ([]int, error) {
+	set := make(map[int]bool)
+	add := func(v int) error {
+		if v < min || v > max {
+			return fmt.Errorf("cron field value %d out of range [%d-%d]", v, min, max)
+		}
+		set[v] = true
+		return nil
+	}
+
+	for _, term := range strings.Split(s, ",") {
+		term = strings.TrimSpace(term)
+		if term == "" {
+			return nil, fmt.Errorf("invalid empty cron term in %q", s)
+		}
+
+		// Split off an optional step (e.g. "*/2", "1-5/2", "10/3").
+		rangePart := term
+		step := 1
+		if slash := strings.Index(term, "/"); slash >= 0 {
+			rangePart = term[:slash]
+			stepStr := term[slash+1:]
+			st, err := strconv.Atoi(stepStr)
+			if err != nil || st <= 0 {
+				return nil, fmt.Errorf("invalid cron step %q", term)
+			}
+			step = st
+		}
+
+		lo, hi := min, max
+		if rangePart != "*" {
+			if dash := strings.Index(rangePart, "-"); dash >= 0 {
+				a, errA := strconv.Atoi(strings.TrimSpace(rangePart[:dash]))
+				b, errB := strconv.Atoi(strings.TrimSpace(rangePart[dash+1:]))
+				if errA != nil || errB != nil {
+					return nil, fmt.Errorf("invalid cron range %q", term)
+				}
+				lo, hi = a, b
+			} else {
+				v, err := strconv.Atoi(rangePart)
+				if err != nil {
+					return nil, fmt.Errorf("invalid cron field %q", term)
+				}
+				// A bare number with no step is a single value; with a step it
+				// means "from v to max" stepping by step.
+				if strings.Contains(term, "/") {
+					lo, hi = v, max
+				} else {
+					lo, hi = v, v
+				}
+			}
+		}
+		if lo > hi {
+			return nil, fmt.Errorf("invalid cron range %q: start greater than end", term)
+		}
+		for v := lo; v <= hi; v += step {
+			if err := add(v); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	vals := make([]int, 0, len(set))
+	for v := range set {
+		vals = append(vals, v)
+	}
+	sort.Ints(vals)
+	return vals, nil
 }
 
 // Git operation handlers.
