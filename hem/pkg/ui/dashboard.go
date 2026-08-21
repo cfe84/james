@@ -244,6 +244,21 @@ func (m dashboardModel) completeSession(id string) tea.Cmd {
 	}
 }
 
+// markReady marks a session as "ready" (unread) so it resurfaces in the Ready
+// group. Reuses sessionCompletedMsg to trigger a dashboard refresh.
+func (m dashboardModel) markReady(id string) tea.Cmd {
+	return func() tea.Msg {
+		resp, err := m.client.send("mark", "session", id)
+		if err != nil {
+			return sessionCompletedMsg{err: err}
+		}
+		if resp.Status == "error" {
+			return sessionCompletedMsg{err: fmt.Errorf("%s", resp.Message)}
+		}
+		return sessionCompletedMsg{err: nil}
+	}
+}
+
 func (m dashboardModel) Init() tea.Cmd {
 	// Start initial load, fallback polling, and broadcast listener.
 	cmds := []tea.Cmd{m.loadDashboard(), m.dashboardPollTickAdaptive()}

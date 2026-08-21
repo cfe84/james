@@ -59,6 +59,18 @@ func (m sessionsModel) stopSession(id string) tea.Cmd {
 	}
 }
 
+// markReady marks a session as "ready" (unread). Reuses sessionStoppedMsg to
+// trigger a reload of the session list.
+func (m sessionsModel) markReady(id string) tea.Cmd {
+	return func() tea.Msg {
+		resp, err := m.client.send("mark", "session", id)
+		if err == nil && resp.Status == "error" {
+			err = fmt.Errorf("%s", resp.Message)
+		}
+		return sessionStoppedMsg{err: err}
+	}
+}
+
 func (m sessionsModel) Init() tea.Cmd {
 	return m.loadSessions()
 }

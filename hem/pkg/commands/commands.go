@@ -564,6 +564,8 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 
 	case "complete session":
 		return e.CompleteSession(args)
+	case "mark session":
+		return e.MarkSession(args)
 	case "diff session":
 		return e.DiffSession(args)
 	case "git-log session":
@@ -3709,6 +3711,42 @@ func (e *Executor) CompleteSession(args []string) *protocol.Response {
 
 	return protocol.OKResponse(TextResult{
 		Message: fmt.Sprintf("Session %s marked as %s.", sessionID, newStatus),
+	})
+}
+
+// MarkSession marks a session as "ready" (unread) by clearing its reviewed
+// flag, or as read with --read. An idle session with reviewed=false surfaces
+// in the Ready group, exactly like a fresh agent response. Pure hem-store
+// state — no moneypenny/protocol interaction.
+func (e *Executor) MarkSession(args []string) *protocol.Response {
+	var sessionID string
+	var read bool
+
+	remaining, err := parseFlagsFromArgs("mark-session", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&sessionID, "session-id", "", "session ID")
+		fs.BoolVar(&read, "read", false, "mark as read (reviewed) instead of ready")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if sessionID == "" {
+		if len(remaining) == 0 {
+			return protocol.ErrResponse("session_id is required")
+		}
+		sessionID = remaining[0]
+	}
+
+	if err := e.store.SetSessionReviewed(sessionID, read); err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	label := "ready"
+	if read {
+		label = "read"
+	}
+	return protocol.OKResponse(TextResult{
+		Message: fmt.Sprintf("Session %s marked as %s.", sessionID, label),
 	})
 }
 

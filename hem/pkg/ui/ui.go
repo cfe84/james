@@ -550,6 +550,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(m.dashboard.loadDashboard(), m.dashboard.dashboardPollTickAdaptive())
 		}
 
+	case chatMarkedReadyMsg:
+		if msg.err != nil {
+			m.chat.err = msg.err
+			return m, nil
+		}
+		m.statusMsg = "Marked ready"
+		m.chat.commandMode = false
+		prev := m.previousView
+		m.currentView = prev
+		switch prev {
+		case viewProjectDetail:
+			m.projectDetail.loading = true
+			return m, m.projectDetail.loadDashboard()
+		case viewSessions:
+			m.sessions.loading = true
+			return m, m.sessions.loadSessions()
+		default:
+			m.currentView = viewDashboard
+			m.dashboard.loading = true
+			return m, tea.Batch(m.dashboard.loadDashboard(), m.dashboard.dashboardPollTickAdaptive())
+		}
+
 	case chatSubagentDeletedMsg:
 		if msg.err != nil {
 			m.chat.err = msg.err
@@ -1081,6 +1103,12 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if e != nil {
 			return m, m.dashboard.completeSession(e.SessionID)
 		}
+	case "u":
+		e := m.dashboard.selectedEntry()
+		if e != nil {
+			m.statusMsg = "Marked ready"
+			return m, m.dashboard.markReady(e.SessionID)
+		}
 	case "d":
 		e := m.dashboard.selectedEntry()
 		if e != nil {
@@ -1301,6 +1329,12 @@ func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if e != nil {
 			return m, m.projectDetail.completeSession(e.SessionID)
 		}
+	case "u":
+		e := m.projectDetail.selectedEntry()
+		if e != nil {
+			m.statusMsg = "Marked ready"
+			return m, m.projectDetail.markReady(e.SessionID)
+		}
 	case "d":
 		e := m.projectDetail.selectedEntry()
 		if e != nil {
@@ -1442,6 +1476,12 @@ func (m Model) updateSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if s != nil && s.Status == "working" {
 			return m, m.sessions.stopSession(s.SessionID)
 		}
+	case "u":
+		s := m.sessions.selectedSession()
+		if s != nil {
+			m.statusMsg = "Marked ready"
+			return m, m.sessions.markReady(s.SessionID)
+		}
 	case "i":
 		m.importForm = newImportModel(m.client)
 		m.importForm.width = m.width
@@ -1513,6 +1553,15 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					return chatSessionCompletedMsg{err: err}
 				}
 				return chatSessionCompletedMsg{}
+			}
+		case "u":
+			m.chat.confirmDelete = false
+			return m, func() tea.Msg {
+				resp, err := m.chat.client.send("mark", "session", m.chat.sessionID)
+				if err == nil && resp.Status == "error" {
+					err = fmt.Errorf("%s", resp.Message)
+				}
+				return chatMarkedReadyMsg{err: err}
 			}
 		case "d":
 			if !m.chat.confirmDelete {
@@ -2067,6 +2116,7 @@ func (m Model) renderStatusBar() string {
 				statusKeyStyle.Render("s") + statusDescStyle.Render(subsLabel),
 				statusKeyStyle.Render("b") + statusDescStyle.Render(soundLabel),
 				statusKeyStyle.Render("c") + statusDescStyle.Render(" complete"),
+				statusKeyStyle.Render("u") + statusDescStyle.Render(" ready"),
 				statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
 				statusKeyStyle.Render("e") + statusDescStyle.Render(" edit"),
 				statusKeyStyle.Render("g") + statusDescStyle.Render(" git diff"),
@@ -2151,6 +2201,7 @@ func (m Model) renderStatusBar() string {
 				statusKeyStyle.Render("a") + statusDescStyle.Render(completedLabel),
 				statusKeyStyle.Render("s") + statusDescStyle.Render(subsLabel),
 				statusKeyStyle.Render("c") + statusDescStyle.Render(" complete"),
+				statusKeyStyle.Render("u") + statusDescStyle.Render(" ready"),
 				statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
 				statusKeyStyle.Render("e") + statusDescStyle.Render(" edit"),
 				statusKeyStyle.Render("g") + statusDescStyle.Render(" git diff"),
@@ -2181,6 +2232,7 @@ func (m Model) renderStatusBar() string {
 				statusKeyStyle.Render("g") + statusDescStyle.Render(" git diff"),
 				statusKeyStyle.Render("i") + statusDescStyle.Render(" import"),
 				statusKeyStyle.Render("s") + statusDescStyle.Render(" stop"),
+				statusKeyStyle.Render("u") + statusDescStyle.Render(" ready"),
 				statusKeyStyle.Render("x") + statusDescStyle.Render(" shell"),
 				statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
 				statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
@@ -2234,6 +2286,7 @@ func (m Model) renderStatusBar() string {
 			keys = []string{
 				statusKeyStyle.Render("a") + statusDescStyle.Render(" subagents"),
 				statusKeyStyle.Render("c") + statusDescStyle.Render(" complete"),
+				statusKeyStyle.Render("u") + statusDescStyle.Render(" ready"),
 				statusKeyStyle.Render("d") + statusDescStyle.Render(" delete"),
 				statusKeyStyle.Render("e") + statusDescStyle.Render(" edit"),
 				statusKeyStyle.Render("g") + statusDescStyle.Render(" git diff"),

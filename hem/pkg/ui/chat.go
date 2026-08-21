@@ -23,6 +23,7 @@ import (
 
 type chatSessionStoppedMsg struct{ err error }
 type chatSessionCompletedMsg struct{ err error }
+type chatMarkedReadyMsg struct{ err error }
 type chatSessionDeletedMsg struct{ err error }
 type chatSubagentDeletedMsg struct {
 	sessionID string

@@ -453,6 +453,7 @@
     const e = dashEntries.find(x => x.sessionId === dashSelectedId);
     if (!e) return;
     if (cmd === 'complete') completeSession(e.sessionId);
+    else if (cmd === 'markready') markReady(e.sessionId);
     else if (cmd === 'delete') deleteSession(e.sessionId, e.name);
     else if (cmd === 'edit') showEditSessionModal(e.sessionId);
     else if (cmd === 'duplicate') openDuplicateWizard(e.sessionId);
@@ -1360,6 +1361,7 @@
         <h3>Session Commands</h3>
         <div class="cmd-list">
           <button class="cmd-item" data-cmd="complete"><kbd>c</kbd> Complete session</button>
+          <button class="cmd-item" data-cmd="markready"><kbd>u</kbd> Mark as ready</button>
           <button class="cmd-item" data-cmd="edit"><kbd>e</kbd> Edit session</button>
           <button class="cmd-item" data-cmd="duplicate"><kbd>y</kbd> Duplicate session</button>
           <button class="cmd-item" data-cmd="subagent"><kbd>a</kbd> New subagent</button>
@@ -1410,6 +1412,7 @@
     closeWizard();
     switch (cmd) {
       case 'complete': completeSession(); break;
+      case 'markready': markReady(); break;
       case 'edit':     showEditSessionModal(); break;
       case 'duplicate': openDuplicateWizard(); break;
       case 'subagent': createNewSubagent(); break;
@@ -3685,6 +3688,24 @@
     }
   }
 
+  // markReady marks a session as "ready" (unread) so it resurfaces in the Ready
+  // group, mirroring the TUI `u` binding. Pure hem-store flag — no moneypenny call.
+  async function markReady(sessionId) {
+    const sid = sessionId || currentSession;
+    if (!sid) return;
+    try {
+      const resp = await apiCall('mark', 'session', [sid]);
+      if (resp.status === 'error') {
+        alert('Mark ready error: ' + resp.message);
+        return;
+      }
+      if (sid === currentSession) closeChat();
+      else loadDashboard();
+    } catch (e) {
+      alert('Error: ' + e.message);
+    }
+  }
+
   window._qewCommitFromDiff = function() { showCommitModal(false); };
   window._qewCommitAndPush = function() { showCommitModal(true); };
   window._qewAmend = gitAmend;
@@ -5028,7 +5049,7 @@
       if (e.key === 'j' || e.key === 'ArrowDown') { e.preventDefault(); enterChatNavMode(); chatScrollLine(1); return; }
       if (e.key === 'k' || e.key === 'ArrowUp') { e.preventDefault(); enterChatNavMode(); chatScrollLine(-1); return; }
       if (e.repeat) return;
-      const map = { c: 'complete', e: 'edit', y: 'duplicate', a: 'subagent', p: 'project', g: 'diff', t: 'thoughts', o: 'model', f: 'effort', w: 'context', m: 'memory', n: 'channels', h: 'schedules', K: 'compact', D: 'distill', s: 'stop', d: 'delete', q: 'back' };
+      const map = { c: 'complete', u: 'markready', e: 'edit', y: 'duplicate', a: 'subagent', p: 'project', g: 'diff', t: 'thoughts', o: 'model', f: 'effort', w: 'context', m: 'memory', n: 'channels', h: 'schedules', K: 'compact', D: 'distill', s: 'stop', d: 'delete', q: 'back' };
       const cmd = map[e.key];
       if (cmd) { e.preventDefault(); runCmd(cmd); }
       return;
@@ -5153,6 +5174,7 @@
       case 'p': e.preventDefault(); showProjectsView(); break;
       case 't': e.preventDefault(); showTraitsView(); break;
       case 'c': e.preventDefault(); dashAction('complete'); break;
+      case 'u': e.preventDefault(); dashAction('markready'); break;
       case 'd': e.preventDefault(); dashAction('delete'); break;
       case 'e': e.preventDefault(); dashAction('edit'); break;
       case 'y': e.preventDefault(); dashAction('duplicate'); break;
