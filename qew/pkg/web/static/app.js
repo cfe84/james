@@ -1000,10 +1000,20 @@
       const sinceCount = chatTotal - (qm.since || 0);
       if (sinceCount <= 0) return true;
       const start = Math.max(0, chatConversation.length - sinceCount);
+      // The optimistic copy carries a display suffix (e.g. " 📎×1") that the
+      // server never persists; when attachments are present the server instead
+      // appends a "[Attached files: …]" addendum to the same base prompt. Match
+      // on the base prompt (qm.core) so an attachment send still reconciles —
+      // otherwise the queued copy would linger alongside the real turn.
+      const core = qm.core != null ? qm.core : qm.content;
+      const matchesTurn = (content) =>
+        content === qm.content ||
+        content === core ||
+        content.startsWith(core + '\n\n[Attached files:');
       for (let i = start; i < chatConversation.length; i++) {
         if (consumedTurns.has(i)) continue;
         const st = chatConversation[i];
-        if (st.role === 'user' && st.content === qm.content) {
+        if (st.role === 'user' && matchesTurn(st.content)) {
           consumedTurns.add(i);
           return false;
         }
@@ -1271,7 +1281,7 @@
       await apiCall('continue', 'session', args);
       // Track as queued and re-render.
       const labelSuffix = hasAttachments ? ` 📎×${attachmentPaths.length}` : '';
-      queuedMessages.push({ content: promptText + labelSuffix, since: chatTotal });
+      queuedMessages.push({ content: promptText + labelSuffix, core: promptText, since: chatTotal });
       clearPendingAttachments();
       chatForceScrollBottom = true; // reveal the new message even if scrolled up
       lastChatHTML = ''; // force re-render

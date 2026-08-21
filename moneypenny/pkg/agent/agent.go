@@ -348,7 +348,16 @@ func (r *Runner) RunOneShot(ctx context.Context, params RunParams) (string, erro
 
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("agent oneshot failed: %w (stderr: %s)", err, strings.TrimSpace(stderrBuf.String()))
+		// Some agents (notably claude) print fatal errors — e.g.
+		// "API Error: 400 Not a valid API key for this workspace" — to
+		// STDOUT rather than stderr, then exit non-zero. cmd.Output() still
+		// captures that stdout in `out`, so fall back to it when stderr is
+		// empty; otherwise the failure surfaces as an opaque "(stderr: )".
+		detail := strings.TrimSpace(stderrBuf.String())
+		if detail == "" {
+			detail = strings.TrimSpace(string(out))
+		}
+		return "", fmt.Errorf("agent oneshot failed: %w (output: %s)", err, detail)
 	}
 	return strings.TrimSpace(string(out)), nil
 }
