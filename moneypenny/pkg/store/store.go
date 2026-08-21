@@ -957,6 +957,25 @@ func (s *Store) CancelSchedule(id int64) error {
 	return nil
 }
 
+// UpdateSchedule edits the prompt, next-run time, cron expression, and reply
+// channel of an existing pending schedule in place (preserving its ID). Only
+// pending schedules can be edited. Returns an error if the schedule does not
+// exist or is not pending.
+func (s *Store) UpdateSchedule(id int64, prompt string, scheduledAt time.Time, cronExpr string, replyChannelID int64) error {
+	res, err := s.db.Exec(
+		`UPDATE schedules SET prompt = ?, scheduled_at = ?, cron_expr = ?, reply_channel_id = ? WHERE id = ? AND status = ?`,
+		prompt, scheduledAt.UTC(), cronExpr, replyChannelID, id, SchedulePending,
+	)
+	if err != nil {
+		return fmt.Errorf("update schedule: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("schedule %d not found or not pending", id)
+	}
+	return nil
+}
+
 // Channel binds a session to an external communication channel (a Teams chat,
 // email thread, ...). The manager polls enabled channels for new messages and
 // mirrors the session's responses back through channel_outbox.

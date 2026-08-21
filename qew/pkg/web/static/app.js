@@ -3147,10 +3147,21 @@
     async function loadSchedules() {
       try {
         const resp = await apiCall('list', 'schedule', ['--session-id', sid]);
-        if (resp.status === 'ok' && resp.data && Array.isArray(resp.data.rows)) {
-          return resp.data.rows.map(r => ({
-            id: r[0], status: r[1], scheduledAt: r[2], prompt: r[3], cron: r[4] || '',
-          }));
+        if (resp.status === 'ok' && resp.data) {
+          // Prefer the exact structured schedules (full untruncated prompt,
+          // cron, channel) so the edit form can prefill accurately.
+          if (Array.isArray(resp.data.schedules)) {
+            return resp.data.schedules.map(s => ({
+              id: s.id, status: s.status, scheduledAt: s.scheduled_at,
+              prompt: s.prompt || '', cron: s.cron_expr || '',
+              channelId: s.reply_channel_id || 0,
+            }));
+          }
+          if (Array.isArray(resp.data.rows)) {
+            return resp.data.rows.map(r => ({
+              id: r[0], status: r[1], scheduledAt: r[2], prompt: r[3], cron: r[4] || '', channelId: 0,
+            }));
+          }
         }
       } catch (e) { /* ignore */ }
       return [];
@@ -3177,13 +3188,16 @@
       if (currentSession !== sid) return;
       const pending = all.filter(s => s.status === 'pending');
       const rowsHtml = pending.length
-        ? pending.map(s => `
+        ? pending.map((s, i) => `
             <div class="sched-row">
               <div class="sched-info">
                 <span class="sched-when">⏰ ${escapeHtml(formatScheduleTime(s.scheduledAt))}${s.cron ? ` <span class="sched-cron">↻ ${escapeHtml(s.cron)}</span>` : ''}</span>
                 <span class="sched-prompt">${escapeHtml(s.prompt)}</span>
               </div>
-              <button class="btn-muted sched-del" data-id="${escapeAttr(String(s.id))}">Delete</button>
+              <div class="sched-actions">
+                <button class="btn-muted sched-edit" data-idx="${i}">Edit</button>
+                <button class="btn-muted sched-del" data-id="${escapeAttr(String(s.id))}">Delete</button>
+              </div>
             </div>`).join('')
         : `<div class="mem-empty">(no scheduled tasks)</div>`;
       renderWizardModal(`
@@ -3196,6 +3210,12 @@
       `, 'modal-mem');
       const newBtn = document.getElementById('sched-new');
       if (newBtn) newBtn.addEventListener('click', () => renderForm());
+      document.querySelectorAll('.sched-edit').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const idx = parseInt(btn.dataset.idx, 10);
+          renderForm(pending[idx]);
+        });
+      });
       document.querySelectorAll('.sched-del').forEach(btn => {
         btn.addEventListener('click', async () => {
           const id = btn.dataset.id;
@@ -3210,38 +3230,46 @@
       });
     }
 
-    async function renderForm() {
-      renderWizardModal(`<h3>New Scheduled Task</h3><div class="loading">Loading…</div>`, 'modal-mem');
+    // renderForm shows the create/edit form. Pass an existing schedule object to
+    // edit it in place (prefilled); omit it to create a new task.
+    async function renderForm(editSched) {
+      const editing = !!editSched;
+      const heading = editing ? 'Edit Scheduled Task' : 'New Scheduled Task';
+      renderWizardModal(`<h3>${heading}</h3><div class="loading">Loading…</div>`, 'modal-mem');
       const channels = await loadScheduleChannels();
       if (currentSession !== sid) return;
+      const curChannel = editing ? String(editSched.channelId || '') : '';
       const channelSelect = channels.length ? `
         <label for="sched-channel">Channel (optional)</label>
         <select id="sched-channel">
           <option value="">(no channel)</option>
           ${channels.map(c => {
             const label = c.label || c.targetId || c.id;
-            return `<option value="${escapeAttr(String(c.id))}">${escapeHtml(`${c.provider}: ${label}`)}</option>`;
+            const sel = String(c.id) === curChannel ? ' selected' : '';
+            return `<option value="${escapeAttr(String(c.id))}"${sel}>${escapeHtml(`${c.provider}: ${label}`)}</option>`;
           }).join('')}
         </select>` : '';
+      const atVal = editing ? isoToScheduleLocal(editSched.scheduledAt) : defaultScheduleLocal();
       renderWizardModal(`
-        <h3>New Scheduled Task</h3>
+        <h3>${heading}</h3>
         <label for="sched-at">When</label>
-        <input id="sched-at" type="datetime-local" value="${escapeAttr(defaultScheduleLocal())}">
+        <input id="sched-at" type="datetime-local" value="${escapeAttr(atVal)}">
         <label for="sched-cron">Repeat (cron, optional)</label>
-        <input id="sched-cron" type="text" placeholder="e.g. 0 9 * * *  (every day at 09:00)">
+        <input id="sched-cron" type="text" placeholder="e.g. 0 9 * * *  (every day at 09:00)" value="${editing ? escapeAttr(editSched.cron || '') : ''}">
         ${channelSelect}
         <label for="sched-prompt">Prompt</label>
-        <textarea id="sched-prompt" rows="4" placeholder="What should the agent do?"></textarea>
+        <textarea id="sched-prompt" rows="4" placeholder="What should the agent do?">${editing ? escapeHtml(editSched.prompt || '') : ''}</textarea>
         <div class="modal-actions">
           <button class="btn-muted" id="sched-back">Back</button>
-          <button class="btn" id="sched-create">Create</button>
+          <button class="btn" id="sched-create">${editing ? 'Save' : 'Create'}</button>
         </div>
       `, 'modal-mem');
       document.getElementById('sched-back').addEventListener('click', () => renderList());
-      document.getElementById('sched-create').addEventListener('click', createSchedule);
+      document.getElementById('sched-create').addEventListener('click', () => saveSchedule(editing ? editSched : null));
     }
 
-    async function createSchedule() {
+    async function saveSchedule(editSched) {
+      const editing = !!editSched;
       const atLocal = document.getElementById('sched-at').value;
       const cron = document.getElementById('sched-cron').value.trim();
       const prompt = document.getElementById('sched-prompt').value.trim();
@@ -3251,23 +3279,34 @@
       if (isNaN(d.getTime())) { alert('Invalid date/time.'); return; }
       const iso = d.toISOString();
       const btn = document.getElementById('sched-create');
+      const restore = editing ? 'Save' : 'Create';
       btn.disabled = true;
-      btn.textContent = 'Creating…';
-      const args = [sid, '--at', iso];
-      if (cron) args.push('--cron', cron);
+      btn.textContent = editing ? 'Saving…' : 'Creating…';
       const channelEl = document.getElementById('sched-channel');
-      if (channelEl && channelEl.value) args.push('--channel', channelEl.value);
-      args.push('--prompt', prompt);
+      const channelVal = channelEl ? channelEl.value : '';
+      let verb, noun, args;
+      if (editing) {
+        // Edit in place; pass all fields so cron/channel can be changed or
+        // cleared ("" cron and 0 channel clear on the server).
+        verb = 'edit'; noun = 'schedule';
+        args = [String(editSched.id), '--session-id', sid, '--at', iso, '--cron', cron, '--channel', channelVal || '0', '--prompt', prompt];
+      } else {
+        verb = 'schedule'; noun = 'session';
+        args = [sid, '--at', iso];
+        if (cron) args.push('--cron', cron);
+        if (channelVal) args.push('--channel', channelVal);
+        args.push('--prompt', prompt);
+      }
       try {
-        const resp = await apiCall('schedule', 'session', args);
+        const resp = await apiCall(verb, noun, args);
         if (resp.status === 'error') {
           alert('Schedule error: ' + resp.message);
-          btn.disabled = false; btn.textContent = 'Create';
+          btn.disabled = false; btn.textContent = restore;
           return;
         }
       } catch (e) {
         alert('Error: ' + e.message);
-        btn.disabled = false; btn.textContent = 'Create';
+        btn.disabled = false; btn.textContent = restore;
         return;
       }
       await renderList();
@@ -4633,6 +4672,15 @@
   // local time, for seeding the datetime-local input in the New task form.
   function defaultScheduleLocal() {
     const d = new Date(Date.now() + 3600000);
+    const pad = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  // isoToScheduleLocal converts an ISO timestamp to a "YYYY-MM-DDTHH:MM" string
+  // in local time, for seeding the datetime-local input when editing a schedule.
+  function isoToScheduleLocal(iso) {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return defaultScheduleLocal();
     const pad = n => String(n).padStart(2, '0');
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }

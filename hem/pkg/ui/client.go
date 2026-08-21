@@ -1098,12 +1098,14 @@ func (c *client) getSessionActivity(sessionID string) ([]activityEvent, error) {
 }
 
 type scheduleInfo struct {
-	ID          int64  `json:"id"`
-	SessionID   string `json:"session_id"`
-	Prompt      string `json:"prompt"`
-	ScheduledAt string `json:"scheduled_at"`
-	Status      string `json:"status"`
-	CreatedAt   string `json:"created_at"`
+	ID             int64  `json:"id"`
+	SessionID      string `json:"session_id"`
+	Prompt         string `json:"prompt"`
+	ScheduledAt    string `json:"scheduled_at"`
+	Status         string `json:"status"`
+	CronExpr       string `json:"cron_expr"`
+	ReplyChannelID int64  `json:"reply_channel_id"`
+	CreatedAt      string `json:"created_at"`
 }
 
 func (c *client) listSchedules(sessionID string) ([]scheduleInfo, error) {
@@ -1121,6 +1123,21 @@ func (c *client) listSchedules(sessionID string) ([]scheduleInfo, error) {
 	}
 	if json.Unmarshal(resp.Data, &text) == nil && text.Message != "" {
 		return nil, nil
+	}
+
+	// Prefer the exact structured schedules (full untruncated prompt, cron,
+	// channel) so an edit form can prefill accurately. Fall back to the display
+	// table rows for older servers that only return headers/rows.
+	var structured struct {
+		Schedules []scheduleInfo `json:"schedules"`
+	}
+	if json.Unmarshal(resp.Data, &structured) == nil && structured.Schedules != nil {
+		for i := range structured.Schedules {
+			if structured.Schedules[i].SessionID == "" {
+				structured.Schedules[i].SessionID = sessionID
+			}
+		}
+		return structured.Schedules, nil
 	}
 
 	var table struct {
@@ -1146,6 +1163,9 @@ func (c *client) listSchedules(sessionID string) ([]scheduleInfo, error) {
 		if len(row) > 3 {
 			s.Prompt = row[3]
 		}
+		if len(row) > 4 {
+			s.CronExpr = row[4]
+		}
 		s.SessionID = sessionID
 		schedules = append(schedules, s)
 	}
@@ -1154,6 +1174,19 @@ func (c *client) listSchedules(sessionID string) ([]scheduleInfo, error) {
 
 func (c *client) scheduleSession(sessionID, at, prompt string) error {
 	resp, err := c.send("schedule", "session", sessionID, "--at", at, "--prompt", prompt)
+	if err != nil {
+		return err
+	}
+	if resp.Status == protocol.StatusError {
+		return fmt.Errorf("%s", resp.Message)
+	}
+	return nil
+}
+
+// editSchedule updates a pending schedule's time and prompt in place. Cron and
+// channel are retained by the server since they are not passed.
+func (c *client) editSchedule(sessionID string, id int64, at, prompt string) error {
+	resp, err := c.send("edit", "schedule", fmt.Sprintf("%d", id), "--session-id", sessionID, "--at", at, "--prompt", prompt)
 	if err != nil {
 		return err
 	}

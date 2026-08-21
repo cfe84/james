@@ -210,6 +210,8 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.listSchedules(ctx, cmd)
 	case "cancel_schedule":
 		return h.cancelSchedule(ctx, cmd)
+	case "update_schedule":
+		return h.updateSchedule(ctx, cmd)
 	case "show_memory":
 		return h.showMemory(ctx, cmd)
 	case "list_memory":
@@ -2269,6 +2271,63 @@ func (h *Handler) cancelSchedule(_ context.Context, cmd *envelope.Command) *enve
 	}
 
 	return envelope.SuccessResponse(cmd.RequestID, map[string]interface{}{"schedule_id": data.ScheduleID, "cancelled": true})
+}
+
+func (h *Handler) updateSchedule(_ context.Context, cmd *envelope.Command) *envelope.Response {
+	var data envelope.UpdateScheduleData
+	if err := json.Unmarshal(cmd.Data, &data); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
+	}
+
+	if data.ScheduleID == 0 || data.Prompt == "" || data.ScheduledAt == "" {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "schedule_id, prompt, and scheduled_at are required")
+	}
+
+	// Verify the schedule exists and is pending before editing.
+	schedule, err := h.store.GetSchedule(data.ScheduleID)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to get schedule: %v", err))
+	}
+	if schedule == nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("schedule %d not found", data.ScheduleID))
+	}
+	if schedule.Status != store.SchedulePending {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("schedule %d is not pending (status: %s)", data.ScheduleID, schedule.Status))
+	}
+
+	scheduledAt, err := time.Parse(time.RFC3339, data.ScheduledAt)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid scheduled_at (expected RFC3339): %v", err))
+	}
+
+	// Validate cron expression if provided.
+	if data.CronExpr != "" {
+		if _, err := nextCronTime(data.CronExpr, time.Now()); err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid cron expression: %v", err))
+		}
+	}
+
+	if err := h.store.UpdateSchedule(data.ScheduleID, data.Prompt, scheduledAt, data.CronExpr, data.ReplyChannelID); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to update schedule: %v", err))
+	}
+
+	h.vlog("updated schedule %d for session %s at %s", data.ScheduleID, schedule.SessionID, scheduledAt.Format(time.RFC3339))
+
+	// Notify about the updated schedule so live views refresh.
+	if h.notifyWriter != nil {
+		_ = h.notifyWriter.Send(envelope.EventChatSchedule, schedule.SessionID, map[string]interface{}{
+			"schedule_id": data.ScheduleID,
+			"prompt":      data.Prompt,
+			"schedule_at": scheduledAt.UTC().Format(time.RFC3339),
+			"action":      "updated",
+		})
+	}
+
+	return envelope.SuccessResponse(cmd.RequestID, envelope.UpdateScheduleResponse{
+		ScheduleID:  data.ScheduleID,
+		SessionID:   schedule.SessionID,
+		ScheduledAt: scheduledAt.UTC().Format(time.RFC3339),
+	})
 }
 
 // scheduleTagRe matches <schedule at="...">...</schedule> tags in agent output.

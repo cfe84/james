@@ -596,6 +596,8 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.ListSchedules(args)
 	case "cancel schedule":
 		return e.CancelSchedule(args)
+	case "edit schedule":
+		return e.EditSchedule(args)
 
 	// Channel commands (external communication: Teams, ...)
 	case "list channel":
@@ -5908,9 +5910,10 @@ func (e *Executor) ListSchedules(args []string) *protocol.Response {
 		})
 	}
 
-	return protocol.OKResponse(TableResult{
-		Headers: []string{"ID", "Status", "Scheduled At", "Prompt", "Cron"},
-		Rows:    rows,
+	return protocol.OKResponse(ScheduleTableResult{
+		Headers:   []string{"ID", "Status", "Scheduled At", "Prompt", "Cron"},
+		Rows:      rows,
+		Schedules: result.Schedules,
 	})
 }
 
@@ -5959,6 +5962,147 @@ func (e *Executor) CancelSchedule(args []string) *protocol.Response {
 	})
 }
 
+// EditSchedule updates a pending schedule in place (preserving its ID). Any
+// flag that is not provided retains the schedule's current value, so callers
+// can change just one field. UIs typically pass all fields (prefilled from the
+// current schedule).
+func (e *Executor) EditSchedule(args []string) *protocol.Response {
+	var sessionID, atStr, prompt, cronExpr string
+	var channelID int64
+
+	remaining, err := parseFlagsFromArgs("edit-schedule", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&sessionID, "session-id", "", "session ID")
+		fs.StringVar(&atStr, "at", "", "when to send (RFC3339 or relative like +2h)")
+		fs.StringVar(&prompt, "prompt", "", "prompt to send")
+		fs.StringVar(&cronExpr, "cron", "", "cron expression for recurring schedules (empty clears)")
+		fs.Int64Var(&channelID, "channel", 0, "channel ID to deliver the output to (0 clears)")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	// Track which flags were explicitly set so unspecified ones retain the
+	// schedule's current value (and so --cron "" / --channel 0 can clear).
+	setFlags := map[string]bool{}
+	for _, a := range args {
+		switch {
+		case a == "--at" || strings.HasPrefix(a, "--at="):
+			setFlags["at"] = true
+		case a == "--prompt" || strings.HasPrefix(a, "--prompt="):
+			setFlags["prompt"] = true
+		case a == "--cron" || strings.HasPrefix(a, "--cron="):
+			setFlags["cron"] = true
+		case a == "--channel" || strings.HasPrefix(a, "--channel="):
+			setFlags["channel"] = true
+		}
+	}
+
+	if len(remaining) == 0 {
+		return protocol.ErrResponse("schedule_id is required")
+	}
+	var scheduleID int64
+	if _, err := fmt.Sscanf(remaining[0], "%d", &scheduleID); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("invalid schedule_id: %s", remaining[0]))
+	}
+	remaining = remaining[1:]
+
+	if sessionID == "" {
+		return protocol.ErrResponse("--session-id is required for edit schedule")
+	}
+
+	mp, err := e.resolveSessionMoneypenny(sessionID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	// Fetch the current schedule so unspecified fields are retained.
+	ctx := context.Background()
+	listResp, err := e.sendCommand(ctx, mp, "list_schedules", map[string]interface{}{
+		"session_id": sessionID,
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	var listResult ScheduleListResult
+	if err := json.Unmarshal(listResp.Data, &listResult); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("parsing schedules: %v", err))
+	}
+	var current *ScheduleInfoResult
+	for i := range listResult.Schedules {
+		if listResult.Schedules[i].ID == scheduleID {
+			current = &listResult.Schedules[i]
+			break
+		}
+	}
+	if current == nil {
+		return protocol.ErrResponse(fmt.Sprintf("schedule #%d not found for session %s", scheduleID, sessionID))
+	}
+	if current.Status != "pending" {
+		return protocol.ErrResponse(fmt.Sprintf("schedule #%d is not pending (status: %s)", scheduleID, current.Status))
+	}
+
+	// Resolve effective values.
+	effPrompt := current.Prompt
+	if setFlags["prompt"] {
+		effPrompt = prompt
+	} else if prompt == "" && len(remaining) > 0 {
+		// Allow a trailing positional prompt (mirrors schedule session).
+		effPrompt = strings.TrimSpace(strings.Join(remaining, " "))
+		setFlags["prompt"] = true
+	}
+	if strings.TrimSpace(effPrompt) == "" {
+		return protocol.ErrResponse("prompt cannot be empty")
+	}
+
+	var scheduledAt time.Time
+	if setFlags["at"] {
+		scheduledAt, err = parseScheduleTime(atStr)
+		if err != nil {
+			return protocol.ErrResponse(fmt.Sprintf("invalid --at value: %v", err))
+		}
+	} else {
+		scheduledAt, err = time.Parse(time.RFC3339, current.ScheduledAt)
+		if err != nil {
+			return protocol.ErrResponse(fmt.Sprintf("invalid current scheduled_at: %v", err))
+		}
+	}
+
+	effCron := current.CronExpr
+	if setFlags["cron"] {
+		effCron = cronExpr
+	}
+	effChannel := current.ReplyChannelID
+	if setFlags["channel"] {
+		effChannel = channelID
+	}
+
+	cmdData := map[string]interface{}{
+		"schedule_id":      scheduleID,
+		"prompt":           effPrompt,
+		"scheduled_at":     scheduledAt.UTC().Format(time.RFC3339),
+		"cron_expr":        effCron,
+		"reply_channel_id": effChannel,
+	}
+
+	resp, err := e.sendCommand(ctx, mp, "update_schedule", cmdData)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	var out struct {
+		ScheduleID  int64  `json:"schedule_id"`
+		SessionID   string `json:"session_id"`
+		ScheduledAt string `json:"scheduled_at"`
+	}
+	if err := json.Unmarshal(resp.Data, &out); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("parsing result: %v", err))
+	}
+
+	return protocol.OKResponse(TextResult{
+		Message: fmt.Sprintf("Updated schedule #%d for session %s (next run %s)", out.ScheduleID, out.SessionID, out.ScheduledAt),
+	})
+}
+
 // ScheduleListResult holds the list_schedules response.
 type ScheduleListResult struct {
 	Schedules []ScheduleInfoResult `json:"schedules"`
@@ -5966,13 +6110,24 @@ type ScheduleListResult struct {
 
 // ScheduleInfoResult holds info about a single schedule.
 type ScheduleInfoResult struct {
-	ID          int64  `json:"id"`
-	SessionID   string `json:"session_id"`
-	Prompt      string `json:"prompt"`
-	ScheduledAt string `json:"scheduled_at"`
-	Status      string `json:"status"`
-	CronExpr    string `json:"cron_expr"`
-	CreatedAt   string `json:"created_at"`
+	ID             int64  `json:"id"`
+	SessionID      string `json:"session_id"`
+	Prompt         string `json:"prompt"`
+	ScheduledAt    string `json:"scheduled_at"`
+	Status         string `json:"status"`
+	CronExpr       string `json:"cron_expr"`
+	ReplyChannelID int64  `json:"reply_channel_id"`
+	CreatedAt      string `json:"created_at"`
+}
+
+// ScheduleTableResult is returned by ListSchedules. It carries the display
+// table (headers/rows, prompt truncated for readability) so the CLI renders as
+// usual, plus the exact structured schedules so UIs can prefill an edit form
+// with the full untruncated prompt, cron expression, and reply channel.
+type ScheduleTableResult struct {
+	Headers   []string             `json:"headers"`
+	Rows      [][]string           `json:"rows"`
+	Schedules []ScheduleInfoResult `json:"schedules"`
 }
 
 // parseScheduleTime parses a time string that can be RFC3339 or relative like "+2h", "+30m".

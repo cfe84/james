@@ -114,6 +114,8 @@ type chatModel struct {
 	subagentPromptPos int   // cursor position in subagent prompt
 	scheduling    bool   // in schedule prompt entry mode
 	scheduleAt    string // time for the scheduled prompt
+	editingScheduleID int64  // >0 = editing this schedule in place (0 = creating)
+	editSchedPrompt   string // current prompt to prefill when editing
 	pickingSchedule      bool // schedule picker overlay
 	scheduleCursor       int
 	confirmDeleteSchedule bool
@@ -515,6 +517,14 @@ func (m chatModel) loadSchedules() tea.Cmd {
 func (m chatModel) createSchedule(at, prompt string) tea.Cmd {
 	return func() tea.Msg {
 		err := m.client.scheduleSession(m.sessionID, at, prompt)
+		return scheduleCreatedMsg{err: err}
+	}
+}
+
+// editSchedule updates an existing pending schedule's time and prompt in place.
+func (m chatModel) editSchedule(id int64, at, prompt string) tea.Cmd {
+	return func() tea.Msg {
+		err := m.client.editSchedule(m.sessionID, id, at, prompt)
 		return scheduleCreatedMsg{err: err}
 	}
 }
@@ -970,6 +980,8 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 	case scheduleCreatedMsg:
 		m.scheduling = false
 		m.scheduleAt = ""
+		m.editingScheduleID = 0
+		m.editSchedPrompt = ""
 		if msg.err != nil {
 			m.err = msg.err
 		}
@@ -1240,6 +1252,21 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 						return scheduleCancelledMsg{scheduleID: sch.ID, err: err}
 					}
 				}
+			case "e":
+				// Edit the selected pending schedule in place.
+				if m.scheduleCursor < len(pending) {
+					sch := pending[m.scheduleCursor]
+					m.pickingSchedule = false
+					m.confirmDeleteSchedule = false
+					m.commandMode = false
+					m.scheduling = true
+					m.editingScheduleID = sch.ID
+					m.editSchedPrompt = sch.Prompt
+					m.scheduleAt = ""
+					m.chatInput.Reset()
+					m.chatInput.SetValue(sch.ScheduledAt)
+					return m, nil
+				}
 			case "enter":
 				// Last entry: "New schedule..."
 				if m.scheduleCursor >= len(pending) {
@@ -1247,6 +1274,8 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 					m.confirmDeleteSchedule = false
 					m.commandMode = false
 					m.scheduling = true
+					m.editingScheduleID = 0
+					m.editSchedPrompt = ""
 					m.scheduleAt = ""
 					m.chatInput.Reset()
 					return m, nil
@@ -1484,6 +1513,8 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 			case "esc":
 				m.scheduling = false
 				m.scheduleAt = ""
+				m.editingScheduleID = 0
+				m.editSchedPrompt = ""
 				m.chatInput.Reset()
 				return m, nil
 			case "enter":
@@ -1495,14 +1526,21 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 					}
 					m.scheduleAt = at
 					m.chatInput.Reset()
+					// When editing, prefill the prompt step with the current prompt.
+					if m.editingScheduleID != 0 {
+						m.chatInput.SetValue(m.editSchedPrompt)
+					}
 					return m, nil
 				}
-				// Second enter: capture the prompt and create schedule.
+				// Second enter: capture the prompt and create/update the schedule.
 				prompt := strings.TrimSpace(m.chatInput.Value())
 				if prompt == "" {
 					return m, nil
 				}
 				m.chatInput.Reset()
+				if m.editingScheduleID != 0 {
+					return m, m.editSchedule(m.editingScheduleID, m.scheduleAt, prompt)
+				}
 				return m, m.createSchedule(m.scheduleAt, prompt)
 			}
 			// Fall through to normal input handling for text entry.
@@ -2054,6 +2092,9 @@ func (m chatModel) View() string {
 				"  Press d again to confirm cancel, any other key to abort"))
 			b.WriteString("\n")
 		}
+		b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render(
+			"  Enter=select  e=edit  d=cancel  Esc=back"))
+		b.WriteString("\n")
 		return b.String()
 	}
 
@@ -2299,11 +2340,17 @@ func (m chatModel) View() string {
 
 	// Input line
 	if m.scheduling {
+		verb := "New"
+		icon := "⏰"
+		if m.editingScheduleID != 0 {
+			verb = "Edit"
+			icon = "✏️"
+		}
 		var label string
 		if m.scheduleAt == "" {
-			label = " ⏰ When? (e.g. +2h, 15:04, 2026-03-07T15:00:00Z): "
+			label = fmt.Sprintf(" %s %s When? (e.g. +2h, 15:04, 2026-03-07T15:00:00Z): ", icon, verb)
 		} else {
-			label = fmt.Sprintf(" ⏰ [%s] Prompt: ", m.scheduleAt)
+			label = fmt.Sprintf(" %s %s [%s] Prompt: ", icon, verb, m.scheduleAt)
 		}
 		schedLabel := lipgloss.NewStyle().Foreground(colorWarning).Bold(true).Render(label)
 		b.WriteString(schedLabel + m.chatInput.Render())

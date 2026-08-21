@@ -389,6 +389,25 @@ type CancelScheduleData struct {
 	ScheduleID int64 `json:"schedule_id"`
 }
 
+// UpdateScheduleData is the data payload for update_schedule. It edits an
+// existing pending schedule in place (preserving its ID).
+type UpdateScheduleData struct {
+	ScheduleID  int64  `json:"schedule_id"`
+	Prompt      string `json:"prompt"`
+	ScheduledAt string `json:"scheduled_at"` // RFC3339 UTC
+	CronExpr    string `json:"cron_expr,omitempty"`
+	// ReplyChannelID routes the scheduled prompt's output to a channel
+	// (channels.id). 0 = no channel routing.
+	ReplyChannelID int64 `json:"reply_channel_id,omitempty"`
+}
+
+// UpdateScheduleResponse is returned by update_schedule on success.
+type UpdateScheduleResponse struct {
+	ScheduleID  int64  `json:"schedule_id"`
+	SessionID   string `json:"session_id"`
+	ScheduledAt string `json:"scheduled_at"`
+}
+
 // GitCommitData is the data payload for git_commit.
 type GitCommitData struct {
 	SessionID string `json:"session_id"`
