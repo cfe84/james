@@ -2585,14 +2585,33 @@ func pickSpyVerb() string {
 	return spyVerbs[rand.Intn(len(spyVerbs))]
 }
 
-// localTime parses a UTC timestamp string and returns it formatted in local time.
+// localTime parses a UTC timestamp string and returns it formatted in local
+// time. Same-day timestamps show just the wall clock ("15:04:05"); other days
+// are prefixed with a friendly date ("Yesterday - 15:04:05", "Aug 21 - …", or
+// "Jan 02 2025 - …" when the year differs).
 func localTime(s string) string {
 	for _, layout := range []string{
 		"2006-01-02T15:04:05Z",
 		time.RFC3339,
 	} {
 		if t, err := time.Parse(layout, s); err == nil {
-			return t.Local().Format("15:04:05")
+			lt := t.Local()
+			clock := lt.Format("15:04:05")
+			now := time.Now()
+			y, m, d := lt.Date()
+			ny, nm, nd := now.Date()
+			if y == ny && m == nm && d == nd {
+				return clock
+			}
+			yy, ym, yd := now.AddDate(0, 0, -1).Date()
+			if y == yy && m == ym && d == yd {
+				return "Yesterday - " + clock
+			}
+			datePart := lt.Format("Jan 02")
+			if y != ny {
+				datePart = lt.Format("Jan 02 2006")
+			}
+			return datePart + " - " + clock
 		}
 	}
 	return s

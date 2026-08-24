@@ -4668,14 +4668,29 @@
   }
 
   // formatTurnTime renders a raw UTC ISO turn timestamp as local wall-clock time
-  // (e.g. "15:04:05"). Falls back to the raw string if unparsable.
+  // (e.g. "15:04:05"). Timestamps not from today are prefixed with a friendly
+  // date ("Yesterday - 15:04:05", "Aug 21 - …", or "Jan 02, 2025 - …" when the
+  // year differs). Falls back to the raw string if unparsable.
   function formatTurnTime(iso) {
     if (!iso) return '';
     const d = new Date(iso);
     if (isNaN(d.getTime())) return iso;
-    return d.toLocaleTimeString('en-US', {
+    const clock = d.toLocaleTimeString('en-US', {
       hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
     });
+    const now = new Date();
+    const sameDay = (a, b) =>
+      a.getFullYear() === b.getFullYear() &&
+      a.getMonth() === b.getMonth() &&
+      a.getDate() === b.getDate();
+    if (sameDay(d, now)) return clock;
+    const yesterday = new Date(now);
+    yesterday.setDate(now.getDate() - 1);
+    if (sameDay(d, yesterday)) return 'Yesterday - ' + clock;
+    const opts = d.getFullYear() === now.getFullYear()
+      ? { month: 'short', day: '2-digit' }
+      : { month: 'short', day: '2-digit', year: 'numeric' };
+    return d.toLocaleDateString('en-US', opts) + ' - ' + clock;
   }
 
   // formatScheduleTime renders an RFC3339 schedule timestamp as a friendly local
