@@ -1356,6 +1356,17 @@
     // Close the Actions dropdown if it happens to be open.
     const menu = document.getElementById('chat-menu');
     if (menu) menu.classList.remove('open');
+    // Numbered subagent shortcuts (1-9), mirroring the hem TUI command mode.
+    let subSection = '';
+    if (lastSubagents && lastSubagents.length > 0) {
+      let subItems = '';
+      for (let i = 0; i < lastSubagents.length && i < 9; i++) {
+        const sub = lastSubagents[i];
+        const name = sub.name || (sub.sessionId ? sub.sessionId.substring(0, 12) + '...' : '?');
+        subItems += `<button class="cmd-item" data-sub-idx="${i}"><kbd>${i + 1}</kbd> 🕴️ ${escapeHtml(name)} [${escapeHtml(sub.status || '')}]</button>`;
+      }
+      subSection = `<div class="cmd-subhead" style="color:var(--muted);font-size:0.8em;margin:4px 2px 2px">Subagents</div><div class="cmd-list">${subItems}</div>`;
+    }
     renderWizardModal(`
       <div class="cmd-palette" tabindex="-1" role="dialog" aria-modal="true" aria-label="Session commands">
         <h3>Session Commands</h3>
@@ -1380,6 +1391,7 @@
           <button class="cmd-item" data-cmd="delete" style="color:var(--danger)"><kbd>d</kbd> Delete session</button>
           <button class="cmd-item" data-cmd="back"><kbd>q</kbd> Back to session list</button>
         </div>
+        ${subSection}
         <div class="modal-actions"><span style="color:var(--muted);font-size:0.85em;margin-right:auto"><kbd>j</kbd>/<kbd>k</kbd> scroll transcript</span><button class="btn-muted" onclick="window._qewCloseCmdPalette()">Close (Esc)</button></div>
       </div>
     `);
@@ -1387,8 +1399,20 @@
     const pal = document.querySelector('.cmd-palette');
     if (pal) {
       pal.addEventListener('click', (e) => {
+        const subBtn = e.target.closest('[data-sub-idx]');
+        if (subBtn) {
+          const idx = parseInt(subBtn.dataset.subIdx, 10);
+          const sub = lastSubagents[idx];
+          if (sub) {
+            const name = sub.name || (sub.sessionId ? sub.sessionId.substring(0, 12) : sub.sessionId);
+            cmdPaletteOpen = false;
+            closeWizard();
+            window._openSubagent(sub.sessionId, name);
+          }
+          return;
+        }
         const btn = e.target.closest('.cmd-item');
-        if (btn) runCmd(btn.dataset.cmd);
+        if (btn && btn.dataset.cmd) runCmd(btn.dataset.cmd);
       });
       pal.focus();
     }
@@ -5064,6 +5088,19 @@
       if (e.key === 'j' || e.key === 'ArrowDown') { e.preventDefault(); enterChatNavMode(); chatScrollLine(1); return; }
       if (e.key === 'k' || e.key === 'ArrowUp') { e.preventDefault(); enterChatNavMode(); chatScrollLine(-1); return; }
       if (e.repeat) return;
+      // 1-9 open the Nth subagent (mirrors the hem TUI command-mode digits).
+      if (e.key >= '1' && e.key <= '9') {
+        const idx = parseInt(e.key, 10) - 1;
+        if (idx < lastSubagents.length) {
+          e.preventDefault();
+          const sub = lastSubagents[idx];
+          const name = sub.name || (sub.sessionId ? sub.sessionId.substring(0, 12) : sub.sessionId);
+          cmdPaletteOpen = false;
+          closeWizard();
+          window._openSubagent(sub.sessionId, name);
+        }
+        return;
+      }
       const map = { c: 'complete', u: 'markready', e: 'edit', y: 'duplicate', a: 'subagent', p: 'project', g: 'diff', t: 'thoughts', o: 'model', f: 'effort', w: 'context', m: 'memory', n: 'channels', h: 'schedules', K: 'compact', D: 'distill', s: 'stop', d: 'delete', q: 'back' };
       const cmd = map[e.key];
       if (cmd) { e.preventDefault(); runCmd(cmd); }
