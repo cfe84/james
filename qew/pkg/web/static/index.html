@@ -309,6 +309,14 @@ header h1 span { color: var(--primary); }
   font-family: monospace; font-size: 0.85em; color: var(--primary);
 }
 
+/* Session omnibar (quick switcher) */
+.cmd-palette.omni h3 { margin: 0 0 10px; }
+.cmd-palette.omni #omni-input { margin-bottom: 4px; }
+.omni-list { max-height: 50vh; overflow-y: auto; }
+.omni-item { justify-content: space-between; }
+.omni-main { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.omni-sub { color: var(--muted); font-size: 0.8em; white-space: nowrap; flex-shrink: 0; }
+
 /* Directory browser */
 .dir-browser { max-height: 300px; overflow-y: auto; margin-top: 8px; }
 .dir-entry {

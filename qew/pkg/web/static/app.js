@@ -49,6 +49,7 @@
   let cmdPaletteOpen = false; // the in-conversation command palette modal is open
   let chatNavMode = false; // in-conversation keyboard nav mode (input blurred, j/k scroll)
   let overridePicker = null; // when set, the model/effort override picker is open: {kind, options, cursor}
+  let omnibar = null; // when set, the session quick-switcher is open: {items, filtered, cursor}
   let traitsCache = []; // cached trait list [{id,name,preview}]
   let chatInputCache = {}; // sessionId → draft text
   let pendingAttachments = []; // files staged for the next send: [{name,size,type,b64,url}]
@@ -2861,8 +2862,125 @@
     return true; // modal is exclusive; ignore other keys
   }
 
-  // openMemoryModal shows the session's hierarchical memory as a browsable tree
-  // with a per-node editor and search (mirrors hem/pkg/ui/memory.go). Memory is
+  // --- Session omnibar (quick switcher) ---
+  //
+  // A dashboard quick-switcher opened with `o`. Lists all non-archived sessions
+  // (agents) sorted by recency; typing filters by nickname + name; up/down move
+  // the selection and Enter opens the highlighted session. Built entirely from
+  // the cached dashboard payload (lastDashboardData) — no extra network call.
+  function openOmnibar() {
+    if (!lastDashboardData || !Array.isArray(lastDashboardData.rows)) return;
+    const items = lastDashboardData.rows
+      .map(row => ({
+        sessionId: row[0] || '',
+        name: row[1] || '',
+        project: row[2] || '',
+        statusRaw: row[3] || '',
+        moneypenny: row[4] || '',
+        lastActive: row[5] || '',
+        parent: row[7] || '',
+        agent: row[8] || '',
+        nick: row[9] || '',
+      }))
+      // Exclude archived (completed) sessions.
+      .filter(it => !it.statusRaw.includes('(completed)'))
+      // Sort by recency (most recent first); undated rows sink to the bottom.
+      .sort((a, b) => (Date.parse(b.lastActive) || 0) - (Date.parse(a.lastActive) || 0));
+    omnibar = { items, filtered: items, cursor: 0, query: '' };
+    renderOmnibar();
+  }
+
+  function renderOmnibar() {
+    if (!omnibar) return;
+    renderWizardModal(`
+      <div class="cmd-palette omni" tabindex="-1" role="dialog" aria-modal="true" aria-label="Switch session">
+        <h3>Switch Session</h3>
+        <input id="omni-input" type="text" placeholder="Type to filter by nickname or name…"
+          autocomplete="off" spellcheck="false" value="${escapeAttr(omnibar.query)}">
+        <div class="cmd-list omni-list" id="omni-list"></div>
+        <div class="modal-actions"><span style="color:var(--muted);font-size:0.85em;margin-right:auto"><kbd>↑</kbd>/<kbd>↓</kbd> move · <kbd>↵</kbd> open · <kbd>Esc</kbd> close</span><button class="btn-muted" onclick="window._qewCloseOmnibar()">Close</button></div>
+      </div>
+    `, 'modal-omni');
+    updateOmniList();
+    const input = document.getElementById('omni-input');
+    if (input) {
+      input.addEventListener('input', () => {
+        omnibar.query = input.value;
+        const q = input.value.trim();
+        omnibar.filtered = q
+          ? omnibar.items.filter(it => fuzzyMatch(q, `${it.nick} ${it.name}`))
+          : omnibar.items;
+        omnibar.cursor = 0;
+        updateOmniList();
+      });
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault(); e.stopPropagation();
+          omnibar.cursor = Math.min(omnibar.filtered.length - 1, omnibar.cursor + 1);
+          updateOmniList();
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault(); e.stopPropagation();
+          omnibar.cursor = Math.max(0, omnibar.cursor - 1);
+          updateOmniList();
+        } else if (e.key === 'Enter') {
+          e.preventDefault(); e.stopPropagation();
+          omniOpenSelected();
+        } else if (e.key === 'Escape') {
+          e.preventDefault(); e.stopPropagation();
+          closeOmnibar();
+        }
+      });
+      // Focus after layout (renderWizardModal's auto-focus already targets the
+      // first input, but call explicitly so the cursor lands reliably).
+      requestAnimationFrame(() => { try { input.focus(); } catch (e) {} });
+    }
+    const list = document.getElementById('omni-list');
+    if (list) {
+      list.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-omni-idx]');
+        if (btn) { omnibar.cursor = parseInt(btn.dataset.omniIdx, 10); omniOpenSelected(); }
+      });
+    }
+  }
+
+  // updateOmniList re-renders only the results list (and selection), leaving the
+  // input element — and its focus/caret — untouched.
+  function updateOmniList() {
+    const list = document.getElementById('omni-list');
+    if (!list || !omnibar) return;
+    if (omnibar.filtered.length === 0) {
+      list.innerHTML = `<div class="empty-state" style="padding:12px">No sessions match</div>`;
+      return;
+    }
+    list.innerHTML = omnibar.filtered.map((it, i) => {
+      const display = it.name || (it.sessionId ? it.sessionId.substring(0, 12) : '?');
+      const nick = it.nick ? `<span class="session-nick">${escapeHtml(it.nick)}</span> ` : '';
+      const sub = [it.agent, it.moneypenny, relativeTime(it.lastActive || '')]
+        .filter(Boolean).join(' · ');
+      return `<button class="cmd-item omni-item${i === omnibar.cursor ? ' selected' : ''}" data-omni-idx="${i}">
+        <span class="omni-main">${nick}${escapeHtml(display)}</span>
+        <span class="omni-sub">${escapeHtml(sub)}</span>
+      </button>`;
+    }).join('');
+    const sel = list.querySelector('.omni-item.selected');
+    if (sel) sel.scrollIntoView({ block: 'nearest' });
+  }
+
+  function omniOpenSelected() {
+    if (!omnibar) return;
+    const it = omnibar.filtered[omnibar.cursor];
+    if (!it) return;
+    closeOmnibar();
+    openDashEntry({ sessionId: it.sessionId, name: it.name, mp: it.moneypenny, parent: it.parent });
+  }
+
+  function closeOmnibar() {
+    omnibar = null;
+    closeWizard();
+  }
+  window._qewCloseOmnibar = closeOmnibar;
+
+
   // a tree of nodes (slash-delimited paths); each node has an optional
   // title/description and a body. Cmd/Ctrl+Enter saves in the editor; Esc backs
   // out (editor → tree → close).
@@ -5224,6 +5342,7 @@
       case 'b': e.preventDefault(); toggleSound(); break;
       case 'n': e.preventDefault(); openCreateWizard(); break;
       case 'p': e.preventDefault(); showProjectsView(); break;
+      case 'o': e.preventDefault(); openOmnibar(); break;
       case 't': e.preventDefault(); showTraitsView(); break;
       case 'c': e.preventDefault(); dashAction('complete'); break;
       case 'u': e.preventDefault(); dashAction('markready'); break;
