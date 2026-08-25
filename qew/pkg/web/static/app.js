@@ -981,6 +981,27 @@
     }
   }
 
+  // ensureChatScrollable eagerly loads older pages while the visible content is
+  // too short to produce a scrollbar but older turns still exist. Without this,
+  // hiding the train of thought can leave only the final answer on screen — with
+  // nothing to scroll, the user can never scroll up to lazy-load older turns and
+  // reach their own prompt. Guarded against no-progress so it can't spin forever.
+  async function ensureChatScrollable() {
+    const container = document.getElementById('chat-messages');
+    if (!container) return;
+    let guard = 0;
+    while (
+      !chatLoadingMore &&
+      chatConversation.length < chatTotal &&
+      container.scrollHeight <= container.clientHeight + 4 &&
+      guard++ < 50
+    ) {
+      const before = chatConversation.length;
+      await loadOlderHistory();
+      if (chatConversation.length <= before) break;
+    }
+  }
+
   function renderChat(prepend) {
     const container = document.getElementById('chat-messages');
     const serverTurns = chatConversation;
@@ -1157,6 +1178,12 @@
       // resets scrollTop to 0 otherwise).
       container.scrollTop = prevTop;
     }
+
+    // On a full (non-prepend) render, make sure enough history is loaded to be
+    // scrollable — otherwise a conversation whose recent window is mostly hidden
+    // train-of-thought turns would show only the final answer with no way to
+    // scroll up and lazy-load the rest.
+    if (!prepend) ensureChatScrollable();
   }
 
   // --- Attachments ---
