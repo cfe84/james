@@ -766,12 +766,21 @@ Sessions can spawn sub-sessions for parallel task execution. Sub-sessions are li
 
 - Sub-sessions are hidden from the dashboard and `list sessions` output (filtered by `parent_session_id`).
 - Deleting a parent session cascades to all its sub-sessions.
-- `watch session` polls sub-agents and queues completed results to the parent via `queue_prompt`.
+- `watch session` polls sub-agents and queues completed results to the parent via `queue_prompt` — tagged as **callbacks** (see below) so they render distinctly from the human's messages.
+
+### Callbacks
+
+Subagents report results back to their parent as **callbacks**, which render as a distinct highlighted turn (↩️) rather than as a normal user ("you") message:
+
+- **`hem callback session PARENT_ID --from ORIGIN_ID MESSAGE`** delivers a message from a subagent to its parent. The origin session is resolved to a friendly label (`nick · name`, falling back to name / nick / short id) and prefixed as `↩️ Callback from {label}:`. If the parent is idle the callback is delivered immediately; if busy it is queued. Either way the turn is recorded with the `callback` role.
+- The gadgets system prompt gives every subagent (a session with a parent, created via `create subsession --gadgets`) **precise instructions** to run `hem callback session <PARENT_ID> --from <OWN_ID> "result"` when its work is complete.
+- `watch session`-delivered results are also tagged as callbacks.
+- In both the TUI and Qew, `callback` turns render compact and indented like a train-of-thought turn but **highlighted** (primary colour, ↩️ marker) so they clearly read as a subagent report. Unlike train-of-thought turns, callbacks are **always shown** (not hidden by the train-of-thought toggle) because the agent acts on them.
 
 ### UI
 
 - Sub-agents are displayed in the TUI and Qew chat views as "subagents".
-- The gadgets system prompt includes sub-agent instructions, informing agents of the `hem create subsession` and `hem watch session` commands.
+- The gadgets system prompt includes sub-agent instructions, informing agents of the `hem create subsession`, `hem watch session`, and `hem callback session` commands.
 
 ## Real-Time Agent Activity Streaming
 

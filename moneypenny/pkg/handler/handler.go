@@ -411,8 +411,14 @@ func (h *Handler) continueSession(ctx context.Context, cmd *envelope.Command) *e
 		prompt += attachmentPromptAddendum(data.Attachments)
 	}
 
-	// Add user prompt to conversation.
-	if err := h.store.AddConversationTurn(data.SessionID, "user", prompt); err != nil {
+	// Add user prompt to conversation. A callback-sourced prompt (a subagent
+	// reporting back) is recorded with the "callback" role so it renders as a
+	// highlighted callback rather than a normal user message.
+	promptRole := "user"
+	if data.Source == "callback" {
+		promptRole = "callback"
+	}
+	if err := h.store.AddConversationTurn(data.SessionID, promptRole, prompt); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to add conversation turn: %v", err))
 	}
 
@@ -480,7 +486,7 @@ func (h *Handler) queuePrompt(_ context.Context, cmd *envelope.Command) *envelop
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, fmt.Sprintf("session not found: %s", data.SessionID))
 	}
 
-	if err := h.store.QueuePrompt(data.SessionID, data.Prompt, data.Model, data.Effort, data.ContextTier, ""); err != nil {
+	if err := h.store.QueuePrompt(data.SessionID, data.Prompt, data.Model, data.Effort, data.ContextTier, data.Source); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to queue prompt: %v", err))
 	}
 
@@ -819,6 +825,8 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 			role := "user"
 			if qp.Source == "scheduled" {
 				role = "scheduled"
+			} else if qp.Source == "callback" {
+				role = "callback"
 			}
 			if err := h.store.AddConversationTurn(sessionID, role, qp.Prompt); err != nil {
 				h.vlog("failed to add queued conversation turn for session %s: %v", sessionID, err)
@@ -2597,13 +2605,13 @@ func nextCronTime(expr string, after time.Time) (time.Time, error) {
 // parseCronField parses a single cron field into the sorted, de-duplicated set
 // of matching integers in [min,max]. It supports standard cron syntax:
 //
-//	*            every value
-//	*/n          every nth value across the whole range
-//	a            a single value
-//	a-b          an inclusive range
-//	a-b/n        an inclusive range with a step
-//	a/n          from a to max with a step
-//	a,b,c-d,...  a comma-separated list of any of the above terms
+//   - every value
+//     */n          every nth value across the whole range
+//     a            a single value
+//     a-b          an inclusive range
+//     a-b/n        an inclusive range with a step
+//     a/n          from a to max with a step
+//     a,b,c-d,...  a comma-separated list of any of the above terms
 func parseCronField(s string, min, max int) ([]int, error) {
 	set := make(map[int]bool)
 	add := func(v int) error {

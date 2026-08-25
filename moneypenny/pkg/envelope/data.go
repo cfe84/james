@@ -44,6 +44,7 @@ type ContinueSessionData struct {
 	Model       string   `json:"model,omitempty"`
 	Effort      string   `json:"effort,omitempty"`
 	ContextTier string   `json:"context_tier,omitempty"`
+	Source      string   `json:"source,omitempty"`      // queue source marker (e.g. "callback") for queue_prompt
 	Attachments []string `json:"attachments,omitempty"` // absolute paths of saved attachments
 }
 

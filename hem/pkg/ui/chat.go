@@ -68,7 +68,7 @@ type fileComment struct {
 type fileViewMode int
 
 const (
-	fileViewModeView     fileViewMode = iota // browsing the file
+	fileViewModeView      fileViewMode = iota // browsing the file
 	fileViewModeLineInput                     // entering a line number
 	fileViewModeComment                       // typing a comment
 	fileViewModeSubmit                        // submitting review
@@ -80,80 +80,80 @@ type fileReviewSubmitMsg struct {
 }
 
 type chatModel struct {
-	sessionID     string
-	sessionName   string
-	sessionNick   string // optional short nickname/alias
-	moneypennyName string
-	sessionStatus string // moneypenny status (ready, working, etc.)
-	contextTokens  int    // current context usage (tokens)
-	contextWindow  int    // model context window (tokens)
-	compactionMode string // "agent" or "custom"
-	conversation  []conversationTurn
-	totalTurns    int // total turns on server
-	recentCount   int // number of turns in the latest page (for comparison on refresh)
-	schedules     []scheduleInfo
-	subagents     []subagentInfo
-	activity      []activityEvent // recent agent activity (thinking, tool calls)
-	chatInput     textInput
-	width         int
-	height        int
-	scroll        int // scroll offset from bottom
-	err           error
-	loading       bool
-	loadingMore   bool // loading older messages
-	polling       bool // a poll loadHistory is in-flight
-	sending       bool
-	commandMode      bool
-	showThoughts     bool // show persisted train-of-thought turns (toggle with T)
-	confirmDelete    bool
-	pickingSubagent      bool // subagent picker overlay
-	subagentCursor       int
-	confirmDeleteSubagent bool // double-press delete confirmation in picker
-	isSubagent       bool // true when viewing a subagent chat
-	creatingSubagent bool   // entering prompt for new subagent
-	subagentPrompt   string // prompt input for new subagent
-	subagentPromptPos int   // cursor position in subagent prompt
-	scheduling    bool   // in schedule prompt entry mode
-	scheduleAt    string // time for the scheduled prompt
-	editingScheduleID int64  // >0 = editing this schedule in place (0 = creating)
-	editSchedPrompt   string // current prompt to prefill when editing
-	pickingSchedule      bool // schedule picker overlay
-	scheduleCursor       int
+	sessionID             string
+	sessionName           string
+	sessionNick           string // optional short nickname/alias
+	moneypennyName        string
+	sessionStatus         string // moneypenny status (ready, working, etc.)
+	contextTokens         int    // current context usage (tokens)
+	contextWindow         int    // model context window (tokens)
+	compactionMode        string // "agent" or "custom"
+	conversation          []conversationTurn
+	totalTurns            int // total turns on server
+	recentCount           int // number of turns in the latest page (for comparison on refresh)
+	schedules             []scheduleInfo
+	subagents             []subagentInfo
+	activity              []activityEvent // recent agent activity (thinking, tool calls)
+	chatInput             textInput
+	width                 int
+	height                int
+	scroll                int // scroll offset from bottom
+	err                   error
+	loading               bool
+	loadingMore           bool // loading older messages
+	polling               bool // a poll loadHistory is in-flight
+	sending               bool
+	commandMode           bool
+	showThoughts          bool // show persisted train-of-thought turns (toggle with T)
+	confirmDelete         bool
+	pickingSubagent       bool // subagent picker overlay
+	subagentCursor        int
+	confirmDeleteSubagent bool   // double-press delete confirmation in picker
+	isSubagent            bool   // true when viewing a subagent chat
+	creatingSubagent      bool   // entering prompt for new subagent
+	subagentPrompt        string // prompt input for new subagent
+	subagentPromptPos     int    // cursor position in subagent prompt
+	scheduling            bool   // in schedule prompt entry mode
+	scheduleAt            string // time for the scheduled prompt
+	editingScheduleID     int64  // >0 = editing this schedule in place (0 = creating)
+	editSchedPrompt       string // current prompt to prefill when editing
+	pickingSchedule       bool   // schedule picker overlay
+	scheduleCursor        int
 	confirmDeleteSchedule bool
-	workingVerb   string // random spy verb chosen once per working session
+	workingVerb           string // random spy verb chosen once per working session
 	// Temporary per-conversation model/effort override (reset when leaving the
 	// chat). Empty override = use the session's stored default.
-	sessionAgent   string   // agent type (copilot/claude), for effort option list
-	defaultModel   string   // session's stored model ("" = agent default)
-	defaultEffort  string   // session's stored effort ("" = agent default)
-	defaultContextTier string // session's stored copilot context tier ("" = default)
-	overrideModel  string   // active temporary model override
-	overrideEffort string   // active temporary effort override
-	overrideContextTier string // active temporary copilot context-tier override
-	availableModels []string // models discovered for this session's mp+agent
-	pickingModel   bool     // model override picker overlay
-	pickingEffort  bool     // effort override picker overlay
-	pickingContext bool     // copilot context-tier override picker overlay
-	overrideCursor int      // cursor in the model/effort/context picker
-	browsingFiles      bool       // file browser overlay
-	browserPath        string     // current directory in browser
-	browserEntries     []dirEntry // directory listing
-	browserCursor      int
-	browserLoading     bool
-	browserErr         error
-	browserShowHidden  bool // toggle with 'a' to show/hide hidden files
+	sessionAgent        string     // agent type (copilot/claude), for effort option list
+	defaultModel        string     // session's stored model ("" = agent default)
+	defaultEffort       string     // session's stored effort ("" = agent default)
+	defaultContextTier  string     // session's stored copilot context tier ("" = default)
+	overrideModel       string     // active temporary model override
+	overrideEffort      string     // active temporary effort override
+	overrideContextTier string     // active temporary copilot context-tier override
+	availableModels     []string   // models discovered for this session's mp+agent
+	pickingModel        bool       // model override picker overlay
+	pickingEffort       bool       // effort override picker overlay
+	pickingContext      bool       // copilot context-tier override picker overlay
+	overrideCursor      int        // cursor in the model/effort/context picker
+	browsingFiles       bool       // file browser overlay
+	browserPath         string     // current directory in browser
+	browserEntries      []dirEntry // directory listing
+	browserCursor       int
+	browserLoading      bool
+	browserErr          error
+	browserShowHidden   bool // toggle with 'a' to show/hide hidden files
 	// In-TUI file viewer (h key in browser)
-	viewingFile         bool     // file viewer overlay active
-	viewFileName        string   // name of file being viewed
-	viewFileRemotePath  string   // remote path for review context
-	viewFileLines       []string // file content lines
-	viewFileScroll      int      // scroll offset in file viewer
-	viewFileComments    map[int]*fileComment // keyed by line number (1-based)
-	viewFileMode        fileViewMode         // current input mode
-	viewFilePendingLine int                  // line being commented
-	viewFileLineInput   textInput            // for line number entry
-	viewFileCommentInput textInput           // for comment text
-	viewFileReviewPrompt textInput           // for overall review comment
+	viewingFile          bool                 // file viewer overlay active
+	viewFileName         string               // name of file being viewed
+	viewFileRemotePath   string               // remote path for review context
+	viewFileLines        []string             // file content lines
+	viewFileScroll       int                  // scroll offset in file viewer
+	viewFileComments     map[int]*fileComment // keyed by line number (1-based)
+	viewFileMode         fileViewMode         // current input mode
+	viewFilePendingLine  int                  // line being commented
+	viewFileLineInput    textInput            // for line number entry
+	viewFileCommentInput textInput            // for comment text
+	viewFileReviewPrompt textInput            // for overall review comment
 	// Download folder picker (d key in browser)
 	downloadMode       bool       // download folder picker active
 	downloadPath       string     // current directory in download picker
@@ -161,9 +161,9 @@ type chatModel struct {
 	downloadCursor     int
 	downloadLoading    bool
 	downloadErr        error
-	downloadSourcePath string     // remote path of file to download
-	client        *client
-	renderCache      map[string]string // key: width+"\x00"+content → rendered markdown
+	downloadSourcePath string // remote path of file to download
+	client             *client
+	renderCache        map[string]string // key: width+"\x00"+content → rendered markdown
 }
 
 // downloadDirs returns only directory entries from the download browser listing.
@@ -375,14 +375,14 @@ func newChatModel(c *client, sessionID, sessionName, moneypennyName string) chat
 
 // Messages
 type historyLoadedMsg struct {
-	conversation []conversationTurn
-	total        int
-	status       string // session status from moneypenny
-	nick         string // session nickname (from detail)
+	conversation   []conversationTurn
+	total          int
+	status         string // session status from moneypenny
+	nick           string // session nickname (from detail)
 	contextTokens  int
 	contextWindow  int
 	compactionMode string
-	err          error
+	err            error
 }
 
 type olderHistoryLoadedMsg struct {
@@ -574,12 +574,12 @@ func (m chatModel) loadActivity() tea.Cmd {
 }
 
 type overrideConfigLoadedMsg struct {
-	agent         string
-	defaultModel  string
-	defaultEffort string
+	agent              string
+	defaultModel       string
+	defaultEffort      string
 	defaultContextTier string
-	models        []string
-	err           error
+	models             []string
+	err                error
 }
 
 // loadOverrideConfig fetches the session's agent + default model/effort/context
@@ -595,11 +595,11 @@ func (m chatModel) loadOverrideConfig() tea.Cmd {
 		}
 		models, _ := client.listModels(mp, detail.Agent)
 		return overrideConfigLoadedMsg{
-			agent:         detail.Agent,
-			defaultModel:  detail.Model,
-			defaultEffort: detail.Effort,
+			agent:              detail.Agent,
+			defaultModel:       detail.Model,
+			defaultEffort:      detail.Effort,
 			defaultContextTier: detail.ContextTier,
-			models:        models,
+			models:             models,
 		}
 	}
 }
@@ -1734,6 +1734,7 @@ func (m chatModel) View() string {
 
 	systemMsgStyle := lipgloss.NewStyle().Foreground(colorMuted).Italic(true)
 	thoughtStyle := lipgloss.NewStyle().Foreground(colorMuted).Italic(true)
+	callbackStyle := lipgloss.NewStyle().Foreground(colorPrimary)
 	for i, turn := range m.conversation {
 		// Skip empty assistant turns that immediately follow a chain-of-thought
 		// turn: when the agent ends with a tool call (no final text), the
@@ -1751,6 +1752,30 @@ func (m chatModel) View() string {
 		// only when thoughts are enabled (handled by the block below).
 		if turn.Role == "compaction" {
 			msgLines = append(msgLines, systemMsgStyle.Render("  🗃️ Session compacted"))
+			msgLines = append(msgLines, "")
+			continue
+		}
+		// Subagent callbacks render compact and indented like a thought, but
+		// highlighted (↩️ + primary colour) so they stand out as a report coming
+		// back from a subagent — and are always shown (not gated by the
+		// train-of-thought toggle), since the agent acts on them.
+		if turn.Role == "callback" {
+			contentWidth := m.width - 6
+			if contentWidth < 20 {
+				contentWidth = 60
+			}
+			content := turn.Content
+			if strings.TrimSpace(content) == "" {
+				content = "(empty)"
+			}
+			wrapped := wordWrap(content, contentWidth)
+			for i, line := range strings.Split(wrapped, "\n") {
+				if i == 0 {
+					msgLines = append(msgLines, callbackStyle.Render(fmt.Sprintf("  ↩️ %s", line)))
+				} else {
+					msgLines = append(msgLines, callbackStyle.Render("    "+line))
+				}
+			}
 			msgLines = append(msgLines, "")
 			continue
 		}

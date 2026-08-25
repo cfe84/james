@@ -1038,6 +1038,14 @@
       const agentName = currentSessionName || 'agent';
       const content = turn.content || '(empty)';
 
+      // Subagent callbacks render compact like a thought but highlighted (↩️ +
+      // primary colour) so they stand out as a report coming back from a
+      // subagent — always shown (not gated by the train-of-thought toggle),
+      // since the agent acts on them.
+      if (turn.role === 'callback') {
+        html += `<div class="msg callback">↩️ ${formatContent(content)}</div>`;
+        continue;
+      }
       // Train-of-thought turns get a compact, indented, gray rendering with
       // the emoji inline — no role-name header. Hidden unless the toggle is on.
       // Scheduled-invocation prompts render the same way (⏰) so they read as

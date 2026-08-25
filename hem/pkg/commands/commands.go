@@ -21,12 +21,32 @@ import (
 	"james/hem/pkg/transport"
 )
 
-func gadgetsSystemPrompt(mi6Control, sessionID string) string {
+func gadgetsSystemPrompt(mi6Control, sessionID, parentID string) string {
 	var hemCmd string
 	if mi6Control != "" {
 		hemCmd = fmt.Sprintf("hem --hem %s", mi6Control)
 	} else {
 		hemCmd = "hem"
+	}
+
+	// Subagents (sessions with a parent) get precise instructions on how to
+	// report their result back to the parent as a *callback* (rendered distinctly
+	// from a normal user message).
+	var callbackSection string
+	if parentID != "" {
+		callbackSection = fmt.Sprintf(`
+
+Reporting back to your parent (callback):
+  You are a subagent. Your parent session ID is %s.
+  When you have finished your task (or reach a milestone worth reporting), send your
+  result back to the parent as a callback:
+    %s callback session %s --from %s "your result or status here"
+  The --from flag MUST be your own session ID (%s) so the parent knows which subagent
+  reported. The message is delivered to the parent as a highlighted callback (not a
+  normal chat message), so write it as a self-contained report of what you did and any
+  output the parent needs. Send exactly one callback when your work is complete; send
+  additional callbacks only for meaningful intermediate updates.`,
+			parentID, hemCmd, parentID, sessionID, sessionID)
 	}
 
 	return fmt.Sprintf(`
@@ -51,7 +71,7 @@ Subagents (parallel tasks):
   back, so you know what to do with it when it arrives.
   Show subagent details: %s show subsession SUBSESSION_ID
   Stop a subagent: %s stop subsession SUBSESSION_ID
-  Delete a subagent: %s delete subsession SUBSESSION_ID
+  Delete a subagent: %s delete subsession SUBSESSION_ID%s
 
 IMPORTANT: NEVER start hem server if you are not directly instructed to do it.
 IMPORTANT: NEVER start moneypenny if you are not directly instructed to do it.
@@ -63,7 +83,17 @@ IMPORTANT: When creating a session or subagent that needs to modify the filesyst
 		hemCmd, sessionID, hemCmd, sessionID, hemCmd,
 		hemCmd, sessionID, hemCmd, sessionID,
 		hemCmd, sessionID, hemCmd, sessionID,
-		hemCmd, hemCmd, hemCmd, hemCmd, hemCmd, hemCmd)
+		hemCmd, hemCmd, hemCmd, callbackSection, hemCmd, hemCmd, hemCmd)
+}
+
+// gadgetsParentID returns the parent session ID for sessionID if it is a tracked
+// sub-session, else "". Used when recomposing the gadgets prompt on update so a
+// subagent keeps its callback instructions.
+func gadgetsParentID(e *Executor, sessionID string) string {
+	if sess, err := e.store.GetSession(sessionID); err == nil && sess != nil {
+		return sess.ParentSessionID
+	}
+	return ""
 }
 
 // mpSessionInfo holds cached session data from a moneypenny's list_sessions response.
@@ -513,6 +543,8 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.CreateSession(args)
 	case "continue session":
 		return e.ContinueSession(args)
+	case "callback session":
+		return e.CallbackSession(args)
 	case "stop session":
 		return e.StopSession(args)
 	case "delete session":
@@ -1786,7 +1818,7 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 
 	// Append gadgets (James tooling instructions) to system prompt when enabled.
 	if params.Gadgets {
-		params.SystemPrompt += gadgetsSystemPrompt(e.MI6Control, sessionID)
+		params.SystemPrompt += gadgetsSystemPrompt(e.MI6Control, sessionID, "")
 	}
 
 	// Memory instructions are injected by the moneypenny at runtime now that
@@ -1971,6 +2003,123 @@ func (e *Executor) ContinueSession(args []string) *protocol.Response {
 		SessionID: sessionID,
 		Response:  response,
 	})
+}
+
+// CallbackSession delivers a callback message from a subagent (--from) to a
+// parent session. Unlike a normal continue, the message is recorded with the
+// "callback" role so it renders as a highlighted subagent callback rather than a
+// user message. The origin session is resolved to a friendly label (nick/name)
+// and prefixed to the message so the parent agent knows which subagent reported.
+func (e *Executor) CallbackSession(args []string) *protocol.Response {
+	var parentID, fromID string
+
+	remaining, err := parseFlagsFromArgs("callback-session", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&parentID, "session-id", "", "parent session ID to deliver the callback to")
+		fs.StringVar(&fromID, "from", "", "origin session ID (the subagent reporting back)")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	if parentID == "" {
+		if len(remaining) == 0 {
+			return protocol.ErrResponse("parent session_id is required")
+		}
+		parentID = remaining[0]
+		remaining = remaining[1:]
+	}
+
+	message := strings.TrimSpace(strings.Join(remaining, " "))
+	if message == "" {
+		return protocol.ErrResponse("callback message is required")
+	}
+
+	mp, err := e.resolveSessionMoneypenny(parentID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+
+	// Build a friendly origin label (nick · name, falling back to name / nick /
+	// short id) so the parent knows which subagent reported.
+	origin := e.callbackOriginLabel(fromID)
+
+	content := fmt.Sprintf("↩️ Callback from %s:\n\n%s", origin, message)
+
+	cmdData := map[string]interface{}{
+		"session_id": parentID,
+		"prompt":     content,
+		"source":     "callback",
+	}
+
+	ctx := context.Background()
+
+	// If the parent is completed, reactivate it so the callback is processed.
+	if hemStatus, _ := e.store.GetSessionHemStatus(parentID); hemStatus == "completed" {
+		_ = e.store.SetSessionHemStatus(parentID, "active")
+	}
+	// A callback is new information the parent hasn't seen — mark unreviewed.
+	_ = e.store.SetSessionReviewed(parentID, false)
+
+	// Try to deliver immediately; if the parent is busy, queue it (still tagged
+	// as a callback so it drains with the callback role).
+	_, err = e.sendCommand(ctx, mp, "continue_session", cmdData)
+	if err != nil {
+		if isSessionNotIdle(err) {
+			if _, queueErr := e.sendCommand(ctx, mp, "queue_prompt", cmdData); queueErr != nil {
+				return protocol.ErrResponse(fmt.Sprintf("queueing callback: %v", queueErr))
+			}
+			e.invalidateMPCache(mp.Name)
+			return protocol.OKResponse(SessionContinuedResult{
+				SessionID: parentID,
+				Queued:    true,
+			})
+		}
+		return protocol.ErrResponse(err.Error())
+	}
+	e.invalidateMPCache(mp.Name)
+
+	return protocol.OKResponse(SessionContinuedResult{
+		SessionID: parentID,
+		Async:     true,
+	})
+}
+
+// callbackOriginLabel resolves a session ID to a human-friendly label for a
+// callback header: "nick · name" when both are known, else name, else nick,
+// else the short session id.
+func (e *Executor) callbackOriginLabel(fromID string) string {
+	if fromID == "" {
+		return "subagent"
+	}
+	var nick, name string
+	if sess, err := e.store.GetSession(fromID); err == nil && sess != nil {
+		nick = sess.Nick
+	}
+	// Fetch the name from the origin's moneypenny (best-effort).
+	if mp, err := e.resolveSessionMoneypenny(fromID); err == nil {
+		resp, cerr := e.sendCommand(context.Background(), mp, "get_session", map[string]interface{}{"session_id": fromID})
+		if cerr == nil {
+			var detail struct {
+				Name string `json:"name"`
+			}
+			if json.Unmarshal(resp.Data, &detail) == nil {
+				name = detail.Name
+			}
+		}
+	}
+	switch {
+	case nick != "" && name != "":
+		return fmt.Sprintf("%s · %s", nick, name)
+	case name != "":
+		return name
+	case nick != "":
+		return nick
+	default:
+		if len(fromID) > 12 {
+			return fromID[:12]
+		}
+		return fromID
+	}
 }
 
 // isSessionNotIdle checks if an error is a SESSION_NOT_IDLE error from moneypenny.
@@ -2463,7 +2612,7 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 				memorySuffix = base[midx:]
 				base = base[:midx]
 			}
-			systemPrompt = base + gadgetsSystemPrompt(e.MI6Control, sessionID) + memorySuffix
+			systemPrompt = base + gadgetsSystemPrompt(e.MI6Control, sessionID, gadgetsParentID(e, sessionID)) + memorySuffix
 			cmdData["system_prompt"] = systemPrompt
 			fetchedSP = systemPrompt // keep cache current for the nick block below
 			hasUpdate = true
@@ -5196,7 +5345,7 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	}
 	params.SystemPrompt += traitsSystemPrompt(traits)
 	if params.Gadgets {
-		params.SystemPrompt += gadgetsSystemPrompt(e.MI6Control, newSessionID)
+		params.SystemPrompt += gadgetsSystemPrompt(e.MI6Control, newSessionID, "")
 	}
 	// Memory instructions are injected by the moneypenny at runtime (file-based
 	// memory). When duplicating within the same moneypenny, ask it to copy the
@@ -6367,7 +6516,7 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 	}
 
 	if gadgets {
-		systemPrompt += gadgetsSystemPrompt(e.MI6Control, sessionID)
+		systemPrompt += gadgetsSystemPrompt(e.MI6Control, sessionID, parentSessionID)
 	}
 	// Memory instructions are injected by the moneypenny at runtime (file-based
 	// memory); no hem-side injection needed.
@@ -6649,18 +6798,21 @@ func (e *Executor) WatchSession(args []string) *protocol.Response {
 			// Mark sub as completed.
 			_ = e.store.SetSessionHemStatus(sub.SessionID, "completed")
 
-			// Queue result to parent session.
+			// Queue result to parent session as a callback (rendered distinctly
+			// from a normal user message).
 			parentMP, err := e.resolveSessionMoneypenny(sessionID)
 			if err == nil {
-				var queuePrompt string
+				var body string
 				if sub.CallbackPrompt != "" {
-					queuePrompt = fmt.Sprintf("[%s completed]\n<callback>%s</callback>\n<response>\n%s\n</response>", subLabel, sub.CallbackPrompt, lastResponse)
+					body = fmt.Sprintf("<callback>%s</callback>\n<response>\n%s\n</response>", sub.CallbackPrompt, lastResponse)
 				} else {
-					queuePrompt = fmt.Sprintf("[%s completed]\n%s", subLabel, lastResponse)
+					body = lastResponse
 				}
+				queuePrompt := fmt.Sprintf("↩️ Callback from %s:\n\n%s", subLabel, body)
 				_, _ = e.sendCommand(ctx, parentMP, "queue_prompt", map[string]interface{}{
 					"session_id": sessionID,
 					"prompt":     queuePrompt,
+					"source":     "callback",
 				})
 			}
 
