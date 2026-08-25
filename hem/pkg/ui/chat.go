@@ -560,6 +560,19 @@ func (m chatModel) loadSubagents() tea.Cmd {
 	}
 }
 
+// visibleSubagents excludes completed subagents from the live chat affordances.
+// The subagent picker deliberately continues to use m.subagents so completed
+// work remains accessible there.
+func (m chatModel) visibleSubagents() []subagentInfo {
+	result := make([]subagentInfo, 0, len(m.subagents))
+	for _, sub := range m.subagents {
+		if !strings.Contains(strings.ToLower(sub.Status), "completed") {
+			result = append(result, sub)
+		}
+	}
+	return result
+}
+
 func (m chatModel) loadActivity() tea.Cmd {
 	return func() tea.Msg {
 		start := time.Now()
@@ -1934,13 +1947,10 @@ func (m chatModel) View() string {
 		}
 	}
 
-	// Show active subagents at the bottom (hide idle/completed; use esc-a to see all).
-	if len(m.subagents) > 0 {
+	// Show non-completed subagents at the bottom; use esc-a to see all.
+	if visible := m.visibleSubagents(); len(visible) > 0 {
 		subStyle := lipgloss.NewStyle().Foreground(colorPrimary)
-		for i, sub := range m.subagents {
-			if strings.Contains(sub.Status, "completed") {
-				continue
-			}
+		for i, sub := range visible {
 			name := sub.Name
 			if name == "" {
 				name = sub.SessionID[:12] + "..."
@@ -2043,7 +2053,7 @@ func (m chatModel) View() string {
 
 	// Subagent picker overlay
 	if m.pickingSubagent {
-		pickerLabel := lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render(" Subagents: ")
+		pickerLabel := lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render(" All subagents: ")
 		b.WriteString(pickerLabel)
 		b.WriteString("\n")
 		for i, sub := range m.subagents {

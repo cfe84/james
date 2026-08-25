@@ -779,7 +779,8 @@ Subagents report results back to their parent as **callbacks**, which render as 
 
 ### UI
 
-- Sub-agents are displayed in the TUI and Qew chat views as "subagents".
+- The live TUI and Qew chat views show only non-completed subagents, keeping finished work from crowding active conversations and numbered quick navigation.
+- Both clients provide an **All subagents** view that includes completed work: Hem's `Esc` → `a` picker and Qew's command-palette `l` shortcut. Entries can be opened from either view.
 - The gadgets system prompt includes sub-agent instructions, informing agents of the `hem create subsession`, `hem watch session`, and `hem callback session` commands.
 
 ## Real-Time Agent Activity Streaming
@@ -1159,4 +1160,3 @@ qew --development --listen 127.0.0.1:8077
 
 ### Moneypenny `check_agents` command:
 Cross-platform agent binary detection using Go's `exec.LookPath()` (works on Windows, macOS, Linux). Returns availability and resolved path for known agents (claude, copilot).
-

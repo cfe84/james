@@ -27,7 +27,8 @@
   let chatLoadingMore = false; // an older-history fetch is in flight
   let chatForceScrollBottom = false; // one-shot: force scroll to bottom on next render
   let lastSchedules = [];      // cached so an older-history re-render needn't refetch
-  let lastSubagents = [];
+  let lastSubagents = [];     // non-completed subagents shown in the live chat
+  let allSubagents = [];      // complete list, retained for the all-subagents view
   let lastActivity = [];
   const CHAT_PAGE_SIZE = 50;
   let lastSessionStates = {}; // track WORKING→READY transitions for notifications
@@ -754,6 +755,7 @@
     chatForceScrollBottom = false;
     lastSchedules = [];
     lastSubagents = [];
+    allSubagents = [];
     lastActivity = [];
     // Update URL hash without triggering hashchange handler.
     const newHash = '#/session/' + sessionId;
@@ -889,7 +891,8 @@
         activity = actResp.data.activity;
       }
       lastSchedules = schedules;
-      lastSubagents = subagents;
+      allSubagents = subagents;
+      lastSubagents = subagents.filter(sub => !String(sub.status || '').toLowerCase().includes('completed'));
       lastActivity = activity;
       mergeRecentHistory(histResp.data);
       renderChat(false);
@@ -1412,6 +1415,7 @@
           <button class="cmd-item" data-cmd="edit"><kbd>e</kbd> Edit session</button>
           <button class="cmd-item" data-cmd="duplicate"><kbd>y</kbd> Duplicate session</button>
           <button class="cmd-item" data-cmd="subagent"><kbd>a</kbd> New subagent</button>
+          <button class="cmd-item" data-cmd="allsubagents"><kbd>l</kbd> All subagents</button>
           <button class="cmd-item" data-cmd="project"><kbd>p</kbd> Move to project</button>
           <button class="cmd-item" data-cmd="diff"><kbd>g</kbd> Git diff</button>
           <button class="cmd-item" data-cmd="model"><kbd>o</kbd> Model override</button>
@@ -1476,6 +1480,7 @@
       case 'edit':     showEditSessionModal(); break;
       case 'duplicate': openDuplicateWizard(); break;
       case 'subagent': createNewSubagent(); break;
+      case 'allsubagents': showAllSubagents(); break;
       case 'project':  showMoveToProjectModal(); break;
       case 'diff':     showDiff(); break;
       case 'thoughts': toggleThoughts(); break;
@@ -1492,6 +1497,36 @@
       case 'back':     closeChat(); break;
     }
   }
+
+  function showAllSubagents() {
+    const items = allSubagents.length
+      ? allSubagents.map((sub, i) => {
+          const name = sub.name || (sub.sessionId ? sub.sessionId.substring(0, 12) + '...' : '?');
+          return `<button class="cmd-item" data-all-sub-idx="${i}">🕴️ ${escapeHtml(name)} <span style="color:var(--muted)">[${escapeHtml(sub.status || 'unknown')}]</span></button>`;
+        }).join('')
+      : '<div class="empty-state">No subagents</div>';
+    renderWizardModal(`
+      <div class="cmd-palette" tabindex="-1" role="dialog" aria-modal="true" aria-label="All subagents">
+        <h3>All subagents</h3>
+        <div class="cmd-list">${items}</div>
+        <div class="modal-actions"><button class="btn-muted" onclick="window._qewCloseAllSubagents()">Close (Esc)</button></div>
+      </div>
+    `);
+    const palette = document.querySelector('.cmd-palette');
+    if (palette) {
+      palette.addEventListener('click', (e) => {
+        const button = e.target.closest('[data-all-sub-idx]');
+        if (!button) return;
+        const sub = allSubagents[parseInt(button.dataset.allSubIdx, 10)];
+        if (!sub) return;
+        const name = sub.name || (sub.sessionId ? sub.sessionId.substring(0, 12) : sub.sessionId);
+        closeWizard();
+        window._openSubagent(sub.sessionId, name);
+      });
+      palette.focus();
+    }
+  }
+  window._qewCloseAllSubagents = function() { closeWizard(); };
 
   async function showWizardStep1() {
     // Load moneypennies.
@@ -5254,7 +5289,7 @@
         }
         return;
       }
-      const map = { c: 'complete', u: 'markready', e: 'edit', y: 'duplicate', a: 'subagent', p: 'project', g: 'diff', t: 'thoughts', o: 'model', f: 'effort', w: 'context', m: 'memory', n: 'channels', h: 'schedules', K: 'compact', D: 'distill', s: 'stop', d: 'delete', q: 'back' };
+      const map = { c: 'complete', u: 'markready', e: 'edit', y: 'duplicate', a: 'subagent', l: 'allsubagents', p: 'project', g: 'diff', t: 'thoughts', o: 'model', f: 'effort', w: 'context', m: 'memory', n: 'channels', h: 'schedules', K: 'compact', D: 'distill', s: 'stop', d: 'delete', q: 'back' };
       const cmd = map[e.key];
       if (cmd) { e.preventDefault(); runCmd(cmd); }
       return;
