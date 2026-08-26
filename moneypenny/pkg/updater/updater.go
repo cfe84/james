@@ -74,7 +74,8 @@ type Updater struct {
 	triggerCh chan struct{}
 
 	// For re-exec
-	execArgs []string // os.Args
+	execArgs      []string // os.Args
+	beforeRestart func()
 }
 
 // Option configures the Updater.
@@ -88,6 +89,14 @@ func WithCheckInterval(d time.Duration) Option {
 // WithLogger sets a verbose logger.
 func WithLogger(l *log.Logger) Option {
 	return func(u *Updater) { u.vlog = l }
+}
+
+// WithBeforeRestart registers cleanup that must finish before the replacement
+// process starts. Windows cannot exec in place; without this, os.Exit in the
+// Windows re-exec path skips main's defers and can leave SQLite WAL mappings
+// open while the replacement process initializes.
+func WithBeforeRestart(f func()) Option {
+	return func(u *Updater) { u.beforeRestart = f }
 }
 
 // New creates an Updater.
@@ -249,8 +258,8 @@ func (u *Updater) cycle(ctx context.Context) {
 
 // gitHubRelease is the subset of the GitHub release API we need.
 type gitHubRelease struct {
-	TagName string          `json:"tag_name"`
-	Assets  []releaseAsset  `json:"assets"`
+	TagName string         `json:"tag_name"`
+	Assets  []releaseAsset `json:"assets"`
 }
 
 type releaseAsset struct {
@@ -514,6 +523,13 @@ func (u *Updater) swapAndRestart(stagedDir string) error {
 
 	// Clean up staged directory.
 	os.RemoveAll(stagedDir)
+
+	// Close resources owned by main before starting a separate replacement
+	// process on Windows. On Unix syscall.Exec replaces this process directly,
+	// but the hook remains safe and makes shutdown ordering explicit.
+	if u.beforeRestart != nil {
+		u.beforeRestart()
+	}
 
 	// Re-exec with the same arguments.
 	u.vlog.Printf("re-execing with args: %v", u.execArgs)

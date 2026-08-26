@@ -58,3 +58,17 @@ func TestStatusInitial(t *testing.T) {
 		t.Errorf("UpdateAvailable should be false initially")
 	}
 }
+
+func TestWithBeforeRestart(t *testing.T) {
+	called := false
+	u := New("0.10.2", "cfe84/james", "/tmp/test", &mockChecker{idle: true},
+		WithBeforeRestart(func() { called = true }),
+	)
+	if u.beforeRestart == nil {
+		t.Fatal("beforeRestart was not configured")
+	}
+	u.beforeRestart()
+	if !called {
+		t.Fatal("beforeRestart callback was not invoked")
+	}
+}

@@ -235,6 +235,8 @@ Method: **create_directory**: creates a new directory (including missing parents
 
 Method: **get_version**: returns the version of moneypenny
 
+Method: **get_logs**: returns the newest lines from Moneypenny's configured daemon log. Data: `{ "lines": 100 }`; `lines` defaults to 100 and must be between 1 and 10,000. Returns `{ "content": "...", "lines": 100, "truncated": false }`. To keep transport responses bounded, Moneypenny reads at most the final 2 MiB of the file; `truncated` is true when older bytes were omitted. Hem exposes this as `hem logs moneypenny -n NAME [--lines N]`, which works through FIFO and MI6 transports. The configured Windows `--log-file` is used directly; Unix service installations use their default service log path.
+
 Memory: Each session has a persistent, file-based memory — a per-session folder of Markdown files (`memory/`, one `README.md` per topic folder) that the agent reads and edits directly with its native file tools. Moneypenny grants access via `--add-dir` and injects an up-to-date outline into the system prompt each call. The `hem ... memory` CLI/TUI/Qew commands browse and edit the same folder. See the Session Memory section for details.
 
 Local deployment: add a `--local` convenience flag that allows moneypenny to run in local mode through fifo.
@@ -339,7 +341,7 @@ Moneypenny can self-update from GitHub releases when started with `--auto-update
 1. **Check**: A background goroutine periodically checks the GitHub Releases API (`/repos/cfe84/james/releases/latest`) for newer versions. Default interval: 1 hour, configurable via `--update-interval`.
 2. **Download**: Downloads the platform-appropriate archive (e.g. `james-darwin-arm64.tar.gz`) and extracts `moneypenny` and `mi6-client` binaries to a staging directory (`~/.config/james/moneypenny/updates/VERSION/`).
 3. **Wait for idle**: Polls session statuses every 30 seconds. Proceeds only when all sessions are idle (not working).
-4. **Swap & restart**: Atomically replaces the running binary and `mi6-client`, then re-execs itself with the same arguments. MI6 reconnect and FIFO setup re-establish naturally.
+4. **Swap & restart**: Atomically replaces the running binary and `mi6-client`, then re-execs itself with the same arguments. Before a Windows replacement process starts, Moneypenny cancels background workers and closes its SQLite store so the replacement cannot race the old process's WAL mapping. MI6 reconnect and FIFO setup re-establish naturally.
 
 ### Windows release signing
 

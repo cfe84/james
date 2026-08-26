@@ -513,6 +513,8 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.ListMoneypennies(args)
 	case "ping moneypenny":
 		return e.PingMoneypenny(args)
+	case "logs moneypenny":
+		return e.GetMoneypennyLogs(args)
 	case "check update":
 		return e.CheckUpdate(args)
 	case "delete moneypenny":
@@ -1495,6 +1497,53 @@ func (e *Executor) PingMoneypenny(args []string) *protocol.Response {
 	return protocol.OKResponse(TextResult{
 		Message: fmt.Sprintf("Moneypenny %q is reachable. Version: %s", name, versionData.Version),
 	})
+}
+
+// GetMoneypennyLogs retrieves the newest daemon log lines through the configured transport.
+func (e *Executor) GetMoneypennyLogs(args []string) *protocol.Response {
+	var name string
+	var lines int
+	_, err := parseFlagsFromArgs("logs-moneypenny", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&name, "n", "", "moneypenny name")
+		fs.StringVar(&name, "name", "", "moneypenny name")
+		fs.IntVar(&lines, "lines", 100, "number of final log lines to retrieve")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if name == "" {
+		return protocol.ErrResponse("--name / -n is required")
+	}
+
+	mp, err := e.store.GetMoneypenny(name)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if mp == nil {
+		return protocol.ErrResponse(fmt.Sprintf("moneypenny %q not found", name))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := e.sendCommand(ctx, mp, "get_logs", map[string]int{"lines": lines})
+	if err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("get_logs failed: %v", err))
+	}
+
+	var result struct {
+		Content   string `json:"content"`
+		Truncated bool   `json:"truncated"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("decode moneypenny logs: %v", err))
+	}
+	if result.Content == "" {
+		return protocol.OKResponse(TextResult{Message: "No log lines available."})
+	}
+	if result.Truncated {
+		result.Content = "[earlier log output omitted because the final 2 MiB limit was reached]\n" + result.Content
+	}
+	return protocol.OKResponse(TextResult{Message: result.Content})
 }
 
 // CheckUpdate triggers an immediate update check on a moneypenny. The check

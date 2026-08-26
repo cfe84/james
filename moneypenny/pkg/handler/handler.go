@@ -1,10 +1,12 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -37,6 +39,7 @@ type Handler struct {
 	runner            *agent.Runner
 	version           string
 	dataDir           string // moneypenny data root; used for per-session storage
+	logFile           string
 	vlog              func(string, ...interface{})
 	updateStatusFunc  func() envelope.UpdateStatusResponse
 	triggerUpdateFunc func() bool                  // returns true if check was queued
@@ -121,6 +124,11 @@ func (h *Handler) SetLogger(vlog func(string, ...interface{})) {
 	h.vlog = vlog
 }
 
+// SetLogFile configures the daemon log made available through get_logs.
+func (h *Handler) SetLogFile(path string) {
+	h.logFile = path
+}
+
 // SetUpdateStatusFunc sets the function called to get update status from the updater.
 func (h *Handler) SetUpdateStatusFunc(f func() envelope.UpdateStatusResponse) {
 	h.updateStatusFunc = f
@@ -170,6 +178,8 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.getSession(ctx, cmd)
 	case "get_session_conversation":
 		return h.getSessionConversation(ctx, cmd)
+	case "get_logs":
+		return h.getLogs(cmd)
 	case "queue_prompt":
 		return h.queuePrompt(ctx, cmd)
 	case "delete_session":
@@ -1475,6 +1485,83 @@ func (h *Handler) executeCommand(_ context.Context, cmd *envelope.Command) *enve
 
 func (h *Handler) getVersion(cmd *envelope.Command) *envelope.Response {
 	return envelope.SuccessResponse(cmd.RequestID, map[string]string{"version": h.version})
+}
+
+const (
+	defaultLogLines       = 100
+	maxLogLines           = 10_000
+	maxLogTailBytes int64 = 2 * 1024 * 1024
+)
+
+func (h *Handler) getLogs(cmd *envelope.Command) *envelope.Response {
+	var data envelope.GetLogsData
+	if err := json.Unmarshal(cmd.Data, &data); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
+	}
+	if data.Lines == 0 {
+		data.Lines = defaultLogLines
+	}
+	if data.Lines < 1 || data.Lines > maxLogLines {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest,
+			fmt.Sprintf("lines must be between 1 and %d", maxLogLines))
+	}
+	if h.logFile == "" {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "daemon log file is not configured")
+	}
+
+	result, err := tailLogFile(h.logFile, data.Lines)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("read daemon log: %v", err))
+	}
+	return envelope.SuccessResponse(cmd.RequestID, result)
+}
+
+func tailLogFile(path string, lineCount int) (envelope.GetLogsResponse, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return envelope.GetLogsResponse{}, err
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return envelope.GetLogsResponse{}, err
+	}
+	if info.Size() == 0 {
+		return envelope.GetLogsResponse{}, nil
+	}
+
+	readSize := min(info.Size(), maxLogTailBytes)
+	start := info.Size() - readSize
+	buf := make([]byte, readSize)
+	if _, err := f.ReadAt(buf, start); err != nil && err != io.EOF {
+		return envelope.GetLogsResponse{}, err
+	}
+
+	truncated := start > 0
+	if start > 0 {
+		if firstNewline := bytes.IndexByte(buf, '\n'); firstNewline >= 0 {
+			buf = buf[firstNewline+1:]
+		}
+	}
+
+	content := strings.TrimSuffix(string(buf), "\n")
+	if content == "" {
+		return envelope.GetLogsResponse{Truncated: truncated}, nil
+	}
+	lines := strings.Split(content, "\n")
+	for i := range lines {
+		lines[i] = strings.TrimSuffix(lines[i], "\r")
+	}
+	if len(lines) > lineCount {
+		lines = lines[len(lines)-lineCount:]
+	}
+	content = strings.Join(lines, "\n")
+	return envelope.GetLogsResponse{
+		Content:   content,
+		Lines:     len(lines),
+		Truncated: truncated,
+	}, nil
 }
 
 func (h *Handler) checkAgents(cmd *envelope.Command) *envelope.Response {

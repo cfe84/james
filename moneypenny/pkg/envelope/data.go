@@ -87,6 +87,19 @@ type GetConversationData struct {
 	All       bool   `json:"all,omitempty"`   // return all turns
 }
 
+// GetLogsData requests the newest daemon log lines. Lines defaults to 100.
+type GetLogsData struct {
+	Lines int `json:"lines,omitempty"`
+}
+
+// GetLogsResponse contains the requested tail of the daemon log.
+// Truncated is true when the final log lines exceeded the response byte limit.
+type GetLogsResponse struct {
+	Content   string `json:"content"`
+	Lines     int    `json:"lines"`
+	Truncated bool   `json:"truncated"`
+}
+
 // SessionInfo is returned by list_sessions for each session.
 type SessionInfo struct {
 	SessionID    string `json:"session_id"`

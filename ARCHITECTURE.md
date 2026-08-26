@@ -356,6 +356,10 @@ hem/
 
 77. **Node 24 release actions (`v1.55.1`)**: GitHub Actions deprecated Node 20 and temporarily forces actions still targeting it to Node 24. The release workflow therefore upgrades first-party actions to their Node-24-native majors: `checkout@v7`, `setup-go@v7`, `upload-artifact@v7`, and `download-artifact@v8`. The artifact data flow is unchanged; this removes compatibility warnings and avoids relying on GitHub’s compatibility override.
 
+78. **Windows updater closes SQLite before spawning replacement (`v1.55.2`)**: the updater's Windows `reExec` starts a new process then exits with `os.Exit(0)`, which skips `main`'s deferred `Store.Close`. This allowed the replacement process to race the old process's SQLite WAL memory mapping; its `PRAGMA journal_mode=WAL` could fail with `disk I/O error: The requested operation cannot be performed on a file with a user-mapped section open`. `Updater.WithBeforeRestart` provides explicit process-owner cleanup immediately before `reExec`; Moneypenny uses it to cancel background scheduler/channel work and close the store. The hook is also safe on Unix, where `syscall.Exec` replaces the current process in place.
+
+79. **Remote Moneypenny log tails (`v1.56.0`)**: `get_logs` is a regular Moneypenny request, so Hem routes it through the already-authenticated FIFO or MI6 transport rather than adding a separate remote file-transfer path. Moneypenny receives only a requested line count (default 100; max 10,000), reads only the final 2 MiB of its configured daemon log, drops a partial leading line, and returns the final whole lines with a `truncated` indicator when the byte bound excluded older output. This prevents a diagnostic request from exhausting MI6 message limits or reading arbitrary remote paths. `hem logs moneypenny -n NAME --lines N` renders the result directly. Windows uses the configured `--log-file`; Unix service installers already direct stdout/stderr to the conventional data-directory log path.
+
 The Executor (hem/pkg/commands) has been refactored to follow Single Responsibility Principle by extracting specialized managers:
 
 **Manager Components** (`hem/pkg/commands/`):

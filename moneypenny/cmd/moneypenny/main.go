@@ -113,6 +113,13 @@ func main() {
 	runner := agent.New(vlog)
 	h := handler.New(st, runner, Version, *dataDir)
 	h.SetLogger(vlog.Printf)
+	if *logFile != "" {
+		h.SetLogFile(*logFile)
+	} else {
+		// Service installers use this path for stdout/stderr on Unix-like
+		// platforms, where moneypenny itself does not redirect output.
+		h.SetLogFile(service.DefaultLogFile(*dataDir))
+	}
 
 	// One-time export of legacy SQLite memory into per-session memory folders.
 	// TODO(2026-06-12): remove this startup migration once all sessions have
@@ -150,6 +157,14 @@ func main() {
 		u := updater.New(Version, "cfe84/james", *dataDir, h,
 			updater.WithCheckInterval(*updateInterval),
 			updater.WithLogger(ulog),
+			updater.WithBeforeRestart(func() {
+				// Windows starts a second process for re-exec. Close SQLite before
+				// that process starts so it cannot race this process's WAL mapping.
+				cancel()
+				if err := st.Close(); err != nil {
+					log.Printf("updater: close store before restart: %v", err)
+				}
+			}),
 		)
 		h.SetUpdateStatusFunc(func() envelope.UpdateStatusResponse {
 			info := u.Status()
@@ -371,7 +386,6 @@ func runMI6Once(ctx context.Context, h *handler.Handler, vlog *log.Logger, mi6Cl
 	stdin.Close()
 	return cmd.Wait()
 }
-
 
 func parseMI6Addr(addr string) (host, sessionID string, err error) {
 	idx := strings.IndexByte(addr, '/')
