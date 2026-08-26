@@ -37,9 +37,9 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.25'
           cache: false
@@ -95,7 +95,7 @@ jobs:
           fi
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: james-${{ matrix.goos }}-${{ matrix.goarch }}
           path: dist/james-${{ matrix.goos }}-${{ matrix.goarch }}.*
@@ -109,7 +109,7 @@ jobs:
       id-token: write
     steps:
       - name: Download Windows archive
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: james-windows-amd64
           path: unsigned
@@ -166,7 +166,7 @@ jobs:
           Compress-Archive signing\james-windows-amd64 -DestinationPath signed\james-windows-amd64.zip -Force
 
       - name: Upload signed Windows archive
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: james-windows-amd64-signed
           path: signed/james-windows-amd64.zip
@@ -177,14 +177,14 @@ jobs:
       - sign-windows
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Read version
         id: version
         run: echo "version=$(cat VERSION)" >> "$GITHUB_OUTPUT"
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
