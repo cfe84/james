@@ -287,7 +287,10 @@
         project: row[2] || '',
         statusRaw: row[3] || '',
         moneypenny: row[4] || '',
-        lastActive: row[5] || '',
+        // Dashboard rows are [id, name, project, status, moneypenny, created,
+        // last activity, parent, agent, nick]. Recency must follow the latest
+        // conversation turn, not session creation.
+        lastActive: row[6] || '',
         parentSessionId: row[7] || '',
         agent: row[8] || '',
         nick: row[9] || '',
@@ -2947,7 +2950,10 @@
         project: row[2] || '',
         statusRaw: row[3] || '',
         moneypenny: row[4] || '',
-        lastActive: row[5] || '',
+        // The dashboard's "Last Activity" column is the timestamp of the
+        // latest conversation turn; use it for omnibar recency rather than
+        // the preceding "Created" column.
+        lastActive: row[6] || '',
         parent: row[7] || '',
         agent: row[8] || '',
         nick: row[9] || '',

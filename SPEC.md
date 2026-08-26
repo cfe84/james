@@ -783,6 +783,10 @@ Subagents report results back to their parent as **callbacks**, which render as 
 - Both clients provide an **All subagents** view that includes completed work: Hem's `Esc` → `a` picker and Qew's command-palette `l` shortcut. Entries can be opened from either view.
 - The gadgets system prompt includes sub-agent instructions, informing agents of the `hem create subsession`, `hem watch session`, and `hem callback session` commands.
 
+### Qew Omnibar Recency
+
+The Qew dashboard omnibar (`o`) orders sessions by their **last conversation message** (the dashboard's `Last Activity` timestamp), newest first. Session creation time does not affect this ordering.
+
 ## Real-Time Agent Activity Streaming
 
 When a Claude agent session is working, moneypenny streams its output in real time to provide visibility into what the agent is doing.

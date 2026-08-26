@@ -350,6 +350,8 @@ hem/
 
 74. **Completed subagents are hidden from live chat (`v1.54.0`)**: a parent conversation's inline subagent status rows and numbered navigation are now scoped to non-completed children, preventing finished tasks from crowding active work. The full child list remains available deliberately: **Hem TUI** keeps the existing `Esc` → `a` subagent picker as an explicitly labelled **All subagents** screen (including completed entries), while **Qew** retains both `lastSubagents` (active-only, for inline rows and `1`–`9`) and `allSubagents` (unfiltered). Qew's command palette adds `l` → **All subagents**, a modal list with each child’s name/status that opens any entry, including completed work. The backend `list subsession` response is unchanged; filtering happens only at the respective live-chat presentation boundary.
 
+75. **Qew omnibar uses last-message recency (`v1.54.1`)**: the dashboard table has a stable row shape: `SessionID`, `Name`, `Project`, `Status`, `Moneypenny`, `Created`, `Last Activity`, `ParentSessionID`, `Agent`, `Nick`. Qew had incorrectly read index 5 (`Created`) into its `lastActive` field, so the dashboard timestamp and omnibar’s recency sort reflected creation date. Qew now reads index 6 (`Last Activity`), which moneypenny derives from `MAX(conversation_turns.created_at)` via `GetSessionTimestamps`. The omnibar’s existing descending sort and subtitle therefore use the latest message date, not session creation.
+
 The Executor (hem/pkg/commands) has been refactored to follow Single Responsibility Principle by extracting specialized managers:
 
 **Manager Components** (`hem/pkg/commands/`):
