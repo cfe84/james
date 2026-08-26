@@ -341,6 +341,14 @@ Moneypenny can self-update from GitHub releases when started with `--auto-update
 3. **Wait for idle**: Polls session statuses every 30 seconds. Proceeds only when all sessions are idle (not working).
 4. **Swap & restart**: Atomically replaces the running binary and `mi6-client`, then re-execs itself with the same arguments. MI6 reconnect and FIFO setup re-establish naturally.
 
+### Windows release signing
+
+Windows release archives contain Authenticode-signed executables. The release workflow builds the
+Windows archive, then a dedicated Windows signing job authenticates to Azure Artifact Signing through
+GitHub OIDC in the `artifact-signing` GitHub environment, signs every `.exe` with the public-trust
+certificate profile, verifies each signature, and publishes only the verified signed ZIP. No signing
+private key or long-lived Azure credential is stored in the repository.
+
 ### Flags
 
 - `moneypenny --auto-update` — enable automatic updates (default: off)
