@@ -366,6 +366,8 @@ hem/
 
 82. **Bounded Moneypenny daemon logs (`v1.58.0`)**: Moneypenny checks its configured daemon log at startup and every minute. Once it reaches 10,000 lines, it discards the oldest 1,000 lines, retaining the newest 9,000. Rotation truncates and rewrites the existing file inode rather than renaming it, so `os.Stdout`, `os.Stderr`, launchd/system service handles, and inherited agent-process descriptors continue appending to the same path. This bounds disk use while retaining the recently relevant diagnostics surfaced by `get_logs`.
 
+83. **Qew mobile Actions menu scrolling (`v1.58.1`)**: The session Actions menu is normally positioned below its header button, but on a short phone viewport the menu's scrollable content can begin below the visible screen, making lower actions inaccessible. At a 600px-or-narrower viewport, Qew switches only `#chat-menu` to a fixed overlay bounded by the viewport's top, right, and bottom safe-area insets. Its existing vertical overflow scroll is therefore entirely visible; `overscroll-behavior: contain` keeps a swipe at the menu edge from scrolling the conversation behind it.
+
 The Executor (hem/pkg/commands) has been refactored to follow Single Responsibility Principle by extracting specialized managers:
 
 **Manager Components** (`hem/pkg/commands/`):

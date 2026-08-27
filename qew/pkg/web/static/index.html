@@ -354,6 +354,20 @@ header h1 span { color: var(--primary); }
 .dropdown-menu button:hover { background: var(--surface2); }
 .dropdown-menu hr { border: none; border-top: 1px solid var(--surface2); margin: 4px 0; }
 
+@media (max-width: 600px) {
+  /* A menu anchored below the chat header can extend past a short phone
+     viewport before its scroll area begins. Pin Actions to the viewport so
+     every action is reachable by scrolling within the menu. */
+  #chat-menu.dropdown-menu {
+    position: fixed;
+    top: max(12px, env(safe-area-inset-top));
+    right: max(12px, env(safe-area-inset-right));
+    bottom: max(12px, env(safe-area-inset-bottom));
+    max-height: none;
+    overscroll-behavior: contain;
+  }
+}
+
 /* Diff display */
 .diff-content {
   font-family: 'SF Mono', 'Menlo', 'Monaco', 'Consolas', monospace;
