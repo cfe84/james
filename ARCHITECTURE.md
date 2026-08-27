@@ -360,6 +360,8 @@ hem/
 
 79. **Remote Moneypenny log tails (`v1.56.0`)**: `get_logs` is a regular Moneypenny request, so Hem routes it through the already-authenticated FIFO or MI6 transport rather than adding a separate remote file-transfer path. Moneypenny receives only a requested line count (default 100; max 10,000), reads only the final 2 MiB of its configured daemon log, drops a partial leading line, and returns the final whole lines with a `truncated` indicator when the byte bound excluded older output. This prevents a diagnostic request from exhausting MI6 message limits or reading arbitrary remote paths. `hem logs moneypenny -n NAME --lines N` renders the result directly. Windows uses the configured `--log-file`; Unix service installers already direct stdout/stderr to the conventional data-directory log path.
 
+80. **Qew rich-text copy preserves line breaks (`v1.56.1`)**: Qew previously relied on CSS `white-space: pre-wrap` to display source newlines. That keeps the visual layout but leaves only whitespace text nodes in copied HTML, which rich-text editors such as Teams collapse when pasting. The final stage of `formatContent` converts remaining source newlines to explicit `<br>` nodes, after all Markdown structure is generated. Browser clipboard serialization therefore retains the same break boundaries in both `text/plain` and `text/html` representations without changing message content or the Markdown parser.
+
 The Executor (hem/pkg/commands) has been refactored to follow Single Responsibility Principle by extracting specialized managers:
 
 **Manager Components** (`hem/pkg/commands/`):

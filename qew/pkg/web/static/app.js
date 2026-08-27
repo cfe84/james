@@ -5004,7 +5004,10 @@
     html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
     // Bare URLs: https://... or http://... (not already inside a tag)
     html = html.replace(/(^|[^"=])((https?:\/\/)[^\s<]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
-    return html;
+    // CSS pre-wrap displays source newlines but does not represent them in the
+    // HTML clipboard payload. Use explicit breaks so applications such as Teams
+    // retain the intended paragraphs when a rendered message is pasted.
+    return html.replace(/\n/g, '<br>');
   }
 
   // --- Auto-resize textarea ---
