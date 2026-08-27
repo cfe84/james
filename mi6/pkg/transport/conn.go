@@ -15,6 +15,7 @@ import (
 	"net"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -47,13 +48,18 @@ type SecureConn struct {
 	compressed  bool          // true if both sides negotiated gzip
 }
 
+// SetReadDeadline sets the deadline for future Receive calls.
+func (sc *SecureConn) SetReadDeadline(t time.Time) error {
+	return sc.conn.SetReadDeadline(t)
+}
+
 // ClientHandshakeParams holds the parameters for a client handshake.
 type ClientHandshakeParams struct {
 	Conn           net.Conn
-	Signer         crypto.Signer    // client SSH key for signing
-	PubKey         ssh.PublicKey     // client SSH public key
-	ServerAddr     string           // server address for TOFU lookup
-	KnownHostsPath string          // path to known_hosts file (empty to skip TOFU)
+	Signer         crypto.Signer // client SSH key for signing
+	PubKey         ssh.PublicKey // client SSH public key
+	ServerAddr     string        // server address for TOFU lookup
+	KnownHostsPath string        // path to known_hosts file (empty to skip TOFU)
 }
 
 // ClientHandshake performs the mutual-auth handshake:
@@ -197,9 +203,9 @@ func ClientHandshake(params ClientHandshakeParams) (*SecureConn, error) {
 // ServerHandshakeParams holds the parameters for a server handshake.
 type ServerHandshakeParams struct {
 	Conn           net.Conn
-	Signer         crypto.Signer    // server SSH key for signing
-	PubKey         ssh.PublicKey     // server SSH public key
-	AuthorizedKeys []ssh.PublicKey   // allowed client keys
+	Signer         crypto.Signer   // server SSH key for signing
+	PubKey         ssh.PublicKey   // server SSH public key
+	AuthorizedKeys []ssh.PublicKey // allowed client keys
 }
 
 // ServerHandshake performs the server side of the mutual-auth handshake.

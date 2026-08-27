@@ -362,6 +362,10 @@ hem/
 
 80. **Qew rich-text copy preserves line breaks (`v1.56.1`)**: Qew previously relied on CSS `white-space: pre-wrap` to display source newlines. That keeps the visual layout but leaves only whitespace text nodes in copied HTML, which rich-text editors such as Teams collapse when pasting. The final stage of `formatContent` converts remaining source newlines to explicit `<br>` nodes, after all Markdown structure is generated. Browser clipboard serialization therefore retains the same break boundaries in both `text/plain` and `text/html` representations without changing message content or the Markdown parser.
 
+81. **MI6 relay liveness deadline (`v1.57.0`)**: TCP keepalive does not reliably detect an application-layer relay that stays connected but no longer forwards frames. MI6 server already sends encrypted `MsgPing` frames every 60 seconds; after handshake, `mi6-client` sets a 2m15s deadline before every `Receive`. Any inbound data (including pings) resets the deadline on the next read. A silent relay therefore returns a timeout, makes `mi6-client` exit, and lets Moneypenny's existing `runMI6` child-process loop reconnect after its normal backoff. The deadline is exposed through `SecureConn.SetReadDeadline`, keeping the watchdog at the transport boundary without exposing its raw connection.
+
+82. **Bounded Moneypenny daemon logs (`v1.58.0`)**: Moneypenny checks its configured daemon log at startup and every minute. Once it reaches 10,000 lines, it discards the oldest 1,000 lines, retaining the newest 9,000. Rotation truncates and rewrites the existing file inode rather than renaming it, so `os.Stdout`, `os.Stderr`, launchd/system service handles, and inherited agent-process descriptors continue appending to the same path. This bounds disk use while retaining the recently relevant diagnostics surfaced by `get_logs`.
+
 The Executor (hem/pkg/commands) has been refactored to follow Single Responsibility Principle by extracting specialized managers:
 
 **Manager Components** (`hem/pkg/commands/`):

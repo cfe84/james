@@ -24,6 +24,8 @@ import (
 // Version is set at build time via -ldflags.
 var Version = "dev"
 
+const relayIdleTimeout = 2*time.Minute + 15*time.Second
+
 func main() {
 	server := flag.String("server", "", "server address (host:port)")
 	sessionID := flag.String("session-id", "", "session ID to join")
@@ -211,12 +213,20 @@ func main() {
 	go func() {
 		defer func() { done <- struct{}{} }()
 		for {
+			// The server sends a keepalive ping every 60 seconds. A deadline
+			// catches relay connections that remain TCP-established but stop
+			// delivering frames, allowing Moneypenny to restart this client.
+			if err := secureConn.SetReadDeadline(time.Now().Add(relayIdleTimeout)); err != nil {
+				log.Printf("failed to set relay read deadline: %v", err)
+				cancel()
+				return
+			}
 			msg, err := secureConn.Receive()
 			if err != nil {
 				if ctx.Err() != nil {
 					return
 				}
-				log.Printf("receive error: %v", err)
+				log.Printf("receive error (relay idle timeout %v): %v", relayIdleTimeout, err)
 				cancel()
 				return
 			}

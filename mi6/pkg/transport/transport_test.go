@@ -6,9 +6,11 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
+	"errors"
 	"net"
 	"sync"
 	"testing"
+	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -258,6 +260,20 @@ func TestSendReceiveAfterHandshake(t *testing.T) {
 		t.Fatalf("client receive: %v", recvErr)
 	}
 	assertMessageEqual(t, reply, receivedReply)
+
+	// A caller can bound a stalled receive without reaching into SecureConn's
+	// underlying net.Conn. This is used by mi6-client's relay watchdog.
+	if err := clientSC.SetReadDeadline(time.Now().Add(10 * time.Millisecond)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+	if _, err := clientSC.Receive(); err == nil {
+		t.Fatal("Receive succeeded after read deadline, want timeout")
+	} else {
+		var netErr net.Error
+		if !errors.As(err, &netErr) || !netErr.Timeout() {
+			t.Fatalf("Receive error = %v, want timeout", err)
+		}
+	}
 }
 
 func TestUnauthorizedKeyRejected(t *testing.T) {

@@ -113,6 +113,7 @@ MI6 is a transport abstraction that allows, by creating a central place that all
 - We'll have agents running remotely. They checking in to their boss through MI6.
 - MI6 is simply a delocalized proxy where agents can check-in. It serves as transport.
 - It is composed of two pieces: a local client `mi6-client` that connects to a unique, remote server `mi6-server`. Mi-6 server will run in a container somewhere.
+- The server emits a keepalive ping every 60 seconds. `mi6-client` requires inbound traffic within 2m15s; when a TCP connection remains established but stops delivering relay frames, its read deadline expires and the client exits. Moneypenny detects that child exit and reconnects, preventing a half-open relay from indefinitely blocking requests.
 - It is built using golang.
 - mi-6 client opens a session to mi6-server. That session is authenticated using ssh-keys, and has a session-id determined by the client.
 - mi-6 server has a list of authorized_keys, we should support ecdsa and rsa.
@@ -236,6 +237,8 @@ Method: **create_directory**: creates a new directory (including missing parents
 Method: **get_version**: returns the version of moneypenny
 
 Method: **get_logs**: returns the newest lines from Moneypenny's configured daemon log. Data: `{ "lines": 100 }`; `lines` defaults to 100 and must be between 1 and 10,000. Returns `{ "content": "...", "lines": 100, "truncated": false }`. To keep transport responses bounded, Moneypenny reads at most the final 2 MiB of the file; `truncated` is true when older bytes were omitted. Hem exposes this as `hem logs moneypenny -n NAME [--lines N]`, which works through FIFO and MI6 transports. The configured Windows `--log-file` is used directly; Unix service installations use their default service log path.
+
+Moneypenny rotates its daemon log in place: it checks at startup and then every minute. When the log reaches 10,000 lines, it removes its oldest 1,000 lines and retains the newest 9,000. In-place rewriting preserves active stdout/stderr handles, including those inherited by agent subprocesses.
 
 Memory: Each session has a persistent, file-based memory — a per-session folder of Markdown files (`memory/`, one `README.md` per topic folder) that the agent reads and edits directly with its native file tools. Moneypenny grants access via `--add-dir` and injects an up-to-date outline into the system prompt each call. The `hem ... memory` CLI/TUI/Qew commands browse and edit the same folder. See the Session Memory section for details.
 

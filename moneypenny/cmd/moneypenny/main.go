@@ -131,6 +131,12 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	effectiveLogFile := *logFile
+	if effectiveLogFile == "" {
+		effectiveLogFile = service.DefaultLogFile(*dataDir)
+	}
+	startLogRotation(ctx, effectiveLogFile, log.Printf)
+
 	// Reset sessions stuck in the working state. Agent processes are tracked in
 	// memory and do not survive a restart, so any session still marked working
 	// is stale; left as-is, the scheduler would queue due prompts behind a
