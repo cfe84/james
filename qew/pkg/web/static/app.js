@@ -55,7 +55,7 @@
   let chatInputCache = {}; // sessionId → draft text
   let pendingAttachments = []; // files staged for the next send: [{name,size,type,b64,url}]
   const ATTACH_MAX_BYTES = 10 * 1024 * 1024; // 10MB per-file cap (mirrors moneypenny)
-  let multilineCompose = true; // per-session preference; true means Enter inserts a newline
+  let multilineCompose = false; // per-session preference; true means Enter inserts a newline
 
   // --- API ---
 
@@ -724,7 +724,7 @@
 
   async function openChat(sessionId, name, mp) {
     currentSession = sessionId;
-    multilineCompose = localStorage.getItem(`qewMultilineCompose:${sessionId}`) !== '0';
+    multilineCompose = localStorage.getItem(`qewMultilineCompose:${sessionId}`) === '1';
     syncComposeModeToggle();
     currentSessionName = name || sessionNameFromCache(sessionId) || sessionId.substring(0, 12);
     currentSessionNick = sessionNickFromCache(sessionId);
@@ -5084,8 +5084,8 @@
     btn.classList.toggle('active', multilineCompose);
     btn.setAttribute('aria-pressed', String(multilineCompose));
     btn.title = multilineCompose
-      ? 'Multiline mode: Enter adds a line; Cmd/Ctrl+Enter sends'
-      : 'Send-on-Enter mode: Enter sends; Shift+Enter adds a line';
+      ? 'Multiline mode: Enter adds a line; Cmd/Ctrl+Enter sends (Ctrl+P toggles)'
+      : 'Send-on-Enter mode: Enter sends; Shift+Enter adds a line (Ctrl+P toggles)';
   }
 
   function syncThoughtsToggle() {
@@ -5360,6 +5360,11 @@
       document.getElementById('chat-view').style.display !== 'none';
 
     if (chatActive) {
+      if (e.ctrlKey && !e.metaKey && !e.altKey && !e.repeat && e.key.toLowerCase() === 'p') {
+        e.preventDefault();
+        toggleComposeMode();
+        return;
+      }
       // Keyboard nav mode: input is blurred; j/k (or arrows) scroll the
       // transcript, Escape returns to the input.
       if (chatNavMode) {
