@@ -55,6 +55,7 @@
   let chatInputCache = {}; // sessionId → draft text
   let pendingAttachments = []; // files staged for the next send: [{name,size,type,b64,url}]
   const ATTACH_MAX_BYTES = 10 * 1024 * 1024; // 10MB per-file cap (mirrors moneypenny)
+  let multilineCompose = true; // per-session preference; true means Enter inserts a newline
 
   // --- API ---
 
@@ -723,6 +724,8 @@
 
   async function openChat(sessionId, name, mp) {
     currentSession = sessionId;
+    multilineCompose = localStorage.getItem(`qewMultilineCompose:${sessionId}`) !== '0';
+    syncComposeModeToggle();
     currentSessionName = name || sessionNameFromCache(sessionId) || sessionId.substring(0, 12);
     currentSessionNick = sessionNickFromCache(sessionId);
     currentSessionMP = mp || '';
@@ -5068,6 +5071,23 @@
     renderChat();
   }
 
+  function toggleComposeMode() {
+    if (!currentSession) return;
+    multilineCompose = !multilineCompose;
+    localStorage.setItem(`qewMultilineCompose:${currentSession}`, multilineCompose ? '1' : '0');
+    syncComposeModeToggle();
+  }
+
+  function syncComposeModeToggle() {
+    const btn = document.getElementById('chat-compose-mode');
+    if (!btn) return;
+    btn.classList.toggle('active', multilineCompose);
+    btn.setAttribute('aria-pressed', String(multilineCompose));
+    btn.title = multilineCompose
+      ? 'Multiline mode: Enter adds a line; Cmd/Ctrl+Enter sends'
+      : 'Send-on-Enter mode: Enter sends; Shift+Enter adds a line';
+  }
+
   function syncThoughtsToggle() {
     const btn = document.getElementById('thoughts-toggle');
     if (!btn) return;
@@ -5081,6 +5101,7 @@
 
   document.getElementById('chat-back').addEventListener('click', closeChat);
   document.getElementById('chat-send').addEventListener('click', sendMessage);
+  document.getElementById('chat-compose-mode').addEventListener('click', toggleComposeMode);
   document.getElementById('sound-toggle').addEventListener('click', toggleSound);
   document.getElementById('passkey-mgmt-btn').addEventListener('click', openPasskeyModal);
   document.getElementById('thoughts-toggle').addEventListener('click', toggleThoughts);
@@ -5137,7 +5158,11 @@
 
   const chatInput = document.getElementById('chat-input');
   chatInput.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key !== 'Enter') return;
+    if (e.metaKey || e.ctrlKey) {
+      e.preventDefault();
+      sendMessage();
+    } else if (!multilineCompose && !e.shiftKey) {
       e.preventDefault();
       sendMessage();
     }

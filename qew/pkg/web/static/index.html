@@ -181,6 +181,7 @@ header h1 span { color: var(--primary); }
   padding: 0 14px !important; font-size: 1.2em !important;
 }
 .chat-attach-btn:hover { background: var(--primary) !important; }
+.chat-compose-mode-btn.active { background: var(--primary) !important; color: white !important; }
 
 /* Pending attachment chips (shown above the chat input before send). */
 .chat-attachments { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 0 0; flex-shrink: 0; }
@@ -556,6 +557,7 @@ header h1 span { color: var(--primary); }
     <div class="chat-input-row">
       <input type="file" id="chat-file-input" multiple style="display:none">
       <button id="chat-attach" class="chat-attach-btn" title="Attach files (or paste / drag-drop)">📎</button>
+      <button id="chat-compose-mode" class="chat-attach-btn chat-compose-mode-btn" title="Multiline mode: Enter adds a line; Cmd/Ctrl+Enter sends" aria-pressed="true">🖋️</button>
       <textarea id="chat-input" placeholder="Type a message..." rows="1"></textarea>
       <button id="chat-send">Send</button>
     </div>
