@@ -1937,12 +1937,13 @@
   // `commit` holds the hash in commit mode. `view` is 'diff' (unified diff,
   // whole tree or a single file) or 'files' (changed-files list). `selectedFile`
   // filters the diff to one file; `fileList` holds the parsed per-file entries;
-  // `reviewed` tracks ephemeral per-file reviewed marks (lost on close, mirrors
-  // the hem TUI). `visibleSeqs` maps the currently rendered diff lines back to
+  // `reviewed` tracks per-file reviewed marks. Marks are persisted locally only
+  // when the hash of the file's diff still matches. `visibleSeqs` maps the
+  // currently rendered diff lines back to
   // their global line index so the cursor/comments stay aligned when filtered.
   const emptyDiffReview = () => ({
     text: '', lines: [], comments: {}, branch: '', mode: 'diff', commit: '', cursor: 0,
-    view: 'diff', selectedFile: '', fileList: [], fileCursor: 0, reviewed: {}, visibleSeqs: [],
+    view: 'diff', selectedFile: '', fileList: [], fileCursor: 0, reviewed: {}, fileHashes: {}, visibleSeqs: [],
     marks: {},
   });
   let diffReview = emptyDiffReview();
@@ -2022,6 +2023,52 @@
     return entries;
   }
 
+  // fnv1a64 returns a compact, deterministic fingerprint for a file's complete
+  // unified-diff section. It is used only to invalidate stale local UI state.
+  function fnv1a64(text) {
+    let hash = 0xcbf29ce484222325n;
+    for (let i = 0; i < text.length; i++) {
+      hash ^= BigInt(text.charCodeAt(i));
+      hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+    }
+    return hash.toString(16).padStart(16, '0');
+  }
+
+  function reviewedFilesStorageKey(sessionID) {
+    return `qewReviewedDiffFiles:${sessionID}`;
+  }
+
+  // restoreReviewedFiles retains a marker only while the corresponding file
+  // diff is byte-for-byte unchanged. It also removes stale persisted entries.
+  function restoreReviewedFiles() {
+    const hashes = {};
+    diffReview.lines.forEach(line => {
+      if (line.file) hashes[line.file] = (hashes[line.file] || '') + line.raw + '\n';
+    });
+    diffReview.fileHashes = {};
+    Object.keys(hashes).forEach(file => { diffReview.fileHashes[file] = fnv1a64(hashes[file]); });
+
+    let persisted = {};
+    try {
+      persisted = JSON.parse(localStorage.getItem(reviewedFilesStorageKey(currentSession)) || '{}');
+    } catch (_) {
+      localStorage.removeItem(reviewedFilesStorageKey(currentSession));
+    }
+    diffReview.reviewed = {};
+    Object.keys(diffReview.fileHashes).forEach(file => {
+      if (persisted[file] === diffReview.fileHashes[file]) diffReview.reviewed[file] = true;
+    });
+    localStorage.setItem(reviewedFilesStorageKey(currentSession), JSON.stringify(
+      Object.fromEntries(Object.entries(diffReview.reviewed).map(([file]) => [file, diffReview.fileHashes[file]])),
+    ));
+  }
+
+  function persistReviewedFiles() {
+    localStorage.setItem(reviewedFilesStorageKey(currentSession), JSON.stringify(
+      Object.fromEntries(Object.entries(diffReview.reviewed).map(([file]) => [file, diffReview.fileHashes[file]])),
+    ));
+  }
+
   function totalChangedLines(list) {
     return (list || []).reduce((s, f) => s + f.added + f.removed, 0);
   }
@@ -2072,7 +2119,7 @@
   }
 
   // renderFilesView shows the changed-files list; selecting a file opens its diff,
-  // and space toggles its (ephemeral) reviewed mark.
+  // and space toggles its reviewed mark.
   function renderFilesView() {
     const reviewedCount = diffReview.fileList.filter(f => diffReview.reviewed[f.name]).length;
     const branch = diffReview.branch ? '(' + escapeHtml(diffReview.branch) + ')' : '';
@@ -2141,6 +2188,7 @@
     if (!f) return;
     if (diffReview.reviewed[f.name]) delete diffReview.reviewed[f.name];
     else diffReview.reviewed[f.name] = true;
+    persistReviewedFiles();
     renderFilesView();
   }
 
@@ -2553,6 +2601,7 @@
       diffReview.text = diffText;
       diffReview.lines = parseDiffLines(diffText);
       diffReview.fileList = buildFileList(diffReview.lines);
+      restoreReviewedFiles();
       // Large multi-file diffs open on the files list (mirrors the hem TUI).
       diffReview.view = (diffReview.fileList.length > 1 &&
         totalChangedLines(diffReview.fileList) > FILES_AUTO_THRESHOLD) ? 'files' : 'diff';

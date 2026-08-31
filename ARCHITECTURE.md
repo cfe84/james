@@ -370,6 +370,8 @@ hem/
 
 84. **Per-conversation Qew compose mode (`v1.59.1`)**: Qew's 🖋️ button beside Attach controls whether Enter sends the current message. The session-specific `qewMultilineCompose:<sessionID>` local-storage key defaults to send-on-Enter when absent, while an explicit `1` selects multiline mode, where Enter inserts a line and Cmd/Ctrl+Enter sends. **Ctrl+P** toggles the setting for the open conversation, including while the message field has focus. Loading the value in `openChat` keeps the preference scoped to each conversation rather than globally changing every agent's compose behavior.
 
+85. **Qew reviewed-file persistence (`v1.59.2`)**: The Git diff Files view records reviewed markers in browser-local storage as a session-scoped `{file path: FNV-1a 64-bit diff fingerprint}` map. On each working-tree diff load, Qew fingerprints the complete parsed diff section for every file and restores a marker only for an exact match, then rewrites the map to remove modified or absent entries. This preserves review progress across closing/reopening the view without treating a changed file as already reviewed or sharing user-local review state with the agent or other users.
+
 The Executor (hem/pkg/commands) has been refactored to follow Single Responsibility Principle by extracting specialized managers:
 
 **Manager Components** (`hem/pkg/commands/`):
