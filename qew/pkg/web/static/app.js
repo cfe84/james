@@ -2024,11 +2024,12 @@
   }
 
   // normalizeAddedLine keeps the redundancy signal structural rather than
-  // formatting-sensitive. Short or punctuation-only lines are omitted to avoid
-  // flagging common braces, separators, and generated scaffolding.
+  // formatting-sensitive. Short, punctuation-only, and single-word lines are
+  // omitted from line-level matching to avoid common identifiers and literals.
   function normalizeAddedLine(line) {
     const normalized = line.code.trim().replace(/\s+/g, ' ');
-    return normalized.length >= 16 && /[A-Za-z0-9]/.test(normalized) ? normalized : '';
+    const words = normalized.match(/[A-Za-z0-9]+/g) || [];
+    return normalized.length >= 16 && words.length >= 2 ? normalized : '';
   }
 
   // findDiffRedundancy detects exact normalized additions and repeated runs of
@@ -2123,6 +2124,50 @@
     localStorage.setItem(reviewedFilesStorageKey(currentSession), JSON.stringify(
       Object.fromEntries(Object.entries(diffReview.reviewed).map(([file]) => [file, diffReview.fileHashes[file]])),
     ));
+  }
+
+  function pendingCommentsStorageKey(sessionID) {
+    return `qewPendingDiffComments:${sessionID}`;
+  }
+
+  // persistPendingComments stores saved inline comments with the fingerprint of
+  // their complete file diff. This lets a page reload restore review work while
+  // avoiding comments being applied to a file whose diff has since changed.
+  function persistPendingComments() {
+    if (diffReview.mode !== 'diff') return;
+    const perFile = {};
+    Object.entries(diffReview.comments).forEach(([seq, text]) => {
+      const line = diffReview.lines[Number(seq)];
+      if (!line || !line.file || !diffReview.fileHashes[line.file]) return;
+      if (!perFile[line.file]) perFile[line.file] = { hash: diffReview.fileHashes[line.file], comments: [] };
+      const occurrence = diffReview.lines.slice(0, Number(seq) + 1)
+        .filter(candidate => candidate.file === line.file).length - 1;
+      perFile[line.file].comments.push({ occurrence, text });
+    });
+    localStorage.setItem(pendingCommentsStorageKey(currentSession), JSON.stringify(perFile));
+  }
+
+  function restorePendingComments() {
+    let persisted = {};
+    try {
+      persisted = JSON.parse(localStorage.getItem(pendingCommentsStorageKey(currentSession)) || '{}');
+    } catch (_) {
+      localStorage.removeItem(pendingCommentsStorageKey(currentSession));
+    }
+    diffReview.comments = {};
+    Object.entries(persisted).forEach(([file, saved]) => {
+      if (!saved || saved.hash !== diffReview.fileHashes[file] || !Array.isArray(saved.comments)) return;
+      const seqs = [];
+      diffReview.lines.forEach((line, seq) => { if (line.file === file) seqs.push(seq); });
+      saved.comments.forEach(comment => {
+        const seq = seqs[comment.occurrence];
+        if (Number.isInteger(seq) && typeof comment.text === 'string' && comment.text.trim()) {
+          diffReview.comments[seq] = comment.text;
+        }
+      });
+    });
+    // Prune comments for removed or changed file diffs.
+    persistPendingComments();
   }
 
   function totalChangedLines(list) {
@@ -2523,12 +2568,14 @@
     const val = ta.value.trim();
     if (!val) { removeComment(seq); return; }
     diffReview.comments[seq] = val;
+    persistPendingComments();
     renderSavedComment(seq);
     updateSendBtn();
   }
 
   function removeComment(seq) {
     delete diffReview.comments[seq];
+    persistPendingComments();
     markLine(seq, false);
     const slot = document.getElementById('dcs-' + seq);
     if (slot) slot.innerHTML = '';
@@ -2617,6 +2664,7 @@
     if (btn) { btn.disabled = true; btn.textContent = 'Sending...'; }
     try {
       await apiCall('continue', 'session', [currentSession, '--async', prompt]);
+      localStorage.removeItem(pendingCommentsStorageKey(currentSession));
       closeWizard();
       queuedMessages.push({ content: prompt, since: chatTotal });
       lastChatHTML = '';
@@ -2667,6 +2715,7 @@
       diffReview.fileList = buildFileList(diffReview.lines);
       diffReview.redundancy = findDiffRedundancy(diffReview.lines);
       restoreReviewedFiles();
+      restorePendingComments();
       // Large multi-file diffs open on the files list (mirrors the hem TUI).
       diffReview.view = (diffReview.fileList.length > 1 &&
         totalChangedLines(diffReview.fileList) > FILES_AUTO_THRESHOLD) ? 'files' : 'diff';
