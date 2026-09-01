@@ -105,6 +105,7 @@ type chatModel struct {
 	sending               bool
 	commandMode           bool
 	showThoughts          bool // show persisted train-of-thought turns (toggle with T)
+	expandedActivity      bool // show all activity at full length (toggle with Esc-A)
 	confirmDelete         bool
 	pickingSubagent       bool // subagent picker overlay
 	subagentCursor        int
@@ -1748,7 +1749,8 @@ func (m chatModel) View() string {
 	systemMsgStyle := lipgloss.NewStyle().Foreground(colorMuted).Italic(true)
 	thoughtStyle := lipgloss.NewStyle().Foreground(colorMuted).Italic(true)
 	callbackStyle := lipgloss.NewStyle().Foreground(colorPrimary)
-	for i, turn := range m.conversation {
+	conversation := collapseSupersededThoughtTurns(m.conversation)
+	for i, turn := range conversation {
 		// Skip empty assistant turns that immediately follow a chain-of-thought
 		// turn: when the agent ends with a tool call (no final text), the
 		// stored assistant turn is empty and the agent_text turns above
@@ -1815,10 +1817,17 @@ func (m chatModel) View() string {
 			if strings.TrimSpace(content) == "" {
 				content = "(empty)"
 			}
+			if !m.expandedActivity {
+				content = truncateActivityContent(content, 180)
+			}
 			wrapped := wordWrap(content, contentWidth)
 			for i, line := range strings.Split(wrapped, "\n") {
 				if i == 0 {
-					msgLines = append(msgLines, thoughtStyle.Render(fmt.Sprintf("  %s %s", icon, line)))
+					prefix := fmt.Sprintf("  %s %s", icon, line)
+					if turn.CreatedAt != "" {
+						prefix = fmt.Sprintf("  %s %s %s", localTime(turn.CreatedAt), icon, line)
+					}
+					msgLines = append(msgLines, thoughtStyle.Render(prefix))
 				} else {
 					msgLines = append(msgLines, thoughtStyle.Render("    "+line))
 				}
@@ -1884,26 +1893,34 @@ func (m chatModel) View() string {
 		if len(m.activity) > 0 {
 			// Show recent activity events.
 			activityStyle := lipgloss.NewStyle().Foreground(colorMuted).Italic(true)
-			// Show last few activity events.
+			activity := collapseSupersededActivityEvents(m.activity)
 			start := 0
-			if len(m.activity) > 5 {
-				start = len(m.activity) - 5
+			if !m.expandedActivity && len(activity) > 5 {
+				start = len(activity) - 5
 			}
 			activityWidth := m.width - 8 // account for "  {icon} " prefix
 			if activityWidth < 20 {
 				activityWidth = 60
 			}
-			for _, ev := range m.activity[start:] {
+			for _, ev := range activity[start:] {
 				icon := "💭"
 				if ev.Type == "tool_use" {
 					icon = "🔧"
 				} else if ev.Type == "text" {
 					icon = "📝"
 				}
-				wrapped := wordWrap(ev.Summary, activityWidth)
+				summary := ev.Summary
+				if !m.expandedActivity {
+					summary = truncateActivityContent(summary, 180)
+				}
+				wrapped := wordWrap(summary, activityWidth)
 				for i, line := range strings.Split(wrapped, "\n") {
 					if i == 0 {
-						msgLines = append(msgLines, activityStyle.Render(fmt.Sprintf("  %s %s", icon, line)))
+						prefix := fmt.Sprintf("  %s %s", icon, line)
+						if ev.Timestamp != "" {
+							prefix = fmt.Sprintf("  %s %s %s", localTime(ev.Timestamp), icon, line)
+						}
+						msgLines = append(msgLines, activityStyle.Render(prefix))
 					} else {
 						msgLines = append(msgLines, activityStyle.Render("    "+line))
 					}
@@ -2650,4 +2667,47 @@ func localTime(s string) string {
 		}
 	}
 	return s
+}
+
+func truncateActivityContent(content string, limit int) string {
+	runes := []rune(content)
+	if len(runes) <= limit {
+		return content
+	}
+	return string(runes[:limit-3]) + "..."
+}
+
+func isThoughtTurn(role string) bool {
+	return role == "thinking" || role == "agent_text" || role == "scheduled"
+}
+
+func collapseSupersededThoughtTurns(turns []conversationTurn) []conversationTurn {
+	collapsed := make([]conversationTurn, 0, len(turns))
+	for i, turn := range turns {
+		if i+1 < len(turns) {
+			next := turns[i+1]
+			if isThoughtTurn(turn.Role) && turn.Role == next.Role &&
+				strings.TrimSpace(turn.Content) != "" &&
+				strings.Contains(strings.TrimSpace(next.Content), strings.TrimSpace(turn.Content)) {
+				continue
+			}
+		}
+		collapsed = append(collapsed, turn)
+	}
+	return collapsed
+}
+
+func collapseSupersededActivityEvents(events []activityEvent) []activityEvent {
+	collapsed := make([]activityEvent, 0, len(events))
+	for i, event := range events {
+		if i+1 < len(events) {
+			next := events[i+1]
+			if event.Type == next.Type && strings.TrimSpace(event.Summary) != "" &&
+				strings.Contains(strings.TrimSpace(next.Summary), strings.TrimSpace(event.Summary)) {
+				continue
+			}
+		}
+		collapsed = append(collapsed, event)
+	}
+	return collapsed
 }

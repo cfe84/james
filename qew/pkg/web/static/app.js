@@ -38,6 +38,7 @@
   // turns are hidden; live activity for the in-progress turn is still shown while
   // the agent is working. Persisted across reloads.
   let showThoughts = (localStorage.getItem('qewShowThoughts') === '1');
+  let expandedActivity = (localStorage.getItem('qewExpandedActivity') === '1');
   let projectFilter = ''; // current project filter
   let projectsCache = []; // cached project list
   let dashEntries = [];   // dashboard rows in display order (for keyboard nav)
@@ -1011,6 +1012,40 @@
     }
   }
 
+  function truncateActivityContent(content) {
+    const limit = 180;
+    return content.length > limit ? content.slice(0, limit - 3) + '...' : content;
+  }
+
+  // Progressive updates often repeat the preceding status verbatim with more
+  // detail. Only remove an immediately preceding update of the same category.
+  function collapseSupersededActivity(entries, typeOf, contentOf) {
+    return entries.filter((entry, index) => {
+      const next = entries[index + 1];
+      const type = typeOf(entry);
+      if (!type || !next || type !== typeOf(next)) return true;
+      const current = String(contentOf(entry) || '').trim();
+      const successor = String(contentOf(next) || '').trim();
+      return !current || !successor || !successor.includes(current);
+    });
+  }
+
+  function collapseSupersededActivityTurns(turns) {
+    return collapseSupersededActivity(
+      turns,
+      turn => isThoughtTurn(turn.role) ? turn.role : '',
+      turn => turn.content,
+    );
+  }
+
+  function isThoughtTurn(role) {
+    return role === 'thinking' || role === 'agent_text' || role === 'scheduled';
+  }
+
+  function collapseSupersededActivityEvents(events) {
+    return collapseSupersededActivity(events, event => event.type, event => event.summary);
+  }
+
   function renderChat(prepend) {
     const container = document.getElementById('chat-messages');
     const serverTurns = chatConversation;
@@ -1062,9 +1097,10 @@
       return;
     }
 
+    const activityTurns = collapseSupersededActivityTurns(serverTurns);
     let html = '';
     let skippedThoughts = false;
-    for (const turn of serverTurns) {
+    for (const turn of activityTurns) {
       const agentName = currentSessionName || 'agent';
       const content = turn.content || '(empty)';
 
@@ -1083,7 +1119,9 @@
       if (turn.role === 'thinking' || turn.role === 'agent_text' || turn.role === 'scheduled') {
         if (!showThoughts) { skippedThoughts = true; continue; }
         const icon = turn.role === 'thinking' ? '💭' : turn.role === 'scheduled' ? '⏰' : '📝';
-        html += `<div class="msg thought">${icon} ${formatContent(content)}</div>`;
+        const thoughtContent = expandedActivity ? content : truncateActivityContent(content);
+        const timestamp = turn.created_at ? `${escapeHtml(formatTurnTime(turn.created_at))} ` : '';
+        html += `<div class="msg thought">${timestamp}${icon} ${formatContent(thoughtContent)}</div>`;
         continue;
       }
 
@@ -1126,11 +1164,15 @@
     // Working indicator with activity events.
     if (currentSessionStatus === 'working') {
       if (activity && activity.length > 0) {
-        const recentAct = activity.slice(-5);
+        const collapsedActivity = collapseSupersededActivityEvents(activity);
+        const recentAct = expandedActivity ? collapsedActivity : collapsedActivity.slice(-5);
         for (const ev of recentAct) {
           const icon = ev.type === 'tool_use' ? '🔧' : ev.type === 'text' ? '📝' : '💭';
-          html += `<div class="msg activity-indicator">${icon} ${escapeHtml(ev.summary)}</div>`;
+          const timestamp = ev.timestamp ? `${escapeHtml(formatTurnTime(ev.timestamp))} ` : '';
+          const summary = expandedActivity ? ev.summary : truncateActivityContent(ev.summary);
+          html += `<div class="msg activity-indicator">${timestamp}${icon} ${escapeHtml(summary)}</div>`;
         }
+
       } else {
         const spyVerbs = ['Infiltrating...', 'Surveilling...', 'Decrypting...', 'On a mission...', 'Going undercover...', 'Acquiring intel...', 'Intercepting...', 'Extracting...'];
         const spyVerb = spyVerbs[Math.floor(Math.random() * spyVerbs.length)];
@@ -1242,6 +1284,7 @@
         rejected.push(`${f.name} (read error)`);
       }
     }
+
     renderAttachmentChips();
     if (rejected.length > 0) {
       alert('Some files were not attached (max 10MB each):\n' + rejected.join('\n'));
@@ -5234,6 +5277,14 @@
     renderChat();
   }
 
+  function toggleExpandedActivity() {
+    expandedActivity = !expandedActivity;
+    localStorage.setItem('qewExpandedActivity', expandedActivity ? '1' : '0');
+    syncActivityDetailToggle();
+    lastChatHTML = '';
+    renderChat(false);
+  }
+
   function toggleComposeMode() {
     if (!currentSession) return;
     multilineCompose = !multilineCompose;
@@ -5260,6 +5311,16 @@
     btn.classList.toggle('active', showThoughts);
   }
 
+  function syncActivityDetailToggle() {
+    const btn = document.getElementById('activity-detail-toggle');
+    if (!btn) return;
+    btn.textContent = expandedActivity ? '🧾' : '📄';
+    btn.title = expandedActivity
+      ? 'Activity detail: Expanded (click for Brief)'
+      : 'Activity detail: Brief (click for Expanded)';
+    btn.classList.toggle('active', expandedActivity);
+  }
+
   // --- Init ---
 
   document.getElementById('chat-back').addEventListener('click', closeChat);
@@ -5268,7 +5329,9 @@
   document.getElementById('sound-toggle').addEventListener('click', toggleSound);
   document.getElementById('passkey-mgmt-btn').addEventListener('click', openPasskeyModal);
   document.getElementById('thoughts-toggle').addEventListener('click', toggleThoughts);
+  document.getElementById('activity-detail-toggle').addEventListener('click', toggleExpandedActivity);
   syncThoughtsToggle();
+  syncActivityDetailToggle();
   document.getElementById('new-session-btn').addEventListener('click', openCreateWizard);
   document.getElementById('nav-moneypennies-btn').addEventListener('click', showMoneypenniesView);
   document.getElementById('nav-projects-btn').addEventListener('click', showProjectsView);
@@ -5414,7 +5477,10 @@
     const pick = (root) => {
       const btns = Array.from(root.querySelectorAll('button'));
       for (const label of labels) {
-        const btn = btns.find(b => b.textContent.trim().toLowerCase() === label);
+        const btn = btns.find(b => {
+          const text = b.textContent.trim().toLowerCase();
+          return text === label || text.startsWith(label + ' ');
+        });
         if (btn) return btn;
       }
       return null;

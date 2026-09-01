@@ -1670,6 +1670,15 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.chat.confirmDelete = false
 			m.chat.showThoughts = !m.chat.showThoughts
 			return m, nil
+		case "A":
+			m.chat.confirmDelete = false
+			m.chat.expandedActivity = !m.chat.expandedActivity
+			if m.chat.expandedActivity {
+				m.statusMsg = "Activity detail: Expanded"
+			} else {
+				m.statusMsg = "Activity detail: Brief"
+			}
+			return m, nil
 		case "K":
 			// Compact: kick off the custom-compaction pipeline on the session.
 			// Runs asynchronously on the moneypenny; results stream back into

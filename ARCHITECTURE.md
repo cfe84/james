@@ -376,6 +376,8 @@ hem/
 
 87. **Qew pending review-comment persistence (`v1.61.0`)**: Saved inline comments on a working-tree diff are stored in browser-local storage by session, grouped by file with the same complete-file diff fingerprint used by reviewed markers. A comment records its line's relative position within that file section, allowing restoration when another file inserts or removes diff lines before it. Reloading restores comments only when the full file diff fingerprint still matches, pruning stale changed-file comments. The state is removed after `continue session` successfully posts the assembled review prompt; unsaved editor text remains intentionally transient.
 
+88. **Brief and expanded activity (`v1.62.0`)**: Qew and Hem treat consecutive same-category thought, narration, and tool-status messages as progressive activity. If the newer update contains the complete preceding update, the preceding update is suppressed and the newer timestamp is retained. Both UIs render local timestamps before activity entries. Qew persists its Brief/Expanded setting in browser local storage; Brief shortens long text and retains the newest five live updates, while Expanded shows full text and every retained live update. Hem exposes the same mode through `Esc` then `A`. The filtering is intentionally adjacent-only and exact containment, avoiding lossy semantic deduplication of distinct reasoning.
+
 The Executor (hem/pkg/commands) has been refactored to follow Single Responsibility Principle by extracting specialized managers:
 
 **Manager Components** (`hem/pkg/commands/`):
