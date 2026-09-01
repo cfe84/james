@@ -1944,7 +1944,7 @@
   const emptyDiffReview = () => ({
     text: '', lines: [], comments: {}, branch: '', mode: 'diff', commit: '', cursor: 0,
     view: 'diff', selectedFile: '', fileList: [], fileCursor: 0, reviewed: {}, fileHashes: {}, visibleSeqs: [],
-    marks: {},
+    marks: {}, redundancy: { lines: 0, blocks: 0, files: {} },
   });
   let diffReview = emptyDiffReview();
   // Threshold (total changed lines) above which a multi-file diff opens on the
@@ -2021,6 +2021,62 @@
     // Files with no +/- lines are binary / mode-only changes.
     entries.forEach(e => { if (e.added === 0 && e.removed === 0) e.binary = true; });
     return entries;
+  }
+
+  // normalizeAddedLine keeps the redundancy signal structural rather than
+  // formatting-sensitive. Short or punctuation-only lines are omitted to avoid
+  // flagging common braces, separators, and generated scaffolding.
+  function normalizeAddedLine(line) {
+    const normalized = line.code.trim().replace(/\s+/g, ' ');
+    return normalized.length >= 16 && /[A-Za-z0-9]/.test(normalized) ? normalized : '';
+  }
+
+  // findDiffRedundancy detects exact normalized additions and repeated runs of
+  // three consecutive meaningful additions. It is a local review hint only:
+  // source text never leaves the browser and no attempt is made to infer intent.
+  function findDiffRedundancy(lines) {
+    const lineLocations = new Map();
+    const blockLocations = new Map();
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const normalized = line.side === '+' ? normalizeAddedLine(line) : '';
+      if (normalized) {
+        const locations = lineLocations.get(normalized) || [];
+        locations.push(line.file);
+        lineLocations.set(normalized, locations);
+      }
+
+      if (!normalized || i + 2 >= lines.length) continue;
+      const next = lines[i + 1];
+      const afterNext = lines[i + 2];
+      if (next.file !== line.file || afterNext.file !== line.file ||
+          next.side !== '+' || afterNext.side !== '+') continue;
+      const block = [normalized, normalizeAddedLine(next), normalizeAddedLine(afterNext)];
+      if (block.some(part => !part)) continue;
+      const key = block.join('\n');
+      const locations = blockLocations.get(key) || [];
+      locations.push(line.file);
+      blockLocations.set(key, locations);
+    }
+
+    const files = {};
+    const add = (file, kind) => {
+      if (!files[file]) files[file] = { lines: 0, blocks: 0 };
+      files[file][kind]++;
+    };
+    let duplicateLines = 0;
+    for (const locations of lineLocations.values()) {
+      if (locations.length < 2) continue;
+      duplicateLines++;
+      new Set(locations).forEach(file => add(file, 'lines'));
+    }
+    let duplicateBlocks = 0;
+    for (const locations of blockLocations.values()) {
+      if (locations.length < 2) continue;
+      duplicateBlocks++;
+      new Set(locations).forEach(file => add(file, 'blocks'));
+    }
+    return { lines: duplicateLines, blocks: duplicateBlocks, files };
   }
 
   // fnv1a64 returns a compact, deterministic fingerprint for a file's complete
@@ -2114,7 +2170,11 @@
         : `<span class="diff-file-add">+${f.added}</span> <span class="diff-file-del">-${f.removed}</span>`;
       const cc = commentCountForFile(f.name);
       const cmt = cc > 0 ? ` <span class="diff-file-cmt">[${cc} comment${cc > 1 ? 's' : ''}]</span>` : '';
-      return `<div class="diff-file-row" data-file="${escapeHtml(f.name)}">${mark}<span class="diff-file-name">${escapeHtml(f.name)}</span>${stats}${cmt}</div>`;
+      const redundancy = diffReview.redundancy.files[f.name];
+      const repeated = redundancy
+        ? ` <span class="diff-file-dup" title="Potential duplicated additions: ${redundancy.lines} repeated line pattern${redundancy.lines === 1 ? '' : 's'}, ${redundancy.blocks} repeated 3-line block${redundancy.blocks === 1 ? '' : 's'}">↻ ${redundancy.lines}L ${redundancy.blocks}B</span>`
+        : '';
+      return `<div class="diff-file-row" data-file="${escapeHtml(f.name)}">${mark}<span class="diff-file-name">${escapeHtml(f.name)}</span>${stats}${cmt}${repeated}</div>`;
     }).join('');
   }
 
@@ -2123,8 +2183,12 @@
   function renderFilesView() {
     const reviewedCount = diffReview.fileList.filter(f => diffReview.reviewed[f.name]).length;
     const branch = diffReview.branch ? '(' + escapeHtml(diffReview.branch) + ')' : '';
+    const redundancy = diffReview.redundancy;
+    const duplicationHint = redundancy.lines || redundancy.blocks
+      ? ` · ↻ ${redundancy.lines} repeated line${redundancy.lines === 1 ? '' : 's'}, ${redundancy.blocks} repeated 3-line block${redundancy.blocks === 1 ? '' : 's'}`
+      : '';
     renderWizardModal(`
-      <h3>Changed files <span class="diff-file-title">${branch} ${reviewedCount}/${diffReview.fileList.length} reviewed</span></h3>
+      <h3>Changed files <span class="diff-file-title">${branch} ${reviewedCount}/${diffReview.fileList.length} reviewed${duplicationHint}</span></h3>
       <div class="diff-content" id="diff-files-list">${renderFilesRows()}</div>
       <div class="modal-actions">
         <button class="btn-muted" onclick="window._qewCloseWizard()">Close</button>
@@ -2601,6 +2665,7 @@
       diffReview.text = diffText;
       diffReview.lines = parseDiffLines(diffText);
       diffReview.fileList = buildFileList(diffReview.lines);
+      diffReview.redundancy = findDiffRedundancy(diffReview.lines);
       restoreReviewedFiles();
       // Large multi-file diffs open on the files list (mirrors the hem TUI).
       diffReview.view = (diffReview.fileList.length > 1 &&

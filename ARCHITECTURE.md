@@ -372,6 +372,8 @@ hem/
 
 85. **Qew reviewed-file persistence (`v1.59.2`)**: The Git diff Files view records reviewed markers in browser-local storage as a session-scoped `{file path: FNV-1a 64-bit diff fingerprint}` map. On each working-tree diff load, Qew fingerprints the complete parsed diff section for every file and restores a marker only for an exact match, then rewrites the map to remove modified or absent entries. This preserves review progress across closing/reopening the view without treating a changed file as already reviewed or sharing user-local review state with the agent or other users.
 
+86. **Qew local diff-redundancy hints (`v1.60.0`)**: Qew derives a lightweight potential-duplication signal entirely in the browser from working-tree diff additions. It normalizes whitespace, omits short or punctuation-only additions, then detects repeated line patterns and exact repeated sequences of three meaningful added lines. The Files view reports aggregate counts and per-file `↻ NL MB` badges. This is deliberately an exact-match review hint, not semantic clone detection: it has no backend call, persists no source text, and cannot claim that repeated code is necessarily incorrect.
+
 The Executor (hem/pkg/commands) has been refactored to follow Single Responsibility Principle by extracting specialized managers:
 
 **Manager Components** (`hem/pkg/commands/`):
