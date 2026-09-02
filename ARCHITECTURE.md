@@ -378,6 +378,10 @@ hem/
 
 88. **Brief and expanded activity (`v1.62.0`)**: Qew and Hem treat consecutive same-category thought, narration, and tool-status messages as progressive activity. If the newer update contains the complete preceding update, the preceding update is suppressed and the newer timestamp is retained. Both UIs render local timestamps before activity entries. Qew persists its Brief/Expanded setting in browser local storage; Brief shortens long text and retains the newest five live updates, while Expanded shows full text and every retained live update. Hem exposes the same mode through `Esc` then `A`. The filtering is intentionally adjacent-only and exact containment, avoiding lossy semantic deduplication of distinct reasoning.
 
+89. **Copilot completed-response recovery (`v1.63.0`)**: Copilot’s stream can contain a complete final answer and terminal `result` event even when the CLI subsequently exits non-zero. Moneypenny treats this narrow, fully parsed completion shape as successful and records the answer rather than adding a misleading generic execution-failure turn. It still fails non-zero exits without a final reply, without the terminal result event, or with a scanner error, preserving real process and stream failures.
+
+90. **Qew Ctrl+J/K navigation (`v1.63.0`)**: The dashboard session omnibar accepts `Ctrl+J`/`Ctrl+K` as down/up selection movement in addition to arrow keys, even while its filter input has focus. In an open conversation the same shortcuts enter the existing transcript navigation mode and scroll down/up by the normal line step, matching `Esc` then `j`/`k`. On the dashboard list they instead scroll `#dash-content` by that line step without changing the `dashSelectedId`, preserving the distinct semantics of plain `j`/`k` selection navigation.
+
 The Executor (hem/pkg/commands) has been refactored to follow Single Responsibility Principle by extracting specialized managers:
 
 **Manager Components** (`hem/pkg/commands/`):

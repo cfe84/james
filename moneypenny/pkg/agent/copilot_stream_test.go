@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"log"
 	"os"
@@ -20,6 +21,16 @@ func fakeCopilotCmd(t *testing.T, jsonl string) *exec.Cmd {
 		t.Fatalf("write fixture: %v", err)
 	}
 	return exec.Command("cat", fixture)
+}
+
+func fakeCopilotExitCmd(t *testing.T, jsonl string, exitCode int) *exec.Cmd {
+	t.Helper()
+	dir := t.TempDir()
+	fixture := filepath.Join(dir, "events.jsonl")
+	if err := os.WriteFile(fixture, []byte(jsonl), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	return exec.Command("sh", "-c", `cat "$1"; exit "$2"`, "sh", fixture, fmt.Sprint(exitCode))
 }
 
 func newTestRunner(persist PersistentActivityFunc) *Runner {
@@ -61,8 +72,35 @@ func TestCopilotStreamingPhaseClassifiesReply(t *testing.T) {
 			t.Errorf("final_answer should not be persisted as train of thought, got %v", p)
 		}
 	}
+
 	if !gotPreamble {
 		t.Errorf("expected commentary preamble persisted as agent_text, got %v", persisted)
+	}
+}
+
+func TestCopilotStreamingRetainsCompletedReplyAfterNonzeroExit(t *testing.T) {
+	jsonl := `{"type":"assistant.message","data":{"phase":"final_answer","content":"Completed successfully."}}
+{"type":"result","data":{"exitCode":1}}
+`
+	r := newTestRunner(func(string, string, string) {})
+	buf := newActivityBuffer(30)
+	res, err := r.runCopilotStreaming(fakeCopilotExitCmd(t, jsonl, 1), buf, "sessExit", &bytes.Buffer{}, true)
+	if err != nil {
+		t.Fatalf("runCopilotStreaming returned error despite final reply: %v", err)
+	}
+	if res.Text != "Completed successfully." {
+		t.Errorf("reply mismatch: got %q", res.Text)
+	}
+}
+
+func TestCopilotStreamingRejectsNonzeroExitWithoutReply(t *testing.T) {
+	jsonl := `{"type":"result","data":{"exitCode":1}}
+`
+	r := newTestRunner(func(string, string, string) {})
+	buf := newActivityBuffer(30)
+	_, err := r.runCopilotStreaming(fakeCopilotExitCmd(t, jsonl, 1), buf, "sessExitEmpty", &bytes.Buffer{}, true)
+	if err == nil {
+		t.Fatal("runCopilotStreaming accepted a nonzero exit without a final reply")
 	}
 }
 

@@ -449,6 +449,11 @@
     if (rows[idx]) rows[idx].scrollIntoView({ block: 'nearest' });
   }
 
+  function dashScrollLine(dir) {
+    const container = document.getElementById('dash-content');
+    if (container) container.scrollBy({ top: dir * 80, behavior: 'auto' });
+  }
+
   function dashOpenSelected() {
     const e = dashEntries.find(x => x.sessionId === dashSelectedId);
     if (e) openDashEntry(e);
@@ -3199,7 +3204,15 @@
         updateOmniList();
       });
       input.addEventListener('keydown', (e) => {
-        if (e.key === 'ArrowDown') {
+        if (e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'j') {
+          e.preventDefault(); e.stopPropagation();
+          omnibar.cursor = Math.min(omnibar.filtered.length - 1, omnibar.cursor + 1);
+          updateOmniList();
+        } else if (e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'k') {
+          e.preventDefault(); e.stopPropagation();
+          omnibar.cursor = Math.max(0, omnibar.cursor - 1);
+          updateOmniList();
+        } else if (e.key === 'ArrowDown') {
           e.preventDefault(); e.stopPropagation();
           omnibar.cursor = Math.min(omnibar.filtered.length - 1, omnibar.cursor + 1);
           updateOmniList();
@@ -5594,6 +5607,18 @@
         toggleComposeMode();
         return;
       }
+      if (e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'j') {
+        e.preventDefault();
+        enterChatNavMode();
+        chatScrollLine(1);
+        return;
+      }
+      if (e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        enterChatNavMode();
+        chatScrollLine(-1);
+        return;
+      }
       // Keyboard nav mode: input is blurred; j/k (or arrows) scroll the
       // transcript, Escape returns to the input.
       if (chatNavMode) {
@@ -5644,10 +5669,21 @@
     // Dashboard list navigation + shortcuts (only when the dashboard is the
     // active view and focus is not in a form field).
     const dashActive = document.getElementById('dashboard-view').style.display !== 'none';
-    if (!dashActive || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (!dashActive) return;
     const tag = (e.target.tagName || '').toLowerCase();
     const typingText = tag === 'input' || tag === 'textarea' || tag === 'select' ||
       e.target.isContentEditable;
+    if (!typingText && e.ctrlKey && !e.metaKey && !e.altKey) {
+      if (e.key.toLowerCase() === 'j') {
+        e.preventDefault();
+        dashScrollLine(1);
+      } else if (e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        dashScrollLine(-1);
+      }
+      return;
+    }
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
     const typingFocus = typingText || tag === 'button' || tag === 'a';
     // Allow auto-repeat for list navigation (holding j/k scrolls a long list),
     // but ignore it for every other key (action keys must not fire repeatedly).

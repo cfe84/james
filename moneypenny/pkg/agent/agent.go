@@ -217,11 +217,11 @@ type RunParams struct {
 	// ContextTier selects copilot's context-window tier via --context (e.g.
 	// "long_context" for the 1M window). Copilot-only; empty means the default
 	// tier (no flag). Claude has no equivalent and ignores this.
-	ContextTier  string
-	Yolo         bool
-	Path         string // working directory for the agent
-	Resume       bool   // true for continue_session
-	SessionDir   string // per-session persistent dir (managed by handler)
+	ContextTier string
+	Yolo        bool
+	Path        string // working directory for the agent
+	Resume      bool   // true for continue_session
+	SessionDir  string // per-session persistent dir (managed by handler)
 	// MemoryDir is the session's file-based memory folder (<SessionDir>/memory).
 	// When set, it is added to the agent's allowed directories so the agent can
 	// read and edit its memory with native file tools; for non-yolo sessions the
@@ -572,6 +572,7 @@ func (r *Runner) runCopilotStreaming(cmd *exec.Cmd, buf *activityBuffer, session
 
 	var resultText string
 	var lastRawEvent string
+	var receivedResult bool
 	// Copilot has no separate "result" event: the answer is conveyed purely
 	// through assistant.message events. The model emits narration before each
 	// tool call ("Now let me look at X") as its own assistant.message, then
@@ -709,6 +710,7 @@ func (r *Runner) runCopilotStreaming(cmd *exec.Cmd, buf *activityBuffer, session
 
 		case "result":
 			r.vlog.Printf("copilot stream: result event: %s", truncStr(line, 500))
+			receivedResult = true
 
 		case "assistant.reasoning":
 			if data != nil {
@@ -844,6 +846,16 @@ func (r *Runner) runCopilotStreaming(cmd *exec.Cmd, buf *activityBuffer, session
 	// any stream read error (e.g. a line exceeding the scanner buffer) rather
 	// than silently storing a truncated reply as a successful turn.
 	if err := cmd.Wait(); err != nil {
+		// Copilot can report a complete final answer, followed by a non-zero
+		// process exit that it also exposes in its terminal result event. The
+		// completed stream is authoritative for a conversational run: retaining
+		// its answer prevents a successful agent response from being replaced by
+		// a misleading generic execution failure. An incomplete stream, empty
+		// answer, or scanner failure remains an error.
+		if receivedResult && strings.TrimSpace(resultText) != "" && scanErr == nil {
+			r.vlog.Printf("copilot stream completed with reply despite process exit: %v", err)
+			return &Result{Text: strings.TrimSpace(resultText)}, nil
+		}
 		return nil, fmtAgentErrorFull(err, stderrBuf, resultText, lastRawEvent)
 	}
 	if scanErr != nil {
@@ -926,8 +938,8 @@ func toolSummary(b map[string]any) string {
 type agentInvocation struct {
 	args    []string
 	stdin   string
-	env     []string     // extra env vars to merge into cmd.Env
-	cleanup func()       // optional cleanup, invoked after cmd.Wait()
+	env     []string // extra env vars to merge into cmd.Env
+	cleanup func()   // optional cleanup, invoked after cmd.Wait()
 }
 
 // stdinPromptThreshold is the prompt length above which we route the prompt
