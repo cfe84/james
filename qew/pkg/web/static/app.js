@@ -621,7 +621,7 @@
   function handleWizardListKey(e) {
     const overlay = document.querySelector('.modal-overlay');
     if (!overlay) return false;
-    if (e.ctrlKey || e.metaKey || e.altKey) return false;
+    if (e.metaKey || e.altKey) return false;
     // Allow auto-repeat for navigation (holding j/k to scroll a long listing),
     // but never for Enter — a held Enter must not rapidly descend directories.
     if (e.repeat && e.key === 'Enter') return false;
@@ -630,8 +630,13 @@
     const onButton = tag === 'button' || tag === 'a';
     const nav = (entries, onEnter) => {
       let idx = entries.findIndex(el => el.classList.contains('selected'));
-      if (e.key === 'ArrowDown' || e.key === 'j') idx = Math.min(entries.length - 1, (idx < 0 ? -1 : idx) + 1);
-      else if (e.key === 'ArrowUp' || e.key === 'k') idx = Math.max(0, (idx < 0 ? 0 : idx) - 1);
+      if (e.key === 'ArrowDown' || e.key === 'j' ||
+          (e.ctrlKey && e.key.toLowerCase() === 'j')) {
+        idx = Math.min(entries.length - 1, (idx < 0 ? -1 : idx) + 1);
+      } else if (e.key === 'ArrowUp' || e.key === 'k' ||
+                 (e.ctrlKey && e.key.toLowerCase() === 'k')) {
+        idx = Math.max(0, (idx < 0 ? 0 : idx) - 1);
+      }
       else if (e.key === 'Enter') {
         // Let a focused button (Cancel/Back/Next/…) activate natively.
         if (onButton) return false;
@@ -2366,8 +2371,11 @@
   function handleFilesListKey(e) {
     const list = diffReview.fileList || [];
     if (!list.length) return false;
-    if (e.ctrlKey || e.metaKey || e.altKey) return false;
-    const isNav = (e.key === 'ArrowDown' || e.key === 'j' || e.key === 'ArrowUp' || e.key === 'k');
+    if (e.metaKey || e.altKey) return false;
+    const ctrlDown = e.ctrlKey && e.key.toLowerCase() === 'j';
+    const ctrlUp = e.ctrlKey && e.key.toLowerCase() === 'k';
+    const isNav = (e.key === 'ArrowDown' || e.key === 'j' || e.key === 'ArrowUp' || e.key === 'k' ||
+      ctrlDown || ctrlUp);
     if (e.repeat && !isNav) return true;
     switch (e.key) {
       case 'ArrowDown': case 'j': e.preventDefault(); moveFileCursor(1); return true;
@@ -2376,6 +2384,8 @@
       case ' ':         e.preventDefault(); toggleReviewedFile(); return true;
       case 'Tab':       e.preventDefault(); showAllDiff(); return true;
     }
+    if (ctrlDown) { e.preventDefault(); moveFileCursor(1); return true; }
+    if (ctrlUp) { e.preventDefault(); moveFileCursor(-1); return true; }
     return false;
   }
 
@@ -2545,6 +2555,12 @@
     }
     if ((e.ctrlKey || e.metaKey) && (e.key === 'u' || e.key === 'U')) {
       e.preventDefault(); moveDiffCursor(-Math.max(1, Math.floor(diffPageLines(content) / 2))); return true;
+    }
+    if (e.ctrlKey && e.key.toLowerCase() === 'j') {
+      e.preventDefault(); moveDiffCursor(1); return true;
+    }
+    if (e.ctrlKey && e.key.toLowerCase() === 'k') {
+      e.preventDefault(); moveDiffCursor(-1); return true;
     }
     if (e.ctrlKey || e.metaKey) return false;
     // Numbered marks: Shift+N sets mark N at the cursor line; N jumps to it.
@@ -3134,14 +3150,16 @@
   function handleOverridePickerKey(e) {
     if (!overridePicker) return false;
     if (e.key === 'Escape') { e.preventDefault(); closeOverridePicker(true); return true; }
-    if (e.ctrlKey || e.metaKey || e.altKey) return true; // swallow while open
+    if (e.metaKey || e.altKey) return true; // swallow while open
     if (e.repeat && e.key === 'Enter') return true;
     const n = overridePicker.options.length;
-    if (e.key === 'ArrowDown' || e.key === 'j') {
+    if (e.key === 'ArrowDown' || e.key === 'j' ||
+        (e.ctrlKey && e.key.toLowerCase() === 'j')) {
       overridePicker.cursor = Math.min(n - 1, overridePicker.cursor + 1);
       e.preventDefault(); renderOverridePicker(); return true;
     }
-    if (e.key === 'ArrowUp' || e.key === 'k') {
+    if (e.key === 'ArrowUp' || e.key === 'k' ||
+        (e.ctrlKey && e.key.toLowerCase() === 'k')) {
       overridePicker.cursor = Math.max(0, overridePicker.cursor - 1);
       e.preventDefault(); renderOverridePicker(); return true;
     }
@@ -5546,6 +5564,12 @@
     // The in-conversation command palette captures single-key actions while open.
     if (cmdPaletteOpen && document.querySelector('.cmd-palette')) {
       if (e.key === 'Escape') { e.preventDefault(); closeCmdPalette(true); return; }
+      if (e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'j') {
+        e.preventDefault(); enterChatNavMode(); chatScrollLine(1); return;
+      }
+      if (e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'k') {
+        e.preventDefault(); enterChatNavMode(); chatScrollLine(-1); return;
+      }
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       // j/k (or arrows) leave the palette and enter keyboard nav mode, scrolling
       // the transcript with the input blurred.
@@ -5607,6 +5631,12 @@
         toggleComposeMode();
         return;
       }
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.repeat &&
+          e.key.toLowerCase() === 'i' && document.activeElement !== document.getElementById('chat-input')) {
+        e.preventDefault();
+        exitChatNavMode(true);
+        return;
+      }
       if (e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'j') {
         e.preventDefault();
         enterChatNavMode();
@@ -5641,10 +5671,13 @@
     // Moneypennies / traits / projects management list views: list navigation + shortcuts.
     const mgmt = activeMgmtList();
     if (mgmt) {
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.metaKey || e.altKey) return;
       const tag = (e.target.tagName || '').toLowerCase();
       if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable) return;
-      const isNav = e.key === 'ArrowDown' || e.key === 'j' || e.key === 'ArrowUp' || e.key === 'k';
+      const ctrlDown = e.ctrlKey && e.key.toLowerCase() === 'j';
+      const ctrlUp = e.ctrlKey && e.key.toLowerCase() === 'k';
+      const isNav = e.key === 'ArrowDown' || e.key === 'j' || e.key === 'ArrowUp' || e.key === 'k' ||
+        ctrlDown || ctrlUp;
       // Allow auto-repeat for navigation (holding j/k scrolls a long list), but
       // ignore it for every action key (a held key must not fire repeatedly).
       if (e.repeat && !isNav) return;
@@ -5659,6 +5692,8 @@
       if (e.key === 'q' && mgmt.kind === 'project') { e.preventDefault(); hideProjectsView(); return; }
       if (e.key === 'ArrowDown' || e.key === 'j') { e.preventDefault(); mgmtMove(1); return; }
       if (e.key === 'ArrowUp' || e.key === 'k') { e.preventDefault(); mgmtMove(-1); return; }
+      if (ctrlDown) { e.preventDefault(); mgmtMove(1); return; }
+      if (ctrlUp) { e.preventDefault(); mgmtMove(-1); return; }
       // Let Enter activate a focused row/toolbar button natively (e.g. after a
       // mouse click) instead of hijacking it for the selected-row action.
       if (e.key === 'Enter' && (tag === 'button' || tag === 'a')) return;
