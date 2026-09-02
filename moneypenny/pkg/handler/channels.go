@@ -288,13 +288,13 @@ func (h *Handler) pollChannel(ctx context.Context, ch *store.Channel) {
 	}
 
 	// Resolve the owner's identity once when the channel restricts to the
-	// signed-in account. On lookup failure we fail open (forward everything) but
-	// surface the error so the operator can see gating is degraded, rather than
-	// silently muting the channel.
+	// signed-in account. If lookup fails, stop polling rather than forwarding
+	// messages without the owner gate.
 	var selfID string
 	if !ch.AllowAnyone {
 		if id, _, serr := prov.Self(ctx); serr != nil {
-			_ = h.store.SetChannelError(ch.ID, fmt.Sprintf("owner identity lookup failed (forwarding all): %v", serr))
+			_ = h.store.SetChannelError(ch.ID, fmt.Sprintf("owner identity lookup failed: %v", serr))
+			return
 		} else {
 			selfID = id
 		}
@@ -314,11 +314,10 @@ func (h *Handler) pollChannel(ctx context.Context, ch *store.Channel) {
 		if selfPrefix != "" && strings.HasPrefix(strings.TrimSpace(m.Text), selfPrefix) {
 			continue
 		}
-		// Sender gate: unless the channel allows anyone (or the owner is
-		// unknown), only forward messages from the signed-in owner. Non-matching
-		// messages are examined and intentionally ignored, so the cursor still
-		// advances past them.
-		if !ch.AllowAnyone && selfID != "" && m.SenderID != selfID {
+		// Sender gate: unless the channel allows anyone, only forward messages
+		// from the signed-in owner. Non-matching messages are examined and
+		// intentionally ignored, so the cursor still advances past them.
+		if !ch.AllowAnyone && m.SenderID != selfID {
 			continue
 		}
 		// Mention gate: when configured, only forward messages addressing the
