@@ -188,6 +188,71 @@ jobs:
         with:
           path: artifacts
 
+      - name: Create and sign release manifest
+        env:
+          JAMES_RELEASE_SIGNING_KEY: ${{ secrets.JAMES_RELEASE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "${JAMES_RELEASE_SIGNING_KEY}" || {
+            echo "JAMES_RELEASE_SIGNING_KEY is not configured" >&2
+            exit 1
+          }
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) -print
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import pathlib
+
+          root = pathlib.Path("artifacts")
+          archives = sorted([
+              root / "james-linux-amd64" / "james-linux-amd64.tar.gz",
+              root / "james-linux-arm64" / "james-linux-arm64.tar.gz",
+              root / "james-darwin-arm64" / "james-darwin-arm64.tar.gz",
+              root / "james-windows-amd64-signed" / "james-windows-amd64.zip",
+          ])
+          if len(archives) != 4:
+              raise SystemExit(f"expected 4 release archives, found {len(archives)}")
+          missing = [str(path) for path in archives if not path.is_file()]
+          if missing:
+              raise SystemExit(f"missing release archives: {missing}")
+          manifest = {
+              "version": "${{ steps.version.outputs.version }}",
+              "artifacts": {
+                  path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                  for path in archives
+              },
+          }
+          pathlib.Path("james-manifest.json").write_text(
+              json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n"
+          )
+          PY
+          printf '%s' "${JAMES_RELEASE_SIGNING_KEY}" | base64 --decode > signing-key
+          chmod 600 signing-key
+          cat > sign-manifest.go <<'EOF'
+          package main
+
+          import (
+            "crypto/ed25519"
+            "os"
+          )
+
+          func main() {
+            key, err := os.ReadFile("signing-key")
+            if err != nil || len(key) != ed25519.PrivateKeySize {
+              panic("invalid signing key")
+            }
+            manifest, err := os.ReadFile("james-manifest.json")
+            if err != nil {
+              panic(err)
+            }
+            if err := os.WriteFile("james-manifest.json.sig", ed25519.Sign(ed25519.PrivateKey(key), manifest), 0644); err != nil {
+              panic(err)
+            }
+          }
+          EOF
+          GO111MODULE=off go run sign-manifest.go
+          rm -f signing-key sign-manifest.go
+
       - name: Create release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
@@ -198,3 +263,5 @@ jobs:
             artifacts/james-linux-arm64/*.tar.gz
             artifacts/james-darwin-arm64/*.tar.gz
             artifacts/james-windows-amd64-signed/*.zip
+            james-manifest.json
+            james-manifest.json.sig

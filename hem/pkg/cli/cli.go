@@ -15,19 +15,19 @@ type Command struct {
 
 // Noun aliases: map plural to singular.
 var nounAliases = map[string]string{
-	"moneypennies": "moneypenny",
-	"mp":           "moneypenny",
-	"sessions":     "session",
-	"defaults":     "default",
-	"projects":     "project",
-	"traits":       "trait",
-	"channels":     "channel",
+	"moneypennies":      "moneypenny",
+	"mp":                "moneypenny",
+	"sessions":          "session",
+	"defaults":          "default",
+	"projects":          "project",
+	"traits":            "trait",
+	"channels":          "channel",
 	"channel-providers": "channel-provider",
-	"providers":    "channel-provider",
-	"subsessions":  "subsession",
-	"sub-session":  "subsession",
-	"sub-sessions": "subsession",
-	"mi6-keys":     "mi6-key",
+	"providers":         "channel-provider",
+	"subsessions":       "subsession",
+	"sub-session":       "subsession",
+	"sub-sessions":      "subsession",
+	"mi6-keys":          "mi6-key",
 }
 
 // Verb aliases: map synonyms.

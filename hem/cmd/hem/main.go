@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"context"
 	"crypto/ecdsa"
+	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"flag"
@@ -143,6 +145,14 @@ func main() {
 		}
 		fmt.Print(string(ssh.MarshalAuthorizedKey(pubKey)))
 		return
+	case "generate":
+		if cmd.Noun == "release-keypair" {
+			if err := generateReleaseKeypair(cmd.Args); err != nil {
+				fmt.Fprintf(os.Stderr, "%sError: %v%s\n", colorRed, err, colorReset)
+				os.Exit(1)
+			}
+			return
+		}
 	case "chat":
 		runChat(cmd.Args)
 		return
@@ -411,7 +421,6 @@ func handleMI6Admin(verb string, args []string) {
 	}
 }
 
-
 // buildSender creates a Sender based on whether --hem was specified.
 func buildSender(mi6Addr string) hemclient.Sender {
 	if mi6Addr == "" {
@@ -650,11 +659,11 @@ func printResponse(data json.RawMessage, outputFmt string) {
 
 // ANSI color codes for terminal output.
 const (
-	colorViolet    = "\033[35m"
-	colorReset     = "\033[0m"
-	colorYellow    = "\033[33m"
-	colorRed       = "\033[31m"
-	colorMuted     = "\033[90m"
+	colorViolet = "\033[35m"
+	colorReset  = "\033[0m"
+	colorYellow = "\033[33m"
+	colorRed    = "\033[31m"
+	colorMuted  = "\033[90m"
 )
 
 // runChat runs an interactive chat session.
@@ -961,12 +970,62 @@ Diagnostics:
 
 Other:
   show-public-key
+  generate release-keypair [--output-dir DIR]
   version
 
 Global flags:
   --hem ADDR            Connect to hem server via MI6 instead of Unix socket
   --local               Force local Unix socket connection (overrides stored default)
   -o, --output-type     Output format: json, text, table, tsv (default: text)`)
+}
+
+func generateReleaseKeypair(args []string) error {
+	fs := flag.NewFlagSet("generate release-keypair", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	outputDir := "."
+	fs.StringVar(&outputDir, "output-dir", ".", "directory for generated key files")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if len(fs.Args()) != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	if err := os.MkdirAll(outputDir, 0700); err != nil {
+		return fmt.Errorf("create output directory: %w", err)
+	}
+
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return fmt.Errorf("generate Ed25519 keypair: %w", err)
+	}
+	files := []struct {
+		name string
+		data []byte
+		mode os.FileMode
+	}{
+		{"james-release-public.key", []byte(base64.StdEncoding.EncodeToString(publicKey) + "\n"), 0644},
+		{"james-release-private.key", privateKey, 0600},
+		{"james-release-private.key.b64", []byte(base64.StdEncoding.EncodeToString(privateKey) + "\n"), 0600},
+	}
+	for _, file := range files {
+		path := filepath.Join(outputDir, file.name)
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, file.mode)
+		if err != nil {
+			return fmt.Errorf("create %s: %w", path, err)
+		}
+		if _, err := f.Write(file.data); err != nil {
+			f.Close()
+			os.Remove(path)
+			return fmt.Errorf("write %s: %w", path, err)
+		}
+		if err := f.Close(); err != nil {
+			os.Remove(path)
+			return fmt.Errorf("close %s: %w", path, err)
+		}
+		fmt.Printf("%s\n", path)
+	}
+	fmt.Printf("public key (base64): %s\n", strings.TrimSpace(string(files[0].data)))
+	return nil
 }
 
 func defaultDataDir() string {

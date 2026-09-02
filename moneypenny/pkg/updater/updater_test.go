@@ -1,6 +1,13 @@
 package updater
 
-import "testing"
+import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
+	"strings"
+	"testing"
+)
 
 func TestIsNewer(t *testing.T) {
 	tests := []struct {
@@ -70,5 +77,60 @@ func TestWithBeforeRestart(t *testing.T) {
 	u.beforeRestart()
 	if !called {
 		t.Fatal("beforeRestart callback was not invoked")
+	}
+}
+
+func TestVerifyReleaseManifest(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifestBytes, err := json.Marshal(releaseManifest{
+		Version: "1.65.1",
+		Artifacts: map[string]string{
+			"james-linux-amd64.tar.gz": strings.Repeat("a", 64),
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	signature := ed25519.Sign(privateKey, manifestBytes)
+	publicKeyBase64 := base64.StdEncoding.EncodeToString(publicKey)
+
+	got, err := verifyReleaseManifestWithKey(manifestBytes, signature, "v1.65.1", publicKeyBase64)
+	if err != nil {
+		t.Fatalf("verifyReleaseManifestWithKey() error = %v", err)
+	}
+	if got.Version != "1.65.1" || got.Artifacts["james-linux-amd64.tar.gz"] != strings.Repeat("a", 64) {
+		t.Fatalf("unexpected manifest: %+v", got)
+	}
+}
+
+func TestVerifyReleaseManifestRejectsInvalidInput(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	publicKeyBase64 := base64.StdEncoding.EncodeToString(publicKey)
+	manifestBytes := []byte(`{"version":"1.65.1","artifacts":{"james-linux-amd64.tar.gz":"` + strings.Repeat("a", 64) + `"}}`)
+	signature := ed25519.Sign(privateKey, manifestBytes)
+
+	tests := []struct {
+		name      string
+		manifest  []byte
+		signature []byte
+		tag       string
+	}{
+		{"bad signature", manifestBytes, []byte("bad"), "v1.65.1"},
+		{"tag mismatch", manifestBytes, signature, "v1.65.2"},
+		{"malformed manifest", []byte("{"), ed25519.Sign(privateKey, []byte("{")), "v1.65.1"},
+		{"missing artifacts", []byte(`{"version":"1.65.1","artifacts":{}}`), ed25519.Sign(privateKey, []byte(`{"version":"1.65.1","artifacts":{}}`)), "v1.65.1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := verifyReleaseManifestWithKey(tt.manifest, tt.signature, tt.tag, publicKeyBase64); err == nil {
+				t.Fatal("expected verification error")
+			}
+		})
 	}
 }

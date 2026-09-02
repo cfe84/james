@@ -8,6 +8,10 @@ import (
 	"archive/zip"
 	"compress/gzip"
 	"context"
+	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -20,6 +24,16 @@ import (
 	"sync"
 	"time"
 )
+
+// releaseManifestPublicKeyBase64 authenticates release manifests published by the
+// James release workflow. The corresponding private key is never stored in
+// the repository.
+const releaseManifestPublicKeyBase64 = "FRfu0TrG4DaIRr5155mKBER3ktucVpZ4oc9Iy5rm1zM="
+
+type releaseManifest struct {
+	Version   string            `json:"version"`
+	Artifacts map[string]string `json:"artifacts"`
+}
 
 // Status constants for the update lifecycle.
 const (
@@ -267,6 +281,60 @@ type releaseAsset struct {
 	BrowserDownloadURL string `json:"browser_download_url"`
 }
 
+func findReleaseAsset(rel *gitHubRelease, name string) (releaseAsset, error) {
+	for _, a := range rel.Assets {
+		if a.Name == name {
+			return a, nil
+		}
+	}
+	return releaseAsset{}, fmt.Errorf("release asset %q not found", name)
+}
+
+func downloadAsset(ctx context.Context, asset releaseAsset) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, asset.BrowserDownloadURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("download %s: %w", asset.Name, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("download %s returned %d", asset.Name, resp.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", asset.Name, err)
+	}
+	return data, nil
+}
+
+func verifyReleaseManifest(manifestBytes, signature []byte, tag string) (releaseManifest, error) {
+	return verifyReleaseManifestWithKey(manifestBytes, signature, tag, releaseManifestPublicKeyBase64)
+}
+
+func verifyReleaseManifestWithKey(manifestBytes, signature []byte, tag, publicKeyBase64 string) (releaseManifest, error) {
+	publicKeyBytes, err := base64.StdEncoding.DecodeString(publicKeyBase64)
+	if err != nil || len(publicKeyBytes) != ed25519.PublicKeySize {
+		return releaseManifest{}, fmt.Errorf("invalid embedded release public key")
+	}
+	if !ed25519.Verify(ed25519.PublicKey(publicKeyBytes), manifestBytes, signature) {
+		return releaseManifest{}, fmt.Errorf("release manifest signature verification failed")
+	}
+	var manifest releaseManifest
+	if err := json.Unmarshal(manifestBytes, &manifest); err != nil {
+		return releaseManifest{}, fmt.Errorf("decode release manifest: %w", err)
+	}
+	if manifest.Version == "" || manifest.Version != strings.TrimPrefix(tag, "v") {
+		return releaseManifest{}, fmt.Errorf("release manifest version %q does not match tag %q", manifest.Version, tag)
+	}
+	if len(manifest.Artifacts) == 0 {
+		return releaseManifest{}, fmt.Errorf("release manifest contains no artifacts")
+	}
+	return manifest, nil
+}
+
 func (u *Updater) checkLatest(ctx context.Context) (*gitHubRelease, error) {
 	url := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", u.repo)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -308,21 +376,47 @@ func (u *Updater) downloadAndStage(ctx context.Context, rel *gitHubRelease) (str
 		ext = ".zip"
 	}
 	archiveName := fmt.Sprintf("james-%s-%s%s", runtime.GOOS, runtime.GOARCH, ext)
-	var downloadURL string
-	for _, a := range rel.Assets {
-		if a.Name == archiveName {
-			downloadURL = a.BrowserDownloadURL
-			break
-		}
+	archiveAsset, err := findReleaseAsset(rel, archiveName)
+	if err != nil {
+		return "", err
 	}
-	if downloadURL == "" {
-		return "", fmt.Errorf("no asset found for %s", archiveName)
+
+	manifestAsset, err := findReleaseAsset(rel, "james-manifest.json")
+	if err != nil {
+		return "", err
+	}
+	signatureAsset, err := findReleaseAsset(rel, "james-manifest.json.sig")
+	if err != nil {
+		return "", err
+	}
+	manifestBytes, err := downloadAsset(ctx, manifestAsset)
+	if err != nil {
+		return "", err
+	}
+	signature, err := downloadAsset(ctx, signatureAsset)
+	if err != nil {
+		return "", err
+	}
+	manifest, err := verifyReleaseManifest(manifestBytes, signature, rel.TagName)
+	if err != nil {
+		return "", err
+	}
+	expectedDigest, ok := manifest.Artifacts[archiveName]
+	if !ok {
+		return "", fmt.Errorf("release manifest has no digest for %s", archiveName)
+	}
+	expectedDigest = strings.ToLower(strings.TrimSpace(expectedDigest))
+	if len(expectedDigest) != sha256.Size*2 {
+		return "", fmt.Errorf("invalid digest for %s", archiveName)
+	}
+	if _, err := hex.DecodeString(expectedDigest); err != nil {
+		return "", fmt.Errorf("invalid digest for %s: %w", archiveName, err)
 	}
 
 	u.vlog.Printf("downloading %s", archiveName)
 
 	// Download to temp file.
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, archiveAsset.BrowserDownloadURL, nil)
 	if err != nil {
 		return "", err
 	}
@@ -334,6 +428,24 @@ func (u *Updater) downloadAndStage(ctx context.Context, rel *gitHubRelease) (str
 
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("download returned %d", resp.StatusCode)
+	}
+
+	archiveFile, err := os.CreateTemp("", "james-update-archive-*")
+	if err != nil {
+		return "", fmt.Errorf("create archive temp file: %w", err)
+	}
+	archivePath := archiveFile.Name()
+	defer os.Remove(archivePath)
+	defer archiveFile.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(archiveFile, hash), resp.Body); err != nil {
+		return "", fmt.Errorf("download archive: %w", err)
+	}
+	if got := hex.EncodeToString(hash.Sum(nil)); got != expectedDigest {
+		return "", fmt.Errorf("archive digest mismatch for %s", archiveName)
+	}
+	if err := archiveFile.Close(); err != nil {
+		return "", fmt.Errorf("close archive: %w", err)
 	}
 
 	// Stage directory.
@@ -350,9 +462,21 @@ func (u *Updater) downloadAndStage(ctx context.Context, rel *gitHubRelease) (str
 	}
 
 	if runtime.GOOS == "windows" {
-		err = u.extractZip(resp.Body, stageDir, wantBinaries)
+		archive, openErr := os.Open(archivePath)
+		if openErr != nil {
+			err = openErr
+		} else {
+			err = u.extractZip(archive, stageDir, wantBinaries)
+			archive.Close()
+		}
 	} else {
-		err = u.extractTarGz(resp.Body, stageDir, wantBinaries)
+		archive, openErr := os.Open(archivePath)
+		if openErr != nil {
+			err = openErr
+		} else {
+			err = u.extractTarGz(archive, stageDir, wantBinaries)
+			archive.Close()
+		}
 	}
 	if err != nil {
 		os.RemoveAll(stageDir)

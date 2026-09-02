@@ -348,6 +348,12 @@ Moneypenny can self-update from GitHub releases when started with `--auto-update
 3. **Wait for idle**: Polls session statuses every 30 seconds. Proceeds only when all sessions are idle (not working).
 4. **Swap & restart**: Atomically replaces the running binary and `mi6-client`, then re-execs itself with the same arguments. Before a Windows replacement process starts, Moneypenny cancels background workers and closes its SQLite store so the replacement cannot race the old process's WAL mapping. MI6 reconnect and FIFO setup re-establish naturally.
 
+Before downloading an archive, Moneypenny verifies the detached Ed25519 signature on
+`james-manifest.json`, confirms that its version matches the release tag, and checks the
+selected archive's SHA-256 digest against the signed manifest. An update is rejected and
+not extracted when any check fails. The release workflow also retains Authenticode signing
+for Windows executables.
+
 ### Windows release signing
 
 Windows release archives contain Authenticode-signed executables. The release workflow builds the
@@ -360,6 +366,14 @@ private key or long-lived Azure credential is stored in the repository.
 
 - `moneypenny --auto-update` — enable automatic updates (default: off)
 - `moneypenny --update-interval 1h` — check frequency (default: 1h)
+
+### Release signing key generation
+
+`hem generate release-keypair [--output-dir DIR]` generates a new Ed25519 release
+signing keypair without contacting the hem server. It writes a base64 public key,
+the raw 64-byte private key, and the base64-encoded private key suitable for the
+`JAMES_RELEASE_SIGNING_KEY` GitHub Actions secret. Existing files are never
+overwritten; the default output directory is the current directory.
 
 ### Protocol
 
