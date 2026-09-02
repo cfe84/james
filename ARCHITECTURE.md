@@ -384,6 +384,10 @@ hem/
 
 91. **Qew Ctrl+J/K in all navigable lists (`v1.65.0`)**: Every Qew surface that supports arrow-key selection—wizard moneypenny/path lists, diff and changed-file review lists, override pickers, and management lists—also accepts `Ctrl+J`/`Ctrl+K` as down/up movement. The command-palette form uses the same shortcuts to enter the existing conversation transcript navigation mode. Meta/Alt shortcuts remain available to the browser and are not intercepted.
 
+92. **Explicit Qew development mode (unreleased)**: Unauthenticated Qew operation is an explicit local-development exception. The `--development` flag is accepted only with a loopback listen address (`127.0.0.1`, `::1`, or `localhost`), preventing an accidental network-exposed no-password server. The Docker entrypoint requires `QEW_PASSWORD` and never adds `--development` implicitly; unauthenticated development runs must be started directly with an explicitly loopback-bound address.
+
+93. **Security hardening (unreleased)**: Owner-only channel polling fails closed when provider identity lookup fails, rather than forwarding messages without sender verification. Uploaded attachment names normalize both Unix and Windows separators before reducing to a basename, preventing cross-platform path traversal. The release workflow pins `softprops/action-gh-release` to the immutable commit for `v2`.
+
 The Executor (hem/pkg/commands) has been refactored to follow Single Responsibility Principle by extracting specialized managers:
 
 **Manager Components** (`hem/pkg/commands/`):
@@ -590,7 +594,8 @@ A combined `Dockerfile` at the project root builds both Hem and Qew into a singl
 
 ### Runtime
 - **Entrypoint** (`docker/entrypoint.sh`): Prints both Hem and Qew SSH public keys (for MI6 `authorized_keys`), starts `hem server` in background, then `qew` in foreground.
-- **Env vars**: `HEM_MI6_URL` (MI6 address for Hem control channel), `QEW_PASSWORD` (Qew web auth, omit for `--development` mode), `LISTEN` (default `:8077`).
+- **Env vars**: `HEM_MI6_URL` (MI6 address for Hem control channel), `QEW_PASSWORD` (required for the container's authenticated Qew web UI), `LISTEN` (default `:8077`).
+- **Authentication safety**: The Docker entrypoint refuses to start when `QEW_PASSWORD` is unset; it never implicitly enables unauthenticated mode. For local development, run Qew directly with `--development --listen 127.0.0.1:8077`. The `--development` flag is restricted to loopback addresses.
 - **Volume**: `JAMES_CONFIG_PATH` mounted to `/root/.config/james` (persists SQLite DB, SSH keys).
 - **Port**: 8077 (configurable via `QEW_PORT` env var in deploy script).
 

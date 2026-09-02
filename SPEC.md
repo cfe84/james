@@ -637,13 +637,14 @@ management clients.
 
 Two independent, opt-in gates decide which inbound messages reach the agent. Both are evaluated
 during polling; a message that fails either gate is examined and ignored (its cursor still
-advances, so it is never reprocessed):
+advances, so it is never reprocessed). If the owner identity needed by the sender gate cannot be
+resolved, polling stops without advancing the cursor and retries on the next poll:
 
 - **Sender gate (allow-anyone)**: by default a channel only forwards messages from the signed-in
   owner (the account driving the provider — its identity is resolved once via the provider, e.g.
   Teams `GetUserPresence`). Set **allow-anyone** to forward messages from every participant. If the
-  owner's identity cannot be resolved the channel fails open (forwards all) and records the lookup
-  error so the degraded state is visible.
+  owner's identity cannot be resolved the channel fails closed (forwards no messages), records the
+  lookup error, and retries on the next poll.
 - **@mention gate**: when a channel has a configured mention name, only messages that address it
   are forwarded, and the mention token is stripped before forwarding. Matching is case-insensitive,
   whole-word, and the leading `@` is optional — so both a user-typed `@james ...` and a Teams-native
@@ -1104,7 +1105,8 @@ qew --development --listen 127.0.0.1:8077
 - `--socket`: Hem server Unix socket path (default `~/.config/james/hem/hem.sock`). Used when `--mi6` is not specified.
 - `--listen`: HTTP listen address (default `:8077`).
 - `--password`: Password for web UI authentication. Required when listening on non-loopback addresses.
-- `--development`: Development mode — allows no password and disables Secure cookie flag.
+- `--development`: Development mode — allows no password and disables the Secure cookie flag, but requires a loopback listen address (`127.0.0.1`, `::1`, or `localhost`).
+- Docker deployments require `QEW_PASSWORD`; the container does not implicitly enable `--development`. Unauthenticated development mode must be explicitly started outside the deployment container with a loopback listen address.
 - `--key`: SSH key path (default `~/.config/james/qew/qew_ecdsa`).
 - `--show-public-key`: Output the public key and exit.
 - `-v`: Verbose logging.
