@@ -10,14 +10,14 @@ import (
 
 // createModel is a form for creating a new session.
 type createModel struct {
-	fields      []formField
-	cursor      int
-	width       int
-	height      int
-	err         error
-	creating    bool
-	async       bool // if true, add --async flag
-	client      *client
+	fields   []formField
+	cursor   int
+	width    int
+	height   int
+	err      error
+	creating bool
+	async    bool // if true, add --async flag
+	client   *client
 }
 
 type formField struct {
@@ -25,7 +25,7 @@ type formField struct {
 	value     string
 	flag      string // CLI flag name
 	isBool    bool
-	traitID   string // if set, this bool field represents a trait toggle
+	traitID   string   // if set, this bool field represents a trait toggle
 	options   []string // if set, field is a selector (cycle with Space)
 	cursorPos int
 	input     *textInput // if set, delegates key handling and rendering to textInput
@@ -58,6 +58,7 @@ func newCreateModel(c *client) createModel {
 			{label: "Agent", flag: "--agent", value: "", options: []string{"", "claude", "copilot"}},
 			{label: "Model", flag: "--model", value: "", options: []string{""}},
 			{label: "System Prompt", flag: "--system-prompt", value: ""},
+			{label: "Environment (NAME=VALUE per line)", flag: "--env", value: ""},
 			{label: "Path", flag: "--path", value: ""},
 			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
 			{label: "Gadgets (James tooling)", flag: "--gadgets", isBool: true, value: "false"},

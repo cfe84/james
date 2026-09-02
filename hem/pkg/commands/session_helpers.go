@@ -3,6 +3,7 @@ package commands
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"james/hem/pkg/store"
@@ -26,6 +27,38 @@ type sessionParams struct {
 	TraitsSpec     string // comma-separated trait IDs/names; resolved to TraitIDs
 	TraitIDs       []string
 	Nick           string // optional short nickname/alias for the session
+	Environment    environmentValues
+}
+
+var environmentVariableName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+type environmentValues []string
+
+func (v *environmentValues) String() string {
+	return strings.Join(*v, ",")
+}
+
+func (v *environmentValues) Set(value string) error {
+	*v = append(*v, strings.Split(value, "\n")...)
+	return nil
+}
+
+func (v environmentValues) Map() (map[string]string, error) {
+	environment := make(map[string]string, len(v))
+	for _, item := range v {
+		if item == "" {
+			continue
+		}
+		name, value, ok := strings.Cut(item, "=")
+		if !ok || !environmentVariableName.MatchString(name) {
+			return nil, fmt.Errorf("--env must use NAME=VALUE with a valid environment variable name")
+		}
+		if strings.ContainsRune(value, 0) {
+			return nil, fmt.Errorf("--env %q contains a NUL byte", name)
+		}
+		environment[name] = value
+	}
+	return environment, nil
 }
 
 // resolveMoneypennyForSession resolves the moneypenny to use for a session.
@@ -119,7 +152,7 @@ func generateSessionName(prompt, providedName string) string {
 }
 
 // buildCreateSessionData builds the command data map for create_session.
-func buildCreateSessionData(params *sessionParams, sessionID, prompt string) map[string]interface{} {
+func buildCreateSessionData(params *sessionParams, sessionID, prompt string) (map[string]interface{}, error) {
 	cmdData := map[string]interface{}{
 		"agent":      params.Agent,
 		"session_id": sessionID,
@@ -145,7 +178,14 @@ func buildCreateSessionData(params *sessionParams, sessionID, prompt string) map
 	if params.CompactionMode != "" {
 		cmdData["compaction_mode"] = params.CompactionMode
 	}
-	return cmdData
+	if len(params.Environment) > 0 {
+		environment, err := params.Environment.Map()
+		if err != nil {
+			return nil, err
+		}
+		cmdData["environment"] = environment
+	}
+	return cmdData, nil
 }
 
 // validatePrompt validates that a prompt is provided and non-empty.

@@ -388,7 +388,7 @@ hem/
 
 93. **Security hardening (unreleased)**: Owner-only channel polling fails closed when provider identity lookup fails, rather than forwarding messages without sender verification. Uploaded attachment names normalize both Unix and Windows separators before reducing to a basename, preventing cross-platform path traversal. The release workflow pins `softprops/action-gh-release` to the immutable commit for `v2`.
 
-94. **Signed release manifests (v1.66.0)**: Cross-platform updater trust is provided by a detached Ed25519 signature over the exact bytes of `james-manifest.json`. The manifest records the release version and SHA-256 digest for every platform archive. Moneypenny embeds only the public key, verifies the signature before parsing the JSON, requires the manifest version to match the GitHub tag, and hashes the complete selected archive before extracting it. The release workflow generates the manifest only after the Windows Authenticode-signed ZIP is available, signs it with the protected `JAMES_RELEASE_SIGNING_KEY` secret, and publishes both the manifest and its raw detached signature. The private key is never committed; Windows Authenticode remains an additional OS-level trust signal rather than the cross-platform verification mechanism.
+94. **Signed release manifests (v1.66.0; audit logs v1.67.0)**: Cross-platform updater trust is provided by a detached Ed25519 signature over the exact bytes of `james-manifest.json`. The manifest records the release version and SHA-256 digest for every platform archive. Moneypenny embeds only the public key, verifies the signature before parsing the JSON, requires the manifest version to match the GitHub tag, and hashes the complete selected archive before extracting it. The updater writes explicit standard-log audit entries only after manifest-signature and archive-digest validation succeeds. The release workflow generates the manifest only after the Windows Authenticode-signed ZIP is available, signs it with the protected `JAMES_RELEASE_SIGNING_KEY` secret, and publishes both the manifest and its raw detached signature. The private key is never committed; Windows Authenticode remains an additional OS-level trust signal rather than the cross-platform verification mechanism.
 
 95. **Release keypair utility (v1.66.0)**: `hem generate release-keypair` is a
 local-only CLI operation using Go's standard-library Ed25519 implementation. It
@@ -398,6 +398,17 @@ key (`james-release-public.key`, mode 0644), the raw private key
 (`james-release-private.key.b64`, mode 0600) for configuring GitHub Actions. It
 refuses to overwrite any existing output, avoiding accidental key rotation or
 destruction.
+
+96. **Per-agent environment variables (v1.67.0)**: Session create/update
+accept repeatable `--env NAME=VALUE` flags. Hem sends the parsed mapping to
+Moneypenny, which validates portable variable names and NUL-free values at its
+protocol boundary, serializes it in the session row, and applies it only while
+building the agent subprocess environment. Updating replaces the complete set,
+which makes secret rotation deterministic. Values are excluded from session
+lists and runner logs, but returned to authenticated session-edit clients so
+they can be reviewed and changed; they are never propagated to the Moneypenny
+daemon environment. Hem TUI and Qew expose the mapping as a multiline
+`NAME=VALUE` editor.
 
 The Executor (hem/pkg/commands) has been refactored to follow Single Responsibility Principle by extracting specialized managers:
 

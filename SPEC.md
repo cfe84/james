@@ -352,7 +352,8 @@ Before downloading an archive, Moneypenny verifies the detached Ed25519 signatur
 `james-manifest.json`, confirms that its version matches the release tag, and checks the
 selected archive's SHA-256 digest against the signed manifest. An update is rejected and
 not extracted when any check fails. The release workflow also retains Authenticode signing
-for Windows executables.
+for Windows executables. Successful manifest-signature and archive-digest validations are
+recorded in the Moneypenny log before staging.
 
 ### Windows release signing
 
@@ -374,6 +375,18 @@ signing keypair without contacting the hem server. It writes a base64 public key
 the raw 64-byte private key, and the base64-encoded private key suitable for the
 `JAMES_RELEASE_SIGNING_KEY` GitHub Actions secret. Existing files are never
 overwritten; the default output directory is the current directory.
+
+### Per-agent environment variables
+
+`hem create session --env NAME=VALUE ...` assigns repeatable, per-session
+environment variables to the created agent. `hem update session SESSION_ID --env
+NAME=VALUE ...` replaces that session's complete environment-variable set. Names
+must be valid portable environment variable identifiers; values may contain `=`.
+Variables are stored on Moneypenny and injected only into the agent subprocess.
+They are excluded from session lists and Moneypenny logs, but are returned to
+authenticated session-edit clients so values can be reviewed or replaced. This permits
+agent-specific configuration such as `PLAYWRIGHT_MCP_EXTENSION_TOKEN` without
+changing the Moneypenny service environment.
 
 ### Protocol
 

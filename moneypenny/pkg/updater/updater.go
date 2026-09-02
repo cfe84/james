@@ -401,6 +401,7 @@ func (u *Updater) downloadAndStage(ctx context.Context, rel *gitHubRelease) (str
 	if err != nil {
 		return "", err
 	}
+	u.slog.Printf("release manifest signature verified for %s", rel.TagName)
 	expectedDigest, ok := manifest.Artifacts[archiveName]
 	if !ok {
 		return "", fmt.Errorf("release manifest has no digest for %s", archiveName)
@@ -444,6 +445,7 @@ func (u *Updater) downloadAndStage(ctx context.Context, rel *gitHubRelease) (str
 	if got := hex.EncodeToString(hash.Sum(nil)); got != expectedDigest {
 		return "", fmt.Errorf("archive digest mismatch for %s", archiveName)
 	}
+	u.slog.Printf("release archive SHA-256 verified for %s", archiveName)
 	if err := archiveFile.Close(); err != nil {
 		return "", fmt.Errorf("close archive: %w", err)
 	}

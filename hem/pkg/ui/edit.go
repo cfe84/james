@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -65,6 +66,7 @@ func newEditModel(c *client, sessionID string) editModel {
 			{label: "Effort", flag: "--effort", value: "", options: []string{"", "low", "medium", "high"}},
 			{label: "Context", flag: "--context", value: "", options: contextTierOptions()},
 			{label: "System Prompt", flag: "--system-prompt", value: "", input: &spInput},
+			{label: "Environment (NAME=VALUE per line)", flag: "--env", value: ""},
 			{label: "Path", flag: "--path", value: ""},
 			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
 			{label: "Gadgets (James tooling)", flag: "--gadgets", isBool: true, value: "false"},
@@ -221,21 +223,27 @@ func (m editModel) Update(msg tea.Msg) (editModel, tea.Cmd) {
 		m.fields[4].value = d.Effort
 		m.fields[5].value = d.ContextTier
 		m.fields[6].value = d.SystemPrompt
-		m.fields[7].value = d.Path
-		if d.Yolo {
-			m.fields[8].value = "true"
-		} else {
-			m.fields[8].value = "false"
+		var environment []string
+		for name, value := range d.Environment {
+			environment = append(environment, name+"="+value)
 		}
-		if d.Gadgets {
+		sort.Strings(environment)
+		m.fields[7].value = strings.Join(environment, "\n")
+		m.fields[8].value = d.Path
+		if d.Yolo {
 			m.fields[9].value = "true"
 		} else {
 			m.fields[9].value = "false"
 		}
-		if d.CompactionMode != "" {
-			m.fields[10].value = d.CompactionMode
+		if d.Gadgets {
+			m.fields[10].value = "true"
 		} else {
-			m.fields[10].value = "agent"
+			m.fields[10].value = "false"
+		}
+		if d.CompactionMode != "" {
+			m.fields[11].value = d.CompactionMode
+		} else {
+			m.fields[11].value = "agent"
 		}
 		// Place cursors at end of values and sync textInput fields.
 		for i := range m.fields {

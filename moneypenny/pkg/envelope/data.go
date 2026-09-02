@@ -14,16 +14,17 @@ const (
 
 // CreateSessionData is the data payload for create_session.
 type CreateSessionData struct {
-	Agent        string `json:"agent"`
-	SystemPrompt string `json:"system_prompt"`
-	Model        string `json:"model,omitempty"`
-	Effort       string `json:"effort,omitempty"`
-	ContextTier  string `json:"context_tier,omitempty"`
-	Yolo         bool   `json:"yolo"`
-	Prompt       string `json:"prompt"`
-	SessionID    string `json:"session_id"`
-	Name         string `json:"name"`
-	Path         string `json:"path"`
+	Agent        string            `json:"agent"`
+	SystemPrompt string            `json:"system_prompt"`
+	Model        string            `json:"model,omitempty"`
+	Effort       string            `json:"effort,omitempty"`
+	ContextTier  string            `json:"context_tier,omitempty"`
+	Yolo         bool              `json:"yolo"`
+	Prompt       string            `json:"prompt"`
+	SessionID    string            `json:"session_id"`
+	Name         string            `json:"name"`
+	Path         string            `json:"path"`
+	Environment  map[string]string `json:"environment,omitempty"`
 	// CompactionMode selects how context is compacted: "agent" (rely on the
 	// underlying agent's built-in compaction) or "custom" (James-managed
 	// distillation + summary + fresh-session substitution). Empty defaults to
@@ -51,15 +52,16 @@ type ContinueSessionData struct {
 // UpdateSessionData is the data payload for update_session.
 // Only non-nil pointer fields are updated.
 type UpdateSessionData struct {
-	SessionID      string  `json:"session_id"`
-	Name           *string `json:"name,omitempty"`
-	SystemPrompt   *string `json:"system_prompt,omitempty"`
-	Model          *string `json:"model,omitempty"`
-	Effort         *string `json:"effort,omitempty"`
-	ContextTier    *string `json:"context_tier,omitempty"`
-	Yolo           *bool   `json:"yolo,omitempty"`
-	Path           *string `json:"path,omitempty"`
-	CompactionMode *string `json:"compaction_mode,omitempty"`
+	SessionID      string             `json:"session_id"`
+	Name           *string            `json:"name,omitempty"`
+	SystemPrompt   *string            `json:"system_prompt,omitempty"`
+	Model          *string            `json:"model,omitempty"`
+	Effort         *string            `json:"effort,omitempty"`
+	ContextTier    *string            `json:"context_tier,omitempty"`
+	Yolo           *bool              `json:"yolo,omitempty"`
+	Path           *string            `json:"path,omitempty"`
+	CompactionMode *string            `json:"compaction_mode,omitempty"`
+	Environment    *map[string]string `json:"environment,omitempty"`
 }
 
 // ImportSessionData is the data payload for import_session.
@@ -130,8 +132,9 @@ type SessionDetail struct {
 	// of the underlying agent's context, and ContextWindow is the model's max.
 	// Both are 0 when never measured. Surfaced so clients can show usage and so
 	// the burned-in window table can be tuned by observation.
-	ContextTokens int `json:"context_tokens,omitempty"`
-	ContextWindow int `json:"context_window,omitempty"`
+	ContextTokens int               `json:"context_tokens,omitempty"`
+	ContextWindow int               `json:"context_window,omitempty"`
+	Environment   map[string]string `json:"environment,omitempty"`
 }
 
 // SessionConversation is returned by get_session_conversation.

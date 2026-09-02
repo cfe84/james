@@ -25,6 +25,50 @@ import (
 	"james/moneypenny/pkg/store"
 )
 
+var environmentNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+func validateEnvironment(environment map[string]string) (string, error) {
+	if len(environment) == 0 {
+		return "{}", nil
+	}
+	for name, value := range environment {
+		if !environmentNamePattern.MatchString(name) {
+			return "", fmt.Errorf("invalid environment variable name %q", name)
+		}
+		if strings.ContainsRune(value, 0) {
+			return "", fmt.Errorf("environment variable %q contains a NUL byte", name)
+		}
+	}
+	encoded, err := json.Marshal(environment)
+	if err != nil {
+		return "", fmt.Errorf("encode environment: %w", err)
+	}
+	return string(encoded), nil
+}
+
+func sessionEnvironment(session *store.Session) (map[string]string, error) {
+	if session.Environment == "" || session.Environment == "{}" {
+		return nil, nil
+	}
+	var environment map[string]string
+	if err := json.Unmarshal([]byte(session.Environment), &environment); err != nil {
+		return nil, fmt.Errorf("decode session environment: %w", err)
+	}
+	_, err := validateEnvironment(environment)
+	return environment, err
+}
+
+func sessionEnvironmentForDetail(encoded string) map[string]string {
+	if encoded == "" || encoded == "{}" {
+		return nil
+	}
+	var environment map[string]string
+	if json.Unmarshal([]byte(encoded), &environment) != nil {
+		return nil
+	}
+	return environment
+}
+
 const scheduleSystemPromptSuffix = `
 
 You can schedule a follow-up task by including a tag in your response:
@@ -296,6 +340,10 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 	if compactionMode == "" {
 		compactionMode = store.CompactionCustom
 	}
+	environment, err := validateEnvironment(data.Environment)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
+	}
 
 	// Create session in store.
 	sess := &store.Session{
@@ -308,6 +356,7 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 		ContextTier:    data.ContextTier,
 		Yolo:           data.Yolo,
 		Path:           data.Path,
+		Environment:    environment,
 		AgentSessionID: data.SessionID,
 		CompactionMode: compactionMode,
 	}
@@ -702,14 +751,21 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 	// Resolve the underlying agent session id (decoupled from the James
 	// session id to support custom-compaction substitution). Falls back to the
 	// James session id for sessions created before this column existed.
-	if params.AgentSessionID == "" {
-		if s, err := h.store.GetSession(sessionID); err == nil && s != nil && s.AgentSessionID != "" {
-			params.AgentSessionID = s.AgentSessionID
+	sess, err := h.store.GetSession(sessionID)
+	if err != nil {
+		err = fmt.Errorf("load session environment: %w", err)
+	} else if sess != nil {
+		if params.AgentSessionID == "" && sess.AgentSessionID != "" {
+			params.AgentSessionID = sess.AgentSessionID
 		}
+		params.Environment, err = sessionEnvironment(sess)
 	}
 
 	ctx := context.Background()
-	result, err := h.runner.Run(ctx, params)
+	var result *agent.Result
+	if err == nil {
+		result, err = h.runner.Run(ctx, params)
+	}
 
 	// Recovery: if the agent reports its session is gone, compact our history
 	// and retry as a fresh agent-side session with the summary as context.
@@ -960,6 +1016,7 @@ func (h *Handler) getSession(_ context.Context, cmd *envelope.Command) *envelope
 		Path:           sess.Path,
 		Memory:         sess.Memory,
 		CompactionMode: sess.CompactionMode,
+		Environment:    sessionEnvironmentForDetail(sess.Environment),
 		ContextTokens:  sess.ContextTokens,
 		ContextWindow:  sess.ContextWindow,
 	}
@@ -1093,8 +1150,16 @@ func (h *Handler) updateSession(_ context.Context, cmd *envelope.Command) *envel
 			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidPath, fmt.Sprintf("path does not exist: %s", *data.Path))
 		}
 	}
+	var environment *string
+	if data.Environment != nil {
+		encoded, err := validateEnvironment(*data.Environment)
+		if err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
+		}
+		environment = &encoded
+	}
 
-	if err := h.store.UpdateSessionFields(data.SessionID, data.Name, data.SystemPrompt, data.Model, data.Effort, data.ContextTier, data.Path, data.CompactionMode, data.Yolo); err != nil {
+	if err := h.store.UpdateSessionFields(data.SessionID, data.Name, data.SystemPrompt, data.Model, data.Effort, data.ContextTier, data.Path, data.CompactionMode, environment, data.Yolo); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to update session: %v", err))
 	}
 

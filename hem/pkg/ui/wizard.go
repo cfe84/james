@@ -71,9 +71,9 @@ type wizardModel struct {
 	// Copy mode: when sourceSessionID is set, submit hits `hem copy session`
 	// instead of `hem create session`, and the form is pre-filled from the
 	// source. The TUI header reflects "Copy session" in this mode.
-	sourceSessionID    string
-	sourceSessionName  string
-	copyLoading        bool // true while loading source details
+	sourceSessionID   string
+	sourceSessionName string
+	copyLoading       bool // true while loading source details
 
 	// Selections
 	selectedMP   string
@@ -138,6 +138,7 @@ func newWizardModel(c *client) wizardModel {
 			{label: "Effort", flag: "--effort", value: "", options: effortOptions("copilot")},
 			{label: "Context", flag: "--context", value: "", options: contextTierOptions()},
 			{label: "System Prompt", flag: "--system-prompt", value: "", input: &spInput},
+			{label: "Environment (NAME=VALUE per line)", flag: "--env", value: ""},
 			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
 			{label: "Gadgets (James tooling)", flag: "--gadgets", isBool: true, value: "false"},
 			{label: "Compaction", flag: "--compaction", value: "custom", options: []string{"custom", "agent"}},

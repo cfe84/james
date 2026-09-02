@@ -24,6 +24,7 @@ func TestCreateAndGetSession(t *testing.T) {
 		SystemPrompt: "You are helpful.",
 		Yolo:         true,
 		Path:         "/tmp/work",
+		Environment:  `{"PLAYWRIGHT_MCP_EXTENSION_TOKEN":"test-token"}`,
 	}
 	if err := s.CreateSession(sess); err != nil {
 		t.Fatalf("CreateSession: %v", err)
@@ -53,6 +54,9 @@ func TestCreateAndGetSession(t *testing.T) {
 	}
 	if got.Path != "/tmp/work" {
 		t.Errorf("Path = %q, want %q", got.Path, "/tmp/work")
+	}
+	if got.Environment != `{"PLAYWRIGHT_MCP_EXTENSION_TOKEN":"test-token"}` {
+		t.Errorf("Environment = %q, want stored value", got.Environment)
 	}
 	if got.Status != StateIdle {
 		t.Errorf("Status = %q, want %q", got.Status, StateIdle)

@@ -897,7 +897,7 @@ Project management:
   delete project NAME_OR_ID
 
 Session management:
-  create session [-m MONEYPENNY] [--project NAME] PROMPT [--name, --system-prompt, --yolo, --path, --compaction agent|custom, --async]
+  create session [-m MONEYPENNY] [--project NAME] PROMPT [--name, --system-prompt, --env NAME=VALUE ..., --yolo, --path, --compaction agent|custom, --async]
   continue session SESSION_ID PROMPT [--async] [--attachment PATH ...]
   complete session SESSION_ID
   stop session SESSION_ID
@@ -905,7 +905,7 @@ Session management:
   state session SESSION_ID
   last session SESSION_ID
   show session SESSION_ID
-  update session SESSION_ID [--name, --system-prompt, --yolo true/false, --path, --compaction agent|custom]
+  update session SESSION_ID [--name, --system-prompt, --env NAME=VALUE ..., --yolo true/false, --path, --compaction agent|custom]
   compact session SESSION_ID
   distillate session SESSION_ID
   history session SESSION_ID [-n N]

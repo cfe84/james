@@ -1057,25 +1057,26 @@ type SessionLastResult struct {
 }
 
 type SessionShowResult struct {
-	SessionID      string   `json:"session_id"`
-	Moneypenny     string   `json:"moneypenny"`
-	Name           string   `json:"name"`
-	Agent          string   `json:"agent"`
-	SystemPrompt   string   `json:"system_prompt"`
-	Model          string   `json:"model,omitempty"`
-	Effort         string   `json:"effort,omitempty"`
-	ContextTier    string   `json:"context_tier,omitempty"`
-	Yolo           bool     `json:"yolo"`
-	Gadgets        bool     `json:"gadgets"`
-	Memory         bool     `json:"memory"`
-	Path           string   `json:"path"`
-	Status         string   `json:"status"`
-	Project        string   `json:"project,omitempty"`
-	Traits         []string `json:"traits"`
-	Nick           string   `json:"nick,omitempty"`
-	CompactionMode string   `json:"compaction_mode,omitempty"`
-	ContextTokens  int      `json:"context_tokens,omitempty"`
-	ContextWindow  int      `json:"context_window,omitempty"`
+	SessionID      string            `json:"session_id"`
+	Moneypenny     string            `json:"moneypenny"`
+	Name           string            `json:"name"`
+	Agent          string            `json:"agent"`
+	SystemPrompt   string            `json:"system_prompt"`
+	Model          string            `json:"model,omitempty"`
+	Effort         string            `json:"effort,omitempty"`
+	ContextTier    string            `json:"context_tier,omitempty"`
+	Yolo           bool              `json:"yolo"`
+	Gadgets        bool              `json:"gadgets"`
+	Memory         bool              `json:"memory"`
+	Path           string            `json:"path"`
+	Status         string            `json:"status"`
+	Project        string            `json:"project,omitempty"`
+	Traits         []string          `json:"traits"`
+	Nick           string            `json:"nick,omitempty"`
+	CompactionMode string            `json:"compaction_mode,omitempty"`
+	ContextTokens  int               `json:"context_tokens,omitempty"`
+	ContextWindow  int               `json:"context_window,omitempty"`
+	Environment    map[string]string `json:"environment,omitempty"`
 }
 
 const gadgetsMarker = "\nYou have access to agent orchestration using the"
@@ -1811,6 +1812,7 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 		fs.StringVar(&projectNameOrID, "project", "", "project name or ID")
 		fs.StringVar(&params.TraitsSpec, "traits", "", "comma-separated trait IDs/names to apply")
 		fs.StringVar(&params.Nick, "nick", "", "optional short nickname/alias for the session")
+		fs.Var(&params.Environment, "env", "agent environment variable NAME=VALUE (repeatable)")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -1886,7 +1888,10 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 	}
 
 	// Build command data.
-	cmdData := buildCreateSessionData(params, sessionID, prompt)
+	cmdData, err := buildCreateSessionData(params, sessionID, prompt)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
 
 	// Track session locally.
 	if params.ProjectID != "" {
@@ -2463,6 +2468,14 @@ func (e *Executor) ShowSession(args []string) *protocol.Response {
 	if v, ok := raw["context_window"].(float64); ok {
 		result.ContextWindow = int(v)
 	}
+	if v, ok := raw["environment"].(map[string]interface{}); ok {
+		result.Environment = make(map[string]string, len(v))
+		for name, value := range v {
+			if value, ok := value.(string); ok {
+				result.Environment[name] = value
+			}
+		}
+	}
 
 	// Look up project name from hem's local store.
 	if hemSess, err := e.store.GetSession(sessionID); err == nil && hemSess != nil && hemSess.ProjectID != "" {
@@ -2487,17 +2500,22 @@ func (e *Executor) ShowSession(args []string) *protocol.Response {
 func (e *Executor) UpdateSession(args []string) *protocol.Response {
 	var sessionID, name, systemPrompt, pathArg, modelStr, effortStr, contextStr string
 	var yoloStr, projectNameOrID, gadgetsStr, traitsStr, compactionStr, nickStr string
+	var environment environmentValues
 
 	// Detect whether --traits was explicitly provided so an empty value can
 	// clear all traits (vs. "not specified" which leaves them untouched).
 	traitsExplicit := false
 	nickExplicit := false
+	environmentExplicit := false
 	for _, a := range args {
 		if a == "--traits" || a == "-traits" || strings.HasPrefix(a, "--traits=") || strings.HasPrefix(a, "-traits=") {
 			traitsExplicit = true
 		}
 		if a == "--nick" || a == "-nick" || strings.HasPrefix(a, "--nick=") || strings.HasPrefix(a, "-nick=") {
 			nickExplicit = true
+		}
+		if a == "--env" || a == "-env" || strings.HasPrefix(a, "--env=") || strings.HasPrefix(a, "-env=") {
+			environmentExplicit = true
 		}
 	}
 
@@ -2515,6 +2533,7 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 		fs.StringVar(&traitsStr, "traits", "", "comma-separated trait IDs/names (empty clears all)")
 		fs.StringVar(&compactionStr, "compaction", "", "compaction mode: agent or custom")
 		fs.StringVar(&nickStr, "nick", "", "short nickname/alias (empty clears)")
+		fs.Var(&environment, "env", "replace agent environment with NAME=VALUE entries (repeatable)")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -2580,6 +2599,14 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 	}
 	if compactionStr != "" {
 		cmdData["compaction_mode"] = compactionStr
+		hasUpdate = true
+	}
+	if environmentExplicit {
+		parsed, err := environment.Map()
+		if err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		cmdData["environment"] = parsed
 		hasUpdate = true
 	}
 
@@ -5401,7 +5428,10 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	// source session's memory folder into the new session so the duplicate
 	// inherits accumulated knowledge.
 
-	cmdData := buildCreateSessionData(params, newSessionID, prompt)
+	cmdData, err := buildCreateSessionData(params, newSessionID, prompt)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
 	if sourceMP.Name == targetMP.Name {
 		cmdData["copy_memory_from"] = sourceSessionID
 	}

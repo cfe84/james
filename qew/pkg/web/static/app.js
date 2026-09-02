@@ -1774,6 +1774,8 @@
       <select id="wiz-context">${contextTierOptionsHtml(srcAgent, copy ? (src.context_tier || '') : '')}</select>
       <label for="wiz-sysprompt">System Prompt (optional)</label>
       <textarea id="wiz-sysprompt" rows="2" placeholder="">${copy ? escapeHtml(src.system_prompt || '') : ''}</textarea>
+      <label for="wiz-env">Environment (NAME=VALUE per line)</label>
+      <textarea id="wiz-env" rows="3" placeholder="PLAYWRIGHT_MCP_EXTENSION_TOKEN=value">${copy ? escapeHtml(Object.entries(src.environment || {}).sort(([a], [b]) => a.localeCompare(b)).map(([name, value]) => name + '=' + value).join('\n')) : ''}</textarea>
       <div class="toggle-row">
         <input type="checkbox" id="wiz-yolo"${copy && src.yolo ? ' checked' : ''}>
         <label for="wiz-yolo" style="margin:0;color:var(--text)">License to Kill (skip permission prompts)</label>
@@ -1891,6 +1893,10 @@
       }
     } else if (sysprompt) {
       args.push('--system-prompt', sysprompt);
+    }
+    const environment = document.getElementById('wiz-env').value;
+    for (const line of environment.split('\n')) {
+      if (line.trim()) args.push('--env', line);
     }
     const yolo = document.getElementById('wiz-yolo').checked;
     if (copy) {
@@ -4231,6 +4237,8 @@
         <select id="es-context">${contextTierOptionsHtml(s.agent || 'copilot', s.context_tier || '')}</select>` : ''}
         <label for="es-sysprompt">System Prompt</label>
         <textarea id="es-sysprompt" rows="6">${escapeHtml(s.system_prompt || '')}</textarea>
+        <label for="es-env">Environment (NAME=VALUE per line)</label>
+        <textarea id="es-env" rows="3" placeholder="PLAYWRIGHT_MCP_EXTENSION_TOKEN=value">${escapeHtml(Object.entries(s.environment || {}).sort(([a], [b]) => a.localeCompare(b)).map(([name, value]) => name + '=' + value).join('\n'))}</textarea>
         <div class="toggle-row">
           <input type="checkbox" id="es-yolo" ${s.yolo ? 'checked' : ''}>
           <label for="es-yolo" style="margin:0;color:var(--text)">License to Kill</label>
@@ -4295,6 +4303,18 @@
           args.push('--gadgets', gadgets ? 'true' : 'false');
         } else if (sysprompt !== (s.system_prompt || '')) {
           args.push('--system-prompt', sysprompt);
+        }
+        const environment = document.getElementById('es-env').value;
+        const originalEnvironment = Object.entries(s.environment || {}).sort(([a], [b]) => a.localeCompare(b)).map(([name, value]) => name + '=' + value).join('\n');
+        if (environment !== originalEnvironment) {
+          let hasEnvironment = false;
+          for (const line of environment.split('\n')) {
+            if (line.trim()) {
+              args.push('--env', line);
+              hasEnvironment = true;
+            }
+          }
+          if (!hasEnvironment) args.push('--env', '');
         }
         // Traits: emit --traits (possibly empty) only when the selection changed.
         const newTraits = Array.from(document.querySelectorAll('.es-trait:checked')).map(c => c.value);

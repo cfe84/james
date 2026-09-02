@@ -127,6 +127,35 @@ func PrependToPath(env []string, dir string) []string {
 	return out
 }
 
+// withEnvironment replaces inherited variables with configured per-agent values.
+func withEnvironment(base []string, additional map[string]string) []string {
+	if len(additional) == 0 {
+		return base
+	}
+	result := make([]string, 0, len(base)+len(additional))
+	for _, item := range base {
+		eq := strings.IndexByte(item, '=')
+		if eq <= 0 {
+			result = append(result, item)
+			continue
+		}
+		configured := false
+		for name := range additional {
+			if strings.EqualFold(name, item[:eq]) {
+				configured = true
+				break
+			}
+		}
+		if !configured {
+			result = append(result, item)
+		}
+	}
+	for key, value := range additional {
+		result = append(result, key+"="+value)
+	}
+	return result
+}
+
 // unixNodeBinCandidates returns common install paths for a Node-based CLI on
 // macOS/Linux, covering Homebrew, npm global, nvm, Volta, Bun, and friends.
 // nvm paths are globbed since they include a node version segment.
@@ -219,9 +248,10 @@ type RunParams struct {
 	// tier (no flag). Claude has no equivalent and ignores this.
 	ContextTier string
 	Yolo        bool
-	Path        string // working directory for the agent
-	Resume      bool   // true for continue_session
-	SessionDir  string // per-session persistent dir (managed by handler)
+	Path        string            // working directory for the agent
+	Environment map[string]string // additional environment variables for this agent run
+	Resume      bool              // true for continue_session
+	SessionDir  string            // per-session persistent dir (managed by handler)
 	// MemoryDir is the session's file-based memory folder (<SessionDir>/memory).
 	// When set, it is added to the agent's allowed directories so the agent can
 	// read and edit its memory with native file tools; for non-yolo sessions the
@@ -336,6 +366,7 @@ func (r *Runner) RunOneShot(ctx context.Context, params RunParams) (string, erro
 		cmd.Dir = params.Path
 	}
 	env := PrependToPath(os.Environ(), filepath.Dir(agentPath))
+	env = withEnvironment(env, params.Environment)
 	env = append(env, inv.env...)
 	cmd.Env = env
 	if inv.stdin != "" {
@@ -384,12 +415,14 @@ func (r *Runner) Run(ctx context.Context, params RunParams) (*Result, error) {
 	// otherwise include the node version's bin dir).
 	agentDir := filepath.Dir(agentPath)
 	env := PrependToPath(os.Environ(), agentDir)
+	env = withEnvironment(env, params.Environment)
 	env = append(env, "HEM_SESSION_ID="+params.SessionID)
 	env = append(env, inv.env...)
 	cmd.Env = env
 	if inv.stdin != "" {
 		cmd.Stdin = strings.NewReader(inv.stdin)
 	}
+
 	var stderrBuf bytes.Buffer
 	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
 
