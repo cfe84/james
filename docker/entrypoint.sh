@@ -27,11 +27,8 @@ done
 
 # Start Qew in foreground (connects to Hem via Unix socket).
 QEW_ARGS="--listen $LISTEN --socket $SOCK -v"
-if [ -n "$QEW_PASSWORD" ]; then
-  QEW_ARGS="$QEW_ARGS --password $QEW_PASSWORD"
-else
-  QEW_ARGS="$QEW_ARGS --development"
-fi
+: "${QEW_PASSWORD:?QEW_PASSWORD must be set; unauthenticated Docker Qew requires running Qew directly with --development on a loopback address}"
+QEW_ARGS="$QEW_ARGS --password $QEW_PASSWORD"
 
 qew $QEW_ARGS &
 QEW_PID=$!

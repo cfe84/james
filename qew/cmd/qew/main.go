@@ -57,20 +57,19 @@ func main() {
 		log.Fatal("specify either --mi6 or --socket, not both")
 	}
 
+	if err := validateListenAddress(*listenAddr, *development); err != nil {
+		log.Fatal(err)
+	}
+
 	vlog := log.New(io.Discard, "[qew] ", log.LstdFlags)
 	if *verbose {
 		vlog = log.New(os.Stderr, "[qew] ", log.LstdFlags)
 	}
 
-	// Require password on non-loopback addresses unless --development.
+	// Require password on non-loopback addresses.
 	if *password == "" && !*development {
-		host, _, _ := net.SplitHostPort(*listenAddr)
-		if host == "" || host == "0.0.0.0" || host == "::" {
-			log.Fatal("--password is required when listening on a non-loopback address (use --development to override)")
-		}
-		ip := net.ParseIP(host)
-		if ip != nil && !ip.IsLoopback() {
-			log.Fatal("--password is required when listening on a non-loopback address (use --development to override)")
+		if !isLoopbackListenAddress(*listenAddr) {
+			log.Fatal("--password is required when listening on a non-loopback address")
 		}
 	}
 
@@ -82,6 +81,7 @@ func main() {
 		if _, err := loadOrCreatePublicKey(*keyPath); err != nil {
 			log.Fatalf("failed to load/create SSH key: %v", err)
 		}
+
 		log.Printf("connecting to Hem via MI6: %s", *mi6Addr)
 		mi6Client := web.NewMI6Client(*mi6Addr, *keyPath, vlog)
 		if err := mi6Client.Start(); err != nil {
@@ -117,6 +117,28 @@ func main() {
 	if err := srv.Run(); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
+}
+
+func validateListenAddress(listenAddr string, development bool) error {
+	if !development {
+		return nil
+	}
+	if !isLoopbackListenAddress(listenAddr) {
+		return fmt.Errorf("--development requires a loopback listen address (got %q)", listenAddr)
+	}
+	return nil
+}
+
+func isLoopbackListenAddress(listenAddr string) bool {
+	host, _, err := net.SplitHostPort(listenAddr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // loadOrCreateSecret returns the 32-byte session-signing seed stored at path,
