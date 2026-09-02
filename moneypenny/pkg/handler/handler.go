@@ -2164,7 +2164,7 @@ const attachmentMaxSize = 10 * 1024 * 1024
 // result would be empty or unsafe.
 func sanitizeAttachmentName(name string) string {
 	// Strip any directory components the client may have included.
-	name = filepath.Base(filepath.FromSlash(name))
+	name = filepath.Base(filepath.FromSlash(strings.ReplaceAll(name, "\\", "/")))
 	name = strings.TrimSpace(name)
 	// Reject traversal/edge cases.
 	if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\") {
