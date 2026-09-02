@@ -462,6 +462,9 @@ func (u *Updater) downloadAndStage(ctx context.Context, rel *gitHubRelease) (str
 		"moneypenny" + suffix: false,
 		"mi6-client" + suffix: false,
 	}
+	if runtime.GOOS == "windows" {
+		wantBinaries["moneypenny-update-helper.exe"] = false
+	}
 
 	if runtime.GOOS == "windows" {
 		archive, openErr := os.Open(archivePath)
@@ -489,6 +492,10 @@ func (u *Updater) downloadAndStage(ctx context.Context, rel *gitHubRelease) (str
 	if !wantBinaries["moneypenny"+suffix] {
 		os.RemoveAll(stageDir)
 		return "", fmt.Errorf("moneypenny binary not found in archive")
+	}
+	if runtime.GOOS == "windows" && !wantBinaries["moneypenny-update-helper.exe"] {
+		os.RemoveAll(stageDir)
+		return "", fmt.Errorf("update helper not found in archive")
 	}
 
 	return stageDir, nil
@@ -610,7 +617,7 @@ func (u *Updater) waitForIdle(ctx context.Context) bool {
 	}
 }
 
-// swapAndRestart replaces the current binary and re-execs.
+// swapAndRestart hands a staged update to the platform-specific installer.
 func (u *Updater) swapAndRestart(stagedDir string) error {
 	currentExe, err := os.Executable()
 	if err != nil {
@@ -627,39 +634,9 @@ func (u *Updater) swapAndRestart(stagedDir string) error {
 		return fmt.Errorf("staged binary not found: %w", err)
 	}
 
-	// Also swap mi6-client if it was staged and exists alongside current binary.
 	currentDir := filepath.Dir(currentExe)
-	newMI6 := filepath.Join(stagedDir, "mi6-client"+suffix)
-	if _, err := os.Stat(newMI6); err == nil {
-		currentMI6 := filepath.Join(currentDir, "mi6-client"+suffix)
-		if _, err := os.Stat(currentMI6); err == nil {
-			u.vlog.Printf("swapping mi6-client: %s -> %s", newMI6, currentMI6)
-			if err := atomicSwap(newMI6, currentMI6); err != nil {
-				u.vlog.Printf("warning: failed to swap mi6-client: %v", err)
-				// Non-fatal — continue with moneypenny swap.
-			}
-		}
-	}
-
-	// Swap the moneypenny binary.
-	u.vlog.Printf("swapping moneypenny: %s -> %s", newExe, currentExe)
-	if err := atomicSwap(newExe, currentExe); err != nil {
-		return fmt.Errorf("swap binary: %w", err)
-	}
-
-	// Clean up staged directory.
-	os.RemoveAll(stagedDir)
-
-	// Close resources owned by main before starting a separate replacement
-	// process on Windows. On Unix syscall.Exec replaces this process directly,
-	// but the hook remains safe and makes shutdown ordering explicit.
-	if u.beforeRestart != nil {
-		u.beforeRestart()
-	}
-
-	// Re-exec with the same arguments.
-	u.vlog.Printf("re-execing with args: %v", u.execArgs)
-	return reExec(currentExe, u.execArgs)
+	currentMI6 := filepath.Join(currentDir, "mi6-client"+suffix)
+	return installStagedUpdate(stagedDir, currentExe, currentMI6, u.execArgs, u.beforeRestart, u.vlog)
 }
 
 // atomicSwap replaces dst with src using rename (atomic on same filesystem)

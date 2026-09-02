@@ -410,6 +410,18 @@ they can be reviewed and changed; they are never propagated to the Moneypenny
 daemon environment. Hem TUI and Qew expose the mapping as a multiline
 `NAME=VALUE` editor.
 
+97. **Windows update helper (`v1.67.1`)**: Windows prevents renaming a running
+executable, so the prior generic updater could never complete its
+`currentExe → .old` swap before it reached `reExec`. Windows releases now include
+`moneypenny-update-helper.exe`. After the signed archive is staged, Moneypenny writes
+a mode-0600 JSON plan containing its PID, current binary paths, staging directory,
+and original arguments; it starts the staged helper, closes its owned resources, then
+exits. The helper waits for the parent process handle, replaces Moneypenny (and
+best-effort `mi6-client`) after the lock is released, starts the updated daemon with
+the original arguments and then removes the staging directory on a best-effort basis.
+Unix retains its
+atomic swap and `syscall.Exec` path.
+
 The Executor (hem/pkg/commands) has been refactored to follow Single Responsibility Principle by extracting specialized managers:
 
 **Manager Components** (`hem/pkg/commands/`):

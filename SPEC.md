@@ -346,7 +346,7 @@ Moneypenny can self-update from GitHub releases when started with `--auto-update
 1. **Check**: A background goroutine periodically checks the GitHub Releases API (`/repos/cfe84/james/releases/latest`) for newer versions. Default interval: 1 hour, configurable via `--update-interval`.
 2. **Download**: Downloads the platform-appropriate archive (e.g. `james-darwin-arm64.tar.gz`) and extracts `moneypenny` and `mi6-client` binaries to a staging directory (`~/.config/james/moneypenny/updates/VERSION/`).
 3. **Wait for idle**: Polls session statuses every 30 seconds. Proceeds only when all sessions are idle (not working).
-4. **Swap & restart**: Atomically replaces the running binary and `mi6-client`, then re-execs itself with the same arguments. Before a Windows replacement process starts, Moneypenny cancels background workers and closes its SQLite store so the replacement cannot race the old process's WAL mapping. MI6 reconnect and FIFO setup re-establish naturally.
+4. **Install & restart**: On Unix, atomically replaces the running binary and `mi6-client`, then re-execs itself with the same arguments. On Windows, a staged update helper performs the replacement after the daemon exits and releases its executable lock. Before either restart path, Moneypenny cancels background workers and closes its SQLite store so the replacement cannot race the old process's WAL mapping. MI6 reconnect and FIFO setup re-establish naturally.
 
 Before downloading an archive, Moneypenny verifies the detached Ed25519 signature on
 `james-manifest.json`, confirms that its version matches the release tag, and checks the
@@ -354,6 +354,11 @@ selected archive's SHA-256 digest against the signed manifest. An update is reje
 not extracted when any check fails. The release workflow also retains Authenticode signing
 for Windows executables. Successful manifest-signature and archive-digest validations are
 recorded in the Moneypenny log before staging.
+
+On Windows, the staged archive contains `moneypenny-update-helper.exe`. Moneypenny
+starts this helper and exits after staging; the helper waits for the original process
+to release Windows' executable lock, replaces Moneypenny and `mi6-client`, then starts
+Moneypenny with its original arguments.
 
 ### Windows release signing
 
