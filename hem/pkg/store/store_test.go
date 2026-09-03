@@ -203,6 +203,32 @@ func TestTrackAndLookupSession(t *testing.T) {
 	}
 }
 
+func TestSetSessionParent(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.AddMoneypenny(&Moneypenny{Name: "mp1", TransportType: TransportFIFO}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"parent", "child"} {
+		if err := s.TrackSession(id, "mp1"); err != nil {
+			t.Fatalf("TrackSession(%q): %v", id, err)
+		}
+	}
+	if err := s.SetSessionParent("child", "parent"); err != nil {
+		t.Fatalf("SetSessionParent: %v", err)
+	}
+	child, err := s.GetSession("child")
+	if err != nil || child.ParentSessionID != "parent" {
+		t.Fatalf("parent = %q, err = %v; want parent", child.ParentSessionID, err)
+	}
+	if err := s.SetSessionParent("child", ""); err != nil {
+		t.Fatalf("promote: %v", err)
+	}
+	child, err = s.GetSession("child")
+	if err != nil || child.ParentSessionID != "" {
+		t.Fatalf("parent = %q, err = %v; want empty", child.ParentSessionID, err)
+	}
+}
+
 func TestListSessionsWithFilter(t *testing.T) {
 	s := newTestStore(t)
 	s.AddMoneypenny(&Moneypenny{Name: "mp1", TransportType: TransportFIFO})

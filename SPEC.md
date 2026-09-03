@@ -456,6 +456,12 @@ Two protections keep the slow copilot query from being hammered:
 
 Hem manages sessions on moneypennies. It tracks which moneypenny each session lives on in its local SQLite. By default, session commands wait for the agent to complete; use `--async` to return immediately.
 
+### Session hierarchy
+
+- `hem adopt session SESSION_ID --parent PARENT_SESSION_ID` makes a tracked session a sub-session. Both must belong to the same Moneypenny; self-parenting and hierarchy cycles are rejected.
+- `hem promote session SESSION_ID` clears its parent relationship and makes the sub-session top-level. Its own children remain attached.
+- Both operations affect only Hem's tracking relationship: no agent process is restarted and session history, memory, schedules, and configuration are unchanged. Qew exposes matching **Make Subsession** and **Make Top-Level** actions.
+
 ### Create
 
 `hem create session -m|--moneypenny NAME PROMPT [flags]`

@@ -438,6 +438,20 @@ func (s *Store) TrackSubSession(sessionID, moneypennyName, parentSessionID strin
 	return nil
 }
 
+// SetSessionParent changes a session's parent relationship. An empty parent ID
+// promotes the session to the top level.
+func (s *Store) SetSessionParent(sessionID, parentSessionID string) error {
+	res, err := s.db.Exec(`UPDATE sessions SET parent_session_id = ? WHERE session_id = ?`, parentSessionID, sessionID)
+	if err != nil {
+		return fmt.Errorf("set parent for session %q: %w", sessionID, err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("session %q not found", sessionID)
+	}
+	return nil
+}
+
 // SetSessionCallback stores a callback prompt for a session.
 // When this sub-session completes, the callback is queued to the parent.
 func (s *Store) SetSessionCallback(sessionID, callbackPrompt string) error {

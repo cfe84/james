@@ -972,6 +972,8 @@ Subagents:
   show subsession SUBSESSION_ID
   stop subsession SUBSESSION_ID
   delete subsession SUBSESSION_ID
+  adopt session SESSION_ID --parent PARENT_SESSION_ID
+  promote session SESSION_ID
   watch session SESSION_ID [--timeout 30m]
 
 Dashboard:

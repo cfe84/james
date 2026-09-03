@@ -665,6 +665,10 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.StopSubSession(args)
 	case "delete subsession":
 		return e.DeleteSubSession(args)
+	case "adopt session":
+		return e.AdoptSession(args)
+	case "promote session":
+		return e.PromoteSession(args)
 	case "watch session":
 		return e.WatchSession(args)
 
@@ -6696,6 +6700,82 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 		SessionID: sessionID,
 		Response:  response,
 	})
+}
+
+// AdoptSession makes a top-level session a sub-session of another session.
+func (e *Executor) AdoptSession(args []string) *protocol.Response {
+	var parentID string
+	remaining, err := parseFlagsFromArgs("adopt-session", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&parentID, "parent", "", "parent session ID")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if len(remaining) != 1 {
+		return protocol.ErrResponse("session ID is required")
+	}
+	if parentID == "" {
+		return protocol.ErrResponse("--parent is required")
+	}
+	childID := remaining[0]
+	if childID == parentID {
+		return protocol.ErrResponse("a session cannot be its own parent")
+	}
+	child, err := e.store.GetSession(childID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if child == nil {
+		return protocol.ErrResponse(fmt.Sprintf("session %q not found", childID))
+	}
+	parent, err := e.store.GetSession(parentID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if parent == nil {
+		return protocol.ErrResponse(fmt.Sprintf("parent session %q not found", parentID))
+	}
+	if child.MoneypennyName != parent.MoneypennyName {
+		return protocol.ErrResponse("parent and child must use the same moneypenny")
+	}
+	for ancestor := parent; ancestor.ParentSessionID != ""; {
+		if ancestor.ParentSessionID == childID {
+			return protocol.ErrResponse("cannot adopt a session under its descendant")
+		}
+		ancestor, err = e.store.GetSession(ancestor.ParentSessionID)
+		if err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		if ancestor == nil {
+			break
+		}
+	}
+	if err := e.store.SetSessionParent(childID, parentID); err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	return protocol.OKResponse(TextResult{Message: fmt.Sprintf("Session %s is now a sub-session of %s.", childID, parentID)})
+}
+
+// PromoteSession removes a session's parent relationship.
+func (e *Executor) PromoteSession(args []string) *protocol.Response {
+	if len(args) != 1 {
+		return protocol.ErrResponse("session ID is required")
+	}
+	sessionID := args[0]
+	sess, err := e.store.GetSession(sessionID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if sess == nil {
+		return protocol.ErrResponse(fmt.Sprintf("session %q not found", sessionID))
+	}
+	if sess.ParentSessionID == "" {
+		return protocol.ErrResponse(fmt.Sprintf("session %q is already top-level", sessionID))
+	}
+	if err := e.store.SetSessionParent(sessionID, ""); err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	return protocol.OKResponse(TextResult{Message: fmt.Sprintf("Session %s is now top-level.", sessionID)})
 }
 
 // ListSubSessions lists sub-sessions for a parent.
