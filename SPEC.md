@@ -137,6 +137,7 @@ MI6 supports remote management of `authorized_keys` through an admin channel:
 - The mi6-client supports `--admin-command JSON` flag for single-shot admin requests.
 - Every MI6 client connection requires an explicit `--server-fingerprint SHA256:...` pin for the relay's server key. This prevents an unattended first connection from trusting an attacker-controlled key. Clients retain a `known_hosts` record as a secondary local key-change check; obtain a previously trusted value without connecting with `mi6-client --display-server-fingerprint --server HOST:PORT`.
 - The `MI6_SERVER_FINGERPRINT` environment variable supplies the same pin for Hem's direct `--hem` connections and MI6 key-administration commands, and for the James and Moneypenny Docker entrypoints. The direct `hem --mi6-server-fingerprint SHA256:... --hem ADDRESS …` flag overrides it.
+- Existing MI6 Moneypenny registrations created before per-Moneypenny fingerprints were introduced use Hem's `MI6_SERVER_FINGERPRINT` as a migration fallback. An explicitly saved Moneypenny fingerprint always takes precedence; re-save each registration with its own pin when it connects to a different relay.
 - Hem exposes admin commands:
   - `hem list mi6-keys [--mi6 ADDRESS]` — list authorized keys
   - `hem add mi6-key KEY_LINE [--mi6 ADDRESS]` — add a key

@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"os"
 	"sync"
 	"time"
 
@@ -43,7 +44,11 @@ func (cm *ClientManager) GetClient(mp *store.Moneypenny) *transport.Client {
 	case store.TransportFIFO:
 		c = transport.NewFIFOClient(mp.FIFOIn, mp.FIFOOut)
 	case store.TransportMI6:
-		c = transport.NewMI6Client(mp.MI6Addr, cm.mi6KeyPath, mp.MI6ServerFingerprint)
+		serverFingerprint := mp.MI6ServerFingerprint
+		if serverFingerprint == "" {
+			serverFingerprint = os.Getenv("MI6_SERVER_FINGERPRINT")
+		}
+		c = transport.NewMI6Client(mp.MI6Addr, cm.mi6KeyPath, serverFingerprint)
 	default:
 		return nil
 	}
