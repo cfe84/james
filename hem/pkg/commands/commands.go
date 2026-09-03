@@ -21,10 +21,10 @@ import (
 	"james/hem/pkg/transport"
 )
 
-func gadgetsSystemPrompt(mi6Control, sessionID, parentID string) string {
+func gadgetsSystemPrompt(mi6Control, mi6ServerFingerprint, sessionID, parentID string) string {
 	var hemCmd string
 	if mi6Control != "" {
-		hemCmd = fmt.Sprintf("hem --hem %s", mi6Control)
+		hemCmd = fmt.Sprintf("hem --hem %s --mi6-server-fingerprint %s", mi6Control, mi6ServerFingerprint)
 	} else {
 		hemCmd = "hem"
 	}
@@ -75,7 +75,7 @@ Subagents (parallel tasks):
 
 IMPORTANT: NEVER start hem server if you are not directly instructed to do it.
 IMPORTANT: NEVER start moneypenny if you are not directly instructed to do it.
-IMPORTANT: All %s commands already include the correct MI6 connection flag (--hem). Do NOT modify or remove the --hem flag. Do NOT attempt to connect via Unix socket or localhost. The --hem flag routes commands through the MI6 relay to the hem server — this is the only way to communicate.
+IMPORTANT: All %s commands already include the required MI6 connection and server-identity flags (--hem and --mi6-server-fingerprint). Do NOT modify or remove either flag. Do NOT attempt to connect via Unix socket or localhost. These flags route commands through the MI6 relay to the hem server and verify its identity — this is the only way to communicate.
 IMPORTANT: When the user asks you to "start an agent", "launch an agent", "spin up a session", or similar — they mean create a new session using %s create session (or %s create subsession for a subagent). Do NOT attempt to run claude, copilot, or any agent binary directly. All agent lifecycle is managed through hem.
 IMPORTANT: Do NOT set the git committer or author to Claude, Copilot, or any AI name. Leave the user's existing git config (user.name/user.email) unchanged. Commits should appear as authored by the human user.
 IMPORTANT: When creating a session or subagent that needs to modify the filesystem (write files, run builds, install packages, commit, etc.), include the --yolo flag to grant it permission. Without --yolo, the agent will be blocked by permission prompts it cannot answer.`,
@@ -109,13 +109,14 @@ type mpSessionInfo struct {
 // Executor runs commands using the store and transport layer.
 // It coordinates between the store, client manager, cache manager, and watch manager.
 type Executor struct {
-	store         *store.Store
-	clientManager *ClientManager
-	cacheManager  *CacheManager
-	watchManager  *WatchManager
-	Version       string
-	MI6Control    string                        // MI6 control address (host/session_id) for hem server
-	BroadcastFunc func(resp *protocol.Response) // optional: push broadcasts to connected MI6 clients
+	store                *store.Store
+	clientManager        *ClientManager
+	cacheManager         *CacheManager
+	watchManager         *WatchManager
+	Version              string
+	MI6Control           string                        // MI6 control address (host/session_id) for hem server
+	MI6ServerFingerprint string                        // expected MI6 server fingerprint for gadget commands
+	BroadcastFunc        func(resp *protocol.Response) // optional: push broadcasts to connected MI6 clients
 }
 
 func New(s *store.Store, mi6KeyPath string) *Executor {
@@ -1874,7 +1875,7 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 
 	// Append gadgets (James tooling instructions) to system prompt when enabled.
 	if params.Gadgets {
-		params.SystemPrompt += gadgetsSystemPrompt(e.MI6Control, sessionID, "")
+		params.SystemPrompt += gadgetsSystemPrompt(e.MI6Control, e.MI6ServerFingerprint, sessionID, "")
 	}
 
 	// Memory instructions are injected by the moneypenny at runtime now that
@@ -2693,7 +2694,7 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 				memorySuffix = base[midx:]
 				base = base[:midx]
 			}
-			systemPrompt = base + gadgetsSystemPrompt(e.MI6Control, sessionID, gadgetsParentID(e, sessionID)) + memorySuffix
+			systemPrompt = base + gadgetsSystemPrompt(e.MI6Control, e.MI6ServerFingerprint, sessionID, gadgetsParentID(e, sessionID)) + memorySuffix
 			cmdData["system_prompt"] = systemPrompt
 			fetchedSP = systemPrompt // keep cache current for the nick block below
 			hasUpdate = true
@@ -5426,7 +5427,7 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	}
 	params.SystemPrompt += traitsSystemPrompt(traits)
 	if params.Gadgets {
-		params.SystemPrompt += gadgetsSystemPrompt(e.MI6Control, newSessionID, "")
+		params.SystemPrompt += gadgetsSystemPrompt(e.MI6Control, e.MI6ServerFingerprint, newSessionID, "")
 	}
 	// Memory instructions are injected by the moneypenny at runtime (file-based
 	// memory). When duplicating within the same moneypenny, ask it to copy the
@@ -6616,7 +6617,7 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 	}
 
 	if gadgets {
-		systemPrompt += gadgetsSystemPrompt(e.MI6Control, sessionID, parentSessionID)
+		systemPrompt += gadgetsSystemPrompt(e.MI6Control, e.MI6ServerFingerprint, sessionID, parentSessionID)
 	}
 	// Memory instructions are injected by the moneypenny at runtime (file-based
 	// memory); no hem-side injection needed.

@@ -463,7 +463,7 @@ Hem manages sessions on moneypennies. It tracks which moneypenny each session li
 - By default: waits for the agent to complete, prints the session_id and the response.
 - With `--async`: prints the session_id and returns immediately without waiting.
 - Flags: `--agent NAME` (default "claude"), `--name NAME` (session name, default empty), `--nick NICK` (optional short nickname/alias, see [Nicknames](#nicknames)), `--system-prompt TEXT`, `--traits ID1,ID2` (apply reusable traits, see Traits; when omitted, default-enabled traits are applied), `--yolo` (skip permissions), `--path PATH` (working directory for the agent), `--gadgets` (include James tooling instructions in system prompt), `--model VALUE` (agent model), `--effort VALUE` (reasoning effort), `--context VALUE` (copilot context-window tier, see [Context tier](#context-tier)).
-- `--gadgets`: Appends instructions telling the agent about `hem` CLI access and scheduling. For MI6-connected moneypennies, includes the MI6 server address so the agent can connect back.
+- `--gadgets`: Appends instructions telling the agent about `hem` CLI access and scheduling. For MI6-connected moneypennies, each generated `hem` command includes both the MI6 server address and its required server-fingerprint pin so the agent can connect back securely.
 
 ### Continue
 
