@@ -3600,34 +3600,6 @@
         alert('Error: ' + resp.message);
         return;
       }
-
-      async function adoptSession() {
-        if (!currentSession) return;
-        const parentID = window.prompt('Parent session ID:');
-        if (!parentID) return;
-        if (!window.confirm('Make this session a subsession of ' + parentID + '?')) return;
-        try {
-          const resp = await apiCall('adopt', 'session', [currentSession, '--parent', parentID.trim()]);
-          if (resp.status === 'error') throw new Error(resp.message);
-          await loadDashboard();
-          await loadChat();
-        } catch (err) {
-          alert('Error: ' + err.message);
-        }
-      }
-
-      async function promoteSession() {
-        if (!currentSession) return;
-        if (!window.confirm('Make this subsession top-level? Its own subsessions will remain attached.')) return;
-        try {
-          const resp = await apiCall('promote', 'session', [currentSession]);
-          if (resp.status === 'error') throw new Error(resp.message);
-          await loadDashboard();
-          await loadChat();
-        } catch (err) {
-          alert('Error: ' + err.message);
-        }
-      }
       // Open the new subagent chat.
       const sid = resp.data && resp.data.session_id;
       const name = resp.data && resp.data.name;
@@ -3639,6 +3611,34 @@
       }
     } catch (e) {
       alert('Error: ' + e.message);
+    }
+  }
+
+  async function adoptSession() {
+    if (!currentSession) return;
+    const parentID = window.prompt('Parent session ID:');
+    if (!parentID) return;
+    if (!window.confirm('Make this session a subsession of ' + parentID + '?')) return;
+    try {
+      const resp = await apiCall('adopt', 'session', [currentSession, '--parent', parentID.trim()]);
+      if (resp.status === 'error') throw new Error(resp.message);
+      await loadDashboard();
+      await loadChat();
+    } catch (err) {
+      alert('Error: ' + err.message);
+    }
+  }
+
+  async function promoteSession() {
+    if (!currentSession) return;
+    if (!window.confirm('Make this subsession top-level? Its own subsessions will remain attached.')) return;
+    try {
+      const resp = await apiCall('promote', 'session', [currentSession]);
+      if (resp.status === 'error') throw new Error(resp.message);
+      await loadDashboard();
+      await loadChat();
+    } catch (err) {
+      alert('Error: ' + err.message);
     }
   }
 
