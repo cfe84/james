@@ -5229,6 +5229,15 @@
             .replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/`/g, '&#96;');
   }
 
+  function safeLinkHref(url) {
+    try {
+      const parsed = new URL(url);
+      return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? escapeAttr(url) : '';
+    } catch (_) {
+      return '';
+    }
+  }
+
   function formatContent(text) {
     // All content is HTML-escaped first, then structural markdown is applied.
     // Since escapeHtml runs first, all user content is safe — regexes only
@@ -5279,10 +5288,16 @@
     // and arithmetic like "2 * 3" are left untouched.
     html = html.replace(/(^|[^\w*])\*(\S|\S[^*\n]*?\S)\*(?!\w)/g, '$1<em>$2</em>');
     html = html.replace(/(^|[^\w_])_(\S|\S[^_\n]*?\S)_(?!\w)/g, '$1<em>$2</em>');
-    // Links: [text](url) — opens in new tab
-    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    // Links: [text](url) — opens in a new tab only for safe web URLs.
+    html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function(match, label, url) {
+      const href = safeLinkHref(url);
+      return href ? `<a href="${href}" target="_blank" rel="noopener">${label}</a>` : match;
+    });
     // Bare URLs: https://... or http://... (not already inside a tag)
-    html = html.replace(/(^|[^"=])((https?:\/\/)[^\s<]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
+    html = html.replace(/(^|[^"=])((https?:\/\/)[^\s<]+)/g, function(match, prefix, url) {
+      const href = safeLinkHref(url);
+      return href ? `${prefix}<a href="${href}" target="_blank" rel="noopener">${url}</a>` : match;
+    });
     // CSS pre-wrap displays source newlines but does not represent them in the
     // HTML clipboard payload. Use explicit breaks so applications such as Teams
     // retain the intended paragraphs when a rendered message is pasted.

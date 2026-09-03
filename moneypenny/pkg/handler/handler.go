@@ -25,6 +25,8 @@ import (
 	"james/moneypenny/pkg/store"
 )
 
+var sessionIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
 var environmentNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func validateEnvironment(environment map[string]string) (string, error) {
@@ -119,18 +121,34 @@ func New(s *store.Store, runner *agent.Runner, version, dataDir string) *Handler
 }
 
 // sessionDir returns the per-session persistent directory under the data dir,
-// creating it if it doesn't exist. Returns "" if dataDir or sessionID is empty,
-// or if creation fails (caller should treat as "no session dir available").
+// creating it if it doesn't exist. Returns "" if the ID is invalid or creation
+// fails (caller should treat as "no session dir available").
 func (h *Handler) sessionDir(sessionID string) string {
-	if h.dataDir == "" || sessionID == "" {
+	dir, err := h.sessionDirPath(sessionID)
+	if err != nil {
 		return ""
 	}
-	dir := filepath.Join(h.dataDir, "sessions", sessionID)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		h.vlog("sessionDir: failed to create %s: %v", dir, err)
 		return ""
 	}
 	return dir
+}
+
+func (h *Handler) sessionDirPath(sessionID string) (string, error) {
+	if h.dataDir == "" {
+		return "", fmt.Errorf("session data directory is not configured")
+	}
+	if !sessionIDPattern.MatchString(sessionID) {
+		return "", fmt.Errorf("invalid session ID")
+	}
+	root := filepath.Join(h.dataDir, "sessions")
+	dir := filepath.Join(root, sessionID)
+	rel, err := filepath.Rel(root, dir)
+	if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("session directory escapes root")
+	}
+	return dir, nil
 }
 
 // memoryDir returns the per-session memory folder (<sessionDir>/memory). The
@@ -323,6 +341,9 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 	if data.Agent == "" || data.Prompt == "" || data.SessionID == "" || data.Name == "" {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "agent, prompt, session_id, and name are required")
 	}
+	if !sessionIDPattern.MatchString(data.SessionID) {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id must be a canonical UUID")
+	}
 
 	// Validate path exists.
 	if _, err := os.Stat(data.Path); err != nil {
@@ -426,6 +447,9 @@ func (h *Handler) continueSession(ctx context.Context, cmd *envelope.Command) *e
 	var data envelope.ContinueSessionData
 	if err := json.Unmarshal(cmd.Data, &data); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
+	}
+	if !sessionIDPattern.MatchString(data.SessionID) {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id must be a canonical UUID")
 	}
 
 	// Validate required fields.
@@ -1105,6 +1129,9 @@ func (h *Handler) deleteSession(_ context.Context, cmd *envelope.Command) *envel
 	if err := json.Unmarshal(cmd.Data, &data); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
 	}
+	if !sessionIDPattern.MatchString(data.SessionID) {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id must be a canonical UUID")
+	}
 
 	sess, err := h.store.GetSession(data.SessionID)
 	if err != nil {
@@ -1124,8 +1151,9 @@ func (h *Handler) deleteSession(_ context.Context, cmd *envelope.Command) *envel
 	}
 
 	// Clean up the per-session persistent dir (best-effort).
-	if h.dataDir != "" {
-		dir := filepath.Join(h.dataDir, "sessions", data.SessionID)
+	if dir, err := h.sessionDirPath(data.SessionID); err != nil {
+		h.vlog("deleteSession: invalid session ID %q: %v", data.SessionID, err)
+	} else {
 		if err := os.RemoveAll(dir); err != nil {
 			h.vlog("deleteSession: failed to remove session dir %s: %v", dir, err)
 		}
@@ -1895,6 +1923,9 @@ func (h *Handler) importSession(_ context.Context, cmd *envelope.Command) *envel
 
 	if data.SessionID == "" || data.Name == "" || data.Agent == "" || data.Path == "" {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id, name, agent, and path are required")
+	}
+	if !sessionIDPattern.MatchString(data.SessionID) {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id must be a canonical UUID")
 	}
 
 	// Create session in store.
