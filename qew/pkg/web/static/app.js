@@ -3616,14 +3616,63 @@
 
   async function adoptSession() {
     if (!currentSession) return;
-    const parentID = window.prompt('Parent session ID:');
-    if (!parentID) return;
-    if (!window.confirm('Make this session a subsession of ' + parentID + '?')) return;
     try {
-      const resp = await apiCall('adopt', 'session', [currentSession, '--parent', parentID.trim()]);
-      if (resp.status === 'error') throw new Error(resp.message);
-      await loadDashboard();
-      await loadChat();
+      const sessAtStart = currentSession;
+      const dashboard = await apiCall('dashboard', '', ['--all', '--show-subs']);
+      if (currentSession !== sessAtStart) return;
+      if (dashboard.status === 'error') throw new Error(dashboard.message);
+
+      const sessions = (dashboard.data && dashboard.data.rows ? dashboard.data.rows : [])
+        .map(row => ({
+          id: row[0] || '',
+          name: (row[1] || '').replace(/^↳\s*/, ''),
+          moneypenny: row[4] || '',
+          parentID: row[7] || '',
+        }));
+      const parentsByID = new Map(sessions.map(session => [session.id, session.parentID]));
+      const isDescendant = (sessionID) => {
+        const visited = new Set();
+        for (let parentID = parentsByID.get(sessionID); parentID && !visited.has(parentID); parentID = parentsByID.get(parentID)) {
+          if (parentID === sessAtStart) return true;
+          visited.add(parentID);
+        }
+        return false;
+      };
+      const parents = sessions.filter(session => session.id && session.id !== sessAtStart &&
+        !isDescendant(session.id) && (!currentSessionMP || session.moneypenny === currentSessionMP));
+
+      if (parents.length === 0) {
+        renderWizardModal(`
+          <h3>Make Subsession</h3>
+          <div class="empty-state">No other sessions are available on this Moneypenny.</div>
+          <div class="modal-actions"><button class="btn-muted" id="adopt-cancel">Close</button></div>`);
+        document.getElementById('adopt-cancel').addEventListener('click', closeWizard);
+        return;
+      }
+
+      const options = parents.map(session =>
+        `<option value="${escapeAttr(session.id)}">${escapeHtml(session.name || session.id)} (${escapeHtml(session.id.substring(0, 12))})</option>`).join('');
+      renderWizardModal(`
+        <h3>Make Subsession</h3>
+        <p style="color:var(--muted);margin-bottom:12px">Choose the parent session.</p>
+        <select id="adopt-parent" style="width:100%">${options}</select>
+        <div class="modal-actions">
+          <button class="btn-muted" id="adopt-cancel">Cancel</button>
+          <button class="btn" id="adopt-confirm">Make Subsession</button>
+        </div>`);
+      document.getElementById('adopt-cancel').addEventListener('click', closeWizard);
+      document.getElementById('adopt-confirm').addEventListener('click', async () => {
+        const parentID = document.getElementById('adopt-parent').value;
+        try {
+          const resp = await apiCall('adopt', 'session', [sessAtStart, '--parent', parentID]);
+          if (resp.status === 'error') throw new Error(resp.message);
+          closeWizard();
+          await loadDashboard();
+          await loadChat();
+        } catch (err) {
+          alert('Error: ' + err.message);
+        }
+      });
     } catch (err) {
       alert('Error: ' + err.message);
     }
