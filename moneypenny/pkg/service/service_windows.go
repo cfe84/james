@@ -16,6 +16,7 @@ const needsLogFileArg = true
 
 const taskNameUser = "JamesMoneypenny"
 const taskNameSystem = "JamesMoneypennySystem"
+const taskWrapperName = "moneypenny-service.cmd"
 
 func taskName(userLevel bool) string {
 	if userLevel {
@@ -49,17 +50,19 @@ func Install(cfg *Config) error {
 		}
 	}
 
-	// Build the argument string.
-	args := cfg.BuildArgs()
-	argStr := strings.Join(args, " ")
+	wrapperPath, err := writeTaskWrapper(cfg)
+	if err != nil {
+		return err
+	}
 
 	tn := taskName(cfg.UserLevel)
 
-	// schtasks /create for current user at logon.
+	// Task Scheduler limits /tr to 261 characters. Keep it short by storing
+	// the configured command in a managed wrapper in the data directory.
 	schtasksArgs := []string{
 		"/create",
 		"/tn", tn,
-		"/tr", fmt.Sprintf(`"%s" %s`, cfg.BinaryPath, argStr),
+		"/tr", fmt.Sprintf(`cmd.exe /d /s /c ""%s""`, wrapperPath),
 		"/sc", "onlogon",
 		"/rl", "limited",
 		"/f", // force overwrite if exists
@@ -91,6 +94,46 @@ func Install(cfg *Config) error {
 	}
 
 	return nil
+}
+
+func writeTaskWrapper(cfg *Config) (string, error) {
+	if cfg.DataDir == "" {
+		return "", fmt.Errorf("data directory is required for Windows service installation")
+	}
+	if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
+		return "", fmt.Errorf("create data directory: %w", err)
+	}
+
+	command := make([]string, 0, 1+len(cfg.BuildArgs()))
+	command = append(command, cfg.BinaryPath)
+	command = append(command, cfg.BuildArgs()...)
+	for _, arg := range command {
+		if strings.ContainsAny(arg, "\x00\r\n") {
+			return "", fmt.Errorf("service command argument contains an invalid control character")
+		}
+	}
+
+	var script strings.Builder
+	script.WriteString("@echo off\r\n")
+	for i, arg := range command {
+		if i > 0 {
+			script.WriteByte(' ')
+		}
+		script.WriteString(quoteBatchArg(arg))
+	}
+	script.WriteString("\r\n")
+
+	path := filepath.Join(cfg.DataDir, taskWrapperName)
+	if err := os.WriteFile(path, []byte(script.String()), 0600); err != nil {
+		return "", fmt.Errorf("write task wrapper: %w", err)
+	}
+	return path, nil
+}
+
+func quoteBatchArg(arg string) string {
+	// Doubling '%' prevents batch-variable expansion. Paths and supported
+	// service arguments cannot contain literal double quotes.
+	return `"` + strings.ReplaceAll(arg, "%", "%%") + `"`
 }
 
 // Uninstall stops and removes the scheduled task.
