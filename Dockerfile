@@ -31,6 +31,6 @@ COPY --from=mi6-builder /build/mi6-client /usr/local/bin/mi6-client
 COPY --from=qew-builder /build/qew /usr/local/bin/qew
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
-ENV HEM_MI6_URL="" QEW_PASSWORD="" LISTEN=":8077"
+ENV HEM_MI6_URL="" MI6_SERVER_FINGERPRINT="" QEW_PASSWORD="" LISTEN=":8077"
 EXPOSE 8077
 ENTRYPOINT ["/entrypoint.sh"]

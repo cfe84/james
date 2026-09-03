@@ -10,15 +10,16 @@ import (
 
 // Config holds the service configuration gathered from the wizard.
 type Config struct {
-	BinaryPath     string // absolute path to the moneypenny binary
-	MI6Address     string // optional MI6 address (host/session_id)
-	AutoUpdate     bool
-	UpdateInterval string // e.g. "1h", "30m"
-	DataDir        string
-	LogFile string // path to log file
-	Local   bool   // run in local FIFO mode
-	Verbose         bool
-	UserLevel       bool // true = user-level service, false = system-level
+	BinaryPath           string // absolute path to the moneypenny binary
+	MI6Address           string // optional MI6 address (host/session_id)
+	MI6ServerFingerprint string // required SHA256 fingerprint of the MI6 server
+	AutoUpdate           bool
+	UpdateInterval       string // e.g. "1h", "30m"
+	DataDir              string
+	LogFile              string // path to log file
+	Local                bool   // run in local FIFO mode
+	Verbose              bool
+	UserLevel            bool // true = user-level service, false = system-level
 }
 
 // DefaultLogFile returns the default log file path in the data dir.
@@ -31,6 +32,7 @@ func (c *Config) BuildArgs() []string {
 	var args []string
 	if c.MI6Address != "" {
 		args = append(args, "--mi6", c.MI6Address)
+		args = append(args, "--mi6-server-fingerprint", c.MI6ServerFingerprint)
 	} else if c.Local {
 		args = append(args, "--local")
 	}

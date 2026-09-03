@@ -31,6 +31,8 @@ func main() {
 	sessionID := flag.String("session-id", "", "session ID to join")
 	keyPath := flag.String("key", "", "path to SSH private key file")
 	keyValue := flag.String("key-value", "", "ECDSA private key PEM content (or set MI6_KEY env var)")
+	serverFingerprint := flag.String("server-fingerprint", "", "required SHA256 fingerprint of the MI6 server public key")
+	displayServerFingerprint := flag.Bool("display-server-fingerprint", false, "display a trusted server fingerprint from known_hosts and exit")
 	adminCommand := flag.String("admin-command", "", "send an admin command (JSON) to MI6 server and exit")
 	exclusive := flag.Bool("exclusive", false, "exit with error if another client is already in the session")
 	generateKey := flag.Bool("generate-key", false, "generate a new ECDSA key pair and exit")
@@ -42,6 +44,28 @@ func main() {
 	if *showVersion {
 		fmt.Println(Version)
 		os.Exit(0)
+	}
+
+	if *displayServerFingerprint {
+		if *server == "" && flag.NArg() == 1 {
+			*server = flag.Arg(0)
+		}
+		if *server == "" {
+			log.Fatal("--server is required with --display-server-fingerprint")
+		}
+		if !strings.Contains(*server, ":") {
+			*server += ":7007"
+		}
+		home, err := os.UserHomeDir()
+		if err != nil {
+			log.Fatalf("determine home directory: %v", err)
+		}
+		fingerprint, err := auth.KnownHostFingerprint(home+"/.config/james/mi6/known_hosts", *server)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println(fingerprint)
+		return
 	}
 
 	if *generateKey {
@@ -86,11 +110,15 @@ func main() {
 
 	hasKey := *keyPath != "" || *keyValue != ""
 	if *server == "" || *sessionID == "" || !hasKey {
-		fmt.Fprintf(os.Stderr, "Usage: mi6-client [--server HOST:PORT --session-id ID | HOST/SESSION_ID] [--key PATH | --key-value PEM]\n")
+		fmt.Fprintf(os.Stderr, "Usage: mi6-client [--server HOST:PORT --session-id ID | HOST/SESSION_ID] --server-fingerprint SHA256:... [--key PATH | --key-value PEM]\n")
 		fmt.Fprintf(os.Stderr, "       mi6-client --admin-command JSON --key PATH HOST:PORT\n")
 		fmt.Fprintf(os.Stderr, "       mi6-client --generate-key\n")
+		fmt.Fprintf(os.Stderr, "       mi6-client --display-server-fingerprint --server HOST:PORT\n")
 		flag.PrintDefaults()
 		os.Exit(1)
+	}
+	if *serverFingerprint == "" {
+		log.Fatal("--server-fingerprint is required")
 	}
 
 	// Load private key.
@@ -127,11 +155,12 @@ func main() {
 
 	// Perform mutual-auth handshake with TOFU server verification.
 	secureConn, err := transport.ClientHandshake(transport.ClientHandshakeParams{
-		Conn:           conn,
-		Signer:         signer,
-		PubKey:         pubKey,
-		ServerAddr:     *server,
-		KnownHostsPath: knownHostsPath,
+		Conn:              conn,
+		Signer:            signer,
+		PubKey:            pubKey,
+		ServerAddr:        *server,
+		KnownHostsPath:    knownHostsPath,
+		ServerFingerprint: *serverFingerprint,
 	})
 	if err != nil {
 		log.Fatalf("handshake failed: %v", err)

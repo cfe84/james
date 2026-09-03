@@ -55,17 +55,18 @@ func (sc *SecureConn) SetReadDeadline(t time.Time) error {
 
 // ClientHandshakeParams holds the parameters for a client handshake.
 type ClientHandshakeParams struct {
-	Conn           net.Conn
-	Signer         crypto.Signer // client SSH key for signing
-	PubKey         ssh.PublicKey // client SSH public key
-	ServerAddr     string        // server address for TOFU lookup
-	KnownHostsPath string        // path to known_hosts file (empty to skip TOFU)
+	Conn              net.Conn
+	Signer            crypto.Signer // client SSH key for signing
+	PubKey            ssh.PublicKey // client SSH public key
+	ServerAddr        string        // server address for TOFU lookup
+	KnownHostsPath    string        // path to known_hosts file (empty to skip TOFU)
+	ServerFingerprint string        // required SHA256 fingerprint of the expected server key
 }
 
 // ClientHandshake performs the mutual-auth handshake:
 // 1. Exchange ECDH public keys (plaintext, no identity leaked)
 // 2. Derive session key, switch to encrypted channel
-// 3. Server proves identity (SSH signature), client verifies (TOFU)
+// 3. Server proves identity (SSH signature), client verifies against the configured pin
 // 4. Client proves identity (SSH signature), server verifies (authorized_keys)
 func ClientHandshake(params ClientHandshakeParams) (*SecureConn, error) {
 	conn := params.Conn
@@ -161,7 +162,16 @@ func ClientHandshake(params ClientHandshakeParams) (*SecureConn, error) {
 		return nil, fmt.Errorf("transport: server identity verification failed: %w", err)
 	}
 
-	// TOFU: verify server fingerprint against known_hosts.
+	if params.ServerFingerprint == "" {
+		_ = conn.Close()
+		return nil, fmt.Errorf("transport: MI6 server fingerprint is required")
+	}
+	if got := ssh.FingerprintSHA256(serverSSHPubKey); got != params.ServerFingerprint {
+		_ = conn.Close()
+		return nil, fmt.Errorf("transport: server fingerprint mismatch: expected %s, got %s", params.ServerFingerprint, got)
+	}
+
+	// Record the pinned key locally and reject any unexpected stored key.
 	if params.KnownHostsPath != "" && params.ServerAddr != "" {
 		if err := auth.CheckKnownHost(params.KnownHostsPath, params.ServerAddr, serverSSHPubKey); err != nil {
 			return nil, fmt.Errorf("transport: server identity: %w", err)

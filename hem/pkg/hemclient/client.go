@@ -70,18 +70,19 @@ func (s *SocketSender) Send(req *protocol.Request) (*protocol.Response, error) {
 
 // MI6Sender sends requests over an MI6 session (persistent connection).
 type MI6Sender struct {
-	Addr    string
-	KeyPath string
+	Addr              string
+	KeyPath           string
+	ServerFingerprint string
 
 	mu           sync.Mutex
 	cmd          *exec.Cmd
 	stdin        io.WriteCloser
 	scanner      *bufio.Scanner
 	stderrBuf    bytes.Buffer
-	waitCh       chan struct{}                         // closed when mi6-client process exits
+	waitCh       chan struct{} // closed when mi6-client process exits
 	waitErr      error
-	broadcastCh  chan *protocol.Response               // channel for broadcasting messages to listeners
-	pendingResps map[string]chan *protocol.Response     // pending requests waiting for responses
+	broadcastCh  chan *protocol.Response            // channel for broadcasting messages to listeners
+	pendingResps map[string]chan *protocol.Response // pending requests waiting for responses
 }
 
 // Connect establishes the MI6 connection. Must be called before Send.
@@ -98,7 +99,7 @@ func (s *MI6Sender) connectInternal() error {
 		return err
 	}
 
-	cmd := exec.Command(mi6Client, "--key", s.KeyPath, s.Addr)
+	cmd := exec.Command(mi6Client, "--key", s.KeyPath, "--server-fingerprint", s.ServerFingerprint, s.Addr)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("stdin pipe: %w", err)

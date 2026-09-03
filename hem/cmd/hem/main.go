@@ -45,9 +45,10 @@ func main() {
 	// Check if this is `set-default server` — if so, don't consume --hem/--local
 	// as global flags since they're arguments to the command itself.
 	isSetDefaultServer := len(os.Args) >= 3 && os.Args[1] == "set-default" && os.Args[2] == "server"
+	isStartServer := len(os.Args) >= 3 && os.Args[1] == "start" && os.Args[2] == "server"
 
 	// Extract global flags from args before cli.Parse.
-	var mi6Addr string
+	var mi6Addr, mi6ServerFingerprint string
 	var silent, verbose, forceLocal, ffUseNotifications bool
 	filteredArgs := make([]string, 0, len(os.Args))
 	filteredArgs = append(filteredArgs, os.Args[0])
@@ -55,6 +56,9 @@ func main() {
 		if !isSetDefaultServer && os.Args[i] == "--hem" && i+1 < len(os.Args) {
 			i++
 			mi6Addr = os.Args[i]
+		} else if !isSetDefaultServer && !isStartServer && os.Args[i] == "--mi6-server-fingerprint" && i+1 < len(os.Args) {
+			i++
+			mi6ServerFingerprint = os.Args[i]
 		} else if os.Args[i] == "--silent" {
 			silent = true
 		} else if os.Args[i] == "--verbose" {
@@ -74,11 +78,14 @@ func main() {
 		if stored := getStoredDefaultServer(); stored != "" {
 			mi6Addr = stored
 		}
+		if mi6ServerFingerprint == "" {
+			mi6ServerFingerprint = os.Getenv("MI6_SERVER_FINGERPRINT")
+		}
 	}
 
 	// Build sender based on transport.
 	var sender hemclient.Sender
-	sender = buildSender(mi6Addr)
+	sender = buildSender(mi6Addr, mi6ServerFingerprint)
 	if verbose {
 		sender = &verboseSender{inner: sender}
 	}
@@ -128,7 +135,7 @@ func main() {
 	case "list mi6-key", "add mi6-key", "delete mi6-key":
 		// MI6 admin commands run client-side using the local hem key,
 		// not through the hem server (which has a different key).
-		handleMI6Admin(cmd.Verb, cmd.Args)
+		handleMI6Admin(cmd.Verb, cmd.Args, mi6ServerFingerprint)
 		return
 	}
 	switch cmd.Verb {
@@ -171,7 +178,7 @@ func main() {
 				return
 			}
 		}
-		runDiagnose(mi6Addr, cmd.OutputType)
+		runDiagnose(mi6Addr, mi6ServerFingerprint, cmd.OutputType)
 		return
 	case "dashboard":
 		req := &protocol.Request{Verb: "dashboard", Noun: "", Args: cmd.Args}
@@ -316,7 +323,7 @@ func getStoredDefaultServer() string {
 }
 
 // handleMI6Admin handles MI6 admin key commands client-side using the local hem key.
-func handleMI6Admin(verb string, args []string) {
+func handleMI6Admin(verb string, args []string, serverFingerprint string) {
 	var mi6Addr string
 	var remaining []string
 
@@ -338,6 +345,13 @@ func handleMI6Admin(verb string, args []string) {
 			v, _ := st.GetDefault("mi6")
 			mi6Addr = v
 			st.Close()
+		}
+		if serverFingerprint == "" {
+			serverFingerprint = os.Getenv("MI6_SERVER_FINGERPRINT")
+		}
+		if serverFingerprint == "" {
+			fmt.Fprintf(os.Stderr, "%sError: --mi6-server-fingerprint (or MI6_SERVER_FINGERPRINT) is required%s\n", colorRed, colorReset)
+			os.Exit(1)
 		}
 	}
 	if mi6Addr == "" {
@@ -383,7 +397,7 @@ func handleMI6Admin(verb string, args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	respData, err := transport.MI6AdminCommand(ctx, mi6Addr, keyPath, cmdJSON)
+	respData, err := transport.MI6AdminCommand(ctx, mi6Addr, keyPath, serverFingerprint, cmdJSON)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%sError: %v%s\n", colorRed, err, colorReset)
 		os.Exit(1)
@@ -422,13 +436,16 @@ func handleMI6Admin(verb string, args []string) {
 }
 
 // buildSender creates a Sender based on whether --hem was specified.
-func buildSender(mi6Addr string) hemclient.Sender {
+func buildSender(mi6Addr, serverFingerprint string) hemclient.Sender {
 	if mi6Addr == "" {
 		return &hemclient.SocketSender{SockPath: server.DefaultSocketPath()}
 	}
 	dataDir := defaultDataDir()
 	keyPath := filepath.Join(dataDir, "hem_ecdsa")
-	s := &hemclient.MI6Sender{Addr: mi6Addr, KeyPath: keyPath}
+	if serverFingerprint == "" {
+		log.Fatalf("--mi6-server-fingerprint (or MI6_SERVER_FINGERPRINT) is required with --hem")
+	}
+	s := &hemclient.MI6Sender{Addr: mi6Addr, KeyPath: keyPath, ServerFingerprint: serverFingerprint}
 	if err := s.Connect(); err != nil {
 		log.Fatalf("failed to connect to MI6 at %s: %v", mi6Addr, err)
 	}
@@ -818,7 +835,7 @@ func runServer() {
 	defer st.Close()
 
 	vlog := log.New(io.Discard, "[hem-server] ", log.LstdFlags)
-	var mi6Control string
+	var mi6Control, mi6ServerFingerprint string
 	// Parse flags from remaining args.
 	args := os.Args[2:]
 	for i := 0; i < len(args); i++ {
@@ -829,6 +846,11 @@ func runServer() {
 			if i+1 < len(args) {
 				i++
 				mi6Control = args[i]
+			}
+		case "--mi6-server-fingerprint":
+			if i+1 < len(args) {
+				i++
+				mi6ServerFingerprint = args[i]
 			}
 		}
 	}
@@ -848,8 +870,11 @@ func runServer() {
 
 	// Start MI6 control listener if configured.
 	if mi6Control != "" {
+		if mi6ServerFingerprint == "" {
+			log.Fatal("--mi6-server-fingerprint is required with --mi6-control")
+		}
 		log.Printf("connecting MI6 control channel: %s", mi6Control)
-		mi6Listener := server.NewMI6Listener(mi6Control, keyPath, exec, vlog)
+		mi6Listener := server.NewMI6Listener(mi6Control, keyPath, mi6ServerFingerprint, exec, vlog)
 		go mi6Listener.Run()
 
 		// Wire up broadcast function so executor can push updates to MI6 clients.
@@ -872,7 +897,8 @@ func printUsage() {
 	fmt.Fprintln(os.Stderr, `Usage: hem <verb> <noun> [flags]
 
 Server:
-  start server [-v]          Start the hem server daemon
+  start server [-v] [--mi6-control HOST/SESSION --mi6-server-fingerprint SHA256:...]
+                              Start the hem server daemon
 
 Moneypenny management:
   add moneypenny -n NAME [--local | --fifo-folder DIR | --fifo-in/--fifo-out | --mi6 ADDR]
@@ -975,6 +1001,7 @@ Other:
 
 Global flags:
   --hem ADDR            Connect to hem server via MI6 instead of Unix socket
+  --mi6-server-fingerprint SHA256:...  Pin the MI6 server key (or set MI6_SERVER_FINGERPRINT)
   --local               Force local Unix socket connection (overrides stored default)
   -o, --output-type     Output format: json, text, table, tsv (default: text)`)
 }

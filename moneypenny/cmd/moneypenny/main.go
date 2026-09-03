@@ -50,6 +50,7 @@ func main() {
 	}
 
 	mi6Addr := flag.String("mi6", "", "connect via MI6 (host/session_id)")
+	mi6ServerFingerprint := flag.String("mi6-server-fingerprint", "", "required SHA256 fingerprint of the MI6 server")
 	fifoDir := flag.String("fifo", "", "use named pipes in FOLDER for I/O (creates moneypenny-in and moneypenny-out)")
 	local := flag.Bool("local", false, "run in local FIFO mode using default path (~/.config/james/moneypenny/fifo)")
 	dataDir := flag.String("data-dir", defaultDataDir(), "directory for moneypenny data (db, keys)")
@@ -200,7 +201,10 @@ func main() {
 	}()
 
 	if *mi6Addr != "" {
-		runMI6(ctx, h, vlog, *mi6Addr, keyPath)
+		if *mi6ServerFingerprint == "" {
+			log.Fatal("--mi6-server-fingerprint is required with --mi6")
+		}
+		runMI6(ctx, h, vlog, *mi6Addr, keyPath, *mi6ServerFingerprint)
 	} else if *fifoDir != "" {
 		runFIFO(ctx, h, vlog, *fifoDir)
 	} else {
@@ -306,7 +310,7 @@ func runFIFO(ctx context.Context, h *handler.Handler, vlog *log.Logger, dir stri
 
 // runMI6 connects to an MI6 server and processes commands received through it.
 // If the connection drops, it retries with exponential backoff (5s, 10s, 10s, ...).
-func runMI6(ctx context.Context, h *handler.Handler, vlog *log.Logger, addr string, keyPath string) {
+func runMI6(ctx context.Context, h *handler.Handler, vlog *log.Logger, addr string, keyPath, serverFingerprint string) {
 	// Parse addr: host/session_id or host:port/session_id
 	host, sessionID, err := parseMI6Addr(addr)
 	if err != nil {
@@ -339,7 +343,7 @@ func runMI6(ctx context.Context, h *handler.Handler, vlog *log.Logger, addr stri
 		}
 
 		log.Printf("connecting to MI6 at %s", addr)
-		err := runMI6Once(ctx, h, vlog, mi6Client, keyPath, addr)
+		err := runMI6Once(ctx, h, vlog, mi6Client, keyPath, addr, serverFingerprint)
 		if ctx.Err() != nil {
 			return
 		}
@@ -363,11 +367,11 @@ func runMI6(ctx context.Context, h *handler.Handler, vlog *log.Logger, addr stri
 	}
 }
 
-func runMI6Once(ctx context.Context, h *handler.Handler, vlog *log.Logger, mi6Client, keyPath, addr string) error {
+func runMI6Once(ctx context.Context, h *handler.Handler, vlog *log.Logger, mi6Client, keyPath, addr, serverFingerprint string) error {
 	childCtx, childCancel := context.WithCancel(ctx)
 	defer childCancel()
 
-	cmd := exec.CommandContext(childCtx, mi6Client, "--key", keyPath, addr)
+	cmd := exec.CommandContext(childCtx, mi6Client, "--key", keyPath, "--server-fingerprint", serverFingerprint, addr)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("failed to get mi6-client stdin: %w", err)
@@ -599,7 +603,7 @@ func runInstallWizard() {
 	}, 0)
 	fmt.Println()
 
-	var mi6Addr string
+	var mi6Addr, mi6ServerFingerprint string
 	localMode := false
 	if modeIdx == 0 {
 		localMode = true
@@ -607,6 +611,11 @@ func runInstallWizard() {
 		mi6Addr = prompt("MI6 address (host/session_id)", "")
 		if mi6Addr == "" {
 			fmt.Println("MI6 address is required.")
+			os.Exit(1)
+		}
+		mi6ServerFingerprint = prompt("MI6 server fingerprint (SHA256:...)", "")
+		if mi6ServerFingerprint == "" {
+			fmt.Println("MI6 server fingerprint is required.")
 			os.Exit(1)
 		}
 		fmt.Println()
@@ -640,15 +649,16 @@ func runInstallWizard() {
 	}
 
 	cfg := &service.Config{
-		BinaryPath:     binPath,
-		MI6Address:     mi6Addr,
-		AutoUpdate:     autoUpdate,
-		UpdateInterval: updateInterval,
-		DataDir:        dataDir,
-		LogFile:        logFile,
-		Local:          localMode,
-		Verbose:        verbose,
-		UserLevel:      userLevel,
+		BinaryPath:           binPath,
+		MI6Address:           mi6Addr,
+		MI6ServerFingerprint: mi6ServerFingerprint,
+		AutoUpdate:           autoUpdate,
+		UpdateInterval:       updateInterval,
+		DataDir:              dataDir,
+		LogFile:              logFile,
+		Local:                localMode,
+		Verbose:              verbose,
+		UserLevel:            userLevel,
 	}
 
 	// Summary.
@@ -663,6 +673,7 @@ func runInstallWizard() {
 		fmt.Printf("  Mode:        local (FIFO)\n")
 	} else {
 		fmt.Printf("  Mode:        MI6 (%s)\n", mi6Addr)
+		fmt.Printf("  MI6 key:     %s\n", mi6ServerFingerprint)
 	}
 	fmt.Printf("  Auto-update: %v\n", autoUpdate)
 	fmt.Printf("  Data dir:    %s\n", dataDir)

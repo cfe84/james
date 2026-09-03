@@ -11,7 +11,8 @@ echo "======================"
 # Start Hem server in background.
 HEM_ARGS="start server -v"
 if [ -n "$HEM_MI6_URL" ]; then
-  HEM_ARGS="$HEM_ARGS --mi6-control $HEM_MI6_URL"
+  : "${MI6_SERVER_FINGERPRINT:?MI6_SERVER_FINGERPRINT must be set with HEM_MI6_URL}"
+  HEM_ARGS="$HEM_ARGS --mi6-control $HEM_MI6_URL --mi6-server-fingerprint $MI6_SERVER_FINGERPRINT"
 else
   echo "Warning, no mi6 URL"
 fi

@@ -43,7 +43,7 @@ func (cm *ClientManager) GetClient(mp *store.Moneypenny) *transport.Client {
 	case store.TransportFIFO:
 		c = transport.NewFIFOClient(mp.FIFOIn, mp.FIFOOut)
 	case store.TransportMI6:
-		c = transport.NewMI6Client(mp.MI6Addr, cm.mi6KeyPath)
+		c = transport.NewMI6Client(mp.MI6Addr, cm.mi6KeyPath, mp.MI6ServerFingerprint)
 	default:
 		return nil
 	}

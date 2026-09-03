@@ -6,6 +6,7 @@ if [ -z "$MP_MI6_ADDRESS" ]; then
   echo "Set it to host[:port]/session_id of your MI6 relay"
   exit 1
 fi
+: "${MI6_SERVER_FINGERPRINT:?MI6_SERVER_FINGERPRINT environment variable is required}"
 
 # Ensure mounted volumes are owned by the mp user (volumes from the host
 # may be owned by a different UID).
@@ -24,7 +25,7 @@ ln -sfn /data/claude.json /home/mp/.claude.json
 chown -h mp:mp /home/mp/.claude.json
 
 # Build moneypenny args.
-MP_ARGS="--mi6 $MP_MI6_ADDRESS --data-dir /data"
+MP_ARGS="--mi6 $MP_MI6_ADDRESS --mi6-server-fingerprint $MI6_SERVER_FINGERPRINT --data-dir /data"
 
 if [ "$MP_AUTO_UPDATE" = "true" ]; then
   MP_ARGS="$MP_ARGS --auto-update --update-interval $MP_UPDATE_INTERVAL"

@@ -18,14 +18,15 @@ const (
 
 // Moneypenny represents a registered moneypenny instance.
 type Moneypenny struct {
-	Name          string
-	TransportType string // "fifo" or "mi6"
-	FIFOIn        string // path to input FIFO (for fifo transport)
-	FIFOOut       string // path to output FIFO (for fifo transport)
-	MI6Addr       string // mi6 address host/session_id (for mi6 transport)
-	IsDefault     bool
-	Enabled       bool // false = disabled, hidden from dashboard/sessions
-	CreatedAt     time.Time
+	Name                 string
+	TransportType        string // "fifo" or "mi6"
+	FIFOIn               string // path to input FIFO (for fifo transport)
+	FIFOOut              string // path to output FIFO (for fifo transport)
+	MI6Addr              string // mi6 address host/session_id (for mi6 transport)
+	MI6ServerFingerprint string // required SHA256 fingerprint of the MI6 server
+	IsDefault            bool
+	Enabled              bool // false = disabled, hidden from dashboard/sessions
+	CreatedAt            time.Time
 }
 
 // Session represents a tracked session (mapping session to moneypenny).
@@ -98,6 +99,7 @@ CREATE TABLE IF NOT EXISTS moneypennies (
     fifo_in TEXT NOT NULL DEFAULT '',
     fifo_out TEXT NOT NULL DEFAULT '',
     mi6_addr TEXT NOT NULL DEFAULT '',
+    mi6_server_fingerprint TEXT NOT NULL DEFAULT '',
     is_default INTEGER NOT NULL DEFAULT 0,
     enabled INTEGER NOT NULL DEFAULT 1,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -177,9 +179,9 @@ func (s *Store) Close() error {
 // AddMoneypenny inserts a new moneypenny. Returns an error if the name already exists.
 func (s *Store) AddMoneypenny(mp *Moneypenny) error {
 	_, err := s.db.Exec(
-		`INSERT INTO moneypennies (name, transport_type, fifo_in, fifo_out, mi6_addr, is_default, enabled)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		mp.Name, mp.TransportType, mp.FIFOIn, mp.FIFOOut, mp.MI6Addr, boolToInt(mp.IsDefault), boolToInt(mp.Enabled),
+		`INSERT INTO moneypennies (name, transport_type, fifo_in, fifo_out, mi6_addr, mi6_server_fingerprint, is_default, enabled)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		mp.Name, mp.TransportType, mp.FIFOIn, mp.FIFOOut, mp.MI6Addr, mp.MI6ServerFingerprint, boolToInt(mp.IsDefault), boolToInt(mp.Enabled),
 	)
 	if err != nil {
 		return fmt.Errorf("add moneypenny %q: %w", mp.Name, err)
@@ -190,7 +192,7 @@ func (s *Store) AddMoneypenny(mp *Moneypenny) error {
 // GetMoneypenny retrieves a moneypenny by name. Returns nil, nil if not found.
 func (s *Store) GetMoneypenny(name string) (*Moneypenny, error) {
 	row := s.db.QueryRow(
-		`SELECT name, transport_type, fifo_in, fifo_out, mi6_addr, is_default, enabled, created_at
+		`SELECT name, transport_type, fifo_in, fifo_out, mi6_addr, mi6_server_fingerprint, is_default, enabled, created_at
 		 FROM moneypennies WHERE name = ?`, name,
 	)
 	mp, err := scanMoneypenny(row)
@@ -206,7 +208,7 @@ func (s *Store) GetMoneypenny(name string) (*Moneypenny, error) {
 // ListMoneypennies returns all registered moneypennies ordered by name.
 func (s *Store) ListMoneypennies() ([]*Moneypenny, error) {
 	rows, err := s.db.Query(
-		`SELECT name, transport_type, fifo_in, fifo_out, mi6_addr, is_default, enabled, created_at
+		`SELECT name, transport_type, fifo_in, fifo_out, mi6_addr, mi6_server_fingerprint, is_default, enabled, created_at
 		 FROM moneypennies ORDER BY name`,
 	)
 	if err != nil {
@@ -218,7 +220,7 @@ func (s *Store) ListMoneypennies() ([]*Moneypenny, error) {
 	for rows.Next() {
 		var mp Moneypenny
 		var isDefault, enabled int
-		if err := rows.Scan(&mp.Name, &mp.TransportType, &mp.FIFOIn, &mp.FIFOOut, &mp.MI6Addr, &isDefault, &enabled, &mp.CreatedAt); err != nil {
+		if err := rows.Scan(&mp.Name, &mp.TransportType, &mp.FIFOIn, &mp.FIFOOut, &mp.MI6Addr, &mp.MI6ServerFingerprint, &isDefault, &enabled, &mp.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan moneypenny: %w", err)
 		}
 		mp.IsDefault = isDefault != 0
@@ -327,7 +329,7 @@ func (s *Store) SetDefaultMoneypenny(name string) error {
 // GetDefaultMoneypenny returns the current default moneypenny. Returns nil, nil if none is set.
 func (s *Store) GetDefaultMoneypenny() (*Moneypenny, error) {
 	row := s.db.QueryRow(
-		`SELECT name, transport_type, fifo_in, fifo_out, mi6_addr, is_default, enabled, created_at
+		`SELECT name, transport_type, fifo_in, fifo_out, mi6_addr, mi6_server_fingerprint, is_default, enabled, created_at
 		 FROM moneypennies WHERE is_default = 1`,
 	)
 	mp, err := scanMoneypenny(row)
@@ -561,7 +563,7 @@ func (s *Store) DeleteTrackedSession(sessionID string) error {
 func scanMoneypenny(row *sql.Row) (*Moneypenny, error) {
 	var mp Moneypenny
 	var isDefault, enabled int
-	err := row.Scan(&mp.Name, &mp.TransportType, &mp.FIFOIn, &mp.FIFOOut, &mp.MI6Addr, &isDefault, &enabled, &mp.CreatedAt)
+	err := row.Scan(&mp.Name, &mp.TransportType, &mp.FIFOIn, &mp.FIFOOut, &mp.MI6Addr, &mp.MI6ServerFingerprint, &isDefault, &enabled, &mp.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -1022,6 +1024,7 @@ func (s *Store) migrateSchema() error {
 		`ALTER TABLE sessions ADD COLUMN reviewed INTEGER NOT NULL DEFAULT 1`,
 		`ALTER TABLE sessions ADD COLUMN parent_session_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE moneypennies ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1`,
+		`ALTER TABLE moneypennies ADD COLUMN mi6_server_fingerprint TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sessions ADD COLUMN callback_prompt TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE traits ADD COLUMN enabled_by_default INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE sessions ADD COLUMN nick TEXT NOT NULL DEFAULT ''`,

@@ -24,6 +24,7 @@ func TestAddAndGetMoneypenny(t *testing.T) {
 		FIFOIn:        "/tmp/in",
 		FIFOOut:       "/tmp/out",
 	}
+
 	if err := s.AddMoneypenny(mp); err != nil {
 		t.Fatalf("AddMoneypenny: %v", err)
 	}
@@ -40,6 +41,26 @@ func TestAddAndGetMoneypenny(t *testing.T) {
 	}
 	if got.CreatedAt.IsZero() {
 		t.Error("CreatedAt should not be zero")
+	}
+}
+
+func TestMoneypennyMI6FingerprintPersists(t *testing.T) {
+	s := newTestStore(t)
+	mp := &Moneypenny{
+		Name:                 "remote",
+		TransportType:        TransportMI6,
+		MI6Addr:              "mi6.example:7007/remote",
+		MI6ServerFingerprint: "SHA256:trusted",
+	}
+	if err := s.AddMoneypenny(mp); err != nil {
+		t.Fatalf("AddMoneypenny: %v", err)
+	}
+	got, err := s.GetMoneypenny("remote")
+	if err != nil {
+		t.Fatalf("GetMoneypenny: %v", err)
+	}
+	if got.MI6ServerFingerprint != mp.MI6ServerFingerprint {
+		t.Fatalf("MI6ServerFingerprint = %q, want %q", got.MI6ServerFingerprint, mp.MI6ServerFingerprint)
 	}
 }
 

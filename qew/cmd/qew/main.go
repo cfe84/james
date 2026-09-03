@@ -22,6 +22,7 @@ var Version = "dev"
 
 func main() {
 	mi6Addr := flag.String("mi6", "", "MI6 address for Hem control channel (host/session_id)")
+	mi6ServerFingerprint := flag.String("mi6-server-fingerprint", "", "required SHA256 fingerprint of the MI6 server")
 	sockPath := flag.String("socket", "", "Hem server Unix socket path (default: ~/.config/james/hem/hem.sock)")
 	listenAddr := flag.String("listen", ":8077", "HTTP listen address")
 	keyPath := flag.String("key", "", "SSH key path (default: ~/.config/james/qew/qew_ecdsa)")
@@ -77,13 +78,16 @@ func main() {
 
 	var hem web.HemClient
 	if *mi6Addr != "" {
+		if *mi6ServerFingerprint == "" {
+			log.Fatal("--mi6-server-fingerprint is required with --mi6")
+		}
 		// Ensure key exists (generate if needed).
 		if _, err := loadOrCreatePublicKey(*keyPath); err != nil {
 			log.Fatalf("failed to load/create SSH key: %v", err)
 		}
 
 		log.Printf("connecting to Hem via MI6: %s", *mi6Addr)
-		mi6Client := web.NewMI6Client(*mi6Addr, *keyPath, vlog)
+		mi6Client := web.NewMI6Client(*mi6Addr, *keyPath, *mi6ServerFingerprint, vlog)
 		if err := mi6Client.Start(); err != nil {
 			log.Fatalf("failed to connect to MI6: %v", err)
 		}

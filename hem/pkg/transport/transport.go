@@ -41,13 +41,14 @@ type Response struct {
 
 // Client communicates with a moneypenny instance.
 type Client struct {
-	transportType string // "fifo" or "mi6"
-	fifoIn        string // write commands here (moneypenny reads from it)
-	fifoOut       string // read responses here (moneypenny writes to it)
-	fifoMu        sync.Mutex // serialise FIFO requests (no concurrent writes)
-	mi6Addr       string     // for mi6 transport
-	mi6KeyPath    string     // SSH key for mi6
-	mi6Mu         sync.Mutex // serialise MI6 requests (concurrent clients cause response mixing)
+	transportType        string     // "fifo" or "mi6"
+	fifoIn               string     // write commands here (moneypenny reads from it)
+	fifoOut              string     // read responses here (moneypenny writes to it)
+	fifoMu               sync.Mutex // serialise FIFO requests (no concurrent writes)
+	mi6Addr              string     // for mi6 transport
+	mi6KeyPath           string     // SSH key for mi6
+	mi6ServerFingerprint string     // expected MI6 server fingerprint
+	mi6Mu                sync.Mutex // serialise MI6 requests (concurrent clients cause response mixing)
 }
 
 // NewFIFOClient creates a client that communicates via named pipes.
@@ -61,13 +62,13 @@ func NewFIFOClient(fifoIn, fifoOut string) *Client {
 	}
 }
 
-
 // NewMI6Client creates a client that communicates via MI6.
-func NewMI6Client(mi6Addr, keyPath string) *Client {
+func NewMI6Client(mi6Addr, keyPath, serverFingerprint string) *Client {
 	return &Client{
-		transportType: "mi6",
-		mi6Addr:       mi6Addr,
-		mi6KeyPath:    keyPath,
+		transportType:        "mi6",
+		mi6Addr:              mi6Addr,
+		mi6KeyPath:           keyPath,
+		mi6ServerFingerprint: serverFingerprint,
 	}
 }
 
@@ -210,7 +211,7 @@ func (c *Client) sendMI6(ctx context.Context, cmd *Command) (*Response, error) {
 		return nil, err
 	}
 
-	proc := exec.CommandContext(ctx, mi6Client, "--key", c.mi6KeyPath, c.mi6Addr)
+	proc := exec.CommandContext(ctx, mi6Client, "--key", c.mi6KeyPath, "--server-fingerprint", c.mi6ServerFingerprint, c.mi6Addr)
 	var stderrBuf bytes.Buffer
 	proc.Stderr = &stderrBuf
 
@@ -271,13 +272,13 @@ func (c *Client) sendMI6(ctx context.Context, cmd *Command) (*Response, error) {
 
 // TestMI6 tests connectivity to an MI6 server by spawning mi6-client and
 // verifying it can connect and join the session. Returns nil on success.
-func TestMI6(ctx context.Context, mi6Addr, keyPath string) error {
+func TestMI6(ctx context.Context, mi6Addr, keyPath, serverFingerprint string) error {
 	mi6Client, err := findMI6Client()
 	if err != nil {
 		return err
 	}
 
-	proc := exec.CommandContext(ctx, mi6Client, "--key", keyPath, mi6Addr)
+	proc := exec.CommandContext(ctx, mi6Client, "--key", keyPath, "--server-fingerprint", serverFingerprint, mi6Addr)
 	proc.Stderr = os.Stderr
 
 	stdin, err := proc.StdinPipe()
@@ -302,7 +303,7 @@ func TestMI6(ctx context.Context, mi6Addr, keyPath string) error {
 
 // MI6AdminCommand sends a single admin command to an MI6 server and returns the raw response.
 // It connects via mi6-client with --admin-command (joining the __admin__ session).
-func MI6AdminCommand(ctx context.Context, mi6Addr, keyPath, commandJSON string) ([]byte, error) {
+func MI6AdminCommand(ctx context.Context, mi6Addr, keyPath, serverFingerprint, commandJSON string) ([]byte, error) {
 	mi6Client, err := findMI6Client()
 	if err != nil {
 		return nil, err
@@ -317,7 +318,7 @@ func MI6AdminCommand(ctx context.Context, mi6Addr, keyPath, commandJSON string) 
 		addr = addr + ":7007"
 	}
 
-	proc := exec.CommandContext(ctx, mi6Client, "--server", addr, "--session-id", "__admin__", "--key", keyPath, "--admin-command", commandJSON)
+	proc := exec.CommandContext(ctx, mi6Client, "--server", addr, "--session-id", "__admin__", "--key", keyPath, "--server-fingerprint", serverFingerprint, "--admin-command", commandJSON)
 	var stdoutBuf, stderrBuf bytes.Buffer
 	proc.Stdout = &stdoutBuf
 	proc.Stderr = &stderrBuf

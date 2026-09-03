@@ -3204,6 +3204,23 @@
     renderOmnibar();
   }
 
+  function filterOmnibarItems(items, query) {
+    const q = query.trim();
+    if (!q) return items;
+    // Preserve recency within each group while placing nickname matches ahead
+    // of title-only matches, so aliases are the quickest route to a session.
+    return items
+      .map((item, index) => ({
+        item,
+        index,
+        nickMatch: fuzzyMatch(q, item.nick),
+        nameMatch: fuzzyMatch(q, item.name),
+      }))
+      .filter(match => match.nickMatch || match.nameMatch)
+      .sort((a, b) => Number(b.nickMatch) - Number(a.nickMatch) || a.index - b.index)
+      .map(match => match.item);
+  }
+
   function renderOmnibar() {
     if (!omnibar) return;
     renderWizardModal(`
@@ -3220,10 +3237,7 @@
     if (input) {
       input.addEventListener('input', () => {
         omnibar.query = input.value;
-        const q = input.value.trim();
-        omnibar.filtered = q
-          ? omnibar.items.filter(it => fuzzyMatch(q, `${it.nick} ${it.name}`))
-          : omnibar.items;
+        omnibar.filtered = filterOmnibarItems(omnibar.items, input.value);
         omnibar.cursor = 0;
         updateOmniList();
       });
@@ -4541,6 +4555,8 @@
       <div id="mp-mi6-fields" style="display:none">
         <label for="mp-mi6-addr">MI6 Address</label>
         <input id="mp-mi6-addr" type="text" placeholder="host:port/session_id">
+        <label for="mp-mi6-server-fingerprint">MI6 Server Fingerprint</label>
+        <input id="mp-mi6-server-fingerprint" type="text" placeholder="SHA256:...">
       </div>
       <div class="modal-actions">
         <button class="btn-muted" onclick="window._qewCloseWizard()">Cancel</button>
@@ -4567,7 +4583,10 @@
       } else if (type === 'mi6') {
         const addr = document.getElementById('mp-mi6-addr').value.trim();
         if (!addr) { alert('MI6 address is required'); return; }
+        const fingerprint = document.getElementById('mp-mi6-server-fingerprint').value.trim();
+        if (!fingerprint) { alert('MI6 server fingerprint is required'); return; }
         args.push('--mi6', addr);
+        args.push('--mi6-server-fingerprint', fingerprint);
       }
 
       const btn = document.getElementById('mp-submit');

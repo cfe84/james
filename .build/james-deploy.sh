@@ -13,6 +13,7 @@ docker create \
     --name "${CONTAINER_NAME}" \
     --restart unless-stopped \
     -e HEM_MI6_URL="${HEM_MI6_URL}" \
+    -e MI6_SERVER_FINGERPRINT="${MI6_SERVER_FINGERPRINT}" \
     ${QEW_PASSWORD:+-e QEW_PASSWORD="${QEW_PASSWORD}"} \
     -v "${JAMES_CONFIG_PATH}:/root/.config/james" \
     james

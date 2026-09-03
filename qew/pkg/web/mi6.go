@@ -83,19 +83,20 @@ func (c *SocketClient) Send(req *Request) (*Response, error) {
 
 // MI6Client connects to a Hem server via MI6 and provides request/response communication.
 type MI6Client struct {
-	addr    string
-	keyPath string
-	vlog    *log.Logger
+	addr              string
+	keyPath           string
+	serverFingerprint string
+	vlog              *log.Logger
 
-	mu           sync.Mutex
-	cmd          *exec.Cmd
-	stdin        *json.Encoder
-	scanner      *bufio.Scanner
-	pending      map[string]chan *Response // request_id -> response channel
-	ready        chan struct{}
-	broadcastCh  chan *Response            // broadcasts to all WebSocket clients
-	broadcastMu  sync.RWMutex
-	subscribers  map[*websocketSubscriber]struct{} // WebSocket clients listening for broadcasts
+	mu          sync.Mutex
+	cmd         *exec.Cmd
+	stdin       *json.Encoder
+	scanner     *bufio.Scanner
+	pending     map[string]chan *Response // request_id -> response channel
+	ready       chan struct{}
+	broadcastCh chan *Response // broadcasts to all WebSocket clients
+	broadcastMu sync.RWMutex
+	subscribers map[*websocketSubscriber]struct{} // WebSocket clients listening for broadcasts
 }
 
 type websocketSubscriber struct {
@@ -103,15 +104,16 @@ type websocketSubscriber struct {
 }
 
 // NewMI6Client creates a client that talks to Hem over MI6.
-func NewMI6Client(addr, keyPath string, vlog *log.Logger) *MI6Client {
+func NewMI6Client(addr, keyPath, serverFingerprint string, vlog *log.Logger) *MI6Client {
 	return &MI6Client{
-		addr:        addr,
-		keyPath:     keyPath,
-		vlog:        vlog,
-		pending:     make(map[string]chan *Response),
-		ready:       make(chan struct{}),
-		broadcastCh: make(chan *Response, 100),
-		subscribers: make(map[*websocketSubscriber]struct{}),
+		addr:              addr,
+		keyPath:           keyPath,
+		serverFingerprint: serverFingerprint,
+		vlog:              vlog,
+		pending:           make(map[string]chan *Response),
+		ready:             make(chan struct{}),
+		broadcastCh:       make(chan *Response, 100),
+		subscribers:       make(map[*websocketSubscriber]struct{}),
 	}
 }
 
@@ -152,7 +154,7 @@ func (c *MI6Client) connect() error {
 		return err
 	}
 
-	cmd := exec.Command(mi6Client, "--key", c.keyPath, c.addr)
+	cmd := exec.Command(mi6Client, "--key", c.keyPath, "--server-fingerprint", c.serverFingerprint, c.addr)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("stdin pipe: %w", err)

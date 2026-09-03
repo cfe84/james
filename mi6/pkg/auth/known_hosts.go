@@ -11,8 +11,8 @@ import (
 )
 
 // CheckKnownHost verifies a server's public key against the known_hosts file.
-// Returns nil if the key is known and matches, ErrUnknownHost if not seen before
-// (and adds it — TOFU), or ErrHostKeyChanged if the fingerprint changed.
+// Returns nil if the key is known and matches, records an unknown key after it
+// was authenticated by an explicit fingerprint pin, or rejects a changed key.
 func CheckKnownHost(knownHostsPath, serverAddr string, serverKey ssh.PublicKey) error {
 	fingerprint := ssh.FingerprintSHA256(serverKey)
 
@@ -33,12 +33,28 @@ func CheckKnownHost(knownHostsPath, serverAddr string, serverKey ssh.PublicKey) 
 		)
 	}
 
-	// TOFU: first time seeing this server, trust and record.
+	// The caller has already verified an explicit fingerprint pin.
 	if err := addKnownHost(knownHostsPath, serverAddr, fingerprint); err != nil {
 		return fmt.Errorf("saving known host: %w", err)
 	}
 
 	return nil
+}
+
+// KnownHostFingerprint returns the previously trusted fingerprint for serverAddr.
+func KnownHostFingerprint(knownHostsPath, serverAddr string) (string, error) {
+	entries, err := loadKnownHosts(knownHostsPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", fmt.Errorf("no trusted MI6 servers recorded in %s", knownHostsPath)
+		}
+		return "", fmt.Errorf("reading known_hosts: %w", err)
+	}
+	fingerprint, ok := entries[serverAddr]
+	if !ok {
+		return "", fmt.Errorf("no trusted server fingerprint for %s in %s", serverAddr, knownHostsPath)
+	}
+	return fingerprint, nil
 }
 
 func loadKnownHosts(path string) (map[string]string, error) {

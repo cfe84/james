@@ -1294,7 +1294,7 @@ type CommandResult struct {
 // ---------------------------------------------------------------------------
 
 func (e *Executor) AddMoneypenny(args []string) *protocol.Response {
-	var name, fifoFolder, fifoIn, fifoOut, mi6Addr, sessionID string
+	var name, fifoFolder, fifoIn, fifoOut, mi6Addr, mi6ServerFingerprint, sessionID string
 	var local bool
 
 	remaining, err := parseFlagsFromArgs("add-moneypenny", args, func(fs *flag.FlagSet) {
@@ -1305,6 +1305,7 @@ func (e *Executor) AddMoneypenny(args []string) *protocol.Response {
 		fs.StringVar(&fifoIn, "fifo-in", "", "path to moneypenny input FIFO")
 		fs.StringVar(&fifoOut, "fifo-out", "", "path to moneypenny output FIFO")
 		fs.StringVar(&mi6Addr, "mi6", "", "MI6 address (host or host/session_id)")
+		fs.StringVar(&mi6ServerFingerprint, "mi6-server-fingerprint", "", "required SHA256 fingerprint of the MI6 server")
 		fs.StringVar(&sessionID, "session-id", "", "MI6 session ID (combined with --mi6 host)")
 	})
 	if err != nil {
@@ -1364,6 +1365,9 @@ func (e *Executor) AddMoneypenny(args []string) *protocol.Response {
 	if hasMI6 && !strings.Contains(mi6Addr, "/") {
 		return protocol.ErrResponse("MI6 address must include a session ID (host/session_id) — use --session-id or include it in --mi6")
 	}
+	if hasMI6 && mi6ServerFingerprint == "" {
+		return protocol.ErrResponse("--mi6-server-fingerprint is required with --mi6")
+	}
 
 	mp := &store.Moneypenny{
 		Name:      name,
@@ -1386,6 +1390,7 @@ func (e *Executor) AddMoneypenny(args []string) *protocol.Response {
 	case hasMI6:
 		mp.TransportType = store.TransportMI6
 		mp.MI6Addr = mi6Addr
+		mp.MI6ServerFingerprint = mi6ServerFingerprint
 	}
 
 	if err := e.store.AddMoneypenny(mp); err != nil {
@@ -5847,10 +5852,11 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 // ---------------------------------------------------------------------------
 
 func (e *Executor) TestMI6(args []string) *protocol.Response {
-	var mi6Addr, sessionID string
+	var mi6Addr, serverFingerprint, sessionID string
 
 	_, err := parseFlagsFromArgs("test-mi6", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&mi6Addr, "mi6", "", "MI6 server address")
+		fs.StringVar(&serverFingerprint, "mi6-server-fingerprint", "", "required SHA256 fingerprint of the MI6 server")
 		fs.StringVar(&sessionID, "session", "", "session ID to join")
 	})
 	if err != nil {
@@ -5870,13 +5876,16 @@ func (e *Executor) TestMI6(args []string) *protocol.Response {
 	if sessionID == "" {
 		return protocol.ErrResponse("--session is required")
 	}
+	if serverFingerprint == "" {
+		return protocol.ErrResponse("--mi6-server-fingerprint is required")
+	}
 
 	addr := mi6Addr + "/" + sessionID
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	if err := transport.TestMI6(ctx, addr, e.clientManager.MI6KeyPath()); err != nil {
+	if err := transport.TestMI6(ctx, addr, e.clientManager.MI6KeyPath(), serverFingerprint); err != nil {
 		return protocol.ErrResponse(fmt.Sprintf("MI6 connectivity test failed: %v", err))
 	}
 
@@ -5887,10 +5896,11 @@ func (e *Executor) TestMI6(args []string) *protocol.Response {
 
 // MI6ListKeys lists authorized keys on the MI6 server.
 func (e *Executor) MI6ListKeys(args []string) *protocol.Response {
-	var mi6Addr string
+	var mi6Addr, serverFingerprint string
 
 	_, err := parseFlagsFromArgs("mi6-list-keys", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&mi6Addr, "mi6", "", "MI6 server address")
+		fs.StringVar(&serverFingerprint, "mi6-server-fingerprint", "", "required SHA256 fingerprint of the MI6 server")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -5899,6 +5909,9 @@ func (e *Executor) MI6ListKeys(args []string) *protocol.Response {
 	if mi6Addr == "" {
 		if v, _ := e.store.GetDefault("mi6"); v != "" {
 			mi6Addr = v
+		}
+		if serverFingerprint == "" {
+			return protocol.ErrResponse("--mi6-server-fingerprint is required")
 		}
 	}
 	if mi6Addr == "" {
@@ -5909,7 +5922,7 @@ func (e *Executor) MI6ListKeys(args []string) *protocol.Response {
 	defer cancel()
 
 	cmdJSON := `{"command":"list_keys"}`
-	respData, err := transport.MI6AdminCommand(ctx, mi6Addr, e.clientManager.MI6KeyPath(), cmdJSON)
+	respData, err := transport.MI6AdminCommand(ctx, mi6Addr, e.clientManager.MI6KeyPath(), serverFingerprint, cmdJSON)
 	if err != nil {
 		return protocol.ErrResponse(fmt.Sprintf("MI6 admin command failed: %v", err))
 	}
@@ -5940,10 +5953,11 @@ func (e *Executor) MI6ListKeys(args []string) *protocol.Response {
 
 // MI6AddKey adds a public key to the MI6 server's authorized_keys.
 func (e *Executor) MI6AddKey(args []string) *protocol.Response {
-	var mi6Addr string
+	var mi6Addr, serverFingerprint string
 
 	remaining, err := parseFlagsFromArgs("mi6-add-key", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&mi6Addr, "mi6", "", "MI6 server address")
+		fs.StringVar(&serverFingerprint, "mi6-server-fingerprint", "", "required SHA256 fingerprint of the MI6 server")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -5952,6 +5966,9 @@ func (e *Executor) MI6AddKey(args []string) *protocol.Response {
 	if mi6Addr == "" {
 		if v, _ := e.store.GetDefault("mi6"); v != "" {
 			mi6Addr = v
+		}
+		if serverFingerprint == "" {
+			return protocol.ErrResponse("--mi6-server-fingerprint is required")
 		}
 	}
 	if mi6Addr == "" {
@@ -5970,7 +5987,7 @@ func (e *Executor) MI6AddKey(args []string) *protocol.Response {
 		"command": "add_key",
 		"key":     keyLine,
 	})
-	respData, err := transport.MI6AdminCommand(ctx, mi6Addr, e.clientManager.MI6KeyPath(), string(cmdJSON))
+	respData, err := transport.MI6AdminCommand(ctx, mi6Addr, e.clientManager.MI6KeyPath(), serverFingerprint, string(cmdJSON))
 	if err != nil {
 		return protocol.ErrResponse(fmt.Sprintf("MI6 admin command failed: %v", err))
 	}
@@ -5991,10 +6008,11 @@ func (e *Executor) MI6AddKey(args []string) *protocol.Response {
 
 // MI6DeleteKey removes a public key from the MI6 server's authorized_keys by fingerprint.
 func (e *Executor) MI6DeleteKey(args []string) *protocol.Response {
-	var mi6Addr string
+	var mi6Addr, serverFingerprint string
 
 	remaining, err := parseFlagsFromArgs("mi6-delete-key", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&mi6Addr, "mi6", "", "MI6 server address")
+		fs.StringVar(&serverFingerprint, "mi6-server-fingerprint", "", "required SHA256 fingerprint of the MI6 server")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -6003,6 +6021,9 @@ func (e *Executor) MI6DeleteKey(args []string) *protocol.Response {
 	if mi6Addr == "" {
 		if v, _ := e.store.GetDefault("mi6"); v != "" {
 			mi6Addr = v
+		}
+		if serverFingerprint == "" {
+			return protocol.ErrResponse("--mi6-server-fingerprint is required")
 		}
 	}
 	if mi6Addr == "" {
@@ -6024,7 +6045,7 @@ func (e *Executor) MI6DeleteKey(args []string) *protocol.Response {
 		"command":     "delete_key",
 		"fingerprint": fingerprint,
 	})
-	respData, err := transport.MI6AdminCommand(ctx, mi6Addr, e.clientManager.MI6KeyPath(), string(cmdJSON))
+	respData, err := transport.MI6AdminCommand(ctx, mi6Addr, e.clientManager.MI6KeyPath(), serverFingerprint, string(cmdJSON))
 	if err != nil {
 		return protocol.ErrResponse(fmt.Sprintf("MI6 admin command failed: %v", err))
 	}

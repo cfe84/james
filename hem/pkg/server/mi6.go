@@ -17,10 +17,11 @@ import (
 // MI6Listener accepts commands over an MI6 session, dispatches them,
 // and writes responses back through the same session.
 type MI6Listener struct {
-	addr       string // MI6 address: host/session_id
-	keyPath    string
-	dispatcher Dispatcher
-	vlog       *log.Logger
+	addr              string // MI6 address: host/session_id
+	keyPath           string
+	serverFingerprint string
+	dispatcher        Dispatcher
+	vlog              *log.Logger
 
 	mu     sync.Mutex
 	cmd    *exec.Cmd
@@ -29,13 +30,14 @@ type MI6Listener struct {
 }
 
 // NewMI6Listener creates a listener that accepts Hem commands over MI6.
-func NewMI6Listener(addr, keyPath string, dispatcher Dispatcher, vlog *log.Logger) *MI6Listener {
+func NewMI6Listener(addr, keyPath, serverFingerprint string, dispatcher Dispatcher, vlog *log.Logger) *MI6Listener {
 	return &MI6Listener{
-		addr:       addr,
-		keyPath:    keyPath,
-		dispatcher: dispatcher,
-		vlog:       vlog,
-		stopCh:     make(chan struct{}),
+		addr:              addr,
+		keyPath:           keyPath,
+		serverFingerprint: serverFingerprint,
+		dispatcher:        dispatcher,
+		vlog:              vlog,
+		stopCh:            make(chan struct{}),
 	}
 }
 
@@ -112,7 +114,7 @@ func (m *MI6Listener) runOnce() error {
 		return fmt.Errorf("mi6-client not found: %w", err)
 	}
 
-	cmd := exec.Command(mi6Client, "--key", m.keyPath, m.addr)
+	cmd := exec.Command(mi6Client, "--key", m.keyPath, "--server-fingerprint", m.serverFingerprint, m.addr)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("stdin pipe: %w", err)

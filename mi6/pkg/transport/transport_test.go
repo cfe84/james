@@ -8,6 +8,7 @@ import (
 	"crypto/rsa"
 	"errors"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -71,9 +72,10 @@ func TestHandshakeRSA(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		clientSC, clientErr = ClientHandshake(ClientHandshakeParams{
-			Conn:   clientConn,
-			Signer: clientKey,
-			PubKey: clientPub,
+			Conn:              clientConn,
+			Signer:            clientKey,
+			PubKey:            clientPub,
+			ServerFingerprint: ssh.FingerprintSHA256(serverPub),
 		})
 	}()
 	go func() {
@@ -122,9 +124,10 @@ func TestHandshakeECDSA(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		clientSC, clientErr = ClientHandshake(ClientHandshakeParams{
-			Conn:   clientConn,
-			Signer: clientKey,
-			PubKey: clientPub,
+			Conn:              clientConn,
+			Signer:            clientKey,
+			PubKey:            clientPub,
+			ServerFingerprint: ssh.FingerprintSHA256(serverPub),
 		})
 	}()
 	go func() {
@@ -141,6 +144,7 @@ func TestHandshakeECDSA(t *testing.T) {
 	if clientErr != nil {
 		t.Fatalf("client handshake error: %v", clientErr)
 	}
+
 	if serverErr != nil {
 		t.Fatalf("server handshake error: %v", serverErr)
 	}
@@ -151,6 +155,44 @@ func TestHandshakeECDSA(t *testing.T) {
 
 	clientSC.Close()
 	serverSC.Close()
+}
+
+func TestHandshakeRejectsUnexpectedServerFingerprint(t *testing.T) {
+	clientKey, clientPub := generateECDSAKey(t)
+	serverKey, serverPub := generateServerKey(t)
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	var wg sync.WaitGroup
+	var clientErr, serverErr error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		_, clientErr = ClientHandshake(ClientHandshakeParams{
+			Conn:              clientConn,
+			Signer:            clientKey,
+			PubKey:            clientPub,
+			ServerFingerprint: "SHA256:not-the-server-key",
+		})
+	}()
+	go func() {
+		defer wg.Done()
+		_, _, serverErr = ServerHandshake(ServerHandshakeParams{
+			Conn:           serverConn,
+			Signer:         serverKey,
+			PubKey:         serverPub,
+			AuthorizedKeys: []ssh.PublicKey{clientPub},
+		})
+	}()
+	wg.Wait()
+
+	if clientErr == nil || !strings.Contains(clientErr.Error(), "fingerprint mismatch") {
+		t.Fatalf("client error = %v, want fingerprint mismatch", clientErr)
+	}
+	if serverErr == nil {
+		t.Fatal("server handshake unexpectedly succeeded")
+	}
 }
 
 func TestSendReceiveAfterHandshake(t *testing.T) {
@@ -171,9 +213,10 @@ func TestSendReceiveAfterHandshake(t *testing.T) {
 		defer wg.Done()
 		var err error
 		clientSC, err = ClientHandshake(ClientHandshakeParams{
-			Conn:   clientConn,
-			Signer: clientKey,
-			PubKey: clientPub,
+			Conn:              clientConn,
+			Signer:            clientKey,
+			PubKey:            clientPub,
+			ServerFingerprint: ssh.FingerprintSHA256(serverPub),
 		})
 		if err != nil {
 			t.Errorf("client handshake: %v", err)
@@ -296,9 +339,10 @@ func TestUnauthorizedKeyRejected(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		_, clientErr = ClientHandshake(ClientHandshakeParams{
-			Conn:   clientConn,
-			Signer: clientKey,
-			PubKey: clientPub,
+			Conn:              clientConn,
+			Signer:            clientKey,
+			PubKey:            clientPub,
+			ServerFingerprint: ssh.FingerprintSHA256(serverPub),
 		})
 	}()
 	go func() {
@@ -338,9 +382,10 @@ func TestMultipleMessagesInSequence(t *testing.T) {
 		defer wg.Done()
 		var err error
 		clientSC, err = ClientHandshake(ClientHandshakeParams{
-			Conn:   clientConn,
-			Signer: clientKey,
-			PubKey: clientPub,
+			Conn:              clientConn,
+			Signer:            clientKey,
+			PubKey:            clientPub,
+			ServerFingerprint: ssh.FingerprintSHA256(serverPub),
 		})
 		if err != nil {
 			t.Errorf("client handshake: %v", err)
@@ -469,9 +514,10 @@ func TestCompressionNegotiated(t *testing.T) {
 		defer wg.Done()
 		var err error
 		clientSC, err = ClientHandshake(ClientHandshakeParams{
-			Conn:   clientConn,
-			Signer: clientKey,
-			PubKey: clientPub,
+			Conn:              clientConn,
+			Signer:            clientKey,
+			PubKey:            clientPub,
+			ServerFingerprint: ssh.FingerprintSHA256(serverPub),
 		})
 		if err != nil {
 			t.Errorf("client handshake: %v", err)

@@ -28,7 +28,7 @@ type diagnoseCheck struct {
 
 // runDiagnose runs client-side and server-side diagnostics with streaming text output.
 // It builds its own sender to avoid fatal errors on MI6 connect failure (local checks should still run).
-func runDiagnose(mi6Addr string, outputFmt string) {
+func runDiagnose(mi6Addr, serverFingerprint, outputFmt string) {
 	isJSON := outputFmt == output.FormatJSON
 	var checks []diagnoseCheck
 
@@ -143,7 +143,7 @@ func runDiagnose(mi6Addr string, outputFmt string) {
 	} else {
 		dataDir := defaultDataDir()
 		keyPath := filepath.Join(dataDir, "hem_ecdsa")
-		s := &hemclient.MI6Sender{Addr: mi6Addr, KeyPath: keyPath}
+		s := &hemclient.MI6Sender{Addr: mi6Addr, KeyPath: keyPath, ServerFingerprint: serverFingerprint}
 		if err := s.Connect(); err != nil {
 			senderErr = fmt.Errorf("MI6 connect: %w", err)
 		} else {

@@ -24,9 +24,10 @@ func newAddMoneypennyModel(c *client) addMoneypennyModel {
 		client: c,
 		fields: []formField{
 			{label: "Name", flag: "-n", value: ""},
-			{label: "Type", flag: "", value: "local"},       // local, fifo, mi6
+			{label: "Type", flag: "", value: "local"}, // local, fifo, mi6
 			{label: "FIFO Folder", flag: "--fifo-folder", value: ""},
 			{label: "MI6 Address", flag: "--mi6", value: ""}, // host/session_id
+			{label: "MI6 Server Fingerprint", flag: "--mi6-server-fingerprint", value: ""},
 		},
 	}
 }
@@ -51,6 +52,9 @@ func (m addMoneypennyModel) addMoneypenny() tea.Cmd {
 			addr := m.fields[3].value
 			if addr != "" {
 				args = append(args, "--mi6", addr)
+			}
+			if fingerprint := m.fields[4].value; fingerprint != "" {
+				args = append(args, "--mi6-server-fingerprint", fingerprint)
 			}
 		}
 
@@ -139,6 +143,8 @@ func (m addMoneypennyModel) isFieldVisible(i int) bool {
 	case 2: // FIFO Folder
 		return mpType == "fifo"
 	case 3: // MI6 Address
+		return mpType == "mi6"
+	case 4: // MI6 Server Fingerprint
 		return mpType == "mi6"
 	}
 	return false
