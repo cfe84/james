@@ -226,7 +226,7 @@ func (h *Handler) runCompaction(sessionID, nextPrompt, effModel, effEffort strin
 
 	// 2. Substitution: mint a fresh underlying agent session id and reset the
 	// measured context to a clean baseline.
-	newAgentID := newAgentSessionID()
+	newAgentID := initialAgentSessionID(sess.Agent, newAgentSessionID())
 	_ = h.store.SetAgentSessionID(sessionID, newAgentID)
 	window := sess.ContextWindow
 	if window <= 0 {

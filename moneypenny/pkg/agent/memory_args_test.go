@@ -72,6 +72,12 @@ func TestMemoryAccessArgsCopilot(t *testing.T) {
 	if !MemoryEnabled("copilot", true) {
 		t.Errorf("MemoryEnabled(copilot, yolo) should be true")
 	}
+	if MemoryEnabled("opencode", false) {
+		t.Errorf("MemoryEnabled(opencode, non-yolo) should be false")
+	}
+	if !MemoryEnabled("opencode", true) {
+		t.Errorf("MemoryEnabled(opencode, yolo) should be true")
+	}
 }
 
 func TestBuildArgsIncludesMemoryDir(t *testing.T) {

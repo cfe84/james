@@ -55,7 +55,7 @@ func newCreateModel(c *client) createModel {
 			{label: "Name", flag: "--name", value: ""},
 			{label: "Nick", flag: "--nick", value: ""},
 			{label: "Project", flag: "--project", value: ""},
-			{label: "Agent", flag: "--agent", value: "", options: []string{"", "claude", "copilot"}},
+			{label: "Agent", flag: "--agent", value: "", options: []string{"", "claude", "copilot", "opencode"}},
 			{label: "Model", flag: "--model", value: "", options: []string{""}},
 			{label: "System Prompt", flag: "--system-prompt", value: ""},
 			{label: "Environment (NAME=VALUE per line)", flag: "--env", value: ""},

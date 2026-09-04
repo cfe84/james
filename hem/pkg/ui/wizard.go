@@ -133,7 +133,7 @@ func newWizardModel(c *client) wizardModel {
 			{label: "Name", flag: "--name", value: ""},
 			{label: "Nick", flag: "--nick", value: ""},
 			{label: "Project", flag: "--project", value: ""},
-			{label: "Agent", flag: "--agent", value: "copilot", options: []string{"", "claude", "copilot"}},
+			{label: "Agent", flag: "--agent", value: "copilot", options: []string{"", "claude", "copilot", "opencode"}},
 			{label: "Model", flag: "--model", value: "", options: []string{""}},
 			{label: "Effort", flag: "--effort", value: "", options: effortOptions("copilot")},
 			{label: "Context", flag: "--context", value: "", options: contextTierOptions()},
@@ -155,7 +155,7 @@ func newProjectWizardModel(c *client) wizardModel {
 		forProject:  true,
 		fields: []formField{
 			{label: "Name", flag: "--name", value: ""},
-			{label: "Agent", flag: "--agent", value: "copilot", options: []string{"", "claude", "copilot"}},
+			{label: "Agent", flag: "--agent", value: "copilot", options: []string{"", "claude", "copilot", "opencode"}},
 			{label: "System Prompt", flag: "--system-prompt", value: ""},
 		},
 	}
@@ -959,6 +959,8 @@ func effortOptions(agent string) []string {
 	switch agent {
 	case "copilot":
 		return []string{"", "none", "low", "medium", "high", "xhigh", "max"}
+	case "opencode":
+		return []string{"", "minimal", "low", "medium", "high", "max"}
 	default:
 		// Claude (and any other agent) keeps the original list.
 		return []string{"", "low", "medium", "high"}

@@ -117,6 +117,7 @@
   // an agent, with a leading "" entry meaning "no override / default".
   function effortOptions(agent) {
     if (agent === 'copilot') return ['', 'none', 'low', 'medium', 'high', 'xhigh', 'max'];
+    if (agent === 'opencode') return ['', 'minimal', 'low', 'medium', 'high', 'max'];
     return ['', 'low', 'medium', 'high'];
   }
 
@@ -1735,7 +1736,7 @@
     }
 
     const srcAgent = copy ? (src.agent || 'copilot') : 'copilot';
-    const agents = ['copilot', 'claude'];
+    const agents = ['copilot', 'claude', 'opencode'];
     if (!agents.includes(srcAgent)) agents.push(srcAgent);
     const agentOpts = agents.map(a => `<option value="${escapeAttr(a)}"${a === srcAgent ? ' selected' : ''}>${escapeHtml(a)}</option>`).join('');
 
@@ -4614,7 +4615,7 @@
     } catch (e) { alert('Error: ' + e.message); }
   }
 
-  function showAddMoneypennyModal() {
+  async function showAddMoneypennyModal() {
     renderWizardModal(`
       <h3>Add Moneypenny</h3>
       <label for="mp-name">Name *</label>
@@ -4646,6 +4647,25 @@
       document.getElementById('mp-fifo-fields').style.display = typeSelect.value === 'fifo' ? 'block' : 'none';
       document.getElementById('mp-mi6-fields').style.display = typeSelect.value === 'mi6' ? 'block' : 'none';
     });
+
+    try {
+      const resp = await apiCall('diagnose', '', []);
+      if (resp.status === 'ok' && resp.data) {
+        const control = resp.data.mi6_control || '';
+        const fingerprint = resp.data.mi6_server_fingerprint || '';
+        const addr = document.getElementById('mp-mi6-addr');
+        const pin = document.getElementById('mp-mi6-server-fingerprint');
+        // A Moneypenny must use its own session, never Hem's control session.
+        // Retain the configured relay endpoint and prompt for that final segment.
+        if (addr && control) {
+          const slash = control.lastIndexOf('/');
+          addr.value = slash >= 0 ? control.substring(0, slash + 1) : control;
+        }
+        if (pin && fingerprint) pin.value = fingerprint;
+      }
+    } catch (e) {
+      // The fields remain blank if the connected Hem does not expose MI6 settings.
+    }
 
     document.getElementById('mp-submit').addEventListener('click', async () => {
       const name = document.getElementById('mp-name').value.trim();

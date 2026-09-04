@@ -5,7 +5,7 @@ James is a set of tools for orchestrating AI agents (Bond pun intended). It lets
 ## Components
 
 - **Hem** — CLI, TUI, and chat REPL for managing agent sessions
-- **Moneypenny** — Per-host daemon that runs agent sessions (Claude Code, GitHub Copilot)
+- **Moneypenny** — Per-host daemon that runs agent sessions (Claude Code, GitHub Copilot, OpenCode)
 - **MI6** — Transport relay for remote agent communication
 - **Qew** — Web UI for remote access via MI6
 
@@ -55,6 +55,26 @@ hem create session -m local "Fix the login bug"
 # Open the TUI
 hem ui
 ```
+
+## MI6 Authentication
+
+MI6 does not use your default `~/.ssh` identity. Each James client creates and
+uses its own ECDSA key in its data directory:
+
+| Client | Private key |
+| --- | --- |
+| Moneypenny | `~/.config/james/moneypenny/moneypenny_ecdsa` |
+| Hem remote client | `~/.config/james/hem/hem_ecdsa` |
+| Qew direct-MI6 mode | `~/.config/james/qew/qew_ecdsa` |
+| Manual `mi6-client` | The path provided through `--key` |
+
+Install the corresponding public key (`.pub`) in the relay's `authorized_keys`.
+Keys permitted to manage relay keys additionally belong in `admin_keys`.
+
+Client authentication is separate from relay identity: every remote MI6 client
+also requires the relay server's `SHA256:...` fingerprint through
+`--server-fingerprint` (or the higher-level `--mi6-server-fingerprint` flag).
+This pin verifies that the connection reached the intended relay.
 
 ## Building from Source
 

@@ -13,12 +13,13 @@ import (
 
 // DiagnoseResult is the structured result from the server-side diagnose command.
 type DiagnoseResult struct {
-	ServerVersion   string         `json:"server_version"`
-	MI6Control      string         `json:"mi6_control,omitempty"` // configured MI6 control address, or ""
-	Moneypennies    []MPDiagnosis  `json:"moneypennies"`
-	SessionCounts   map[string]int `json:"session_counts"`    // hem_status → count
-	CacheAgeSeconds float64        `json:"cache_age_seconds"` // seconds since last cache refresh (-1 = never)
-	CacheRefreshing bool           `json:"cache_refreshing"`
+	ServerVersion        string         `json:"server_version"`
+	MI6Control           string         `json:"mi6_control,omitempty"`            // configured MI6 control address, or ""
+	MI6ServerFingerprint string         `json:"mi6_server_fingerprint,omitempty"` // configured relay identity pin, or ""
+	Moneypennies         []MPDiagnosis  `json:"moneypennies"`
+	SessionCounts        map[string]int `json:"session_counts"`    // hem_status → count
+	CacheAgeSeconds      float64        `json:"cache_age_seconds"` // seconds since last cache refresh (-1 = never)
+	CacheRefreshing      bool           `json:"cache_refreshing"`
 }
 
 // MPDiagnosis holds diagnostic info for a single moneypenny.
@@ -204,12 +205,13 @@ func (e *Executor) Diagnose(args []string) *protocol.Response {
 	}
 
 	result := DiagnoseResult{
-		ServerVersion:   e.Version,
-		MI6Control:      e.MI6Control,
-		Moneypennies:    diagnoses,
-		SessionCounts:   sessionCounts,
-		CacheAgeSeconds: cacheAge,
-		CacheRefreshing: e.cacheManager.IsRefreshing(),
+		ServerVersion:        e.Version,
+		MI6Control:           e.MI6Control,
+		MI6ServerFingerprint: e.MI6ServerFingerprint,
+		Moneypennies:         diagnoses,
+		SessionCounts:        sessionCounts,
+		CacheAgeSeconds:      cacheAge,
+		CacheRefreshing:      e.cacheManager.IsRefreshing(),
 	}
 
 	return protocol.OKResponse(result)

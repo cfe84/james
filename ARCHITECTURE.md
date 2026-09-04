@@ -51,6 +51,7 @@ mi6/
 13. **Mutable session hierarchy**: Hem stores the parent relationship in `sessions.parent_session_id`, so adopting (`adopt session --parent`) or promoting (`promote session`) a session is a local relationship update only. Adoption requires the same Moneypenny and walks parent links to reject cycles; promotion clears only the selected session's parent, retaining its children. No Moneypenny state, history, memory, schedules, or active agent process changes.
 14. **Coordinated gadget client updates**: Moneypenny’s updater stages the matching `moneypenny`, `mi6-client`, and `hem` binaries from a signed release archive. It replaces all colocated binaries during the idle update transition so a gadget-invoked Hem CLI forwards the same MI6 authentication options expected by its client.
 15. **Non-interactive service provisioning**: `moneypenny install --non-interactive` uses the same platform service backends as the interactive wizard but validates all provisioning choices from explicit flags. It requires a selected service level and transport, requires a MI6 relay fingerprint for remote transports, and refuses to replace an existing service unless `--force` is explicit.
+16. **Qew MI6 registration defaults**: Hem's authenticated `diagnose` response includes its configured MI6 control address and relay fingerprint. Qew reads these values when opening the Add Moneypenny modal, pre-filling the relay endpoint (but not Hem's control-session ID) and fingerprint. This avoids duplicated relay configuration and prevents session collisions while preserving editable inputs.
 
 ### Auth Flow
 
@@ -654,6 +655,23 @@ Moneypenny can self-update from GitHub releases (`--auto-update` flag).
 5. **MI6 resilience**: After re-exec, moneypenny's MI6 reconnect loop naturally re-establishes the connection. FIFO mode recreates pipes on startup. Sessions survive in SQLite.
 6. **Companion binaries**: Also updates `mi6-client` if found alongside the moneypenny binary, since moneypenny spawns it as a subprocess for MI6 connections.
 7. **Observability**: `update_status` protocol method exposes current state (checking/downloading/staged/waiting_idle/etc.) to hem and TUI.
+
+## OpenCode Agent Integration
+
+OpenCode is a third Moneypenny agent backend alongside Claude Code and GitHub
+Copilot. It runs as `opencode run --format json` and emits NDJSON activity
+events. Unlike the other backends, OpenCode generates its own `ses_...`
+session ID; the runner extracts that ID from the stream and persists it in
+`sessions.agent_session_id` before a subsequent continuation or custom
+compaction. New OpenCode runs therefore omit `--session`, while resumed runs
+pass the stored ID with `--session`.
+
+OpenCode model identifiers retain the CLI's `provider/model` form and are
+discovered with `opencode models`. James maps effort to OpenCode's
+provider-specific `--variant`, yolo to `--auto`, and uploads to repeated
+`--file`. OpenCode has no system-prompt flag, so each prompt is prefixed with
+the configured system instructions. Non-yolo OpenCode sessions do not receive
+file-based memory, matching Copilot's conservative headless-permission policy.
 
 ## Versioning
 

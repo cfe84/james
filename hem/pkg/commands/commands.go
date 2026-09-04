@@ -4516,7 +4516,7 @@ func (e *Executor) ListModels(args []string) *protocol.Response {
 	_, err := parseFlagsFromArgs("list-models", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&mpName, "m", "", "moneypenny name")
 		fs.StringVar(&mpName, "moneypenny", "", "moneypenny name")
-		fs.StringVar(&agentName, "agent", "", "agent type (claude, copilot)")
+		fs.StringVar(&agentName, "agent", "", "agent type (claude, copilot, opencode)")
 		fs.BoolVar(&refresh, "refresh", false, "bypass the cache and query the moneypenny directly")
 	})
 	if err != nil {
@@ -4590,7 +4590,7 @@ func (e *Executor) RefreshModels(args []string) *protocol.Response {
 	_, err := parseFlagsFromArgs("refresh-models", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&mpName, "m", "", "moneypenny name")
 		fs.StringVar(&mpName, "moneypenny", "", "moneypenny name")
-		fs.StringVar(&agentName, "agent", "", "agent type (claude, copilot)")
+		fs.StringVar(&agentName, "agent", "", "agent type (claude, copilot, opencode)")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())

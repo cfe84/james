@@ -29,6 +29,13 @@ var sessionIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-
 
 var environmentNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
+func initialAgentSessionID(agentName, sessionID string) string {
+	if agentName == "opencode" {
+		return ""
+	}
+	return sessionID
+}
+
 func validateEnvironment(environment map[string]string) (string, error) {
 	if len(environment) == 0 {
 		return "{}", nil
@@ -378,7 +385,7 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 		Yolo:           data.Yolo,
 		Path:           data.Path,
 		Environment:    environment,
-		AgentSessionID: data.SessionID,
+		AgentSessionID: initialAgentSessionID(data.Agent, data.SessionID),
 		CompactionMode: compactionMode,
 	}
 	if err := h.store.CreateSession(sess); err != nil {
@@ -757,7 +764,7 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 	// edits its memory folder directly with its native file tools, so it always
 	// sees an up-to-date map of what it knows and where to write. Memory is
 	// skipped for agent/permission combinations that can't write it without an
-	// interactive prompt (non-yolo Copilot — see agent.MemoryEnabled).
+	// interactive prompt (non-yolo Copilot/OpenCode — see agent.MemoryEnabled).
 	if agent.MemoryEnabled(params.Agent, params.Yolo) {
 		h.ensureMemoryMigrated(sessionID)
 		if memDir := h.memoryDir(sessionID); memDir != "" {
@@ -790,6 +797,11 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 	if err == nil {
 		result, err = h.runner.Run(ctx, params)
 	}
+	if result != nil && result.AgentSessionID != "" {
+		if persistErr := h.store.SetAgentSessionID(sessionID, result.AgentSessionID); persistErr != nil {
+			h.vlog("failed to persist agent session id for session %s: %v", sessionID, persistErr)
+		}
+	}
 
 	// Recovery: if the agent reports its session is gone, compact our history
 	// and retry as a fresh agent-side session with the summary as context.
@@ -813,7 +825,7 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 		// Retry as a CREATE against a fresh underlying agent session id (the old
 		// one is gone; reusing it can collide on agents that treat --session-id
 		// as create-only).
-		newAgentID := newAgentSessionID()
+		newAgentID := initialAgentSessionID(params.Agent, newAgentSessionID())
 		_ = h.store.SetAgentSessionID(sessionID, newAgentID)
 		params.AgentSessionID = newAgentID
 		params.Resume = false
@@ -1658,7 +1670,7 @@ func tailLogFile(path string, lineCount int) (envelope.GetLogsResponse, error) {
 }
 
 func (h *Handler) checkAgents(cmd *envelope.Command) *envelope.Response {
-	knownAgents := []string{"claude", "copilot"}
+	knownAgents := []string{"claude", "copilot", "opencode"}
 	var agents []envelope.AgentAvailability
 	for _, name := range knownAgents {
 		a := envelope.AgentAvailability{Name: name}
@@ -1708,6 +1720,8 @@ func (h *Handler) listModels(_ context.Context, cmd *envelope.Command) *envelope
 		models = claudeModels()
 	case "copilot":
 		models = copilotModels()
+	case "opencode":
+		models = openCodeModels()
 	default:
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("unknown agent: %s", agentName))
 	}
@@ -1726,6 +1740,32 @@ func claudeModels() []envelope.ModelInfo {
 		{Name: "opus", Value: "opus"},
 		{Name: "haiku", Value: "haiku"},
 	}
+}
+
+// openCodeModels reads OpenCode's authoritative provider/model identifiers.
+func openCodeModels() []envelope.ModelInfo {
+	path, err := agent.FindAgent("opencode")
+	if err != nil {
+		log.Printf("opencode models: opencode not found: %v", err)
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, "models")
+	cmd.Env = agent.PrependToPath(os.Environ(), filepath.Dir(path))
+	out, err := cmd.Output()
+	if err != nil {
+		log.Printf("opencode models: command failed: %v", err)
+		return nil
+	}
+	var models []envelope.ModelInfo
+	for _, line := range strings.Fields(string(out)) {
+		if !strings.Contains(line, "/") {
+			continue
+		}
+		models = append(models, envelope.ModelInfo{Name: line, Value: line})
+	}
+	return models
 }
 
 // Copilot model cache (querying is slow, ~10-20s).
