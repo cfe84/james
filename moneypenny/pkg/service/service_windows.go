@@ -17,6 +17,7 @@ const needsLogFileArg = true
 const taskNameUser = "JamesMoneypenny"
 const taskNameSystem = "JamesMoneypennySystem"
 const taskWrapperName = "moneypenny-service.cmd"
+const taskLauncherName = "moneypenny-service.vbs"
 
 func taskName(userLevel bool) string {
 	if userLevel {
@@ -50,7 +51,7 @@ func Install(cfg *Config) error {
 		}
 	}
 
-	wrapperPath, err := writeTaskWrapper(cfg)
+	launcherPath, err := writeTaskLauncher(cfg)
 	if err != nil {
 		return err
 	}
@@ -58,11 +59,12 @@ func Install(cfg *Config) error {
 	tn := taskName(cfg.UserLevel)
 
 	// Task Scheduler limits /tr to 261 characters. Keep it short by storing
-	// the configured command in a managed wrapper in the data directory.
+	// the configured command in a managed wrapper in the data directory. Run
+	// it through wscript so the daemon's console window remains hidden.
 	schtasksArgs := []string{
 		"/create",
 		"/tn", tn,
-		"/tr", fmt.Sprintf(`cmd.exe /d /s /c ""%s""`, wrapperPath),
+		"/tr", fmt.Sprintf(`wscript.exe //B "%s"`, launcherPath),
 		"/sc", "onlogon",
 		"/rl", "limited",
 		"/f", // force overwrite if exists
@@ -126,6 +128,25 @@ func writeTaskWrapper(cfg *Config) (string, error) {
 	path := filepath.Join(cfg.DataDir, taskWrapperName)
 	if err := os.WriteFile(path, []byte(script.String()), 0600); err != nil {
 		return "", fmt.Errorf("write task wrapper: %w", err)
+	}
+	return path, nil
+}
+
+func writeTaskLauncher(cfg *Config) (string, error) {
+	wrapperPath, err := writeTaskWrapper(cfg)
+	if err != nil {
+		return "", err
+	}
+
+	// WScript's window style 0 hides the cmd.exe console; waitOnReturn keeps
+	// Task Scheduler tracking the daemon process rather than the launcher.
+	script := fmt.Sprintf(
+		`CreateObject("WScript.Shell").Run "cmd.exe /d /s /c """"%s""""", 0, True`+"\r\n",
+		strings.ReplaceAll(wrapperPath, `"`, `""`),
+	)
+	path := filepath.Join(cfg.DataDir, taskLauncherName)
+	if err := os.WriteFile(path, []byte(script), 0600); err != nil {
+		return "", fmt.Errorf("write task launcher: %w", err)
 	}
 	return path, nil
 }
