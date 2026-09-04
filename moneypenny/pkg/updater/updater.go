@@ -368,7 +368,8 @@ func exeSuffix() string {
 	return ""
 }
 
-// downloadAndStage downloads the platform-specific archive and extracts moneypenny + mi6-client.
+// downloadAndStage downloads the platform-specific archive and extracts the
+// moneypenny, MI6, and Hem binaries that must remain protocol-compatible.
 func (u *Updater) downloadAndStage(ctx context.Context, rel *gitHubRelease) (string, error) {
 	// Find the right asset: james-GOOS-GOARCH.tar.gz (or .zip on Windows).
 	ext := ".tar.gz"
@@ -461,6 +462,7 @@ func (u *Updater) downloadAndStage(ctx context.Context, rel *gitHubRelease) (str
 	wantBinaries := map[string]bool{
 		"moneypenny" + suffix: false,
 		"mi6-client" + suffix: false,
+		"hem" + suffix:        false,
 	}
 	if runtime.GOOS == "windows" {
 		wantBinaries["moneypenny-update-helper.exe"] = false
@@ -492,6 +494,10 @@ func (u *Updater) downloadAndStage(ctx context.Context, rel *gitHubRelease) (str
 	if !wantBinaries["moneypenny"+suffix] {
 		os.RemoveAll(stageDir)
 		return "", fmt.Errorf("moneypenny binary not found in archive")
+	}
+	if !wantBinaries["hem"+suffix] {
+		os.RemoveAll(stageDir)
+		return "", fmt.Errorf("hem binary not found in archive")
 	}
 	if runtime.GOOS == "windows" && !wantBinaries["moneypenny-update-helper.exe"] {
 		os.RemoveAll(stageDir)
@@ -636,7 +642,8 @@ func (u *Updater) swapAndRestart(stagedDir string) error {
 
 	currentDir := filepath.Dir(currentExe)
 	currentMI6 := filepath.Join(currentDir, "mi6-client"+suffix)
-	return installStagedUpdate(stagedDir, currentExe, currentMI6, u.execArgs, u.beforeRestart, u.vlog)
+	currentHem := filepath.Join(currentDir, "hem"+suffix)
+	return installStagedUpdate(stagedDir, currentExe, currentMI6, currentHem, u.execArgs, u.beforeRestart, u.vlog)
 }
 
 // atomicSwap replaces dst with src using rename (atomic on same filesystem)

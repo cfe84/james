@@ -15,7 +15,7 @@ func reExec(binary string, args []string) error {
 	return syscall.Exec(binary, args, os.Environ())
 }
 
-func installStagedUpdate(stagedDir, currentExe, currentMI6 string, args []string, beforeRestart func(), vlog *log.Logger) error {
+func installStagedUpdate(stagedDir, currentExe, currentMI6, currentHem string, args []string, beforeRestart func(), vlog *log.Logger) error {
 	suffix := exeSuffix()
 	newMI6 := filepath.Join(stagedDir, "mi6-client"+suffix)
 	if _, err := os.Stat(newMI6); err == nil {
@@ -24,6 +24,14 @@ func installStagedUpdate(stagedDir, currentExe, currentMI6 string, args []string
 			if err := atomicSwap(newMI6, currentMI6); err != nil {
 				vlog.Printf("warning: failed to swap mi6-client: %v", err)
 			}
+		}
+	}
+
+	newHem := filepath.Join(stagedDir, "hem"+suffix)
+	if _, err := os.Stat(currentHem); err == nil {
+		vlog.Printf("swapping hem: %s -> %s", newHem, currentHem)
+		if err := atomicSwap(newHem, currentHem); err != nil {
+			return fmt.Errorf("swap hem: %w", err)
 		}
 	}
 

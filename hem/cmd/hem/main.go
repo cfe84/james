@@ -78,9 +78,11 @@ func main() {
 		if stored := getStoredDefaultServer(); stored != "" {
 			mi6Addr = stored
 		}
-		if mi6ServerFingerprint == "" {
-			mi6ServerFingerprint = os.Getenv("MI6_SERVER_FINGERPRINT")
-		}
+	}
+	// The environment provides a deployment-level default whether the MI6
+	// address came from --hem or persisted configuration.
+	if mi6ServerFingerprint == "" {
+		mi6ServerFingerprint = os.Getenv("MI6_SERVER_FINGERPRINT")
 	}
 
 	// Build sender based on transport.

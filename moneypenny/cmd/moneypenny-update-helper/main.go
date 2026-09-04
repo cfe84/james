@@ -21,6 +21,7 @@ type updatePlan struct {
 	ParentPID  int      `json:"parent_pid"`
 	CurrentExe string   `json:"current_exe"`
 	CurrentMI6 string   `json:"current_mi6"`
+	CurrentHem string   `json:"current_hem"`
 	StagedDir  string   `json:"staged_dir"`
 	Args       []string `json:"args"`
 }
@@ -61,6 +62,14 @@ func apply(planPath string) error {
 		if _, err := os.Stat(plan.CurrentMI6); err == nil {
 			if err := replaceFile(newMI6, plan.CurrentMI6); err != nil {
 				log.Printf("warning: replace mi6-client: %v", err)
+			}
+			newHem := filepath.Join(plan.StagedDir, "hem.exe")
+			if _, err := os.Stat(newHem); err == nil {
+				if _, err := os.Stat(plan.CurrentHem); err == nil {
+					if err := replaceFile(newHem, plan.CurrentHem); err != nil {
+						log.Printf("warning: replace hem: %v", err)
+					}
+				}
 			}
 		}
 	}

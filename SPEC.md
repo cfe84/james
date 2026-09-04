@@ -462,6 +462,10 @@ Hem manages sessions on moneypennies. It tracks which moneypenny each session li
 - `hem promote session SESSION_ID` clears its parent relationship and makes the sub-session top-level. Its own children remain attached.
 - Both operations affect only Hem's tracking relationship: no agent process is restarted and session history, memory, schedules, and configuration are unchanged. Qew exposes matching **Make Subsession** and **Make Top-Level** actions; making a subsession presents an eligible parent-session picker.
 
+### Updates
+
+Moneypenny auto-update stages and replaces its colocated `moneypenny`, `mi6-client`, and `hem` binaries together. This keeps the gadget-installed Hem CLI compatible with the MI6 client protocol.
+
 ### Create
 
 `hem create session -m|--moneypenny NAME PROMPT [flags]`

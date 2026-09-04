@@ -15,11 +15,12 @@ type windowsUpdatePlan struct {
 	ParentPID  int      `json:"parent_pid"`
 	CurrentExe string   `json:"current_exe"`
 	CurrentMI6 string   `json:"current_mi6"`
+	CurrentHem string   `json:"current_hem"`
 	StagedDir  string   `json:"staged_dir"`
 	Args       []string `json:"args"`
 }
 
-func installStagedUpdate(stagedDir, currentExe, currentMI6 string, args []string, beforeRestart func(), vlog *log.Logger) error {
+func installStagedUpdate(stagedDir, currentExe, currentMI6, currentHem string, args []string, beforeRestart func(), vlog *log.Logger) error {
 	helper := filepath.Join(stagedDir, "moneypenny-update-helper.exe")
 	if _, err := os.Stat(helper); err != nil {
 		return fmt.Errorf("staged update helper not found: %w", err)
@@ -29,6 +30,7 @@ func installStagedUpdate(stagedDir, currentExe, currentMI6 string, args []string
 		ParentPID:  os.Getpid(),
 		CurrentExe: currentExe,
 		CurrentMI6: currentMI6,
+		CurrentHem: currentHem,
 		StagedDir:  stagedDir,
 		Args:       args[1:],
 	})
