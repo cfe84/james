@@ -40,13 +40,15 @@ type CreateSessionData struct {
 // Model, Effort and ContextTier are optional per-prompt overrides (empty = use
 // the session's stored default).
 type ContinueSessionData struct {
-	SessionID   string   `json:"session_id"`
-	Prompt      string   `json:"prompt"`
-	Model       string   `json:"model,omitempty"`
-	Effort      string   `json:"effort,omitempty"`
-	ContextTier string   `json:"context_tier,omitempty"`
-	Source      string   `json:"source,omitempty"`      // queue source marker (e.g. "callback") for queue_prompt
-	Attachments []string `json:"attachments,omitempty"` // absolute paths of saved attachments
+	SessionID       string   `json:"session_id"`
+	Prompt          string   `json:"prompt"`
+	Model           string   `json:"model,omitempty"`
+	Effort          string   `json:"effort,omitempty"`
+	ContextTier     string   `json:"context_tier,omitempty"`
+	Source          string   `json:"source,omitempty"`            // queue source marker (e.g. "callback") for queue_prompt
+	SourceSessionID string   `json:"source_session_id,omitempty"` // James session that invoked this prompt through a gadget
+	SourceName      string   `json:"source_name,omitempty"`       // resolved display name for SourceSessionID
+	Attachments     []string `json:"attachments,omitempty"`       // absolute paths of saved attachments
 }
 
 // UpdateSessionData is the data payload for update_session.
@@ -134,6 +136,7 @@ type SessionDetail struct {
 	// the burned-in window table can be tuned by observation.
 	ContextTokens int               `json:"context_tokens,omitempty"`
 	ContextWindow int               `json:"context_window,omitempty"`
+	OpenCodeCost  float64           `json:"opencode_cost,omitempty"`
 	Environment   map[string]string `json:"environment,omitempty"`
 }
 
@@ -146,9 +149,11 @@ type SessionConversation struct {
 
 // ConversationTurn represents a single prompt/response pair.
 type ConversationTurn struct {
-	Role      string `json:"role"` // "user" or "assistant"
-	Content   string `json:"content"`
-	CreatedAt string `json:"created_at,omitempty"`
+	Role            string `json:"role"` // "user" or "assistant"
+	Content         string `json:"content"`
+	SourceSessionID string `json:"source_session_id,omitempty"`
+	SourceName      string `json:"source_name,omitempty"`
+	CreatedAt       string `json:"created_at,omitempty"`
 }
 
 // CreateSessionResponse is returned by create_session on success.

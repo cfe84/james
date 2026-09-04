@@ -218,6 +218,9 @@ type Result struct {
 	// ContextWindow is the model's max context, when the agent reports it
 	// (Claude's modelUsage). 0 if unavailable.
 	ContextWindow int
+	// OpenCodeCost is the provider-reported cost for this invocation. OpenCode
+	// reports it on each completed step; other agents leave it at zero.
+	OpenCodeCost float64
 }
 
 // ActivityEvent is a simplified representation of what the agent is doing right now.
@@ -488,6 +491,7 @@ func (r *Runner) runOpenCodeStreaming(cmd *exec.Cmd, buf *activityBuffer, sessio
 	}
 
 	var resultText, agentSessionID, lastRawEvent string
+	var openCodeCost float64
 	var streamErr error
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 256*1024), 10*1024*1024)
@@ -537,6 +541,10 @@ func (r *Runner) runOpenCodeStreaming(cmd *exec.Cmd, buf *activityBuffer, sessio
 					_ = r.notifyWriter.Send(envelope.EventChatActivity, sessionID, map[string]interface{}{"events": buf.snapshot()})
 				}
 			}
+		case "step_finish":
+			if cost, ok := part["cost"].(float64); ok {
+				openCodeCost += cost
+			}
 		case "error":
 			if errorData, ok := event["error"].(map[string]any); ok {
 				if message, ok := errorData["message"].(string); ok {
@@ -547,15 +555,31 @@ func (r *Runner) runOpenCodeStreaming(cmd *exec.Cmd, buf *activityBuffer, sessio
 		}
 	}
 	if err := cmd.Wait(); err != nil {
-		return &Result{Text: strings.TrimSpace(resultText), AgentSessionID: agentSessionID}, fmtAgentErrorFull(err, stderrBuf, resultText, lastRawEvent)
+		return &Result{
+			Text:           strings.TrimSpace(resultText),
+			AgentSessionID: agentSessionID,
+			OpenCodeCost:   openCodeCost,
+		}, fmtAgentErrorFull(err, stderrBuf, resultText, lastRawEvent)
 	}
 	if err := scanner.Err(); err != nil {
-		return &Result{Text: strings.TrimSpace(resultText), AgentSessionID: agentSessionID}, fmtAgentErrorFull(fmt.Errorf("reading opencode stream: %w", err), stderrBuf, resultText, lastRawEvent)
+		return &Result{
+			Text:           strings.TrimSpace(resultText),
+			AgentSessionID: agentSessionID,
+			OpenCodeCost:   openCodeCost,
+		}, fmtAgentErrorFull(fmt.Errorf("reading opencode stream: %w", err), stderrBuf, resultText, lastRawEvent)
 	}
 	if streamErr != nil {
-		return &Result{Text: strings.TrimSpace(resultText), AgentSessionID: agentSessionID}, streamErr
+		return &Result{
+			Text:           strings.TrimSpace(resultText),
+			AgentSessionID: agentSessionID,
+			OpenCodeCost:   openCodeCost,
+		}, streamErr
 	}
-	return &Result{Text: strings.TrimSpace(resultText), AgentSessionID: agentSessionID}, nil
+	return &Result{
+		Text:           strings.TrimSpace(resultText),
+		AgentSessionID: agentSessionID,
+		OpenCodeCost:   openCodeCost,
+	}, nil
 }
 
 // runStreaming runs a Claude agent with stream-json, parsing events into the activity buffer.

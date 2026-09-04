@@ -508,7 +508,7 @@ func (h *Handler) continueSession(ctx context.Context, cmd *envelope.Command) *e
 	if data.Source == "callback" {
 		promptRole = "callback"
 	}
-	if err := h.store.AddConversationTurn(data.SessionID, promptRole, prompt); err != nil {
+	if err := h.store.AddConversationTurnFrom(data.SessionID, promptRole, prompt, data.SourceSessionID, data.SourceName); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to add conversation turn: %v", err))
 	}
 
@@ -576,7 +576,7 @@ func (h *Handler) queuePrompt(_ context.Context, cmd *envelope.Command) *envelop
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, fmt.Sprintf("session not found: %s", data.SessionID))
 	}
 
-	if err := h.store.QueuePrompt(data.SessionID, data.Prompt, data.Model, data.Effort, data.ContextTier, data.Source); err != nil {
+	if err := h.store.QueuePromptChannelFrom(data.SessionID, data.Prompt, data.Model, data.Effort, data.ContextTier, data.Source, data.SourceSessionID, data.SourceName, 0); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to queue prompt: %v", err))
 	}
 
@@ -897,6 +897,11 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 	// real token counts and its model's window; Copilot reports neither, so we
 	// estimate from the stored transcript and fall back to a burned-in window.
 	h.recordContextUsage(sessionID, params, result)
+	if result.OpenCodeCost != 0 {
+		if err := h.store.AddOpenCodeCost(sessionID, result.OpenCodeCost); err != nil {
+			h.vlog("failed to record OpenCode cost for session %s: %v", sessionID, err)
+		}
+	}
 
 	// Check for queued prompts before going idle. Drain one override-group at a
 	// time: prompts sharing the same per-prompt model/effort override are
@@ -930,7 +935,7 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 			} else if qp.Source == "callback" {
 				role = "callback"
 			}
-			if err := h.store.AddConversationTurn(sessionID, role, qp.Prompt); err != nil {
+			if err := h.store.AddConversationTurnFrom(sessionID, role, qp.Prompt, qp.SourceSessionID, qp.SourceName); err != nil {
 				h.vlog("failed to add queued conversation turn for session %s: %v", sessionID, err)
 			}
 			texts = append(texts, qp.Prompt)
@@ -1055,6 +1060,7 @@ func (h *Handler) getSession(_ context.Context, cmd *envelope.Command) *envelope
 		Environment:    sessionEnvironmentForDetail(sess.Environment),
 		ContextTokens:  sess.ContextTokens,
 		ContextWindow:  sess.ContextWindow,
+		OpenCodeCost:   sess.OpenCodeCost,
 	}
 
 	if ts, err := h.store.GetSessionTimestamps(data.SessionID); err == nil && ts != nil {
@@ -1100,9 +1106,11 @@ func (h *Handler) getSessionConversation(_ context.Context, cmd *envelope.Comman
 	conversation := make([]envelope.ConversationTurn, 0, len(turns))
 	for _, t := range turns {
 		conversation = append(conversation, envelope.ConversationTurn{
-			Role:      t.Role,
-			Content:   t.Content,
-			CreatedAt: t.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			Role:            t.Role,
+			Content:         t.Content,
+			SourceSessionID: t.SourceSessionID,
+			SourceName:      t.SourceName,
+			CreatedAt:       t.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		})
 	}
 

@@ -34,6 +34,7 @@
   let lastSessionStates = {}; // track WORKING→READY transitions for notifications
   let parentSessionStack = []; // stack for subagent navigation
   let soundEnabled = true;
+  let userLabel = localStorage.getItem('qewUserLabel') || 'you';
   // Show persisted train-of-thought (thinking/agent_text) turns. When off, those
   // turns are hidden; live activity for the in-progress turn is still shown while
   // the agent is working. Persisted across reloads.
@@ -870,11 +871,18 @@
         if (ctxEl) {
           const win = showResp.data.context_window || 0;
           const tok = showResp.data.context_tokens || 0;
+          const cost = showResp.data.opencode_cost || 0;
+          const hasOpenCodeCost = showResp.data.agent === 'opencode';
+          const costLabel = hasOpenCodeCost ? ` · $${cost.toFixed(4)}` : '';
           if (win > 0) {
             const pct = Math.round(tok / win * 100);
-            ctxEl.textContent = `🗃️ ${pct}% (${Math.round(tok/1000)}k/${Math.round(win/1000)}k)`;
+            ctxEl.textContent = `🗃️ ${pct}% (${Math.round(tok/1000)}k/${Math.round(win/1000)}k)${costLabel}`;
             ctxEl.style.color = pct >= 75 ? 'var(--warning, #e0a030)' : 'var(--muted)';
-            ctxEl.title = `Context usage: ${tok} / ${win} tokens (${showResp.data.compaction_mode || 'agent'} compaction)`;
+            ctxEl.title = `Context usage: ${tok} / ${win} tokens (${showResp.data.compaction_mode || 'agent'} compaction)${hasOpenCodeCost ? `; OpenCode cost: $${cost.toFixed(4)}` : ''}`;
+          } else if (hasOpenCodeCost) {
+            ctxEl.textContent = `💲 $${cost.toFixed(4)}`;
+            ctxEl.style.color = 'var(--muted)';
+            ctxEl.title = `OpenCode provider-reported session cost: $${cost.toFixed(4)}`;
           } else {
             ctxEl.textContent = '';
           }
@@ -1112,7 +1120,7 @@
     let html = '';
     let skippedThoughts = false;
     for (const turn of activityTurns) {
-      const agentName = currentSessionName || 'agent';
+      const agentName = currentSessionNick || currentSessionName || 'agent';
       const content = turn.content || '(empty)';
 
       // Subagent callbacks render compact like a thought but highlighted (↩️ +
@@ -1153,8 +1161,8 @@
 
       let roleLabel;
       switch (turn.role) {
-        case 'user':       roleLabel = '🧑‍💻 you'; break;
-        case 'assistant':  roleLabel = '🕴️ ' + agentName; break;
+        case 'user':       roleLabel = '🧑‍💻 ' + escapeHtml(turn.source_name || userLabel); break;
+        case 'assistant':  roleLabel = '🕴️ ' + escapeHtml(agentName); break;
         default:           roleLabel = turn.role;
       }
       const roleClass = turn.role;
@@ -1168,7 +1176,7 @@
     for (const qm of queuedMessages) {
       html += `
         <div class="msg">
-          <div class="msg-role user">⏳ you <span style="color:var(--muted);font-weight:normal">[Queued]</span></div>
+          <div class="msg-role user">⏳ ${escapeHtml(userLabel)} <span style="color:var(--muted);font-weight:normal">[Queued]</span></div>
           <div class="msg-content">${formatContent(qm.content)}</div>
         </div>`;
     }
@@ -5450,6 +5458,27 @@
     btn.title = soundEnabled ? 'Sound on (click to mute)' : 'Sound off (click to unmute)';
   }
 
+  function openUserLabelModal() {
+    renderWizardModal(`
+      <h3>Your conversation name</h3>
+      <label for="user-label-input">Name</label>
+      <input id="user-label-input" type="text" value="${escapeAttr(userLabel === 'you' ? '' : userLabel)}" placeholder="you">
+      <div class="modal-actions">
+        <button class="btn-muted" id="user-label-cancel">Cancel</button>
+        <button class="btn" id="user-label-save">Save</button>
+      </div>`);
+    const input = document.getElementById('user-label-input');
+    input.focus();
+    document.getElementById('user-label-cancel').addEventListener('click', closeWizard);
+    document.getElementById('user-label-save').addEventListener('click', () => {
+      userLabel = input.value.trim() || 'you';
+      localStorage.setItem('qewUserLabel', userLabel);
+      closeWizard();
+      lastChatHTML = '';
+      renderChat();
+    });
+  }
+
   // toggleThoughts shows/hides persisted train-of-thought turns in the open chat.
   function toggleThoughts() {
     showThoughts = !showThoughts;
@@ -5508,6 +5537,7 @@
   document.getElementById('chat-back').addEventListener('click', closeChat);
   document.getElementById('chat-send').addEventListener('click', sendMessage);
   document.getElementById('chat-compose-mode').addEventListener('click', toggleComposeMode);
+  document.getElementById('user-label-btn').addEventListener('click', openUserLabelModal);
   document.getElementById('sound-toggle').addEventListener('click', toggleSound);
   document.getElementById('passkey-mgmt-btn').addEventListener('click', openPasskeyModal);
   document.getElementById('thoughts-toggle').addEventListener('click', toggleThoughts);

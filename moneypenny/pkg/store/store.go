@@ -45,8 +45,11 @@ type Session struct {
 	// at a threshold and to surface usage in clients.
 	ContextTokens int
 	ContextWindow int
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	// OpenCodeCost is the cumulative provider-reported USD cost for this
+	// OpenCode session. It remains zero for other agents.
+	OpenCodeCost float64
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 // Compaction modes.
@@ -57,11 +60,13 @@ const (
 
 // ConversationTurn represents a stored prompt or response.
 type ConversationTurn struct {
-	ID        int64
-	SessionID string
-	Role      string // "user" or "assistant"
-	Content   string
-	CreatedAt time.Time
+	ID              int64
+	SessionID       string
+	Role            string // "user" or "assistant"
+	Content         string
+	SourceSessionID string
+	SourceName      string
+	CreatedAt       time.Time
 }
 
 // Schedule states
@@ -141,6 +146,8 @@ CREATE TABLE IF NOT EXISTS conversation_turns (
     session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     role TEXT NOT NULL,
     content TEXT NOT NULL,
+    source_session_id TEXT NOT NULL DEFAULT '',
+    source_name TEXT NOT NULL DEFAULT '',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -153,6 +160,8 @@ CREATE TABLE IF NOT EXISTS prompt_queue (
     model TEXT NOT NULL DEFAULT '',
     effort TEXT NOT NULL DEFAULT '',
     source TEXT NOT NULL DEFAULT '',
+    source_session_id TEXT NOT NULL DEFAULT '',
+    source_name TEXT NOT NULL DEFAULT '',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -250,6 +259,10 @@ CREATE INDEX IF NOT EXISTS idx_channel_outbox_pending ON channel_outbox(status);
 	// Scheduled prompts are recorded as a train-of-thought turn rather than a
 	// user message when drained.
 	db.Exec(`ALTER TABLE prompt_queue ADD COLUMN source TEXT NOT NULL DEFAULT ''`)
+	db.Exec(`ALTER TABLE prompt_queue ADD COLUMN source_session_id TEXT NOT NULL DEFAULT ''`)
+	db.Exec(`ALTER TABLE prompt_queue ADD COLUMN source_name TEXT NOT NULL DEFAULT ''`)
+	db.Exec(`ALTER TABLE conversation_turns ADD COLUMN source_session_id TEXT NOT NULL DEFAULT ''`)
+	db.Exec(`ALTER TABLE conversation_turns ADD COLUMN source_name TEXT NOT NULL DEFAULT ''`)
 
 	// Migration: custom-compaction support. agent_session_id decouples the
 	// underlying agent CLI session from the James session so it can be
@@ -262,6 +275,7 @@ CREATE INDEX IF NOT EXISTS idx_channel_outbox_pending ON channel_outbox(status);
 	db.Exec(`ALTER TABLE sessions ADD COLUMN compaction_mode TEXT NOT NULL DEFAULT 'agent'`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN context_tokens INTEGER NOT NULL DEFAULT 0`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN context_window INTEGER NOT NULL DEFAULT 0`)
+	db.Exec(`ALTER TABLE sessions ADD COLUMN opencode_cost REAL NOT NULL DEFAULT 0`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN environment TEXT NOT NULL DEFAULT '{}'`)
 
 	// Migration: reply_channel_id routes a run's final response to an external
@@ -318,7 +332,7 @@ func (s *Store) CreateSession(sess *Session) error {
 // GetSession retrieves a session by ID. Returns nil, nil if not found.
 func (s *Store) GetSession(sessionID string) (*Session, error) {
 	row := s.db.QueryRow(
-		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, status, memory, agent_session_id, compaction_mode, context_tokens, context_window, created_at, updated_at
+		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, status, memory, agent_session_id, compaction_mode, context_tokens, context_window, opencode_cost, created_at, updated_at
 		 FROM sessions WHERE session_id = ?`, sessionID,
 	)
 
@@ -327,7 +341,7 @@ func (s *Store) GetSession(sessionID string) (*Session, error) {
 	err := row.Scan(
 		&sess.SessionID, &sess.Name, &sess.Agent, &sess.SystemPrompt, &sess.Model, &sess.Effort, &sess.ContextTier,
 		&yolo, &sess.Path, &sess.Environment, &sess.Status, &sess.Memory, &sess.AgentSessionID, &sess.CompactionMode,
-		&sess.ContextTokens, &sess.ContextWindow, &sess.CreatedAt, &sess.UpdatedAt,
+		&sess.ContextTokens, &sess.ContextWindow, &sess.OpenCodeCost, &sess.CreatedAt, &sess.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -345,7 +359,7 @@ func (s *Store) GetSession(sessionID string) (*Session, error) {
 // ListSessions returns all sessions.
 func (s *Store) ListSessions() ([]*Session, error) {
 	rows, err := s.db.Query(
-		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, status, memory, agent_session_id, compaction_mode, context_tokens, context_window, created_at, updated_at
+		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, status, memory, agent_session_id, compaction_mode, context_tokens, context_window, opencode_cost, created_at, updated_at
 		 FROM sessions ORDER BY created_at`,
 	)
 	if err != nil {
@@ -360,7 +374,7 @@ func (s *Store) ListSessions() ([]*Session, error) {
 		if err := rows.Scan(
 			&sess.SessionID, &sess.Name, &sess.Agent, &sess.SystemPrompt, &sess.Model, &sess.Effort, &sess.ContextTier,
 			&yolo, &sess.Path, &sess.Environment, &sess.Status, &sess.Memory, &sess.AgentSessionID, &sess.CompactionMode,
-			&sess.ContextTokens, &sess.ContextWindow, &sess.CreatedAt, &sess.UpdatedAt,
+			&sess.ContextTokens, &sess.ContextWindow, &sess.OpenCodeCost, &sess.CreatedAt, &sess.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
@@ -458,6 +472,23 @@ func (s *Store) SetContextUsage(sessionID string, tokens, window int) error {
 	)
 	if err != nil {
 		return fmt.Errorf("set context usage: %w", err)
+	}
+	return nil
+}
+
+// AddOpenCodeCost adds a provider-reported OpenCode invocation cost to the
+// persistent session total.
+func (s *Store) AddOpenCodeCost(sessionID string, cost float64) error {
+	if cost == 0 {
+		return nil
+	}
+	now := time.Now().UTC()
+	_, err := s.db.Exec(
+		`UPDATE sessions SET opencode_cost = opencode_cost + ?, updated_at = ? WHERE session_id = ?`,
+		cost, now, sessionID,
+	)
+	if err != nil {
+		return fmt.Errorf("add OpenCode cost: %w", err)
 	}
 	return nil
 }
@@ -593,9 +624,15 @@ func (s *Store) DeleteLastTurnIfMatches(sessionID, role, content string) (bool, 
 }
 
 func (s *Store) AddConversationTurn(sessionID string, role string, content string) error {
+	return s.AddConversationTurnFrom(sessionID, role, content, "", "")
+}
+
+// AddConversationTurnFrom records a turn and, when supplied, the James agent
+// session that originated it through a gadget command.
+func (s *Store) AddConversationTurnFrom(sessionID, role, content, sourceSessionID, sourceName string) error {
 	result, err := s.db.Exec(
-		`INSERT INTO conversation_turns (session_id, role, content) VALUES (?, ?, ?)`,
-		sessionID, role, content,
+		`INSERT INTO conversation_turns (session_id, role, content, source_session_id, source_name) VALUES (?, ?, ?, ?, ?)`,
+		sessionID, role, content, sourceSessionID, sourceName,
 	)
 	if err != nil {
 		return fmt.Errorf("add conversation turn: %w", err)
@@ -605,10 +642,12 @@ func (s *Store) AddConversationTurn(sessionID string, role string, content strin
 	if s.notifyWriter != nil {
 		turnIndex, _ := result.LastInsertId()
 		_ = s.notifyWriter.Send(envelope.EventChatMessage, sessionID, map[string]interface{}{
-			"role":       role,
-			"content":    content,
-			"timestamp":  time.Now().Format(time.RFC3339),
-			"turn_index": int(turnIndex),
+			"role":              role,
+			"content":           content,
+			"source_session_id": sourceSessionID,
+			"source_name":       sourceName,
+			"timestamp":         time.Now().Format(time.RFC3339),
+			"turn_index":        int(turnIndex),
 		})
 	}
 
@@ -639,7 +678,7 @@ func (s *Store) GetSessionTimestamps(sessionID string) (*SessionTimestamps, erro
 // GetConversation returns all turns for a session, ordered by creation time.
 func (s *Store) GetConversation(sessionID string) ([]*ConversationTurn, error) {
 	rows, err := s.db.Query(
-		`SELECT id, session_id, role, content, created_at
+		`SELECT id, session_id, role, content, source_session_id, source_name, created_at
 		 FROM conversation_turns WHERE session_id = ? ORDER BY created_at, id`, sessionID,
 	)
 	if err != nil {
@@ -650,7 +689,7 @@ func (s *Store) GetConversation(sessionID string) ([]*ConversationTurn, error) {
 	var turns []*ConversationTurn
 	for rows.Next() {
 		t := &ConversationTurn{}
-		if err := rows.Scan(&t.ID, &t.SessionID, &t.Role, &t.Content, &t.CreatedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.SessionID, &t.Role, &t.Content, &t.SourceSessionID, &t.SourceName, &t.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan turn: %w", err)
 		}
 		turns = append(turns, t)
@@ -675,8 +714,8 @@ func (s *Store) GetConversationPaginated(sessionID string, limit, offset int) ([
 	// We want rows ordered chronologically, but paginated from the end.
 	// Use a subquery to get the tail, then re-order.
 	rows, err := s.db.Query(
-		`SELECT id, session_id, role, content, created_at FROM (
-			SELECT id, session_id, role, content, created_at
+		`SELECT id, session_id, role, content, source_session_id, source_name, created_at FROM (
+			SELECT id, session_id, role, content, source_session_id, source_name, created_at
 			FROM conversation_turns WHERE session_id = ?
 			ORDER BY created_at DESC, id DESC
 			LIMIT ? OFFSET ?
@@ -690,7 +729,7 @@ func (s *Store) GetConversationPaginated(sessionID string, limit, offset int) ([
 	var turns []*ConversationTurn
 	for rows.Next() {
 		t := &ConversationTurn{}
-		if err := rows.Scan(&t.ID, &t.SessionID, &t.Role, &t.Content, &t.CreatedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.SessionID, &t.Role, &t.Content, &t.SourceSessionID, &t.SourceName, &t.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan turn: %w", err)
 		}
 		turns = append(turns, t)
@@ -703,11 +742,13 @@ func (s *Store) GetConversationPaginated(sessionID string, limit, offset int) ([
 // prompt's origin ("" = user-typed, "scheduled" = scheduler-fired) so the drain
 // path can classify the resulting conversation turn.
 type QueuedPrompt struct {
-	Prompt      string
-	Model       string
-	Effort      string
-	ContextTier string
-	Source      string
+	Prompt          string
+	Model           string
+	Effort          string
+	ContextTier     string
+	Source          string
+	SourceSessionID string
+	SourceName      string
 	// ReplyChannelID routes this prompt's response to an external channel
 	// (channels.id). 0 = no channel routing.
 	ReplyChannelID int64
@@ -724,9 +765,14 @@ func (s *Store) QueuePrompt(sessionID, prompt, model, effort, contextTier, sourc
 
 // QueuePromptChannel is QueuePrompt with an explicit reply channel id (0 = none).
 func (s *Store) QueuePromptChannel(sessionID, prompt, model, effort, contextTier, source string, replyChannelID int64) error {
+	return s.QueuePromptChannelFrom(sessionID, prompt, model, effort, contextTier, source, "", "", replyChannelID)
+}
+
+// QueuePromptChannelFrom is QueuePromptChannel with agent-origin provenance.
+func (s *Store) QueuePromptChannelFrom(sessionID, prompt, model, effort, contextTier, source, sourceSessionID, sourceName string, replyChannelID int64) error {
 	_, err := s.db.Exec(
-		`INSERT INTO prompt_queue (session_id, prompt, model, effort, context_tier, source, reply_channel_id) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		sessionID, prompt, model, effort, contextTier, source, replyChannelID,
+		`INSERT INTO prompt_queue (session_id, prompt, model, effort, context_tier, source, source_session_id, source_name, reply_channel_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sessionID, prompt, model, effort, contextTier, source, sourceSessionID, sourceName, replyChannelID,
 	)
 	if err != nil {
 		return fmt.Errorf("queue prompt: %w", err)
@@ -749,7 +795,7 @@ func (s *Store) DrainQueueGroup(sessionID string) ([]QueuedPrompt, error) {
 	defer tx.Rollback()
 
 	rows, err := tx.Query(
-		`SELECT id, prompt, model, effort, context_tier, source, reply_channel_id FROM prompt_queue WHERE session_id = ? ORDER BY created_at, id`, sessionID,
+		`SELECT id, prompt, model, effort, context_tier, source, source_session_id, source_name, reply_channel_id FROM prompt_queue WHERE session_id = ? ORDER BY created_at, id`, sessionID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("drain queue group: %w", err)
@@ -763,7 +809,7 @@ func (s *Store) DrainQueueGroup(sessionID string) ([]QueuedPrompt, error) {
 	for rows.Next() {
 		var id int64
 		var qp QueuedPrompt
-		if err := rows.Scan(&id, &qp.Prompt, &qp.Model, &qp.Effort, &qp.ContextTier, &qp.Source, &qp.ReplyChannelID); err != nil {
+		if err := rows.Scan(&id, &qp.Prompt, &qp.Model, &qp.Effort, &qp.ContextTier, &qp.Source, &qp.SourceSessionID, &qp.SourceName, &qp.ReplyChannelID); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("scan queued prompt: %w", err)
 		}

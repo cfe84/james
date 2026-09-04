@@ -60,6 +60,11 @@ Scheduling:
   List schedules: %s list schedules --session-id %s
   Cancel a schedule: %s cancel schedule SCHEDULE_ID
 
+Direct messages to another agent:
+  Send a message: %s continue session TARGET_SESSION_ID "your message"
+  Your session identity is attached automatically. The destination conversation
+  shows your nickname or session name as the sender; do not add --from yourself.
+
 Subagents (parallel tasks):
   Create a subagent: %s create subsession %s --async --name "task name" PROMPT
   Create with callback: %s create subsession %s --async --callback "instructions for when result arrives" --name "task name" PROMPT
@@ -81,6 +86,7 @@ IMPORTANT: Do NOT set the git committer or author to Claude, Copilot, or any AI 
 IMPORTANT: When creating a session or subagent that needs to modify the filesystem (write files, run builds, install packages, commit, etc.), include the --yolo flag to grant it permission. Without --yolo, the agent will be blocked by permission prompts it cannot answer.`,
 		hemCmd, hemCmd, sessionID,
 		hemCmd, sessionID, hemCmd, sessionID, hemCmd,
+		hemCmd,
 		hemCmd, sessionID, hemCmd, sessionID,
 		hemCmd, sessionID, hemCmd, sessionID,
 		hemCmd, hemCmd, hemCmd, callbackSection, hemCmd, hemCmd, hemCmd)
@@ -1081,6 +1087,7 @@ type SessionShowResult struct {
 	CompactionMode string            `json:"compaction_mode,omitempty"`
 	ContextTokens  int               `json:"context_tokens,omitempty"`
 	ContextWindow  int               `json:"context_window,omitempty"`
+	OpenCodeCost   float64           `json:"opencode_cost,omitempty"`
 	Environment    map[string]string `json:"environment,omitempty"`
 }
 
@@ -1260,9 +1267,11 @@ func (e *Executor) resolveTraits(spec string) ([]*store.Trait, error) {
 }
 
 type ConversationTurn struct {
-	Role      string `json:"role"`
-	Content   string `json:"content"`
-	CreatedAt string `json:"created_at,omitempty"`
+	Role            string `json:"role"`
+	Content         string `json:"content"`
+	SourceSessionID string `json:"source_session_id,omitempty"`
+	SourceName      string `json:"source_name,omitempty"`
+	CreatedAt       string `json:"created_at,omitempty"`
 }
 
 type HistoryResult struct {
@@ -1963,7 +1972,7 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 }
 
 func (e *Executor) ContinueSession(args []string) *protocol.Response {
-	var sessionID, callbackPrompt, model, effort, contextTier string
+	var sessionID, callbackPrompt, model, effort, contextTier, fromID string
 	var async bool
 	var attachments stringListFlag
 
@@ -1974,6 +1983,7 @@ func (e *Executor) ContinueSession(args []string) *protocol.Response {
 		fs.StringVar(&model, "model", "", "temporary model override for this prompt (empty = session default)")
 		fs.StringVar(&effort, "effort", "", "temporary effort/complexity override for this prompt (empty = session default)")
 		fs.StringVar(&contextTier, "context", "", "temporary copilot context-tier override for this prompt: default or long_context (empty = session default)")
+		fs.StringVar(&fromID, "from", "", "originating agent session ID (set automatically by gadgets)")
 		fs.Var(&attachments, "attachment", "absolute path of an attachment saved on the moneypenny (repeatable)")
 	})
 	if err != nil {
@@ -2009,6 +2019,10 @@ func (e *Executor) ContinueSession(args []string) *protocol.Response {
 	cmdData := map[string]interface{}{
 		"session_id": sessionID,
 		"prompt":     prompt,
+	}
+	if fromID != "" {
+		cmdData["source_session_id"] = fromID
+		cmdData["source_name"] = e.agentOriginLabel(fromID)
 	}
 	if model != "" {
 		cmdData["model"] = model
@@ -2146,6 +2160,15 @@ func (e *Executor) CallbackSession(args []string) *protocol.Response {
 		SessionID: parentID,
 		Async:     true,
 	})
+}
+
+// agentOriginLabel resolves the preferred label for an agent-originated
+// conversation turn: its nick when present, otherwise its session name.
+func (e *Executor) agentOriginLabel(sessionID string) string {
+	if sess, err := e.store.GetSession(sessionID); err == nil && sess != nil && sess.Nick != "" {
+		return sess.Nick
+	}
+	return e.callbackOriginLabel(sessionID)
 }
 
 // callbackOriginLabel resolves a session ID to a human-friendly label for a
@@ -2477,6 +2500,9 @@ func (e *Executor) ShowSession(args []string) *protocol.Response {
 	}
 	if v, ok := raw["context_window"].(float64); ok {
 		result.ContextWindow = int(v)
+	}
+	if v, ok := raw["opencode_cost"].(float64); ok {
+		result.OpenCodeCost = v
 	}
 	if v, ok := raw["environment"].(map[string]interface{}); ok {
 		result.Environment = make(map[string]string, len(v))

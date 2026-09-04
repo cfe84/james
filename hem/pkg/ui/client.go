@@ -75,15 +75,18 @@ type sessionDetail struct {
 	CompactionMode string             `json:"compaction_mode"`
 	ContextTokens  int                `json:"context_tokens"`
 	ContextWindow  int                `json:"context_window"`
+	OpenCodeCost   float64            `json:"opencode_cost"`
 	Environment    map[string]string  `json:"environment"`
 	Conversation   []conversationTurn `json:"conversation"`
 }
 
 type conversationTurn struct {
-	Role      string `json:"role"`
-	Content   string `json:"content"`
-	CreatedAt string `json:"created_at"`
-	Queued    bool   `json:"-"` // local-only flag for optimistic UI
+	Role            string `json:"role"`
+	Content         string `json:"content"`
+	SourceSessionID string `json:"source_session_id"`
+	SourceName      string `json:"source_name"`
+	CreatedAt       string `json:"created_at"`
+	Queued          bool   `json:"-"` // local-only flag for optimistic UI
 }
 
 func (c *client) listSessions(mpFilter string) ([]sessionInfo, error) {

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"math"
 	"testing"
 )
 
@@ -26,6 +27,7 @@ func TestCreateAndGetSession(t *testing.T) {
 		Path:         "/tmp/work",
 		Environment:  `{"PLAYWRIGHT_MCP_EXTENSION_TOKEN":"test-token"}`,
 	}
+
 	if err := s.CreateSession(sess); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -66,6 +68,26 @@ func TestCreateAndGetSession(t *testing.T) {
 	}
 	if got.UpdatedAt.IsZero() {
 		t.Error("UpdatedAt is zero")
+	}
+}
+
+func TestAddOpenCodeCost(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateSession(&Session{SessionID: "s-cost", Name: "Cost", Agent: "opencode"}); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if err := s.AddOpenCodeCost("s-cost", 0.0123); err != nil {
+		t.Fatalf("AddOpenCodeCost: %v", err)
+	}
+	if err := s.AddOpenCodeCost("s-cost", 0.0045); err != nil {
+		t.Fatalf("AddOpenCodeCost: %v", err)
+	}
+	got, err := s.GetSession("s-cost")
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if math.Abs(got.OpenCodeCost-0.0168) > 1e-9 {
+		t.Errorf("OpenCodeCost = %v, want 0.0168", got.OpenCodeCost)
 	}
 }
 
@@ -202,6 +224,44 @@ func TestAddAndGetConversationTurns(t *testing.T) {
 	for i := 1; i < len(turns); i++ {
 		if turns[i].ID <= turns[i-1].ID {
 			t.Errorf("turns not ordered: turn[%d].ID=%d <= turn[%d].ID=%d", i, turns[i].ID, i-1, turns[i-1].ID)
+		}
+	}
+}
+
+func TestAgentMessageProvenancePersistsForImmediateAndQueuedTurns(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateSession(&Session{SessionID: "target", Name: "target", Agent: "agent"}); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if err := s.AddConversationTurnFrom("target", "user", "immediate", "source-id", "ian"); err != nil {
+		t.Fatalf("AddConversationTurnFrom: %v", err)
+	}
+	if err := s.QueuePromptChannelFrom("target", "queued", "", "", "", "", "source-id", "ian", 0); err != nil {
+		t.Fatalf("QueuePromptChannelFrom: %v", err)
+	}
+	queued, err := s.DrainQueueGroup("target")
+	if err != nil {
+		t.Fatalf("DrainQueueGroup: %v", err)
+	}
+	if len(queued) != 1 {
+		t.Fatalf("len(queued) = %d, want 1", len(queued))
+	}
+	if queued[0].SourceSessionID != "source-id" || queued[0].SourceName != "ian" {
+		t.Errorf("queued provenance = (%q, %q), want (%q, %q)", queued[0].SourceSessionID, queued[0].SourceName, "source-id", "ian")
+	}
+	if err := s.AddConversationTurnFrom("target", "user", queued[0].Prompt, queued[0].SourceSessionID, queued[0].SourceName); err != nil {
+		t.Fatalf("AddConversationTurnFrom queued: %v", err)
+	}
+	turns, err := s.GetConversation("target")
+	if err != nil {
+		t.Fatalf("GetConversation: %v", err)
+	}
+	if len(turns) != 2 {
+		t.Fatalf("len(turns) = %d, want 2", len(turns))
+	}
+	for _, turn := range turns {
+		if turn.SourceSessionID != "source-id" || turn.SourceName != "ian" {
+			t.Errorf("turn provenance = (%q, %q), want (%q, %q)", turn.SourceSessionID, turn.SourceName, "source-id", "ian")
 		}
 	}
 }

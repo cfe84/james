@@ -1839,15 +1839,22 @@ func (m chatModel) View() string {
 		var prefix string
 		switch turn.Role {
 		case "user":
+			userLabel := turn.SourceName
+			if userLabel == "" {
+				userLabel = "you"
+			}
 			if turn.Queued {
 				prefix = userMsgStyle.Render("⏳ you") + " " + lipgloss.NewStyle().Foreground(colorMuted).Render("[Queued]")
 			} else {
-				prefix = userMsgStyle.Render("🧑‍💻 you")
+				prefix = userMsgStyle.Render("🧑‍💻 " + userLabel)
 			}
 		case "system":
 			prefix = systemMsgStyle.Render("⚙ system")
 		default:
-			agentLabel := m.sessionName
+			agentLabel := m.sessionNick
+			if agentLabel == "" {
+				agentLabel = m.sessionName
+			}
 			if agentLabel == "" {
 				agentLabel = "agent"
 			}

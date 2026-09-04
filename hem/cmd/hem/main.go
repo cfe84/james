@@ -125,6 +125,11 @@ func main() {
 		printUsage()
 		os.Exit(1)
 	}
+	// Gadget commands inherit HEM_SESSION_ID from Moneypenny. Preserve that
+	// provenance when an agent sends a prompt to another session.
+	if cmd.Verb == "continue" && cmd.Noun == "session" && os.Getenv("HEM_SESSION_ID") != "" && !hasFlag(cmd.Args, "from") {
+		cmd.Args = append(cmd.Args, "--from", os.Getenv("HEM_SESSION_ID"))
+	}
 
 	// Handle local-only commands that don't need the server.
 	switch cmd.Verb + " " + cmd.Noun {
@@ -140,6 +145,7 @@ func main() {
 		handleMI6Admin(cmd.Verb, cmd.Args, mi6ServerFingerprint)
 		return
 	}
+
 	switch cmd.Verb {
 	case "version":
 		fmt.Println(Version)
@@ -255,6 +261,16 @@ func main() {
 	}
 
 	printResponse(resp.Data, cmd.OutputType)
+}
+
+func hasFlag(args []string, name string) bool {
+	long := "--" + name
+	for _, arg := range args {
+		if arg == long || strings.HasPrefix(arg, long+"=") {
+			return true
+		}
+	}
+	return false
 }
 
 // handleSetDefaultServer handles `hem set-default server` locally (no server needed).
