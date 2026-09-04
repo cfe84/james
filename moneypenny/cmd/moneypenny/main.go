@@ -38,7 +38,7 @@ func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "install":
-			runInstallWizard()
+			runInstall(os.Args[2:])
 			return
 		case "uninstall":
 			runUninstall()
@@ -47,6 +47,7 @@ func main() {
 			runStatus()
 			return
 		}
+
 	}
 
 	mi6Addr := flag.String("mi6", "", "connect via MI6 (host/session_id)")
@@ -210,6 +211,104 @@ func main() {
 	} else {
 		runStdio(ctx, h, vlog, os.Stdin, os.Stdout)
 	}
+}
+
+func runInstall(args []string) {
+	for _, arg := range args {
+		if arg == "--non-interactive" {
+			if err := runNonInteractiveInstall(args); err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+	}
+	runInstallWizard()
+}
+
+func runNonInteractiveInstall(args []string) error {
+	fs := flag.NewFlagSet("moneypenny install", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	nonInteractive := fs.Bool("non-interactive", false, "install without prompts")
+	userLevel := fs.Bool("user", false, "install as a user-level service")
+	systemLevel := fs.Bool("system", false, "install as a system-level service")
+	localMode := fs.Bool("local", false, "use local FIFO transport")
+	mi6Addr := fs.String("mi6", "", "connect via MI6 (host/session_id)")
+	mi6Fingerprint := fs.String("mi6-server-fingerprint", "", "SHA256 fingerprint of the MI6 server")
+	autoUpdate := fs.Bool("auto-update", false, "enable automatic updates")
+	updateInterval := fs.String("update-interval", "1h", "automatic update check interval")
+	dataDir := fs.String("data-dir", defaultDataDir(), "directory for moneypenny data")
+	logFile := fs.String("log-file", "", "log file path")
+	verbose := fs.Bool("verbose", false, "enable verbose logging")
+	force := fs.Bool("force", false, "replace an existing service at the selected level")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if !*nonInteractive {
+		return fmt.Errorf("--non-interactive is required when install options are supplied")
+	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("unexpected install arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	if *userLevel == *systemLevel {
+		return fmt.Errorf("specify exactly one of --user or --system")
+	}
+	if *localMode == (*mi6Addr != "") {
+		return fmt.Errorf("specify exactly one of --local or --mi6")
+	}
+	if *mi6Addr != "" && *mi6Fingerprint == "" {
+		return fmt.Errorf("--mi6-server-fingerprint is required with --mi6")
+	}
+	if *mi6Addr == "" && *mi6Fingerprint != "" {
+		return fmt.Errorf("--mi6-server-fingerprint requires --mi6")
+	}
+	if *autoUpdate {
+		if _, err := time.ParseDuration(*updateInterval); err != nil {
+			return fmt.Errorf("invalid --update-interval: %w", err)
+		}
+	}
+	if *logFile == "" {
+		*logFile = service.DefaultLogFile(*dataDir)
+	}
+
+	installed, _, err := service.Status(*userLevel)
+	if err != nil {
+		return fmt.Errorf("check existing service: %w", err)
+	}
+	level := "system"
+	if *userLevel {
+		level = "user"
+	}
+	if installed {
+		if !*force {
+			return fmt.Errorf("a %s-level service already exists; pass --force to replace it", level)
+		}
+		if err := service.Uninstall(*userLevel); err != nil {
+			return fmt.Errorf("uninstall existing service: %w", err)
+		}
+	}
+
+	binaryPath, err := service.ResolveBinaryPath()
+	if err != nil {
+		return err
+	}
+	cfg := &service.Config{
+		BinaryPath:           binaryPath,
+		MI6Address:           *mi6Addr,
+		MI6ServerFingerprint: *mi6Fingerprint,
+		AutoUpdate:           *autoUpdate,
+		UpdateInterval:       *updateInterval,
+		DataDir:              *dataDir,
+		LogFile:              *logFile,
+		Local:                *localMode,
+		Verbose:              *verbose,
+		UserLevel:            *userLevel,
+	}
+	if err := service.Install(cfg); err != nil {
+		return err
+	}
+	fmt.Printf("Installed %s-level moneypenny service.\n", level)
+	return nil
 }
 
 func defaultDataDir() string {

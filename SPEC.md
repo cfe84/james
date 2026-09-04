@@ -466,6 +466,19 @@ Hem manages sessions on moneypennies. It tracks which moneypenny each session li
 
 Moneypenny auto-update stages and replaces its colocated `moneypenny`, `mi6-client`, and `hem` binaries together. This keeps the gadget-installed Hem CLI compatible with the MI6 client protocol.
 
+### Non-interactive service installation
+
+`moneypenny install --non-interactive` provisions a service without prompts. It requires exactly one service level (`--user` or `--system`) and exactly one transport (`--local` or `--mi6 HOST/SESSION`). MI6 installation additionally requires `--mi6-server-fingerprint SHA256:...`. Optional flags are `--auto-update`, `--update-interval DURATION`, `--data-dir PATH`, `--log-file PATH`, `--verbose`, and `--force`; `--force` is required to replace an existing service at the selected level.
+
+Example:
+
+```sh
+moneypenny install --non-interactive --user \
+  --mi6 mi6.example.com/my-host \
+  --mi6-server-fingerprint SHA256:YOUR_RELAY_FINGERPRINT \
+  --auto-update --update-interval 1h
+```
+
 ### Create
 
 `hem create session -m|--moneypenny NAME PROMPT [flags]`
