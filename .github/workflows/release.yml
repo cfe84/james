@@ -75,6 +75,7 @@ jobs:
           cd moneypenny
           go build -ldflags "${LDFLAGS}" -o "../${OUTDIR}/moneypenny${SUFFIX}" ./cmd/moneypenny/
           go build -ldflags "${LDFLAGS}" -o "../${OUTDIR}/james-teams-agency${SUFFIX}" ./cmd/james-teams-agency/
+          go build -ldflags "${LDFLAGS}" -o "../${OUTDIR}/james-teams-trouter${SUFFIX}" ./cmd/james-teams-trouter/
           if [ "${GOOS}" = "windows" ]; then
             go build -ldflags "${LDFLAGS}" -o "../${OUTDIR}/moneypenny-update-helper.exe" ./cmd/moneypenny-update-helper/
           fi

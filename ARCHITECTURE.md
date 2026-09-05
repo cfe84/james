@@ -41,6 +41,17 @@ added. The adapter exposes the existing search, resolve, list, send, cursor, and
 self operations; asynchronous inbound events and threaded reply metadata remain
 reserved for the Trouter phase.
 
+`james-teams-trouter` is the first Trouter implementation. In v1.74.1 it is a
+standalone authentication/connection probe only: it exposes lifecycle status
+over the same JSONL protocol, supports a no-network `--dry-run` mode, and
+accepts a platform-neutral delegated-auth helper through
+`JAMES_TEAMS_AUTH_COMMAND`. On macOS, omitting that variable uses the locally
+installed Azure CLI (`az login` followed by an IC3 Teams token request); on
+Windows the helper remains required. Access tokens are held only in memory for
+the future transport implementation and are not persisted.
+Trouter message delivery and agent dispatch are intentionally not enabled by
+this probe.
+
 ## MI6 - Agent Communication Relay
 
 MI6 is a transport layer for remote agents to communicate via sessions. It consists of two binaries: `mi6-client` (local) and `mi6-server` (remote/container).
@@ -175,6 +186,15 @@ moneypenny/
 - `cancel_schedule` - Cancel a pending schedule by ID
 
 ## Hem - Agent Orchestration CLI
+
+Gadgets are persisted in session system prompts, so updating the template alone
+does not repair existing agents. Explicit `update session --gadgets true`
+replaces the existing gadgets block using the executor's current relay address
+and fingerprint, even if gadgets were already enabled. Recomposition preserves
+the surrounding base/traits/nickname and memory blocks and resolves the tracked
+parent for callback instructions. The prompt states the pin explicitly; Hem
+accepts `--mi6-server-fingerprint` and forwards it as `--server-fingerprint` to
+the spawned MI6 client. Local-only prompts do not require relay flags.
 
 Hem is the top-level CLI that manages moneypenny instances and orchestrates sessions across them. kubectl-style verb+noun commands.
 

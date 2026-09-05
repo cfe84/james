@@ -1,16 +1,54 @@
 package main
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"james/hem/pkg/cli"
 )
+
+func TestGadgetFingerprintForwarding(t *testing.T) {
+	if os.Getenv("HEM_TEST_GADGET_CLI") == "1" {
+		os.Args = []string{"hem", "--hem", "relay.example:443/control",
+			"--mi6-server-fingerprint", "SHA256:trusted", "list", "sessions"}
+		main()
+		return
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("uses a POSIX fake mi6-client")
+	}
+	dir := t.TempDir()
+	client := filepath.Join(dir, "mi6-client")
+	// Exit before any real connection, after recording the exact child arguments.
+	if err := os.WriteFile(client, []byte("#!/bin/sh\nprintf 'ARG=%s\\n' \"$@\" >&2\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HEM_TEST_GADGET_CLI", "1")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("MI6_SERVER_FINGERPRINT", "SHA256:environment-must-not-win")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestGadgetFingerprintForwarding$")
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatal(ctx.Err())
+	}
+	if err == nil {
+		t.Fatal("expected fake mi6-client to exit with an error")
+	}
+	if !strings.Contains(string(out), "ARG=--server-fingerprint\nARG=SHA256:trusted\nARG=relay.example:443/control\n") {
+		t.Fatalf("Hem did not forward the explicit fingerprint to mi6-client:\n%s", out)
+	}
+}
 
 func TestGenerateReleaseKeypair(t *testing.T) {
 	dir := t.TempDir()

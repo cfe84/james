@@ -30,7 +30,7 @@ endif
 all: build
 
 build: $(COMPONENTS)
-	@echo "Built james v$(VERSION): mi6-server mi6-client moneypenny james-teams-agency hem qew"
+	@echo "Built james v$(VERSION): mi6-server mi6-client moneypenny james-teams-agency james-teams-trouter hem qew"
 
 mi6:
 	$(MAKE) -C mi6 build
@@ -69,6 +69,7 @@ endif
 	$(INSTALL) mi6$(SEP)bin$(SEP)mi6-client$(EXECUTABLE_SUFFIX) "$(INSTALL_DIR)$(SEP)"
 	$(INSTALL) moneypenny$(SEP)bin$(SEP)moneypenny$(EXECUTABLE_SUFFIX) "$(INSTALL_DIR)$(SEP)"
 	$(INSTALL) moneypenny$(SEP)bin$(SEP)james-teams-agency$(EXECUTABLE_SUFFIX) "$(INSTALL_DIR)$(SEP)"
+	$(INSTALL) moneypenny$(SEP)bin$(SEP)james-teams-trouter$(EXECUTABLE_SUFFIX) "$(INSTALL_DIR)$(SEP)"
 	$(INSTALL) hem$(SEP)bin$(SEP)hem$(EXECUTABLE_SUFFIX) "$(INSTALL_DIR)$(SEP)"
 	$(INSTALL) qew$(SEP)bin$(SEP)qew$(EXECUTABLE_SUFFIX) "$(INSTALL_DIR)$(SEP)"
 ifneq ($(OS),Windows_NT)
@@ -78,6 +79,7 @@ ifeq ($(shell uname -s),Darwin)
 	@codesign -s - -f "$(INSTALL_DIR)/mi6-client" 2>/dev/null || true
 	@codesign -s - -f "$(INSTALL_DIR)/moneypenny" 2>/dev/null || true
 	@codesign -s - -f "$(INSTALL_DIR)/james-teams-agency" 2>/dev/null || true
+	@codesign -s - -f "$(INSTALL_DIR)/james-teams-trouter" 2>/dev/null || true
 	@codesign -s - -f "$(INSTALL_DIR)/hem" 2>/dev/null || true
 	@codesign -s - -f "$(INSTALL_DIR)/qew" 2>/dev/null || true
 endif

@@ -534,6 +534,16 @@ moneypenny install --non-interactive --user \
 
 ### Update
 
+`hem update session SESSION_ID --gadgets true` regenerates the gadgets block even
+when it is already enabled. Use it to refresh an existing agent after updating
+Hem or changing the relay configuration. It replaces stale commands with the
+current Hem server's `--hem` address and `--mi6-server-fingerprint` pin, preserving
+base instructions, traits, nickname, memory, and subagent callback identity.
+The prompt also states the relay fingerprint explicitly and distinguishes Hem's
+flag from the underlying `mi6-client --server-fingerprint` flag. Local-only Hem
+servers generate local commands without MI6 instructions. Refreshing a prompt
+does not upgrade the Hem binary installed on the agent's host.
+
 `hem update session SESSION_ID [--name NAME] [--nick NICK] [--system-prompt TEXT] [--traits ID1,ID2] [--gadgets true/false] [--yolo true/false] [--path PATH] [--model VALUE] [--effort VALUE] [--context VALUE] [--project NAME_OR_ID]` — updates session parameters. Only specified fields are changed. `--project` moves the session to a project (hem-local operation, not sent to moneypenny). `--traits` recomposes the session's system prompt (empty value clears all traits). `--nick` sets or clears (empty value) the session's nickname, recomposing the identity block at the top of the system prompt. `--effort`/`--context` accept `none` (or `default`) to clear the stored override back to the agent default. `--path` **repoints** the session to a new working directory — it does NOT move or create the folder; the moneypenny validates the new path exists (`os.Stat`) and errors otherwise. Use it only after you have actually moved the session folder on the host. Editable in the hem TUI edit form (Path field) and the Qew edit dialog (Path field).
 
 ### History / Log
@@ -687,6 +697,16 @@ details outside Moneypenny. `james-teams-agency` currently exposes the existing
 Agency Teams operations through this boundary; leaving the variable unset
 preserves the embedded Agency implementation. Future push adapters, including
 `james-teams-trouter`, will use the same protocol.
+
+The `james-teams-trouter` executable currently provides a testable lifecycle
+probe rather than live message delivery. It accepts `initialize`, `configure`,
+`authenticate`, `status`, `connect`, and `shutdown` JSONL requests and emits
+`status` events. `--dry-run` performs the complete lifecycle without network
+access. On Windows, `JAMES_TEAMS_AUTH_COMMAND` may point to a delegated-auth
+helper that returns JSON with an `account` field; on macOS the helper is optional and the probe uses Azure CLI
+(`az login` plus an IC3 Teams token request) by default. The helper is an explicit
+temporary integration seam for validating authentication before the native
+Trouter client is added. It does not dispatch prompts or send Teams messages.
 
 Channels bind a session (hem agent) to an external communication channel, letting the
 agent participate in conversations outside the James UI. The first provider is **Microsoft

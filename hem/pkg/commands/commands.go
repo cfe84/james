@@ -23,8 +23,18 @@ import (
 
 func gadgetsSystemPrompt(mi6Control, mi6ServerFingerprint, sessionID, parentID string) string {
 	var hemCmd string
+	connectionInstructions := "Use the local hem server's configured Unix socket."
 	if mi6Control != "" {
 		hemCmd = fmt.Sprintf("hem --hem %s --mi6-server-fingerprint %s", mi6Control, mi6ServerFingerprint)
+		connectionInstructions = fmt.Sprintf(`MI6 relay address: %s
+MI6 relay server fingerprint: %s
+Use the full command prefix above for EVERY hem command, including help.
+Hem takes --mi6-server-fingerprint; --server-fingerprint is the underlying
+mi6-client flag, not a Hem flag. Hem forwards the pin to mi6-client automatically.
+Do not remove either connection flag or use Unix socket/localhost as a fallback.
+If mi6-client still reports "--server-fingerprint is required" with this exact
+prefix, report the failure and check for an outdated Hem binary; do not bypass pinning.`,
+			mi6Control, mi6ServerFingerprint)
 	} else {
 		hemCmd = "hem"
 	}
@@ -52,6 +62,7 @@ Reporting back to your parent (callback):
 	return fmt.Sprintf(`
 You have access to agent orchestration using the %s command. Run %s -h to see available commands.
 Your session ID is %s.
+%s
 
 Scheduling:
   Schedule a follow-up: %s schedule session %s --at TIME --prompt "your prompt"
@@ -80,16 +91,30 @@ Subagents (parallel tasks):
 
 IMPORTANT: NEVER start hem server if you are not directly instructed to do it.
 IMPORTANT: NEVER start moneypenny if you are not directly instructed to do it.
-IMPORTANT: All %s commands already include the required MI6 connection and server-identity flags (--hem and --mi6-server-fingerprint). Do NOT modify or remove either flag. Do NOT attempt to connect via Unix socket or localhost. These flags route commands through the MI6 relay to the hem server and verify its identity — this is the only way to communicate.
 IMPORTANT: When the user asks you to "start an agent", "launch an agent", "spin up a session", or similar — they mean create a new session using %s create session (or %s create subsession for a subagent). Do NOT attempt to run claude, copilot, or any agent binary directly. All agent lifecycle is managed through hem.
 IMPORTANT: Do NOT set the git committer or author to Claude, Copilot, or any AI name. Leave the user's existing git config (user.name/user.email) unchanged. Commits should appear as authored by the human user.
 IMPORTANT: When creating a session or subagent that needs to modify the filesystem (write files, run builds, install packages, commit, etc.), include the --yolo flag to grant it permission. Without --yolo, the agent will be blocked by permission prompts it cannot answer.`,
-		hemCmd, hemCmd, sessionID,
+		hemCmd, hemCmd, sessionID, connectionInstructions,
 		hemCmd, sessionID, hemCmd, sessionID, hemCmd,
 		hemCmd,
 		hemCmd, sessionID, hemCmd, sessionID,
 		hemCmd, sessionID, hemCmd, sessionID,
-		hemCmd, hemCmd, hemCmd, callbackSection, hemCmd, hemCmd, hemCmd)
+		hemCmd, hemCmd, hemCmd, callbackSection, hemCmd, hemCmd)
+}
+
+func replaceGadgetsPrompt(current, gadgets string) string {
+	base := current
+	var memorySuffix string
+	if idx := findMemoryMarker(base); idx >= 0 {
+		memorySuffix = base[idx:]
+		base = base[:idx]
+	}
+	if idx := strings.Index(base, gadgetsMarker); idx >= 0 {
+		base = base[:idx]
+	} else if strings.HasPrefix(base, gadgetsMarker[1:]) {
+		base = ""
+	}
+	return base + gadgets + memorySuffix
 }
 
 // gadgetsParentID returns the parent session ID for sessionID if it is a tracked
@@ -2714,36 +2739,16 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 		if err != nil {
 			return protocol.ErrResponse(fmt.Sprintf("failed to get session for gadgets toggle: %v", err))
 		}
-		hasGadgets := strings.Contains(currentSP, gadgetsMarker[1:]) // skip leading newline
-
-		if gadgetsStr == "true" && !hasGadgets {
-			// Append gadgets — insert before memory if memory exists.
-			base := currentSP
-			var memorySuffix string
-			if midx := findMemoryMarker(base); midx >= 0 {
-				memorySuffix = base[midx:]
-				base = base[:midx]
-			}
-			systemPrompt = base + gadgetsSystemPrompt(e.MI6Control, e.MI6ServerFingerprint, sessionID, gadgetsParentID(e, sessionID)) + memorySuffix
-			cmdData["system_prompt"] = systemPrompt
-			fetchedSP = systemPrompt // keep cache current for the nick block below
-			hasUpdate = true
-			spChanged = true
-		} else if gadgetsStr == "false" && hasGadgets {
-			// Strip gadgets — preserve memory if present.
-			idx := strings.Index(currentSP, gadgetsMarker)
-			if idx >= 0 {
-				before := currentSP[:idx]
-				after := currentSP[idx:]
-				// Check if memory prompt follows gadgets.
-				if midx := findMemoryMarker(after); midx >= 0 {
-					systemPrompt = before + after[midx:]
-				} else {
-					systemPrompt = before
-				}
-			} else {
-				systemPrompt = currentSP
-			}
+		if gadgetsStr != "true" && gadgetsStr != "false" {
+			return protocol.ErrResponse("--gadgets must be true or false")
+		}
+		var gadgets string
+		if gadgetsStr == "true" {
+			gadgets = gadgetsSystemPrompt(e.MI6Control, e.MI6ServerFingerprint, sessionID, gadgetsParentID(e, sessionID))
+		}
+		// Regenerate even when already enabled so stored prompts pick up current relay pins.
+		systemPrompt = replaceGadgetsPrompt(currentSP, gadgets)
+		if systemPrompt != currentSP || gadgetsStr == "true" {
 			cmdData["system_prompt"] = systemPrompt
 			fetchedSP = systemPrompt // keep cache current for the nick block below
 			hasUpdate = true

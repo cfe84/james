@@ -21,6 +21,7 @@ all: build
 build:
 	go build $(LDFLAGS) -o bin/moneypenny$(EXE) ./cmd/moneypenny/
 	go build $(LDFLAGS) -o bin/james-teams-agency$(EXE) ./cmd/james-teams-agency/
+	go build $(LDFLAGS) -o bin/james-teams-trouter$(EXE) ./cmd/james-teams-trouter/
 
 test:
 	go test ./... -timeout 60s
