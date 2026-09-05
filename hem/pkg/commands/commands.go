@@ -6541,7 +6541,7 @@ func (e *Executor) ActivitySession(args []string) *protocol.Response {
 
 // CreateSubSession creates a sub-session under a parent session.
 func (e *Executor) CreateSubSession(args []string) *protocol.Response {
-	var mpName, sessionName, systemPrompt, pathArg, agentName, parentSessionID, modelName, effortName, contextTierName, callbackPrompt string
+	var mpName, sessionName, systemPrompt, pathArg, agentName, parentSessionID, modelName, effortName, contextTierName, callbackPrompt, fromID string
 	var yolo, async, gadgets bool
 
 	remaining, err := parseFlagsFromArgs("create-subsession", args, func(fs *flag.FlagSet) {
@@ -6559,6 +6559,7 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 		fs.BoolVar(&gadgets, "gadgets", false, "include James tooling in system prompt")
 		fs.StringVar(&pathArg, "path", "", "working directory path")
 		fs.BoolVar(&async, "async", false, "return immediately without waiting for response")
+		fs.StringVar(&fromID, "from", "", "originating agent session ID (set automatically by gadgets)")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -6658,6 +6659,10 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 		"name":       sessionName,
 		"prompt":     prompt,
 		"path":       pathArg,
+	}
+	if fromID != "" {
+		cmdData["source_session_id"] = fromID
+		cmdData["source_name"] = e.agentOriginLabel(fromID)
 	}
 	if systemPrompt != "" {
 		cmdData["system_prompt"] = systemPrompt

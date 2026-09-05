@@ -680,6 +680,14 @@ Schedule instructions are appended to every session's system prompt automaticall
 
 ## Channels
 
+Moneypenny supports an opt-in external provider-plugin transport through
+`MONEYPENNY_CHANNEL_PLUGIN`. The configured executable is supervised as a
+newline-delimited JSON child process and keeps provider credentials and SDK
+details outside Moneypenny. `james-teams-agency` currently exposes the existing
+Agency Teams operations through this boundary; leaving the variable unset
+preserves the embedded Agency implementation. Future push adapters, including
+`james-teams-trouter`, will use the same protocol.
+
 Channels bind a session (hem agent) to an external communication channel, letting the
 agent participate in conversations outside the James UI. The first provider is **Microsoft
 Teams** (via the `agency mcp teams` MCP server). Channels are a **moneypenny-level** concept:
@@ -850,6 +858,7 @@ Sessions can spawn sub-sessions for parallel task execution. Sub-sessions are li
 
 Subagents report results back to their parent as **callbacks**, which render as a distinct highlighted turn (↩️) rather than as a normal user ("you") message:
 
+- When a James agent creates a subagent through `hem create subsession`, Hem automatically passes its `HEM_SESSION_ID` as the source of the new session's initial prompt. The subagent's conversation therefore labels that turn with the invoking agent's nick or session name in both Hem and Qew, rather than the browser-local human label. A user-created subagent remains labelled with the configured human name.
 - **`hem callback session PARENT_ID --from ORIGIN_ID MESSAGE`** delivers a message from a subagent to its parent. The origin session is resolved to a friendly label (`nick · name`, falling back to name / nick / short id) and prefixed as `↩️ Callback from {label}:`. If the parent is idle the callback is delivered immediately; if busy it is queued. Either way the turn is recorded with the `callback` role.
 - The gadgets system prompt gives every subagent (a session with a parent, created via `create subsession --gadgets`) **precise instructions** to run `hem callback session <PARENT_ID> --from <OWN_ID> "result"` when its work is complete.
 - `watch session`-delivered results are also tagged as callbacks.

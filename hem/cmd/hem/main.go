@@ -126,10 +126,9 @@ func main() {
 		os.Exit(1)
 	}
 	// Gadget commands inherit HEM_SESSION_ID from Moneypenny. Preserve that
-	// provenance when an agent sends a prompt to another session.
-	if cmd.Verb == "continue" && cmd.Noun == "session" && os.Getenv("HEM_SESSION_ID") != "" && !hasFlag(cmd.Args, "from") {
-		cmd.Args = append(cmd.Args, "--from", os.Getenv("HEM_SESSION_ID"))
-	}
+	// provenance when an agent sends a prompt to another session or creates a
+	// subagent. The initial subagent prompt is a user turn in its own history.
+	addGadgetProvenance(cmd, os.Getenv("HEM_SESSION_ID"))
 
 	// Handle local-only commands that don't need the server.
 	switch cmd.Verb + " " + cmd.Noun {
@@ -271,6 +270,16 @@ func hasFlag(args []string, name string) bool {
 		}
 	}
 	return false
+}
+
+func addGadgetProvenance(cmd *cli.Command, sourceSessionID string) {
+	if sourceSessionID == "" || hasFlag(cmd.Args, "from") {
+		return
+	}
+	if (cmd.Verb == "continue" && cmd.Noun == "session") ||
+		(cmd.Verb == "create" && cmd.Noun == "subsession") {
+		cmd.Args = append(cmd.Args, "--from", sourceSessionID)
+	}
 }
 
 // handleSetDefaultServer handles `hem set-default server` locally (no server needed).

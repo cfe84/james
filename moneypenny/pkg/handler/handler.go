@@ -114,7 +114,11 @@ func New(s *store.Store, runner *agent.Runner, version, dataDir string) *Handler
 	if h.channelCmd == "" {
 		h.channelCmd = "agency"
 	}
-	h.channels = channel.NewRegistry(h.channelCmd)
+	if plugin := os.Getenv("MONEYPENNY_CHANNEL_PLUGIN"); plugin != "" {
+		h.channels = channel.NewPluginRegistry(plugin)
+	} else {
+		h.channels = channel.NewRegistry(h.channelCmd)
+	}
 	// Persist thinking and intermediate-text activity events as conversation
 	// turns so the train of thought survives across reloads.
 	runner.SetPersistentActivityFunc(func(sessionID, eventType, content string) {
@@ -427,7 +431,7 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 	}
 
 	// Add user prompt to conversation.
-	if err := h.store.AddConversationTurn(data.SessionID, "user", data.Prompt); err != nil {
+	if err := h.store.AddConversationTurnFrom(data.SessionID, "user", data.Prompt, data.SourceSessionID, data.SourceName); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to add conversation turn: %v", err))
 	}
 

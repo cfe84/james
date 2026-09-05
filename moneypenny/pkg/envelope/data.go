@@ -25,6 +25,10 @@ type CreateSessionData struct {
 	Name         string            `json:"name"`
 	Path         string            `json:"path"`
 	Environment  map[string]string `json:"environment,omitempty"`
+	// SourceSessionID and SourceName attribute the initial prompt when this
+	// session was created by another James agent (such as a subagent).
+	SourceSessionID string `json:"source_session_id,omitempty"`
+	SourceName      string `json:"source_name,omitempty"`
 	// CompactionMode selects how context is compacted: "agent" (rely on the
 	// underlying agent's built-in compaction) or "custom" (James-managed
 	// distillation + summary + fresh-session substitution). Empty defaults to

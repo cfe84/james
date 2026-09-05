@@ -1,5 +1,46 @@
 # James Architecture
 
+## Architectural Decision: Single Responsibility Per Binary
+
+James favors **single responsibility per binary**. The core binaries own their
+respective orchestration boundaries: MI6 transports authenticated remote
+messages, Moneypenny owns agent-session state and execution, Hem owns
+orchestration state and user-facing command semantics, and Qew owns web access.
+
+Provider-specific integrations that need their own authentication, SDKs,
+long-lived connections, platform dependencies, or independent restart lifecycle
+are extracted into dedicated plugin binaries rather than embedded in
+Moneypenny. A plugin communicates only with its parent over line-delimited JSON
+on stdin/stdout. It owns provider mechanics such as token refresh,
+subscriptions, reconnects, and send/reply delivery; Moneypenny retains durable
+channel configuration, authorization and mention policy, session routing,
+queueing, and agent execution.
+
+The plugin protocol is provider-neutral and command/event based: Moneypenny
+sends correlated commands such as `configure`, `send`, and `react`; plugins
+emit normalized inbound `message`, lifecycle `ready`, and structured `error`
+events. Provider bearer tokens stay in the plugin's local credential context
+and are never persisted in Moneypenny's database or sent over this protocol.
+Plugins are supervised children: an EOF or failure marks that provider
+unavailable and is restarted with backoff without interrupting active agent
+sessions.
+
+This is the required shape for future channel integrations and for extracting
+existing embedded provider adapters when their lifecycle warrants it. The
+planned `james-teams-trouter` binary is the first intended application: it will
+own Teams delegated authentication, Trouter registration/reconnect, and
+threaded ChatSvc delivery, while Moneypenny keeps the existing channel gates
+and dispatch behavior.
+
+The first implementation of this boundary is `james-teams-agency`. It is an
+opt-in compatibility adapter that runs the existing `agency mcp teams` provider
+behind the JSONL plugin protocol (`MONEYPENNY_CHANNEL_PLUGIN`). This keeps the
+default embedded Agency path unchanged while validating process supervision,
+request correlation, credential isolation, and packaging before Trouter is
+added. The adapter exposes the existing search, resolve, list, send, cursor, and
+self operations; asynchronous inbound events and threaded reply metadata remain
+reserved for the Trouter phase.
+
 ## MI6 - Agent Communication Relay
 
 MI6 is a transport layer for remote agents to communicate via sessions. It consists of two binaries: `mi6-client` (local) and `mi6-server` (remote/container).
@@ -277,7 +318,7 @@ hem/
 
     (3) **Identity in the system prompt.** When a nick is set, `nickSystemPrompt` composes `Your name is <Title>, you may refer to yourself as such.` wrapped in `<!--james:nick:begin-->`/`<!--james:nick:end-->` markers and `applyNickBlock` prepends it at the **very top** (order becomes nick → base → traits → gadgets → memory). `CreateSession` prepends after traits/gadgets are appended (so nick stays at index 0) and persists via `SetSessionNick` only after the moneypenny accepts the create. `UpdateSession` detects an explicit `--nick` (pre-scan, like `traitsExplicit`), recomposes through the shared `getCurrentSP()` closure via `applyNickBlock`, and persists the mapping only after the prompt update lands. `ShowSession` strips the nick block from the displayed prompt and returns the stored nick; `CopySession` strips any inherited nick block and does not carry the nick over (nicks are unique). The nick is settable in the TUI create wizard / edit form and the Qew create/edit dialogs (a **Nick** field; the copy wizard omits it since `copy session` has no `--nick`).
 
-35c. **Agent-to-agent message attribution**: Moneypenny already injects `HEM_SESSION_ID` into every agent environment. The Hem CLI consumes it only for `continue session` commands and automatically appends an internal `--from <source-session-id>` flag, unless one is already present; ordinary human CLI/TUI/Qew requests have no such environment variable. Hem resolves the source to a display label preferring its nick, then its session name, then a short ID. The additive Moneypenny `ContinueSessionData` protocol carries `source_session_id` and `source_name`; both are stored on `conversation_turns` and `prompt_queue` (with idempotent migrations) so an agent-originated prompt retains provenance whether it is delivered immediately or after queueing. `ConversationTurn` returns the fields to Hem/Qew/TUI. Renderers show `source_name` for user-role turns when present, otherwise `you`; the TUI retains its fixed human label, while Qew has a browser-local `qewUserLabel` preference controlled by the header person button. Storing the resolved name preserves readable historical attribution even if the source session is later removed or renamed.
+35c. **Agent-to-agent message attribution**: Moneypenny injects `HEM_SESSION_ID` into every agent environment. The Hem CLI consumes it for `continue session` and `create subsession`, automatically appending an internal `--from <source-session-id>` flag unless one is already present; ordinary human CLI/TUI/Qew requests have no such environment variable. Hem resolves the source to a display label preferring its nick, then its session name, then a short ID. The additive Moneypenny `ContinueSessionData` and `CreateSessionData` protocols carry `source_session_id` and `source_name`; both are stored on `conversation_turns` and queued prompts where applicable, so an agent-originated direct message or initial subagent prompt retains provenance. `ConversationTurn` returns the fields to Hem/Qew/TUI. Renderers show `source_name` for user-role turns when present, otherwise `you`; the TUI retains its fixed human label, while Qew has a browser-local `qewUserLabel` preference controlled by the header person button. Storing the resolved name preserves readable historical attribution even if the source session is later removed or renamed.
 
 
 36. **Copilot reply assembly**: Conversation turns distinguish the final `assistant` reply from the dim "train of thought" (`thinking`/`agent_text` turns). Claude has a dedicated `result` event for the final answer, so its streamed `text` blocks are persisted as `agent_text` and the handler dedups the trailing duplicate against the `result`. Copilot has **no** result event — the answer is conveyed purely through `assistant.message` events. Copilot tags each `assistant.message` with a **`phase`** field: `commentary` for pre-tool narration ("Now let me look at X", emitted as its own message, often carrying a `toolRequests` array) and `final_answer` for the concluding reply. Accumulating *every* message into the reply made it very chatty (all the preambles leaked into the bubble). `runCopilotStreaming` now **classifies at end-of-stream**, mirroring Claude's split: it buffers each message/reasoning event in order (recording the `phase`), then — **when any message carries a phase** — the reply is exactly the message(s) tagged **`final_answer`** and everything else is train of thought. This is the provider's own ground truth and is robust to tool-call position. For **older Copilot builds that omit `phase`**, it falls back to the prior positional heuristic: the **trailing contiguous run of no-tool messages** (the model talking after it stopped acting), with a **further fallback to the last non-empty message** if there is no such run (so an answer bundled with a housekeeping tool call is never hidden). Empty tool-only messages are recorded solely as boundaries for that fallback and never persisted. Everything else — preamble narration (persisted as `agent_text`) and reasoning (persisted as `thinking`) — is written to the train of thought in original order; the reply itself is **not** persisted there (the handler stores it as the `assistant` turn, so the Claude-only dedup is a no-op for Copilot). All events still stream live via the activity buffer during the turn. The reply is computed before `cmd.Wait` so the error path still carries partial text for diagnostics.

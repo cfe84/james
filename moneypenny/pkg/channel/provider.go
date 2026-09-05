@@ -76,6 +76,7 @@ type Provider interface {
 type Registry struct {
 	mu        sync.Mutex
 	command   string // base command, e.g. "agency"
+	pluginCmd string
 	providers map[string]Provider
 }
 
@@ -86,6 +87,12 @@ func NewRegistry(command string) *Registry {
 		command = "agency"
 	}
 	return &Registry{command: resolveCommand(command), providers: map[string]Provider{}}
+}
+
+// NewPluginRegistry returns a registry backed by supervised provider plugins.
+// The plugin executable is started lazily on the first provider operation.
+func NewPluginRegistry(command string) *Registry {
+	return &Registry{pluginCmd: command, providers: map[string]Provider{}}
 }
 
 // resolveCommand turns a bare command name into an absolute path so provider
@@ -131,7 +138,11 @@ func (r *Registry) Get(name string) (Provider, error) {
 	var p Provider
 	switch name {
 	case "teams":
-		p = newTeamsProvider(newMCPClient(r.command, "mcp", "teams"))
+		if r.pluginCmd != "" {
+			p = newPluginProvider(name, r.pluginCmd)
+		} else {
+			p = newTeamsProvider(newMCPClient(r.command, "mcp", "teams"))
+		}
 	default:
 		return nil, fmt.Errorf("unknown channel provider %q", name)
 	}
