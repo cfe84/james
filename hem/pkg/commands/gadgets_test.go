@@ -35,6 +35,29 @@ func TestLocalGadgetsPrompt(t *testing.T) {
 	}
 }
 
+func TestGadgetEnvironment(t *testing.T) {
+	e := &Executor{MI6Control: "relay/control", MI6ServerFingerprint: "SHA256:trusted"}
+	got := e.addGadgetEnvironment(map[string]string{
+		"FEATURE_FLAG":           "true",
+		"MI6_SERVER_FINGERPRINT": "SHA256:untrusted",
+	})
+	if got["MI6_SERVER_FINGERPRINT"] != "SHA256:trusted" {
+		t.Fatalf("fingerprint = %q, want trusted relay pin", got["MI6_SERVER_FINGERPRINT"])
+	}
+	if got["FEATURE_FLAG"] != "true" {
+		t.Fatal("existing environment was not preserved")
+	}
+	values := environmentValues{"MI6_SERVER_FINGERPRINT=SHA256:untrusted"}
+	e.addGadgetEnvironmentValues(&values)
+	parsed, err := values.Map()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed["MI6_SERVER_FINGERPRINT"] != "SHA256:trusted" {
+		t.Fatalf("create fingerprint = %q, want trusted relay pin", parsed["MI6_SERVER_FINGERPRINT"])
+	}
+}
+
 func TestReplaceGadgetsPrompt(t *testing.T) {
 	fresh := gadgetsSystemPrompt("relay.example:443/control", "SHA256:new", "child", "parent")
 	base := "nick and base instructions\ntraits"

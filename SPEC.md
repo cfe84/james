@@ -542,7 +542,11 @@ base instructions, traits, nickname, memory, and subagent callback identity.
 The prompt also states the relay fingerprint explicitly and distinguishes Hem's
 flag from the underlying `mi6-client --server-fingerprint` flag. Local-only Hem
 servers generate local commands without MI6 instructions. Refreshing a prompt
-does not upgrade the Hem binary installed on the agent's host.
+does not upgrade the Hem binary installed on the agent's host. For MI6-controlled
+Hem, gadgets also persist `MI6_SERVER_FINGERPRINT` in the agent environment.
+Hem uses that pinned value whenever a command does not provide an explicit
+`--mi6-server-fingerprint`; the configured relay pin takes precedence over a
+user-supplied value.
 
 `hem update session SESSION_ID [--name NAME] [--nick NICK] [--system-prompt TEXT] [--traits ID1,ID2] [--gadgets true/false] [--yolo true/false] [--path PATH] [--model VALUE] [--effort VALUE] [--context VALUE] [--project NAME_OR_ID]` — updates session parameters. Only specified fields are changed. `--project` moves the session to a project (hem-local operation, not sent to moneypenny). `--traits` recomposes the session's system prompt (empty value clears all traits). `--nick` sets or clears (empty value) the session's nickname, recomposing the identity block at the top of the system prompt. `--effort`/`--context` accept `none` (or `default`) to clear the stored override back to the agent default. `--path` **repoints** the session to a new working directory — it does NOT move or create the folder; the moneypenny validates the new path exists (`os.Stat`) and errors otherwise. Use it only after you have actually moved the session folder on the host. Editable in the hem TUI edit form (Path field) and the Qew edit dialog (Path field).
 

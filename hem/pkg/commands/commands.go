@@ -1914,6 +1914,7 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 	// Append gadgets (James tooling instructions) to system prompt when enabled.
 	if params.Gadgets {
 		params.SystemPrompt += gadgetsSystemPrompt(e.MI6Control, e.MI6ServerFingerprint, sessionID, "")
+		e.addGadgetEnvironmentValues(&params.Environment)
 	}
 
 	// Memory instructions are injected by the moneypenny at runtime now that
@@ -2753,6 +2754,28 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 			fetchedSP = systemPrompt // keep cache current for the nick block below
 			hasUpdate = true
 			spChanged = true
+		}
+		if gadgetsStr == "true" {
+			gadgetEnvironment := map[string]string{}
+			if environmentExplicit {
+				gadgetEnvironment = cmdData["environment"].(map[string]string)
+			} else {
+				ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel2()
+				sessResp, err := e.sendCommand(ctx2, mp, "get_session", map[string]interface{}{"session_id": sessionID})
+				if err != nil {
+					return protocol.ErrResponse(fmt.Sprintf("failed to get session environment for gadgets: %v", err))
+				}
+				var sd struct {
+					Environment map[string]string `json:"environment"`
+				}
+				if err := json.Unmarshal(sessResp.Data, &sd); err != nil {
+					return protocol.ErrResponse(fmt.Sprintf("parsing session environment for gadgets: %v", err))
+				}
+				gadgetEnvironment = sd.Environment
+			}
+			cmdData["environment"] = e.addGadgetEnvironment(gadgetEnvironment)
+			hasUpdate = true
 		}
 	}
 
@@ -5463,6 +5486,7 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	params.SystemPrompt += traitsSystemPrompt(traits)
 	if params.Gadgets {
 		params.SystemPrompt += gadgetsSystemPrompt(e.MI6Control, e.MI6ServerFingerprint, newSessionID, "")
+		e.addGadgetEnvironmentValues(&params.Environment)
 	}
 	// Memory instructions are injected by the moneypenny at runtime (file-based
 	// memory). When duplicating within the same moneypenny, ask it to copy the
@@ -6664,6 +6688,9 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 		"name":       sessionName,
 		"prompt":     prompt,
 		"path":       pathArg,
+	}
+	if gadgets {
+		cmdData["environment"] = e.addGadgetEnvironment(nil)
 	}
 	if fromID != "" {
 		cmdData["source_session_id"] = fromID

@@ -194,7 +194,10 @@ and fingerprint, even if gadgets were already enabled. Recomposition preserves
 the surrounding base/traits/nickname and memory blocks and resolves the tracked
 parent for callback instructions. The prompt states the pin explicitly; Hem
 accepts `--mi6-server-fingerprint` and forwards it as `--server-fingerprint` to
-the spawned MI6 client. Local-only prompts do not require relay flags.
+the spawned MI6 client. MI6-controlled gadget sessions also store the pin in
+their per-agent `MI6_SERVER_FINGERPRINT` environment, overriding a caller value
+so a stale prompt lacking the explicit argument still uses the trusted relay
+identity. Local-only prompts do not require relay flags.
 
 Hem is the top-level CLI that manages moneypenny instances and orchestrates sessions across them. kubectl-style verb+noun commands.
 
