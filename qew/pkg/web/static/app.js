@@ -1131,6 +1131,10 @@
         html += `<div class="msg callback">↩️ ${formatContent(content)}</div>`;
         continue;
       }
+      if (turn.role === 'notification') {
+        html += `<div class="msg notification">🔔 <strong>Action needed:</strong> ${formatContent(content)}</div>`;
+        continue;
+      }
       // Train-of-thought turns get a compact, indented, gray rendering with
       // the emoji inline — no role-name header. Hidden unless the toggle is on.
       // Scheduled-invocation prompts render the same way (⏰) so they read as

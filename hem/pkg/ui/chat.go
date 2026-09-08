@@ -829,6 +829,10 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 			if !m.loading && !m.polling {
 				cmds = append(cmds, m.loadActivity())
 			}
+		case "user_notification":
+			if !m.loading && !m.polling {
+				cmds = append(cmds, m.loadHistory())
+			}
 
 		case "message":
 			// New conversation message added
@@ -1749,6 +1753,7 @@ func (m chatModel) View() string {
 	systemMsgStyle := lipgloss.NewStyle().Foreground(colorMuted).Italic(true)
 	thoughtStyle := lipgloss.NewStyle().Foreground(colorMuted).Italic(true)
 	callbackStyle := lipgloss.NewStyle().Foreground(colorPrimary)
+	notificationStyle := lipgloss.NewStyle().Foreground(colorWarning).Bold(true)
 	conversation := collapseSupersededThoughtTurns(m.conversation)
 	for i, turn := range conversation {
 		// Skip empty assistant turns that immediately follow a chain-of-thought
@@ -1759,6 +1764,17 @@ func (m chatModel) View() string {
 		if turn.Role == "assistant" && strings.TrimSpace(turn.Content) == "" && i > 0 {
 			prev := m.conversation[i-1].Role
 			if prev == "agent_text" || prev == "thinking" {
+				continue
+			}
+			if turn.Role == "notification" {
+				for i, line := range strings.Split(wordWrap(turn.Content, m.width-6), "\n") {
+					if i == 0 {
+						msgLines = append(msgLines, notificationStyle.Render("  🔔 Action needed: "+line))
+					} else {
+						msgLines = append(msgLines, notificationStyle.Render("    "+line))
+					}
+				}
+				msgLines = append(msgLines, "")
 				continue
 			}
 		}

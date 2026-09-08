@@ -86,6 +86,17 @@ The "at" attribute accepts RFC3339 timestamps or relative durations like "+2h", 
 When you schedule a follow-up, the system will automatically send that prompt to you at the specified time.
 Use this to set reminders, check on long-running processes, or break work into timed phases.`
 
+const notifyUserSystemPromptSuffix = `
+
+User intervention:
+When the user must take action while you continue working, write:
+<NOTIFY_USER>Concise action the user must take.</NOTIFY_USER>
+Use this only for authentication, permission dialogs, missing credentials,
+irreversible decisions, or blocked external dependencies—not routine progress.
+The message is saved and shown to the user immediately while you keep working.`
+
+var notifyUserTagRe = regexp.MustCompile(`(?s)<NOTIFY_USER>\s*(.{1,1000}?)\s*</NOTIFY_USER>`)
+
 // Handler processes commands and returns responses.
 type Handler struct {
 	store             *store.Store
@@ -122,11 +133,28 @@ func New(s *store.Store, runner *agent.Runner, version, dataDir string) *Handler
 	// Persist thinking and intermediate-text activity events as conversation
 	// turns so the train of thought survives across reloads.
 	runner.SetPersistentActivityFunc(func(sessionID, eventType, content string) {
+		notifications := notifyUserTagRe.FindAllStringSubmatch(content, -1)
+		content = notifyUserTagRe.ReplaceAllString(content, "")
 		role := "thinking"
 		if eventType == "text" {
 			role = "agent_text"
 		}
-		_ = s.AddConversationTurn(sessionID, role, content)
+		if strings.TrimSpace(content) != "" {
+			_ = s.AddConversationTurn(sessionID, role, content)
+		}
+		for _, match := range notifications {
+			message := strings.TrimSpace(match[1])
+			if message == "" {
+				continue
+			}
+			if err := s.AddConversationTurn(sessionID, "notification", message); err != nil {
+				h.vlog("failed to save user notification for session %s: %v", sessionID, err)
+				continue
+			}
+			if h.notifyWriter != nil {
+				_ = h.notifyWriter.Send(envelope.EventChatUserNotification, sessionID, map[string]string{"message": message})
+			}
+		}
 	})
 	return h
 }
@@ -775,6 +803,7 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 			params.MemoryDir = memDir
 			params.SystemPrompt += memorySystemPrompt(memDir)
 		}
+		params.SystemPrompt += notifyUserSystemPromptSuffix
 	}
 
 	// Provide the per-session persistent directory to the agent runner so it

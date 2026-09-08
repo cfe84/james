@@ -849,6 +849,15 @@ Memory previously lived in moneypenny's SQLite (`memory_nodes` table, plus an ev
 
 Agents are instructed to treat the memory folder as their long-term knowledge base: read `README.md` first, organize hierarchically with a `README.md` per folder, keep parents as concise synthesis + index of children, update existing notes instead of duplicating, and record the task, key decisions and rationale, conventions, important paths/names, current state, and pending actions.
 
+While an agent is working, it can request human intervention by emitting
+`<NOTIFY_USER>message</NOTIFY_USER>` in streamed thinking or intermediate text.
+Moneypenny removes complete tags from persisted activity, saves each bounded
+message as a durable `notification` turn, and broadcasts it immediately. Hem
+and Qew always render it as **Action needed**, independently of the
+train-of-thought setting. Agents reserve this for authentication, permission,
+credentials, irreversible decisions, or blocking external dependencies—not
+routine progress.
+
 ## Sub-agents
 
 Sessions can spawn sub-sessions for parallel task execution. Sub-sessions are linked to a parent session and are managed as a group.

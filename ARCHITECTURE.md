@@ -131,6 +131,13 @@ Client                              Server
 
 ## Moneypenny - Agent Session Manager
 
+Streamed agent activity is the boundary for user-intervention markup. The
+handler recognizes complete bounded `<NOTIFY_USER>` tags in persistent
+thinking/text events, removes them from the activity turn, and creates a
+separate durable `notification` turn plus a `chat_user_notification` event.
+This keeps provider stream parsers independent from the UI while letting
+Hem/Qew display Action needed before agent completion.
+
 Moneypenny is a per-host daemon that manages Claude Code agent sessions. It receives JSON commands via stdio (directly or through MI6) and orchestrates agent subprocesses.
 
 ### Project Structure
