@@ -36,6 +36,10 @@ import (
 // Version is set at build time via -ldflags.
 var Version = "dev"
 
+func isStartServerCommand(args []string) bool {
+	return len(args) >= 3 && args[1] == "start" && args[2] == "server"
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		printUsage()
@@ -45,7 +49,14 @@ func main() {
 	// Check if this is `set-default server` — if so, don't consume --hem/--local
 	// as global flags since they're arguments to the command itself.
 	isSetDefaultServer := len(os.Args) >= 3 && os.Args[1] == "set-default" && os.Args[2] == "server"
-	isStartServer := len(os.Args) >= 3 && os.Args[1] == "start" && os.Args[2] == "server"
+	isStartServer := isStartServerCommand(os.Args)
+	// Server startup owns its --mi6-control and --mi6-server-fingerprint
+	// arguments. It must not construct a client using a persisted remote
+	// default before parsing those server-specific flags.
+	if isStartServer {
+		runServer()
+		return
+	}
 
 	// Extract global flags from args before cli.Parse.
 	var mi6Addr, mi6ServerFingerprint string
@@ -56,7 +67,7 @@ func main() {
 		if !isSetDefaultServer && os.Args[i] == "--hem" && i+1 < len(os.Args) {
 			i++
 			mi6Addr = os.Args[i]
-		} else if !isSetDefaultServer && !isStartServer && os.Args[i] == "--mi6-server-fingerprint" && i+1 < len(os.Args) {
+		} else if !isSetDefaultServer && os.Args[i] == "--mi6-server-fingerprint" && i+1 < len(os.Args) {
 			i++
 			mi6ServerFingerprint = os.Args[i]
 		} else if os.Args[i] == "--silent" {

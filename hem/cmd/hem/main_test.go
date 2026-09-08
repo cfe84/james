@@ -50,6 +50,21 @@ func TestGadgetFingerprintForwarding(t *testing.T) {
 	}
 }
 
+func TestIsStartServerCommand(t *testing.T) {
+	if !isStartServerCommand([]string{"hem", "start", "server", "--mi6-control", "relay/control"}) {
+		t.Fatal("start server command was not recognized")
+	}
+	for _, args := range [][]string{
+		{"hem", "start"},
+		{"hem", "start", "client"},
+		{"hem", "list", "server"},
+	} {
+		if isStartServerCommand(args) {
+			t.Fatalf("non-server command was recognized: %#v", args)
+		}
+	}
+}
+
 func TestGenerateReleaseKeypair(t *testing.T) {
 	dir := t.TempDir()
 	if err := generateReleaseKeypair([]string{"--output-dir", dir}); err != nil {

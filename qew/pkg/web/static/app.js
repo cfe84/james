@@ -749,6 +749,7 @@
     overrideModel = '';
     overrideEffort = '';
     overrideContext = '';
+    syncSchedulesToggle([]);
     document.getElementById('dashboard-view').style.display = 'none';
     document.getElementById('moneypennies-view').style.display = 'none';
     document.getElementById('projects-view').style.display = 'none';
@@ -917,6 +918,7 @@
         activity = actResp.data.activity;
       }
       lastSchedules = schedules;
+      syncSchedulesToggle(schedules);
       allSubagents = subagents;
       lastSubagents = subagents.filter(sub => !String(sub.status || '').toLowerCase().includes('completed'));
       lastActivity = activity;
@@ -1068,7 +1070,6 @@
   function renderChat(prepend) {
     const container = document.getElementById('chat-messages');
     const serverTurns = chatConversation;
-    const schedules = lastSchedules;
     const subagents = lastSubagents;
     const activity = lastActivity;
 
@@ -1107,8 +1108,7 @@
       return true;
     });
 
-    const hasIndicators = (currentSessionStatus === 'working') ||
-      (schedules && schedules.length > 0) || (subagents && subagents.length > 0);
+    const hasIndicators = (currentSessionStatus === 'working') || (subagents && subagents.length > 0);
     if (serverTurns.length === 0 && queuedMessages.length === 0 && !hasIndicators) {
       if (lastChatHTML === '__empty__') return;
       lastChatHTML = '__empty__';
@@ -1196,13 +1196,6 @@
         const spyVerbs = ['Infiltrating...', 'Surveilling...', 'Decrypting...', 'On a mission...', 'Going undercover...', 'Acquiring intel...', 'Intercepting...', 'Extracting...'];
         const spyVerb = spyVerbs[Math.floor(Math.random() * spyVerbs.length)];
         html += `<div class="msg working-indicator">🕴️ ${spyVerb}</div>`;
-      }
-    }
-    // Pending schedules.
-    if (schedules && schedules.length > 0) {
-      for (const s of schedules) {
-        const prompt = s.prompt.length > 80 ? s.prompt.substring(0, 77) + '...' : s.prompt;
-        html += `<div class="msg schedule-indicator">⏰ ${escapeHtml(formatScheduleTime(s.scheduledAt))}${s.cron ? ' ↻ ' + escapeHtml(s.cron) : ''} — ${escapeHtml(prompt)}</div>`;
       }
     }
     // Subagents.
@@ -3754,6 +3747,8 @@
       const all = await loadSchedules();
       if (currentSession !== sid) return;
       const pending = all.filter(s => s.status === 'pending');
+      lastSchedules = pending;
+      syncSchedulesToggle(pending);
       const rowsHtml = pending.length
         ? pending.map((s, i) => `
             <div class="sched-row">
@@ -5532,6 +5527,20 @@
     btn.classList.toggle('active', expandedActivity);
   }
 
+  function syncSchedulesToggle(schedules) {
+    const btn = document.getElementById('schedules-toggle');
+    const dot = document.getElementById('schedules-pending-dot');
+    if (!btn || !dot) return;
+    const count = Array.isArray(schedules) ? schedules.length : 0;
+    dot.classList.toggle('active', count > 0);
+    btn.title = count > 0
+      ? `Scheduled tasks (${count} pending) — H`
+      : 'Scheduled tasks — H';
+    btn.setAttribute('aria-label', count > 0
+      ? `Scheduled tasks, ${count} pending`
+      : 'Scheduled tasks');
+  }
+
   // --- Init ---
 
   document.getElementById('chat-back').addEventListener('click', closeChat);
@@ -5542,8 +5551,10 @@
   document.getElementById('passkey-mgmt-btn').addEventListener('click', openPasskeyModal);
   document.getElementById('thoughts-toggle').addEventListener('click', toggleThoughts);
   document.getElementById('activity-detail-toggle').addEventListener('click', toggleExpandedActivity);
+  document.getElementById('schedules-toggle').addEventListener('click', openSchedulesModal);
   syncThoughtsToggle();
   syncActivityDetailToggle();
+  syncSchedulesToggle([]);
   document.getElementById('new-session-btn').addEventListener('click', openCreateWizard);
   document.getElementById('nav-moneypennies-btn').addEventListener('click', showMoneypenniesView);
   document.getElementById('nav-projects-btn').addEventListener('click', showProjectsView);

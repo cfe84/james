@@ -249,7 +249,7 @@ hem/
 
 ### Key Technical Decisions
 
-1. **Client/server split**: Server maintains persistent state and connections. CLI is stateless. Clients connect via Unix socket or MI6 transport (using the `Sender` interface: `SocketSender` for local, `MI6Sender` for remote). The server can also accept commands from an MI6 control channel (`--mi6-control` flag, implemented in `server/mi6.go`). The default connection can be persisted with `hem set-default server --hem ADDR` (MI6) or `--local` (Unix socket). The `--local` global flag overrides any stored default.
+1. **Client/server split**: Server maintains persistent state and connections. CLI is stateless. Clients connect via Unix socket or MI6 transport (using the `Sender` interface: `SocketSender` for local, `MI6Sender` for remote). The server can also accept commands from an MI6 control channel (`--mi6-control` flag, implemented in `server/mi6.go`). Server startup is dispatched before any client sender is constructed, so its own MI6 control fingerprint is parsed independently of a persisted remote default. The default connection can be persisted with `hem set-default server --hem ADDR` (MI6) or `--local` (Unix socket). The `--local` global flag overrides any stored default.
 
 2. **Internal protocol**: Line-delimited JSON over Unix socket. Request: `{"verb":"create","noun":"session","args":[...]}`. Response: `{"status":"ok","data":{...}}` or `{"status":"error","message":"..."}`. One request/response per connection.
 
@@ -651,6 +651,13 @@ moneypenny/pkg/handler/channels.go  # ChannelManager (poll/forward/drain) + CRUD
    activity is simply picked up on a later tick.
 
 ## Qew - Web UI for Remote Access
+
+The Qew conversation header owns schedule visibility rather than the message
+stream. Its schedule toggle opens the existing schedule modal, and a DOM-local
+red dot reflects the latest pending schedule count from the normal chat poll
+or a modal edit. This removes schedule metadata from conversation rows while
+leaving scheduled invocation turns and the existing command-palette/action-menu
+entry points intact.
 
 Qew is a web-based UI that connects to a Hem server via MI6, enabling remote access from phones and other computers.
 

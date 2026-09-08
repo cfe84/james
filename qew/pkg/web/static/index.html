@@ -104,7 +104,7 @@ header h1 span { color: var(--primary); }
 }
 /* Line 1: back arrow, agent name, moneypenny. */
 .chat-header-line1 { display: flex; align-items: center; min-width: 0; }
-/* Line 2: context %, override selects, thoughts toggle, Actions menu (right-aligned). */
+/* Line 2: context %, override selects, conversation toggles, Actions menu (right-aligned). */
 .chat-header-line2 {
   display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0;
 }
@@ -121,8 +121,14 @@ header h1 span { color: var(--primary); }
 /* Keep the toggle + Actions menu from ever shrinking or being cropped, and push
    the Actions dropdown to the right edge of line 2 so its right-aligned menu
    opens on-screen. */
-.chat-header #thoughts-toggle, .chat-header #activity-detail-toggle, .chat-header .dropdown { flex-shrink: 0; }
+.chat-header #thoughts-toggle, .chat-header #activity-detail-toggle, .chat-header #schedules-toggle, .chat-header .dropdown { flex-shrink: 0; }
 .chat-header-line2 .dropdown { margin-left: auto; }
+.chat-header .conversation-toggle { position: relative; background: none; border: none; font-size: 1.2em; cursor: pointer; margin-right: 4px; }
+.schedule-pending-dot {
+  display: none; position: absolute; top: 0; right: 0; width: 7px; height: 7px;
+  border-radius: 50%; background: var(--danger); border: 1px solid var(--bg);
+}
+.schedule-pending-dot.active { display: block; }
 .chat-messages { flex: 1; overflow-y: auto; padding-bottom: 12px; min-height: 0; }
 .msg { margin-bottom: 12px; }
 .msg-role {
@@ -222,7 +228,6 @@ header h1 span { color: var(--primary); }
 .msg.thought code, .msg.thought pre { color: var(--muted); }
 .msg.callback { color: var(--primary); font-size: 0.9em; padding: 6px 10px 6px 12px; margin: 4px 0; white-space: pre-wrap; word-break: break-word; border-left: 3px solid var(--primary); background: var(--surface2); border-radius: 4px; }
 .msg.callback code, .msg.callback pre { color: var(--primary); }
-.schedule-indicator { color: var(--primary); font-size: 0.9em; padding: 4px 0; }
 .subagent-indicator { color: var(--primary); font-size: 0.9em; padding: 4px 0; }
 
 /* Notification pop-over */
@@ -525,8 +530,9 @@ header h1 span { color: var(--primary); }
         <select id="chat-model-override" class="chat-override" title="Model override — esc-o"></select>
         <select id="chat-effort-override" class="chat-override" title="Effort override — esc-f"></select>
         <select id="chat-context-override" class="chat-override" title="Context override — esc-w" style="display:none"></select>
-        <button id="thoughts-toggle" title="Train of thought hidden (click to show) — T" style="background:none;border:none;font-size:1.2em;cursor:pointer;margin-right:4px">💤</button>
-        <button id="activity-detail-toggle" title="Activity detail: Brief (click for Expanded)" style="background:none;border:none;font-size:1.2em;cursor:pointer;margin-right:4px">📄</button>
+        <button id="thoughts-toggle" class="conversation-toggle" title="Train of thought hidden (click to show) — T">💤</button>
+        <button id="activity-detail-toggle" class="conversation-toggle" title="Activity detail: Brief (click for Expanded)">📄</button>
+        <button id="schedules-toggle" class="conversation-toggle" title="Scheduled tasks — H" aria-label="Scheduled tasks">⏰<span id="schedules-pending-dot" class="schedule-pending-dot"></span></button>
         <div class="dropdown" id="chat-menu-wrap">
         <button class="btn-muted" id="chat-menu-btn">Actions ▾</button>
         <div class="dropdown-menu" id="chat-menu">
