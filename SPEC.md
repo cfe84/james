@@ -7,6 +7,12 @@ We are building James, a set of tools used to orchestrate agents (see the pun ye
 
 # Architecture Overview
 
+Alongside the operator interfaces, v1.78.0 adds the `gadgets` agent client.
+Each Moneypenny hosts its session-scoped loopback endpoint and a separate
+`<sessionDir>/memory.db` per session; these memory databases are distinct from
+the operational stores shown below. Only cross-agent operations route back
+through Hem. Local memory, schedules, and notifications stay in Moneypenny.
+
 ```mermaid
 graph TB
     subgraph "User Interfaces"
@@ -250,7 +256,7 @@ Moneypenny session IDs must be canonical UUIDs. This validation applies to creat
 
 Moneypenny rotates its daemon log in place: it checks at startup and then every minute. When the log reaches 10,000 lines, it removes its oldest 1,000 lines and retains the newest 9,000. In-place rewriting preserves active stdout/stderr handles, including those inherited by agent subprocesses.
 
-Memory: Each session has a persistent, file-based memory — a per-session folder of Markdown files (`memory/`, one `README.md` per topic folder) that the agent reads and edits directly with its native file tools. Moneypenny grants access via `--add-dir` and injects an up-to-date outline into the system prompt each call. The `hem ... memory` CLI/TUI/Qew commands browse and edit the same folder. See the Session Memory section for details.
+Memory: Each session has authoritative hierarchical memory in `<sessionDir>/memory.db`, separate from Moneypenny's operational database. Agents use the session-scoped `gadgets memory` commands; Hem CLI/TUI/Qew management commands use the same SQLite APIs. Each invocation injects only the bounded root note, not the whole tree. See [Session Memory](#session-memory) and [Gadgets Platform](#gadgets-platform-v1780).
 
 Local deployment: add a `--local` convenience flag that allows moneypenny to run in local mode through fifo.
 
@@ -467,7 +473,7 @@ Hem manages sessions on moneypennies. It tracks which moneypenny each session li
 
 ### Updates
 
-Moneypenny auto-update stages and replaces its colocated `moneypenny`, `mi6-client`, and `hem` binaries together. This keeps the gadget-installed Hem CLI compatible with the MI6 client protocol.
+The v1.78.0 build, install, release archives, and Moneypenny auto-updater include the new `gadgets` binary. Auto-update stages the matching `moneypenny`, `mi6-client`, `hem`, and `gadgets` companions and installs `gadgets` even when upgrading an installation that does not yet have it. Agent tools use this client, not an embedded Hem command prefix.
 
 When Qew registers a remote Moneypenny, its MI6 address defaults to the relay endpoint from the current Hem server's configured MI6 control connection, leaving its final session segment for the new Moneypenny. Its relay fingerprint is also prefilled. Both defaults remain editable.
 
@@ -493,7 +499,8 @@ moneypenny install --non-interactive --user \
 - By default: waits for the agent to complete, prints the session_id and the response.
 - With `--async`: prints the session_id and returns immediately without waiting.
 - Flags: `--agent NAME` (default "claude"), `--name NAME` (session name, default empty), `--nick NICK` (optional short nickname/alias, see [Nicknames](#nicknames)), `--system-prompt TEXT`, `--traits ID1,ID2` (apply reusable traits, see Traits; when omitted, default-enabled traits are applied), `--yolo` (skip permissions), `--path PATH` (working directory for the agent), `--gadgets` (include James tooling instructions in system prompt), `--model VALUE` (agent model), `--effort VALUE` (reasoning effort), `--context VALUE` (copilot context-window tier, see [Context tier](#context-tier)).
-- `--gadgets`: Appends instructions telling the agent about `hem` CLI access, scheduling, and direct messages to another agent using `continue session TARGET_SESSION_ID`. The agent's session identity is attached automatically so its destination message is attributed to its nick or session name; direct messages do not need `--from` (subagent callbacks retain their explicit `--from` requirement). For MI6-connected moneypennies, each generated `hem` command includes both the MI6 server address and its required server-fingerprint pin so the agent can connect back securely.
+- `--gadgets`: Appends a minimal daemon-managed notice; Moneypenny supplies capability-filtered `gadgets` instructions at runtime, never direct Hem commands. Hem persists trusted daemon routing metadata on session creation, copying, subagent creation, and daemon-level updates: `JAMES_HEM_ADDRESS` plus `JAMES_HEM_FINGERPRINT` for MI6, or `JAMES_HEM_SOCKET` locally. Agent requests cannot override the route or their source identity.
+- `--gadget-memory=true|false`, `--gadget-subagents=true|false`, `--gadget-agents=true|false`, `--gadget-scheduling=true|false`: explicit operator capability settings, also supported by copy, subsession creation, and update. `--gadgets` is a legacy instruction-notice flag, **not** a capability toggle; disabling it does not disable runtime tools.
 
 ### Continue
 
@@ -538,18 +545,20 @@ moneypenny install --non-interactive --user \
 ### Update
 
 `hem update session SESSION_ID --gadgets true` regenerates the gadgets block even
-when it is already enabled. Use it to refresh an existing agent after updating
-Hem or changing the relay configuration. It replaces stale commands with the
-current Hem server's `--hem` address and `--mi6-server-fingerprint` pin, preserving
-base instructions, traits, nickname, memory, and subagent callback identity.
-The prompt also states the relay fingerprint explicitly and distinguishes Hem's
-flag from the underlying `mi6-client --server-fingerprint` flag. Local-only Hem
-servers generate local commands without MI6 instructions. Refreshing a prompt
-does not upgrade the Hem binary installed on the agent's host. For MI6-controlled
-Hem, gadgets also persist `MI6_SERVER_FINGERPRINT` in the agent environment.
-Hem uses that pinned value whenever a command does not provide an explicit
-`--mi6-server-fingerprint`; the configured relay pin takes precedence over a
-user-supplied value.
+when it is already enabled. It replaces legacy direct-Hem instructions with a
+daemon-managed notice, preserving base instructions, traits, nickname and memory.
+Daemon-level updates also refresh trusted Hem routing metadata while preserving
+unrelated environment entries. Opening, continuing, queuing work, compacting, or
+distilling an existing session through Hem also refreshes its route automatically.
+No Hem address, key or command prefix is advertised
+in the prompt. Sessions without a configured route receive an explicit error for
+agent-routing operations rather than falling back to an agent-controlled endpoint.
+
+Use `--gadget-memory=false`, `--gadget-subagents=false`,
+`--gadget-agents=false`, or `--gadget-scheduling=false` to revoke individual
+agent capabilities; `true` grants them. Omitted capability fields remain unchanged.
+The daemon checks current permissions on every gadget request, including during
+an already-running agent turn. Notifications cannot be disabled by these flags.
 
 `hem update session SESSION_ID [--name NAME] [--nick NICK] [--system-prompt TEXT] [--traits ID1,ID2] [--gadgets true/false] [--yolo true/false] [--path PATH] [--model VALUE] [--effort VALUE] [--context VALUE] [--project NAME_OR_ID]` — updates session parameters. Only specified fields are changed. `--project` moves the session to a project (hem-local operation, not sent to moneypenny). `--traits` recomposes the session's system prompt (empty value clears all traits). `--nick` sets or clears (empty value) the session's nickname, recomposing the identity block at the top of the system prompt. `--effort`/`--context` accept `none` (or `default`) to clear the stored override back to the agent default. `--path` **repoints** the session to a new working directory — it does NOT move or create the folder; the moneypenny validates the new path exists (`os.Stat`) and errors otherwise. Use it only after you have actually moved the session folder on the host. Editable in the hem TUI edit form (Path field) and the Qew edit dialog (Path field).
 
@@ -600,7 +609,7 @@ user-supplied value.
 - **Cross-agent copies drop the source model/effort/context** unless explicitly overridden: when `--agent` changes the agent from the source's, the source's `--model`/`--effort`/`--context` are NOT inherited (they belong to a different model namespace and would be invalid for the new agent); the new agent picks its own defaults instead. Passing any of those flags explicitly still overrides. When the agent is unchanged, all three are inherited as before.
 - Source's gadgets/memory markers are stripped from the inherited system prompt to avoid double injection on the new session.
 - `--yolo` is inherited only when the flag is not mentioned on the command line; passing `--yolo=false` explicitly disables yolo even when the source had it on.
-- `--gadgets` is NOT inherited: gadgets embed the new session's ID into the system prompt, so the copy starts without gadgets unless the flag is set.
+- The legacy `--gadgets` notice is not inherited unless requested. Capability settings **are** inherited from the source unless explicitly overridden with `--gadget-*`; the daemon binds a new credential to the copy's identity independently of the notice.
 - If summarization of the source fails (timeout, agent error), the entire copy aborts and the error is returned to the caller — no new session is created.
 - The summarizer reports a `turn_count` alongside the summary so callers can distinguish "the source genuinely has no conversation history yet" (`turn_count == 0`) from "history exists but the summarizer agent returned nothing" (`turn_count > 0`, empty summary — typically a transient failure such as a retired model). In the latter case copy aborts with an explicit error and `hem summarize session` returns an error too, rather than silently emitting a `(no history)` preamble/result. The literal `(the source session had no conversation history yet)` fallback is only written when the source truly has zero stored turns.
 - Default name is `"Copy of <source name>"`.
@@ -809,51 +818,215 @@ Provider-scoped commands (`list channel-providers`, `search channel`) resolve th
   bind). Each channel row shows its mention and sender policy; **Edit** updates them in place.
 - The scheduled-task modal gains an optional channel selector that passes `--channel`.
 
+## Gadgets Platform (v1.78.0)
+
+`gadgets` is the agent-facing, dependency-free Go client for Moneypenny's
+session-scoped tools. Agents use **only the new gadgets commands** for memory,
+agent communication, subagent creation, scheduling, and notifications—not direct
+Hem commands, legacy memory files, or direct database access. Hem remains the
+operator's administrative CLI/server, with TUI and Qew as operator interfaces.
+
+### Capabilities and operator controls
+
+| Capability | Default | Agent operations |
+| --- | --- | --- |
+| Memory | On, revocable | Get/list/search/set/batch/delete memory; inspect current revision |
+| Subagents | On, revocable | Create own subagents; list/message direct children and reply to parent |
+| Agents | Off, explicit combined grant | Discover and message all Hem-tracked agents |
+| Scheduling | On, revocable | List/create/delete schedules belonging to this session |
+| Notifications | Always available | Send actionable operator notifications |
+
+The Agents grant combines discovery and messaging; it does **not** grant editing,
+deletion, or other management of sessions. Subagents scope does not cover siblings,
+arbitrary descendants, or unrelated sessions. Gadget-created subagents inherit
+the parent's current capabilities; agents cannot override permissions during
+creation. Operator changes to a parent are not a promise of recursively changing
+already-created children's settings.
+
+Capability defaults apply when an older session has no stored capability object.
+Hem's create/copy/edit and subsession commands expose the four explicit
+`--gadget-memory`, `--gadget-subagents`, `--gadget-agents`, and
+`--gadget-scheduling` booleans. The existing TUI wizard/edit forms and Qew
+create/copy/edit dialogs expose matching permission controls and an
+always-available-notifications hint. Copy inherits permissions unless overridden;
+updates preserve unspecified values. `--gadgets` controls only the legacy stored
+instruction notice: neither it nor `schedule-system-prompt` authorizes tools.
+
+### Transport and permission boundary
+
+Moneypenny starts a daemon-local HTTP endpoint on `127.0.0.1` with an ephemeral
+port. It issues a session-bound bearer credential via the child process environment
+(`JAMES_GADGETS_URL`, `JAMES_GADGETS_TOKEN`), not an editable authorization file
+or prompt text. Every request resolves identity from that credential and checks
+current daemon-stored capabilities; revocation applies to subsequent calls even
+in an active turn. There are no agent identity, endpoint, credential, route, or
+permission override flags.
+
+Memory, schedules, and notifications are handled locally without Hem/MI6.
+Agent discovery, messaging, and subagent creation go daemon→existing Hem
+infrastructure using operator-supplied routing metadata, over its Unix socket or
+MI6 control channel. Hem supplies current hierarchy checks and normal
+create/continue/queue behavior; parent replies are callbacks. Missing routing or
+transport failures are explicit errors, not a fallback to direct agent Hem access.
+
+Non-yolo Claude and Copilot receive narrow execution grants for `gadgets`, not
+memory-directory or general file-write grants. Capability-based memory is not
+disabled merely because an adapter is non-yolo; native agent deny rules still
+apply and may block shell execution. This is **not an OS sandbox or same-user/yolo
+isolation guarantee**. A same-user process with broad native access may still
+reach files or administrative interfaces; operator Hem remains administrative.
+
+### Agent command surface
+
+```text
+gadgets memory get [path] [--offset N] [--limit N]
+gadgets memory list|revisions [path]
+gadgets memory search query
+gadgets memory set [path] [--body text]
+gadgets memory batch
+gadgets memory delete path [--recursive]
+gadgets agents list
+gadgets agents message id [--body text]
+gadgets subagents list
+gadgets subagents create [--name name] [--agent agent] [--model model] [--path path]
+gadgets subagents message id [--body text]
+gadgets schedule list
+gadgets schedule create (--cron expr | --at timestamp) --prompt text
+gadgets schedule delete id
+gadgets notify [text]
+```
+
+Omitted memory paths mean the root (`""`). Writes and messages accept stdin;
+subagent creation reads its prompt from stdin. `memory batch` takes one JSON
+array of `{ "path": "...", "body": "..." }` replacements and sends one atomic
+request, not a sequence of independent writes. `notify` accepts stdin when text
+is omitted and requires 1–1,000 Unicode characters of actionable content.
+Agent scheduling does not expose all operator Hem scheduling features; it has
+list/create/delete, not schedule editing or arbitrary-session targeting.
+Schedules use the existing prompt/time records; no separate schedule-name field is exposed.
+
+The client emits structured JSON success/error envelopes and nonzero exit codes
+on failure, with no automatic retries. Requests are bounded to 1 MiB and
+responses to 4 MiB. Its HTTP client accepts loopback endpoints only and rejects
+proxies, redirects, URL credentials, queries, and fragments. See
+[`gadgets/README.md`](gadgets/README.md) for exact syntax, HTTP schema, and limits.
+`memory revisions` reports **only the current revision**: no historical bodies,
+historical revision replay, or compare-and-swap writes are provided.
+
 ## Session Memory
 
-Each session has a persistent memory — a **folder of Markdown files** on the moneypenny host that survives across conversation turns, compactions, and session continuations. The agent reads and edits it directly with its **native file tools**; it is not a blob dumped into every prompt.
+Each session's authoritative memory is a **separate SQLite database at
+`<sessionDir>/memory.db`**, not Moneypenny's operational database and not its
+retired `memory/` directory. It survives turns, restarts, and compaction.
 
-### Model
+### Model and write guarantees
 
-- Memory lives in a per-session folder `<sessionDir>/memory/` on the moneypenny.
-- The structure is a **uniform hierarchy**: every node is a *folder* containing a `README.md` that serves as both that topic's note and an index of its sub-topics. The root note is `memory/README.md`; a node at path `a/b` is `memory/a/b/README.md`.
-- Hierarchy comes purely from the folder path. There are no separate title/description/body fields — a node *is* its `README.md`. For display (outline/browser), a one-line **description** is derived from the README's first heading or first non-empty line.
-- Paths are short slugs. `NormalizePath` rejects traversal (`..`/`.`), absolute paths, control characters, and prose-length segments (over 64 chars), so an agent can never escape the memory folder or pass a whole note as the path.
-- System instructions require **every README to stay at most 4,000 Unicode characters**, including headings and index; the root targets **2,000 or fewer**. Before exceeding the limit, agents split details into focused children and replace the moved material with a summary and annotated index, recursively grouping large indexes into intermediate topics. File writes are not rejected or truncated automatically.
+- Memory is a uniform hierarchy of Markdown nodes addressed by slash-delimited
+  topic paths. The root path is the empty string (`""`); whole-tree listing is
+  root-first, followed by case-sensitive path order. `list [path]` browses only
+  immediate children. Each note includes an overview and annotated child index.
+- Nodes retain path, title, description, body, and current revision. Missing
+  descriptions are derived from the first non-empty heading/line for display.
+  Path normalization rejects `.`/`..`, control characters, invalid UTF-8, and
+  segments longer than 64 Unicode characters; paths are logical keys, not file
+  destinations.
+- All new or updated bodies must be valid UTF-8 and **at most 4,000 Unicode
+  characters**, including headings and index; the root targets **2,000 or fewer**.
+  Oversized writes fail without truncation. Missing ancestors are auto-created.
+- A batch commits every replacement and missing ancestor in one transaction, or
+  none. Invalid/duplicate normalized paths or an oversized replacement reject
+  the whole batch. Each committed replacement monotonically increases that
+  node's current revision; caller-supplied revisions are ignored. There is no
+  retained revision history or replay API.
+- Root deletion is refused. A node with descendants requires `--recursive`;
+  subtree checks and removal are transactional.
+- Imported oversized notes remain readable intact. They are not destructively
+  reduced by import, copying, or prompt injection; any later replacement must
+  meet the limit. Agents should split relevant oversized notes and update indexes
+  atomically, preserving useful knowledge rather than discarding it.
 
-### How it works
+### Root-first runtime prompt
 
-- The agent edits memory with its normal file tools. The folder is outside the project working directory, so moneypenny passes `--add-dir <memoryDir>` so the agent can reach it. For **non-yolo** sessions it also pre-authorizes the file-writing tools so memory edits don't trigger permission prompts that would be auto-denied in non-interactive (`-p`) mode — but only where they can be path-scoped: Claude gets path-scoped `Read/Write/Edit/MultiEdit(<memoryDir>/**)`. **Copilot can't scope a tool by path**, and we won't grant a non-yolo session broad write access, so **non-yolo Copilot sessions have memory disabled** (no folder access, no injection). Yolo sessions (Claude or Copilot) already allow everything, so they get memory with just `--add-dir`.
-- Each run, moneypenny injects a `<session-memory>` block containing the memory-use rules and the **actual root README contents** in `<root-memory>`, not a recursive outline or descendant bodies. The root is a big-picture overview and annotated topic index: each link explains what a child contains and when to consult it. Agents descend only through relevant branches and repair incomplete indexes by inspecting immediate child folders.
-- Usage instructions belong only in the system prompt, never in memory files. The root seed contains only an empty knowledge overview and topic index. Agents update parent indexes on child creation, moves, renames, or deletion; update ancestor summaries when scope changes; and maintain durable knowledge before handoff/compaction and when relevant facts or decisions change.
-- Root injection is bounded to **4,000 Unicode characters** (not bytes or tokens). Oversized roots produce a clearly marked excerpt with the full file path and instructions to restructure without losing knowledge. Existing files are never rewritten by injection. Root creation/read failures are surfaced as errors instead of silently dropping memory. Descendant notes are checked and split by the agent as it reads or edits them.
-- Non-yolo OpenCode sessions, like non-yolo Copilot sessions, do not receive memory access or injection. Agent delivery remains native to each adapter: Claude uses `--system-prompt`, Copilot uses its custom instructions file, and OpenCode prepends the instructions to its task prompt.
-- Because memory is local files managed by moneypenny, it works **without any hem/MI6 connectivity** — agents no longer shell out to `hem` to read or write memory.
-- When a session is **duplicated**, the source session's `memory/` folder is copied into the new session (same-moneypenny only) so the copy inherits accumulated knowledge.
+Each memory-enabled invocation reloads the authored root and injects its body
+inside `<root-memory>` within the shared `<session-memory>` instructions.
+No recursive outline or descendant bodies are injected. An absent root is seeded
+with a knowledge-only overview/index. The root is a navigation map: agents follow
+relevant branches and use `gadgets memory list` to repair incomplete indexes.
 
-### CLI Commands (management)
+The injected **root body** is capped at **4,000 Unicode characters** (not bytes
+or tokens). An oversized root receives a marked excerpt plus a pointer to
+`gadgets memory get` for the full content; stored content is unchanged. Reads
+are paged at 64,000 Unicode characters by default (configurable with `--limit`);
+follow `next_offset` with `--offset` for unusually large imported notes, including
+those exceeding the transport response limit.
+A separate warning of at most **2,000 Unicode characters** lists **individual
+oversized nodes and their character counts**, with an omitted-count/navigation
+footer when necessary. This is not an aggregate-tree size limit: many small
+nodes do not trigger an oversized warning merely because their sum is large.
+Creation, read, and migration errors surface explicitly, rather than silently
+presenting empty memory.
 
-The `hem ... memory` verbs remain for browsing/editing memory from the CLI, TUI, and Qew; they are now backed by the filesystem (the single source of truth):
+Usage and size rules belong in the system prompt, not stored notes. Agents keep
+durable knowledge and annotated navigation in memory, maintain parent indexes
+and ancestor summaries, verify stale facts, and update rather than duplicate
+notes. Normal runs, compaction, and distillation share this contract and the same
+gadgets access. Memory-disabled compaction summarizes only; distillation requires
+Memory enabled. Claude receives system-prompt instructions, Copilot its custom
+instructions file, and OpenCode a task prefix—not a separate system-role message.
 
-- `hem show memory SESSION_ID` — prints the body-less outline of the whole tree **and the root `README.md` body** (the tree's index note).
-- `hem show memory SESSION_ID PATH` — prints that node's `README.md` and lists its immediate children.
-- `hem list memory SESSION_ID [PATH]` — lists the immediate children of PATH (or the roots).
-- `hem search memory SESSION_ID QUERY` — ranked substring search over node path and README content.
-- `hem update memory SESSION_ID PATH BODY` — creates or replaces the `README.md` at PATH (auto-creating ancestor folders). A BODY beginning with `-` is taken verbatim, not parsed as a flag. (Legacy `--title`/`--description` flags are still accepted and folded into the note.)
-- `hem delete memory SESSION_ID PATH [--recursive]` — deletes a node's folder; refuses a node with child folders unless `--recursive`.
+### Operator CLI, TUI, and Qew
 
-### TUI / Qew
+The existing management commands call the **same SQLite memory APIs** as gadgets:
 
-- In chat command mode, `m` opens the memory view (Qew: command-palette `m` / Actions menu).
-- The view has a **browse** tree (Enter/`e` edit, `n` new, `d` delete with confirm, `/` search, `r` refresh), a per-node **editor** with a Path field plus a single **Note (README.md)** Markdown field (the Path is locked when editing an existing node), and **search**. The tree includes a synthetic **"(root)"** row for the root `README.md`, which is viewable/editable like any other node but cannot be deleted.
+- `hem show memory SESSION_ID` — body-less outline plus the root note.
+- `hem show memory SESSION_ID PATH` — complete node and immediate children.
+- `hem list memory SESSION_ID [PATH]` — immediate children of PATH (of root
+  when omitted).
+- `hem search memory SESSION_ID QUERY` — ranked substring search over paths,
+  notes, and metadata.
+- `hem update memory SESSION_ID PATH BODY` — create/replace a node, including
+  root with `PATH=""`; the same 4,000-character validation applies. A body
+  beginning with `-` is verbatim; legacy title/description flags are folded into
+  the note.
+- `hem delete memory SESSION_ID PATH [--recursive]` — transactional node/subtree
+  deletion; the root cannot be deleted.
 
-### Migration (transitional)
+The existing TUI (`m` in chat command mode) and Qew (`m` in the command palette /
+Actions menu) retain their tree browser, node editor, search, and confirmation
+flows. The synthetic **(root)** row is editable but not deletable. The editor's
+**Memory note** label describes Markdown content, not a live file;
+Path is locked when editing an existing node. Same-moneypenny duplication copies
+an authoritative SQLite snapshot through `CopyTree`, preserving oversized
+imported bodies, never copying backup README files.
 
-Memory previously lived in moneypenny's SQLite (`memory_nodes` table, plus an even older flat `sessions.memory` blob). On moneypenny **startup**, that data is exported once into the per-session `memory/` folders (idempotent — skipped when a folder already has content); a lazy per-session export also runs on first access. The SQLite memory tables and this migration shim are slated for removal (TODO ~2026-06-12).
+### Temporary importer
 
-### Agent prompt
+Before accepting work at boot, Moneypenny runs a **temporary files→SQLite
+importer** for every registered session, including inactive sessions. It also
+offers an idempotent per-session retry before access. Imported nodes and the
+`files-to-sqlite-v1` completion marker commit in the same transaction. A failure
+rolls back, is surfaced, and remains retryable; successful imports are not
+replayed after restart or later edits to backup files.
+The boot pass attempts all sessions and aborts daemon startup if any import
+fails; repair the source/access problem and restart to retry before accepting work.
 
-Agents use the injected root as a compact navigation map, follow relevant branches from broad context to fine-grained notes, verify potentially stale facts, and update existing knowledge instead of duplicating it. Memory files contain durable knowledge, relevant state, and navigation only; the shared system-prompt contract owns usage and size rules for normal runs, compaction, and distillation.
+If **any `README.md` exists anywhere in the legacy memory tree**, that file tree
+is authoritative over **all** stale memory rows in the main operational database,
+including paths absent from the file tree. This is **not a per-path merge**:
+deleted notes must not be resurrected from stale rows. Empty README files count.
+Only when there is no README does the importer fall back to legacy `memory_nodes`,
+or the old flat `sessions.memory` blob as `notes` when there are no legacy nodes.
+README bodies—including oversized roots and descendants—are preserved intact;
+directories without a README remain navigable nodes. Invalid sources fail rather
+than silently lose knowledge.
+
+Legacy files remain untouched **backups**, not writable authority; old operational
+memory rows are migration inputs only. Both the former startup and lazy
+**SQLite→file exporters have been removed**. This importer is transitional, not
+a permanent synchronization layer. Its removal evaluation is already scheduled
+as **#366 for September 16, 2026 at 11:15 Pacific**.
+
+### Operator notifications
 
 Normal runs receive notification guidance independently of memory permissions,
 including non-yolo Copilot/OpenCode. While an agent is working, it can request human intervention by emitting
@@ -886,7 +1059,7 @@ Sessions can spawn sub-sessions for parallel task execution. Sub-sessions are li
 ### Data Model
 
 - Sub-sessions use the same session model, linked by a `parent_session_id` column in hem's SQLite.
-- `HEM_SESSION_ID` environment variable is set by moneypenny when launching agents, allowing agents to create sub-sessions via `hem`.
+- Agent sub-session creation goes through `gadgets subagents create`. Moneypenny binds the source to the authenticated session, and Hem fixes the parent from that identity, not an agent-supplied environment value or CLI flag.
 
 ### Behavior
 
@@ -898,9 +1071,9 @@ Sessions can spawn sub-sessions for parallel task execution. Sub-sessions are li
 
 Subagents report results back to their parent as **callbacks**, which render as a distinct highlighted turn (↩️) rather than as a normal user ("you") message:
 
-- When a James agent creates a subagent through `hem create subsession`, Hem automatically passes its `HEM_SESSION_ID` as the source of the new session's initial prompt. The subagent's conversation therefore labels that turn with the invoking agent's nick or session name in both Hem and Qew, rather than the browser-local human label. A user-created subagent remains labelled with the configured human name.
+- When a James agent creates a subagent through `gadgets subagents create`, the daemon-bound parent identity supplies provenance for the initial prompt. The conversation labels it with the invoking agent's nick or session name in Hem and Qew, rather than the human label. A user-created subagent remains labelled with the configured human name.
 - **`hem callback session PARENT_ID --from ORIGIN_ID MESSAGE`** delivers a message from a subagent to its parent. The origin session is resolved to a friendly label (`nick · name`, falling back to name / nick / short id) and prefixed as `↩️ Callback from {label}:`. If the parent is idle the callback is delivered immediately; if busy it is queued. Either way the turn is recorded with the `callback` role.
-- The gadgets system prompt gives every subagent (a session with a parent, created via `create subsession --gadgets`) **precise instructions** to run `hem callback session <PARENT_ID> --from <OWN_ID> "result"` when its work is complete.
+- `gadgets subagents message PARENT_ID` replies with the callback role and the daemon-bound source identity. Hem checks its authoritative parent/child records on every request; the subagents scope permits only direct children and reply to the parent, not arbitrary siblings or descendants.
 - `watch session`-delivered results are also tagged as callbacks.
 - In both the TUI and Qew, `callback` turns render compact and indented like a train-of-thought turn but **highlighted** (primary colour, ↩️ marker) so they clearly read as a subagent report. Unlike train-of-thought turns, callbacks are **always shown** (not hidden by the train-of-thought toggle) because the agent acts on them.
 
@@ -908,7 +1081,7 @@ Subagents report results back to their parent as **callbacks**, which render as 
 
 - The live TUI and Qew chat views show only non-completed subagents, keeping finished work from crowding active conversations and numbered quick navigation.
 - Both clients provide an **All subagents** view that includes completed work: Hem's `Esc` → `a` picker and Qew's command-palette `l` shortcut. Entries can be opened from either view.
-- The gadgets system prompt includes sub-agent instructions, informing agents of the `hem create subsession`, `hem watch session`, and `hem callback session` commands.
+- Runtime gadget instructions expose only permitted tools. The combined agents capability grants list/message across tracked agents, not editing or deletion. Subagent creation is bound to the authenticated parent and inherits its current capabilities without accepting permission overrides.
 
 ### Qew Omnibar Recency
 
@@ -993,7 +1166,7 @@ Nicknames are a hem-level concept (like projects and traits); moneypenny is unaw
 
 ### Agent-to-agent attribution
 
-Gadget-enabled agents receive their James session ID through `HEM_SESSION_ID`. When such an agent uses `hem continue session`, the Hem CLI automatically passes that ID as source provenance. Hem resolves the source agent's preferred display name (nick, then session name) and Moneypenny persists both the source session ID and display name with the destination's conversation turn, including if the destination was busy and the prompt was queued. Qew and the Hem TUI show this source label instead of `you`; ordinary human prompts remain `you`. Qew's **person** button lets each browser choose a local human display name, which replaces `you` for that browser's own messages.
+Agents message through `gadgets agents message` (global grant) or `gadgets subagents message` (direct parent/child scope). Moneypenny derives source identity from the session credential, and Hem resolves its preferred display name (nick, then session name). Moneypenny persists source ID and display name with the destination conversation turn, including queued delivery when busy. Parent replies use the callback role. Qew and the TUI show the source label instead of `you`; ordinary human prompts retain their human label. Qew's **person** button lets each browser choose its local human display name.
 
 ### Setting / clearing a nick
 
@@ -1062,14 +1235,14 @@ Controls how a session's context is condensed as it grows. Set per session via t
 
 - Available in the CLI (`hem distillate session ID`), TUI (chat command-mode `D`), and Qew (command palette `D` or Actions ▸ Distill to Memory).
 - Runs asynchronously on the moneypenny; the session shows busy (`distilling`) while the agent inspects and writes memory, then returns to idle.
-- The session must be idle and permit file-based memory access. Non-yolo Copilot/OpenCode sessions are rejected explicitly before becoming busy; no Hem/MI6 connectivity is required for memory. Distillation uses the same system-level memory contract, without duplicating it in task instructions.
+- The session must be idle with its **Memory capability enabled**, independent of provider/yolo mode. Disabled memory is rejected before becoming busy; native agent deny rules can still prevent gadget execution. No Hem/MI6 connectivity is required for local memory. Distillation uses the same system-level gadgets/SQLite memory contract, without duplicating it in task instructions.
 
 ## Settings
 
 `hem enable SETTING` / `hem disable SETTING` — toggle boolean settings stored in the defaults table.
 
 Available settings:
-- **schedule-system-prompt** — legacy stored setting; it does not currently gate prompt injection or scheduling permissions. Current scheduling guidance comes from session **gadgets**, using Hem commands. Legacy `<schedule>` output tags remain supported for compatibility.
+- **schedule-system-prompt** — legacy stored setting; it does not gate prompt injection or scheduling permissions. Current agent guidance uses **`gadgets schedule`**, gated by the session's Scheduling capability. Operator Hem scheduling remains administrative. Legacy `<schedule>` output tags remain supported for compatibility.
 
 ## Remote Execution
 
@@ -1252,7 +1425,7 @@ qew --development --listen 127.0.0.1:8077
 - **Session omnibar / quick switcher (Qew)**: Pressing `o` on the dashboard opens a modal **quick switcher** for jumping to any session by name. It lists all non-archived sessions (agents) sorted by **recency** (most recently active first), built instantly from the cached dashboard payload (no network call). A focused text input at the top **live-filters by nickname + name** (case-insensitive subsequence match); matching nicknames rank before title-only matches, while recency is preserved within each group. `↑`/`↓` or `Ctrl+J`/`Ctrl+K` move the selection, `Enter` opens the highlighted session (subagent rows open their parent first, mirroring the dashboard `Enter`), a row click also opens, and `Esc` (or the Close button) dismisses. Each row shows `nick · name` with a muted sub-line (`agent · moneypenny · relative time`). Distinct from the inline `/` fuzzy filter (which filters the dashboard list in place over more fields); the omnibar is a dedicated modal switcher scoped to nick+name.
 - **Train-of-thought toggle**: Persisted train-of-thought turns (💭 `thinking`, 📝 `agent_text`) are hidden by default in the chat transcript so the conversation reads as a clean question/answer exchange; live activity for the in-progress turn is still streamed while the agent works. A header toggle button (💤/💭) and the command-palette action `t` (mirrored by the hem TUI command-mode key `T`) show/hide the persisted train of thought. The preference is remembered across reloads (`localStorage`).
 - **Model/effort/context override (Qew)**: Header dropdowns let you temporarily override the agent's **model**, **effort** ("complexity"), and (copilot-only) **context-window tier** for prompts sent from the open conversation; the first option is always `Default (…)` (no override). The context dropdown is hidden for non-copilot agents. The command palette's `o` (`esc-o`), `f` (`esc-f`), and `w` (`esc-w`) open a dedicated **keyboard-navigable picker modal** (mirroring the hem TUI's pickers): `j`/`k`/`↑`/`↓` move, `Enter` applies, `Esc` closes; clicking an entry also applies it. (The header dropdowns remain for mouse users, but the shortcuts no longer rely on the native `<select>.showPicker()`, which is unsupported in Firefox/Safari and unreliable right after a modal closes.) Choosing a value stores the override and refocuses the message input. Overrides are scoped to the current session and reset when you leave the chat — they never change the session's stored defaults — and are forwarded as `--model`/`--effort`/`--context` on `continue session` (honored even for prompts queued while the session is busy). The effort options match the agent (copilot: none/low/medium/high/xhigh/max; others: low/medium/high); the context tier (copilot-only) offers `default`/`1M (long context)`.
-- **Memory (Qew)**: The chat Actions menu and the command-palette action `m` (i.e. `esc-m`) open a 95% **Memory** modal that mirrors the hem TUI memory view: a browsable node **tree** (click a node to edit it, a search box, a "New node" button) and a per-node **editor** (Path — locked when editing an existing node — plus Title, Description, and a Body textarea that fills the height). It is backed by the `show`/`search`/`update`/`delete` `memory` commands. The modal follows the standard-modal contract: `Esc` backs out (editor → tree → close), and `Cmd`/`Ctrl`+`Enter` triggers the editor's Save. Flags are sent before the positional body so a body beginning with `-` stays verbatim.
+- **Memory (Qew)**: The chat Actions menu and command-palette `m` (`esc-m`) open the existing 95% **Memory** modal: a browsable/searchable node tree, **(root)** row, New node action, and per-node editor. The editor has a Path (locked for existing nodes) and one Markdown Note textarea, not separate Title/Description inputs or direct file access. Its `show`/`search`/`update`/`delete memory` commands share Moneypenny's authoritative per-session SQLite APIs and 4,000-character write validation. `Esc` backs out editor → tree → close; `Cmd`/`Ctrl`+`Enter` saves. Flags precede the positional body so a body beginning with `-` stays verbatim.
 - **Scheduled tasks (Qew)**: The chat Actions menu (**Scheduled Tasks**) and the command-palette action `h` (i.e. `esc-h`) open a **Scheduled Tasks** modal for the open conversation, mirroring the hem TUI's schedule picker. It lists the session's pending scheduled prompts — each showing a friendly local time, a `↻ <cron>` badge for recurring ones, and the prompt — with **Edit** and **Delete** buttons per task. **Delete** runs `cancel schedule <id> --session-id <id>`. A **New task** form includes date/time, optional **cron**, optional channel, a **Mark result Ready** checkbox, and a prompt. When enabled, each completed run sets a durable Moneypenny marker; Hem consumes each newer marker once and surfaces the idle session in the Ready group. **Edit** preserves or changes this setting with the other exact schedule values. (`list schedule` returns the `ID, Status, Scheduled At, Prompt, Cron, Mark Ready` display table plus an exact `schedules` array the UIs read for prefill.)
 - **Scheduled tasks (Hem TUI)**: The chat command-mode `t` schedule picker identifies marked tasks with `[Ready]`. New and edited tasks expose the same setting during their time/prompt entry flow: **Alt-R** toggles whether the completed result is surfaced in the dashboard Ready group.
 - **Agent badge**: Each dashboard session row shows a small badge with the session's agent (`copilot` in orange, `claude` in violet, or `opencode`), mirroring the TUI's agent column.

@@ -58,7 +58,7 @@ func newEditModel(c *client, sessionID string) editModel {
 		client:    c,
 		sessionID: sessionID,
 		loading:   true,
-		fields: []formField{
+		fields: append([]formField{
 			{label: "Name", flag: "--name", value: ""},
 			{label: "Nick", flag: "--nick", value: ""},
 			{label: "Project", flag: "--project", value: "", options: []string{""}},
@@ -71,7 +71,7 @@ func newEditModel(c *client, sessionID string) editModel {
 			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
 			{label: "Gadgets (James tooling)", flag: "--gadgets", isBool: true, value: "false"},
 			{label: "Compaction", flag: "--compaction", value: "agent", options: []string{"agent", "custom"}},
-		},
+		}, gadgetCapabilityFields(nil)...),
 	}
 }
 
@@ -186,6 +186,7 @@ func (m editModel) Update(msg tea.Msg) (editModel, tea.Cmd) {
 		m.moneypenny = d.Moneypenny
 		m.agent = d.Agent
 		m.selectedTraits = d.Traits
+		setGadgetCapabilityFields(m.fields, d.GadgetCapabilities)
 		// Set effort options based on the session's agent. Reset value if no
 		// longer valid for this agent.
 		for i := range m.fields {
@@ -466,6 +467,7 @@ func (m editModel) View() string {
 		maxValueWidth = 20
 	}
 
+	var rows []string
 	for i, f := range m.fields {
 		label := lStyle.Render(truncateDisplay(f.label+":", labelW))
 
@@ -540,8 +542,14 @@ func (m editModel) View() string {
 				value = fieldInactiveStyle.Render(f.value)
 			}
 		}
-		b.WriteString("  " + label + " " + value + changed + "\n")
+		rows = append(rows, "  "+label+" "+value+changed+"\n")
 	}
+	height := m.height - 10
+	if m.height == 0 {
+		height = len(rows)
+	}
+	b.WriteString(formViewport(rows, m.cursor, height))
+	b.WriteString(fieldInactiveStyle.Render(gadgetNotificationHint))
 
 	b.WriteString("\n")
 	if m.saving {

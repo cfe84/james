@@ -5,22 +5,16 @@ import (
 	"testing"
 )
 
-func TestGadgetsCommandsIncludeFingerprint(t *testing.T) {
-	const prefix = "hem --hem relay.example:443/control --mi6-server-fingerprint SHA256:trusted"
+func TestGadgetsPromptIsDaemonManaged(t *testing.T) {
 	for _, parent := range []string{"", "parent"} {
 		prompt := gadgetsSystemPrompt("relay.example:443/control", "SHA256:trusted", "child", parent)
-		if !strings.Contains(prompt, "MI6 relay server fingerprint: SHA256:trusted") {
-			t.Fatal("missing explicit fingerprint")
+		if !strings.HasPrefix(prompt, gadgetsMarker) || !strings.Contains(prompt, "daemon-managed") {
+			t.Fatal("missing daemon-managed marker")
 		}
-		for _, line := range strings.Split(prompt, "\n") {
-			// Every executable example must retain the complete connection prefix.
-			if strings.Contains(line, "hem --hem") &&
-				strings.Count(line, "hem --hem") != strings.Count(line, prefix) {
-				t.Fatalf("command is missing its fingerprint: %s", line)
+		for _, forbidden := range []string{"hem --hem", "SHA256:", "relay.example", "delete", "stop", "--yolo", "schedule session"} {
+			if strings.Contains(prompt, forbidden) {
+				t.Fatalf("prompt advertises routing or operator command: %s", forbidden)
 			}
-		}
-		if parent != "" && !strings.Contains(prompt, prefix+" callback session parent --from child") {
-			t.Fatal("callback is missing its connection flags or provenance")
 		}
 	}
 }
@@ -31,57 +25,45 @@ func TestLocalGadgetsPrompt(t *testing.T) {
 		t.Fatal("local prompt contains MI6 flags")
 	}
 
-	if !strings.Contains(prompt, "hem schedule session local") {
-		t.Fatal("missing local command")
-	}
-}
-
-func TestGadgetsScheduleExamples(t *testing.T) {
-	for _, remote := range []string{"", "relay.example/control"} {
-		prompt := gadgetsSystemPrompt(remote, "SHA256:trusted", "session-id", "")
-		for _, text := range []string{
-			"cancel schedule SCHEDULE_ID --session-id session-id",
-			"edit schedule SCHEDULE_ID --session-id session-id --at TIME --prompt",
-			"--mark-ready", "--mark-ready=true|false", `--cron ""`, "--channel 0",
-			"Omitted edit flags retain their values.",
-		} {
-			if !strings.Contains(prompt, text) {
-				t.Errorf("missing schedule guidance %q", text)
-			}
-		}
-		if strings.Contains(prompt, "%!") {
-			t.Fatalf("broken prompt formatting: %s", prompt)
-		}
+	if !strings.Contains(prompt, "Moneypenny at runtime") {
+		t.Fatal("missing runtime notice")
 	}
 }
 
 func TestGadgetEnvironment(t *testing.T) {
 	e := &Executor{MI6Control: "relay/control", MI6ServerFingerprint: "SHA256:trusted"}
 	got := e.addGadgetEnvironment(map[string]string{
-		"FEATURE_FLAG":           "true",
-		"MI6_SERVER_FINGERPRINT": "SHA256:untrusted",
+		"FEATURE_FLAG":          "true",
+		"JAMES_HEM_FINGERPRINT": "SHA256:untrusted",
+		"JAMES_HEM_SOCKET":      "untrusted.sock",
 	})
-	if got["MI6_SERVER_FINGERPRINT"] != "SHA256:trusted" {
-		t.Fatalf("fingerprint = %q, want trusted relay pin", got["MI6_SERVER_FINGERPRINT"])
+	if got["JAMES_HEM_FINGERPRINT"] != "SHA256:trusted" || got["JAMES_HEM_ADDRESS"] != "relay/control" || got["JAMES_HEM_SOCKET"] != "" {
+		t.Fatalf("unexpected remote route: %v", got)
 	}
 	if got["FEATURE_FLAG"] != "true" {
 		t.Fatal("existing environment was not preserved")
 	}
-	values := environmentValues{"MI6_SERVER_FINGERPRINT=SHA256:untrusted"}
+	values := environmentValues{"JAMES_HEM_FINGERPRINT=SHA256:untrusted", "JAMES_HEM_SOCKET=untrusted.sock"}
 	e.addGadgetEnvironmentValues(&values)
 	parsed, err := values.Map()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed["MI6_SERVER_FINGERPRINT"] != "SHA256:trusted" {
-		t.Fatalf("create fingerprint = %q, want trusted relay pin", parsed["MI6_SERVER_FINGERPRINT"])
+	if parsed["JAMES_HEM_FINGERPRINT"] != "SHA256:trusted" || parsed["JAMES_HEM_SOCKET"] != "" {
+		t.Fatalf("unexpected create route: %v", parsed)
+	}
+	e.MI6Control = ""
+	e.HemSocket = "/configured/hem.sock"
+	got = e.addGadgetEnvironment(got)
+	if got["JAMES_HEM_SOCKET"] != e.HemSocket || got["JAMES_HEM_ADDRESS"] != "" || got["JAMES_HEM_FINGERPRINT"] != "" {
+		t.Fatalf("unexpected local route: %v", got)
 	}
 }
 
 func TestReplaceGadgetsPrompt(t *testing.T) {
 	fresh := gadgetsSystemPrompt("relay.example:443/control", "SHA256:new", "child", "parent")
 	base := "nick and base instructions\ntraits"
-	stale := gadgetsSystemPrompt("relay.example:443/control", "SHA256:old", "child", "parent")
+	stale := gadgetsMarker + " hem --hem relay.example:443/control command.\nLegacy instructions\n"
 	for _, memory := range []string{"", memoryMarker + "\nkeep memory", memoryMarkerLegacy + "\nkeep memory"} {
 		for _, old := range []string{"", stale} {
 			got := replaceGadgetsPrompt(base+old+memory, fresh)

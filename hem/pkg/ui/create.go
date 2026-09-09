@@ -21,14 +21,15 @@ type createModel struct {
 }
 
 type formField struct {
-	label     string
-	value     string
-	flag      string // CLI flag name
-	isBool    bool
-	traitID   string   // if set, this bool field represents a trait toggle
-	options   []string // if set, field is a selector (cycle with Space)
-	cursorPos int
-	input     *textInput // if set, delegates key handling and rendering to textInput
+	label        string
+	value        string
+	flag         string // CLI flag name
+	isBool       bool
+	explicitBool bool     // send false as well as true for permission overrides
+	traitID      string   // if set, this bool field represents a trait toggle
+	options      []string // if set, field is a selector (cycle with Space)
+	cursorPos    int
+	input        *textInput // if set, delegates key handling and rendering to textInput
 }
 
 // syncFromInput copies textInput state back to the formField value/cursorPos.
@@ -50,7 +51,7 @@ func newCreateModel(c *client) createModel {
 	return createModel{
 		client: c,
 		async:  true, // TUI always creates async; polling is done by chat/dashboard
-		fields: []formField{
+		fields: append([]formField{
 			{label: "Prompt", flag: "", value: ""},
 			{label: "Name", flag: "--name", value: ""},
 			{label: "Nick", flag: "--nick", value: ""},
@@ -63,7 +64,7 @@ func newCreateModel(c *client) createModel {
 			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
 			{label: "Gadgets (James tooling)", flag: "--gadgets", isBool: true, value: "false"},
 			{label: "Compaction", flag: "--compaction", value: "custom", options: []string{"custom", "agent"}},
-		},
+		}, gadgetCapabilityFields(nil)...),
 	}
 }
 
@@ -100,6 +101,10 @@ func (m createModel) createSession() tea.Cmd {
 			}
 			if f.flag == "" {
 				prompt = f.value
+				continue
+			}
+			if f.explicitBool {
+				args = append(args, f.flag+"="+f.value)
 				continue
 			}
 			if f.value == "" || (f.isBool && f.value == "false") {
@@ -262,6 +267,7 @@ func (m createModel) View() string {
 	labelW := formLabelWidth(labels)
 	lStyle := labelStyle.Width(labelW)
 
+	var rows []string
 	for i, f := range m.fields {
 		label := lStyle.Render(truncateDisplay(f.label+":", labelW))
 		var value string
@@ -296,8 +302,14 @@ func (m createModel) View() string {
 				value = fieldInactiveStyle.Render(f.value)
 			}
 		}
-		b.WriteString("  " + label + " " + value + "\n")
+		rows = append(rows, "  "+label+" "+value+"\n")
 	}
+	height := m.height - 10
+	if m.height == 0 {
+		height = len(rows)
+	}
+	b.WriteString(formViewport(rows, m.cursor, height))
+	b.WriteString(fieldInactiveStyle.Render(gadgetNotificationHint))
 
 	b.WriteString("\n")
 	if m.creating {

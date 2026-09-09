@@ -64,9 +64,13 @@ func (h *Handler) distillSessionCmd(_ context.Context, cmd *envelope.Command) *e
 	if sess == nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, fmt.Sprintf("session not found: %s", data.SessionID))
 	}
-	if !agent.MemoryEnabled(sess.Agent, sess.Yolo) {
+	capabilities, err := h.gadgetCapabilities(data.SessionID)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("read memory capabilities: %v", err))
+	}
+	if !capabilities.Memory {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest,
-			fmt.Sprintf("memory distillation is unavailable: %s cannot write session memory without yolo permissions", sess.Agent))
+			"memory distillation is unavailable: session memory capability is disabled")
 	}
 	if sess.Status != store.StateIdle {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotIdle, fmt.Sprintf("session is not idle: %s", sess.Status))
@@ -113,11 +117,15 @@ func (h *Handler) runDistillation(sessionID string) {
 		h.vlog("distillation: cannot load session %s: %v", sessionID, err)
 		return
 	}
-	if !agent.MemoryEnabled(sess.Agent, sess.Yolo) {
+	capabilities, err := h.gadgetCapabilities(sessionID)
+	if err != nil {
+		h.vlog("distillation: cannot read memory capabilities for session %s: %v", sessionID, err)
+		return
+	}
+	if !capabilities.Memory {
 		h.vlog("distillation: memory is disabled for session %s", sessionID)
 		return
 	}
-	h.ensureMemoryMigrated(sessionID)
 
 	turns, err := h.store.GetConversation(sessionID)
 	if err != nil {
@@ -131,29 +139,14 @@ func (h *Handler) runDistillation(sessionID string) {
 		return
 	}
 
-	// Run the agent with the session's system prompt plus the file-based memory
-	// contract and root index. Use a throwaway underlying agent session id
+	// Run the agent with the session's system prompt and shared gadget memory
+	// contract. Use a throwaway underlying agent session id
 	// (NOT persisted) so the live agent session is untouched.
-	systemPrompt := sess.SystemPrompt
-	memDir := h.memoryDir(sessionID)
-	if memDir == "" {
-		h.vlog("distillation: session memory directory unavailable for session %s", sessionID)
-		return
-	}
-	memoryPrompt, err := memorySystemPrompt(memDir)
-	if err != nil {
-		h.vlog("distillation: cannot prepare memory for session %s: %v", sessionID, err)
-		return
-	}
-	systemPrompt += memoryPrompt
-	// NoPersistTurns bypasses persistent notification handling; do not inject
-	// notifyUserSystemPromptSuffix and promise notifications this run cannot send.
-
 	params := agent.RunParams{
 		SessionID:      sessionID,
 		Agent:          sess.Agent,
 		Prompt:         fmt.Sprintf(distillPrompt, transcript),
-		SystemPrompt:   systemPrompt,
+		SystemPrompt:   sess.SystemPrompt,
 		Model:          sess.Model,
 		Effort:         sess.Effort,
 		ContextTier:    sess.ContextTier,
@@ -162,8 +155,11 @@ func (h *Handler) runDistillation(sessionID string) {
 		Resume:         false,
 		AgentSessionID: newAgentSessionID(),
 		SessionDir:     h.sessionDir(sessionID),
-		MemoryDir:      memDir,
 		NoPersistTurns: true,
+	}
+	if err := h.prepareRunInstructions(sessionID, &params); err != nil {
+		h.vlog("distillation: cannot prepare memory for session %s: %v", sessionID, err)
+		return
 	}
 
 	if _, runErr := h.runner.Run(context.Background(), params); runErr != nil {

@@ -147,14 +147,15 @@ func PrependToPath(env []string, dir string) []string {
 
 // withEnvironment replaces inherited variables with configured per-agent values.
 func withEnvironment(base []string, additional map[string]string) []string {
-	if len(additional) == 0 {
-		return base
-	}
 	result := make([]string, 0, len(base)+len(additional))
 	for _, item := range base {
 		eq := strings.IndexByte(item, '=')
 		if eq <= 0 {
 			result = append(result, item)
+			continue
+		}
+		name := strings.ToUpper(item[:eq])
+		if strings.HasPrefix(name, "JAMES_HEM_") || strings.HasPrefix(name, "JAMES_GADGETS_") {
 			continue
 		}
 		configured := false
@@ -276,11 +277,6 @@ type RunParams struct {
 	Environment map[string]string // additional environment variables for this agent run
 	Resume      bool              // true for continue_session
 	SessionDir  string            // per-session persistent dir (managed by handler)
-	// MemoryDir is the session's file-based memory folder (<SessionDir>/memory).
-	// When set, it is added to the agent's allowed directories so the agent can
-	// read and edit its memory with native file tools; for non-yolo sessions the
-	// file-write tools are also pre-authorized so memory edits don't prompt.
-	MemoryDir string
 	// AgentSessionID is the id passed to the underlying agent CLI. It is
 	// decoupled from SessionID so custom compaction can substitute a fresh
 	// underlying session. OpenCode generates this value after its first run.
@@ -392,8 +388,8 @@ func (r *Runner) RunOneShot(ctx context.Context, params RunParams) (string, erro
 	if params.Path != "" {
 		cmd.Dir = params.Path
 	}
-	env := PrependToPath(os.Environ(), filepath.Dir(agentPath))
-	env = withEnvironment(env, params.Environment)
+	env := withEnvironment(os.Environ(), params.Environment)
+	env = PrependToPath(env, filepath.Dir(agentPath))
 	env = append(env, inv.env...)
 	cmd.Env = env
 	if inv.stdin != "" {
@@ -441,8 +437,8 @@ func (r *Runner) Run(ctx context.Context, params RunParams) (*Result, error) {
 	// nvm-installed agents where the moneypenny service's PATH doesn't
 	// otherwise include the node version's bin dir).
 	agentDir := filepath.Dir(agentPath)
-	env := PrependToPath(os.Environ(), agentDir)
-	env = withEnvironment(env, params.Environment)
+	env := withEnvironment(os.Environ(), params.Environment)
+	env = PrependToPath(env, agentDir)
 	env = append(env, "HEM_SESSION_ID="+params.SessionID)
 	env = append(env, inv.env...)
 	cmd.Env = env
@@ -1140,6 +1136,7 @@ func buildOneShotArgs(params RunParams) agentInvocation {
 
 func buildClaudeOneShotArgs(params RunParams) agentInvocation {
 	args := []string{"--output-format", "text"}
+	args = append(args, gadgetAccessArgs("claude", params)...)
 	if params.SystemPrompt != "" {
 		args = append(args, "--system-prompt", params.SystemPrompt)
 	}
@@ -1166,6 +1163,7 @@ func buildClaudeOneShotArgs(params RunParams) agentInvocation {
 
 func buildCopilotOneShotArgs(params RunParams) agentInvocation {
 	args := []string{"--output-format", "text"}
+	args = append(args, gadgetAccessArgs("copilot", params)...)
 	if params.Model != "" {
 		args = append(args, "--model", params.Model)
 	}
@@ -1261,6 +1259,7 @@ func buildClaudeArgs(params RunParams) agentInvocation {
 			"--session-id", params.agentSessionID(),
 		}
 	}
+	args = append(args, gadgetAccessArgs("claude", params)...)
 	if params.SystemPrompt != "" {
 		args = append(args, "--system-prompt", params.SystemPrompt)
 	}
@@ -1273,7 +1272,6 @@ func buildClaudeArgs(params RunParams) agentInvocation {
 	if params.Yolo {
 		args = append(args, "--dangerously-skip-permissions")
 	}
-	args = append(args, memoryAccessArgs("claude", params)...)
 	// Claude has no attachment flag; grant read access to the directories
 	// containing uploaded attachments so it can open the absolute paths listed
 	// in the prompt addendum.
@@ -1312,50 +1310,6 @@ func needsStdin(prompt string) bool {
 	return false
 }
 
-// MemoryEnabled reports whether file-based session memory should be wired up for
-// the given agent/permission combination. Memory requires the agent to be able
-// to write its memory folder without interactive prompts (which are auto-denied
-// in headless -p mode). Claude can pre-authorize writes scoped to the memory
-// folder; Copilot's --allow-tool cannot be path-scoped, so the only way to let
-// it write memory would be to grant broad write access to the whole workspace —
-// which we refuse for non-yolo sessions. Therefore non-yolo Copilot sessions get
-// no memory at all (yolo sessions already permit every tool).
-func MemoryEnabled(agentName string, yolo bool) bool {
-	if yolo {
-		return true
-	}
-	return agentName != "copilot" && agentName != "opencode"
-}
-
-// memoryAccessArgs returns the extra CLI args that grant the agent read/write
-// access to its file-based memory folder. The folder lives outside the project
-// cwd, so it must be explicitly allowed via --add-dir. For non-yolo sessions we
-// also pre-authorize the file-writing tools so memory edits don't trigger
-// permission prompts that would be auto-denied in non-interactive (-p) mode.
-// Claude permission rules can be path-scoped to the memory folder; Copilot's
-// --allow-tool can't scope by path, so non-yolo Copilot sessions have memory
-// disabled entirely (see MemoryEnabled). Yolo sessions already allow everything.
-func memoryAccessArgs(agentName string, params RunParams) []string {
-	if params.MemoryDir == "" || !MemoryEnabled(agentName, params.Yolo) {
-		return nil
-	}
-	args := []string{"--add-dir", params.MemoryDir}
-	if params.Yolo {
-		return args
-	}
-	// Only Claude reaches here (non-yolo Copilot is filtered out above).
-	// Claude permission rules anchor a single leading "/" to the project root
-	// (gitignore semantics), so an absolute filesystem path must be written
-	// with a doubled leading slash to match. The memory dir is already
-	// absolute, so prefixing one more "/" yields the "//abs/path" form Claude
-	// expects. Use a single space-separated value so the variadic flag doesn't
-	// swallow subsequent args (e.g. the prompt).
-	pat := "/" + filepath.Clean(params.MemoryDir) + "/**"
-	tools := fmt.Sprintf("Read(%s) Write(%s) Edit(%s) MultiEdit(%s)", pat, pat, pat, pat)
-	args = append(args, "--allowedTools", tools)
-	return args
-}
-
 // attachmentDirs returns the unique parent directories of the given attachment
 // paths, preserving first-seen order. Used to grant Claude read access via
 // --add-dir (it has no native attachment flag).
@@ -1383,6 +1337,7 @@ func buildCopilotArgs(params RunParams) agentInvocation {
 		"--stream", "on",
 		"-s",
 	}
+	args = append(args, gadgetAccessArgs("copilot", params)...)
 	// Copilot uses --session-id to CREATE a new session and --resume to
 	// reattach to an existing one. Using --resume on a non-existent session
 	// errors out with "No session, task, or name matched ...".
@@ -1403,7 +1358,6 @@ func buildCopilotArgs(params RunParams) agentInvocation {
 	if params.Yolo {
 		args = append(args, "--yolo")
 	}
-	args = append(args, memoryAccessArgs("copilot", params)...)
 	// Copilot ingests attachments natively via a repeatable --attachment flag
 	// (images and documents). Only valid in prompt mode, which is how we invoke
 	// it.

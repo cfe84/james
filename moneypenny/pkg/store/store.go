@@ -26,12 +26,13 @@ type Session struct {
 	Effort       string
 	// ContextTier selects copilot's context-window tier (e.g. "long_context"
 	// for the 1M window). Copilot-only; empty means the default tier.
-	ContextTier string
-	Yolo        bool
-	Path        string
-	Environment string
-	Status      string
-	Memory      string
+	ContextTier        string
+	Yolo               bool
+	Path               string
+	Environment        string
+	GadgetCapabilities string
+	Status             string
+	Memory             string
 	// AgentSessionID is the session id handed to the underlying agent CLI
 	// (claude/copilot) via --session-id/--resume. It is decoupled from
 	// SessionID so custom compaction can substitute a fresh underlying agent
@@ -284,6 +285,7 @@ CREATE INDEX IF NOT EXISTS idx_channel_outbox_pending ON channel_outbox(status);
 	db.Exec(`ALTER TABLE sessions ADD COLUMN context_window INTEGER NOT NULL DEFAULT 0`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN opencode_cost REAL NOT NULL DEFAULT 0`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN environment TEXT NOT NULL DEFAULT '{}'`)
+	db.Exec(`ALTER TABLE sessions ADD COLUMN gadget_capabilities TEXT NOT NULL DEFAULT ''`)
 
 	// Migration: reply_channel_id routes a run's final response to an external
 	// communication channel (channels.id). 0 = no channel routing. Present on
@@ -327,9 +329,9 @@ func (s *Store) CreateSession(sess *Session) error {
 	}
 
 	_, err := s.db.Exec(
-		`INSERT INTO sessions (session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, status, agent_session_id, compaction_mode, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sess.SessionID, sess.Name, sess.Agent, sess.SystemPrompt, sess.Model, sess.Effort, sess.ContextTier, yolo, sess.Path, sess.Environment, sess.Status, sess.AgentSessionID, sess.CompactionMode, now, now,
+		`INSERT INTO sessions (session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, gadget_capabilities, status, agent_session_id, compaction_mode, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sess.SessionID, sess.Name, sess.Agent, sess.SystemPrompt, sess.Model, sess.Effort, sess.ContextTier, yolo, sess.Path, sess.Environment, sess.GadgetCapabilities, sess.Status, sess.AgentSessionID, sess.CompactionMode, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("create session: %w", err)
@@ -340,7 +342,7 @@ func (s *Store) CreateSession(sess *Session) error {
 // GetSession retrieves a session by ID. Returns nil, nil if not found.
 func (s *Store) GetSession(sessionID string) (*Session, error) {
 	row := s.db.QueryRow(
-		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, status, memory, agent_session_id, compaction_mode, context_tokens, context_window, opencode_cost, schedule_ready_at, created_at, updated_at
+		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, gadget_capabilities, status, memory, agent_session_id, compaction_mode, context_tokens, context_window, opencode_cost, schedule_ready_at, created_at, updated_at
 		 FROM sessions WHERE session_id = ?`, sessionID,
 	)
 
@@ -349,7 +351,7 @@ func (s *Store) GetSession(sessionID string) (*Session, error) {
 	var scheduleReadyAt sql.NullTime
 	err := row.Scan(
 		&sess.SessionID, &sess.Name, &sess.Agent, &sess.SystemPrompt, &sess.Model, &sess.Effort, &sess.ContextTier,
-		&yolo, &sess.Path, &sess.Environment, &sess.Status, &sess.Memory, &sess.AgentSessionID, &sess.CompactionMode,
+		&yolo, &sess.Path, &sess.Environment, &sess.GadgetCapabilities, &sess.Status, &sess.Memory, &sess.AgentSessionID, &sess.CompactionMode,
 		&sess.ContextTokens, &sess.ContextWindow, &sess.OpenCodeCost, &scheduleReadyAt, &sess.CreatedAt, &sess.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
@@ -371,7 +373,7 @@ func (s *Store) GetSession(sessionID string) (*Session, error) {
 // ListSessions returns all sessions.
 func (s *Store) ListSessions() ([]*Session, error) {
 	rows, err := s.db.Query(
-		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, status, memory, agent_session_id, compaction_mode, context_tokens, context_window, opencode_cost, schedule_ready_at, created_at, updated_at
+		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, gadget_capabilities, status, memory, agent_session_id, compaction_mode, context_tokens, context_window, opencode_cost, schedule_ready_at, created_at, updated_at
 		 FROM sessions ORDER BY created_at`,
 	)
 	if err != nil {
@@ -386,7 +388,7 @@ func (s *Store) ListSessions() ([]*Session, error) {
 		var scheduleReadyAt sql.NullTime
 		if err := rows.Scan(
 			&sess.SessionID, &sess.Name, &sess.Agent, &sess.SystemPrompt, &sess.Model, &sess.Effort, &sess.ContextTier,
-			&yolo, &sess.Path, &sess.Environment, &sess.Status, &sess.Memory, &sess.AgentSessionID, &sess.CompactionMode,
+			&yolo, &sess.Path, &sess.Environment, &sess.GadgetCapabilities, &sess.Status, &sess.Memory, &sess.AgentSessionID, &sess.CompactionMode,
 			&sess.ContextTokens, &sess.ContextWindow, &sess.OpenCodeCost, &scheduleReadyAt, &sess.CreatedAt, &sess.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
@@ -404,7 +406,7 @@ func (s *Store) ListSessions() ([]*Session, error) {
 }
 
 // UpdateSessionFields updates specific fields of a session.
-func (s *Store) UpdateSessionFields(sessionID string, name, systemPrompt, model, effort, contextTier, path, compactionMode, environment *string, yolo *bool) error {
+func (s *Store) UpdateSessionFields(sessionID string, name, systemPrompt, model, effort, contextTier, path, compactionMode, environment *string, yolo *bool, gadgetCapabilities ...*string) error {
 	sess, err := s.GetSession(sessionID)
 	if err != nil {
 		return err
@@ -440,6 +442,10 @@ func (s *Store) UpdateSessionFields(sessionID string, name, systemPrompt, model,
 	if environment != nil {
 		sess.Environment = *environment
 	}
+	var capabilities *string
+	if len(gadgetCapabilities) > 0 {
+		capabilities = gadgetCapabilities[0]
+	}
 
 	now := time.Now().UTC()
 	yoloInt := 0
@@ -447,8 +453,8 @@ func (s *Store) UpdateSessionFields(sessionID string, name, systemPrompt, model,
 		yoloInt = 1
 	}
 	res, err := s.db.Exec(
-		`UPDATE sessions SET name = ?, system_prompt = ?, model = ?, effort = ?, context_tier = ?, yolo = ?, path = ?, compaction_mode = ?, environment = ?, updated_at = ? WHERE session_id = ?`,
-		sess.Name, sess.SystemPrompt, sess.Model, sess.Effort, sess.ContextTier, yoloInt, sess.Path, sess.CompactionMode, sess.Environment, now, sessionID,
+		`UPDATE sessions SET name = ?, system_prompt = ?, model = ?, effort = ?, context_tier = ?, yolo = ?, path = ?, compaction_mode = ?, environment = ?, gadget_capabilities = COALESCE(?, gadget_capabilities), updated_at = ? WHERE session_id = ?`,
+		sess.Name, sess.SystemPrompt, sess.Model, sess.Effort, sess.ContextTier, yoloInt, sess.Path, sess.CompactionMode, sess.Environment, capabilities, now, sessionID,
 	)
 	if err != nil {
 		return fmt.Errorf("update session: %w", err)

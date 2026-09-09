@@ -89,6 +89,10 @@ jobs:
           go build -ldflags "${LDFLAGS}" -o "../${OUTDIR}/qew${SUFFIX}" ./cmd/qew/
           cd ..
 
+          cd gadgets
+          CGO_ENABLED=0 go build -ldflags "${LDFLAGS}" -o "../${OUTDIR}/gadgets${SUFFIX}" ./cmd/gadgets/
+          cd ..
+
       - name: Create archive
         run: |
           cd dist

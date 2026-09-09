@@ -1,5 +1,12 @@
 package commands
 
+func init() {
+	const permissionsHelp = "\n\nGadget permissions (operator settings, true/false):\n  --gadget-memory       Session memory (default: true)\n  --gadget-subagents    Own subagent creation, communication and replies (default: true)\n  --gadget-agents       Discover and message any agents, without management access (default: false)\n  --gadget-scheduling   This session's scheduled prompts (default: true)\n\nNotifications to the operator are always available. Copy inherits permissions;\nupdate preserves omitted permissions. Example: --gadget-memory=false."
+	for _, command := range []string{"create session", "create subsession", "copy session", "update session"} {
+		CommandHelp[command] += permissionsHelp
+	}
+}
+
 var CommandHelp = map[string]string{
 	"add moneypenny":         "Usage: hem add moneypenny -n NAME [--local | --fifo-folder DIR | --fifo-in PATH --fifo-out PATH | --mi6 ADDR --mi6-server-fingerprint SHA256:...]\n\nRegisters a new moneypenny instance.\n\nFlags:\n  -n, --name                  Moneypenny name (required)\n  --local                     Use default local FIFO path (~/.config/james/moneypenny/fifo)\n  --fifo-folder               Folder containing moneypenny-in and moneypenny-out FIFOs\n  --fifo-in                   Path to moneypenny input FIFO\n  --fifo-out                  Path to moneypenny output FIFO\n  --mi6                       MI6 server address (host or host/session_id)\n  --mi6-server-fingerprint    Required SHA256 fingerprint of the MI6 server\n  --session-id                MI6 session ID (combined with --mi6 host; uses default mi6 if --mi6 omitted)",
 	"list moneypenny":        "Usage: hem list moneypennies\n\nLists all registered moneypennies with name, type, address, and default status.",

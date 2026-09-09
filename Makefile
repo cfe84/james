@@ -1,4 +1,4 @@
-COMPONENTS := mi6 moneypenny hem qew
+COMPONENTS := mi6 moneypenny hem qew gadgets
 ifeq ($(OS),Windows_NT)
     VERSION := $(shell type VERSION 2>NUL || echo unknown)
 	INSTALL := copy
@@ -30,7 +30,7 @@ endif
 all: build
 
 build: $(COMPONENTS)
-	@echo "Built james v$(VERSION): mi6-server mi6-client moneypenny james-teams-agency james-teams-trouter hem qew"
+	@echo "Built james v$(VERSION): mi6-server mi6-client moneypenny james-teams-agency james-teams-trouter hem qew gadgets"
 
 mi6:
 	$(MAKE) -C mi6 build
@@ -44,17 +44,22 @@ hem:
 qew:
 	$(MAKE) -C qew build
 
+gadgets:
+	$(MAKE) -C gadgets build
+
 test:
 	$(MAKE) -C mi6 test
 	$(MAKE) -C moneypenny test
 	$(MAKE) -C hem test
 	$(MAKE) -C qew test
+	$(MAKE) -C gadgets test
 
 clean:
 	$(MAKE) -C mi6 clean
 	$(MAKE) -C moneypenny clean
 	$(MAKE) -C hem clean
 	$(MAKE) -C qew clean
+	$(MAKE) -C gadgets clean
 
 install: build
 ifndef INSTALL_DIR
@@ -72,6 +77,7 @@ endif
 	$(INSTALL) moneypenny$(SEP)bin$(SEP)james-teams-trouter$(EXECUTABLE_SUFFIX) "$(INSTALL_DIR)$(SEP)"
 	$(INSTALL) hem$(SEP)bin$(SEP)hem$(EXECUTABLE_SUFFIX) "$(INSTALL_DIR)$(SEP)"
 	$(INSTALL) qew$(SEP)bin$(SEP)qew$(EXECUTABLE_SUFFIX) "$(INSTALL_DIR)$(SEP)"
+	$(INSTALL) gadgets$(SEP)bin$(SEP)gadgets$(EXECUTABLE_SUFFIX) "$(INSTALL_DIR)$(SEP)"
 ifneq ($(OS),Windows_NT)
 ifeq ($(shell uname -s),Darwin)
 	@echo "Signing binaries for macOS Gatekeeper..."
@@ -82,6 +88,7 @@ ifeq ($(shell uname -s),Darwin)
 	@codesign -s - -f "$(INSTALL_DIR)/james-teams-trouter" 2>/dev/null || true
 	@codesign -s - -f "$(INSTALL_DIR)/hem" 2>/dev/null || true
 	@codesign -s - -f "$(INSTALL_DIR)/qew" 2>/dev/null || true
+	@codesign -s - -f "$(INSTALL_DIR)/gadgets" 2>/dev/null || true
 endif
 endif
 	@echo "Installed to: $(INSTALL_DIR)"

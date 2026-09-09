@@ -32,7 +32,7 @@ func compactionTaskPrompt(memoryEnabled bool) string {
 		return compactionDistillPrompt
 	}
 	return `[SYSTEM: CONTEXT COMPACTION]
-Your context is getting large and is about to be compacted into a fresh session. Persistent memory is disabled for this run; do not read or write a memory folder.
+Your context is getting large and is about to be compacted into a fresh session. Persistent memory is disabled for this run; do not read or write session memory through gadgets, native file tools, or direct database access.
 
 Output a standalone, comprehensive handoff summary of the available conversation as your FINAL message. The fresh session must be able to resume from this summary alone: include the original task, key decisions and rationale, important context (file paths, names, conventions, learnings), current state, and pending actions. Do not assume access to earlier history or external notes. Output ONLY the summary text — no preamble or meta-commentary.`
 }
@@ -212,13 +212,18 @@ func (h *Handler) runCompaction(sessionID, nextPrompt, effModel, effEffort strin
 		h.vlog("compaction: cannot load session %s: %v", sessionID, err)
 		return
 	}
+	capabilities, err := h.gadgetCapabilities(sessionID)
+	if err != nil {
+		h.vlog("compaction: cannot read memory capabilities for session %s: %v", sessionID, err)
+		return
+	}
 
 	// 1. In-session distillation + handoff summary against the CURRENT
 	// underlying agent session, so all of its context is available.
 	distillParams := agent.RunParams{
 		SessionID:      sessionID,
 		Agent:          sess.Agent,
-		Prompt:         compactionTaskPrompt(agent.MemoryEnabled(sess.Agent, sess.Yolo)),
+		Prompt:         compactionTaskPrompt(capabilities.Memory),
 		SystemPrompt:   sess.SystemPrompt,
 		Model:          effModel,
 		Effort:         effEffort,

@@ -19,91 +19,11 @@ import (
 	"james/hem/pkg/protocol"
 	"james/hem/pkg/store"
 	"james/hem/pkg/transport"
+	"james/moneypenny/pkg/envelope"
 )
 
 func gadgetsSystemPrompt(mi6Control, mi6ServerFingerprint, sessionID, parentID string) string {
-	var hemCmd string
-	connectionInstructions := "Use the local hem server's configured Unix socket."
-	if mi6Control != "" {
-		hemCmd = fmt.Sprintf("hem --hem %s --mi6-server-fingerprint %s", mi6Control, mi6ServerFingerprint)
-		connectionInstructions = fmt.Sprintf(`MI6 relay address: %s
-MI6 relay server fingerprint: %s
-Use the full command prefix above for EVERY hem command, including help.
-Hem takes --mi6-server-fingerprint; --server-fingerprint is the underlying
-mi6-client flag, not a Hem flag. Hem forwards the pin to mi6-client automatically.
-Do not remove either connection flag or use Unix socket/localhost as a fallback.
-If mi6-client still reports "--server-fingerprint is required" with this exact
-prefix, report the failure and check for an outdated Hem binary; do not bypass pinning.`,
-			mi6Control, mi6ServerFingerprint)
-	} else {
-		hemCmd = "hem"
-	}
-
-	// Subagents (sessions with a parent) get precise instructions on how to
-	// report their result back to the parent as a *callback* (rendered distinctly
-	// from a normal user message).
-	var callbackSection string
-	if parentID != "" {
-		callbackSection = fmt.Sprintf(`
-
-Reporting back to your parent (callback):
-  You are a subagent. Your parent session ID is %s.
-  When you have finished your task (or reach a milestone worth reporting), send your
-  result back to the parent as a callback:
-    %s callback session %s --from %s "your result or status here"
-  The --from flag MUST be your own session ID (%s) so the parent knows which subagent
-  reported. The message is delivered to the parent as a highlighted callback (not a
-  normal chat message), so write it as a self-contained report of what you did and any
-  output the parent needs. Send exactly one callback when your work is complete; send
-  additional callbacks only for meaningful intermediate updates.`,
-			parentID, hemCmd, parentID, sessionID, sessionID)
-	}
-
-	return fmt.Sprintf(`
-You have access to agent orchestration using the %s command. Run %s -h to see available commands.
-Your session ID is %s.
-%s
-
-Scheduling:
-  Schedule a follow-up: %s schedule session %s --at TIME --prompt "your prompt"
-  TIME accepts RFC3339 timestamps or relative durations like +2h, +30m.
-  Add --cron EXPR for recurring tasks (e.g. --cron "@every 2h", --cron "0 9 * * 1").
-  Add --mark-ready when the completed result should surface in the user's Ready group.
-  List schedules: %s list schedules --session-id %s
-  Edit a pending schedule: %s edit schedule SCHEDULE_ID --session-id %s --at TIME --prompt "updated prompt"
-  Omitted edit flags retain their values. Use --cron "" to clear recurrence,
-  --channel 0 to clear reply routing, and --mark-ready=true|false to change Ready behavior.
-  Cancel a schedule: %s cancel schedule SCHEDULE_ID --session-id %s
-
-Direct messages to another agent:
-  Send a message: %s continue session TARGET_SESSION_ID "your message"
-  Your session identity is attached automatically. The destination conversation
-  shows your nickname or session name as the sender; do not add --from yourself.
-
-Subagents (parallel tasks):
-  Create a subagent: %s create subsession %s --async --name "task name" PROMPT
-  Create with callback: %s create subsession %s --async --callback "instructions for when result arrives" --name "task name" PROMPT
-  List subagents: %s list subsessions %s
-  Watch for completion: %s watch session %s
-  The --async flag returns immediately. Use watch to wait for results, which queues
-  completed subagent responses back to your session.
-  The --callback flag attaches instructions that are included when the result is queued
-  back, so you know what to do with it when it arrives.
-  Show subagent details: %s show subsession SUBSESSION_ID
-  Stop a subagent: %s stop subsession SUBSESSION_ID
-  Delete a subagent: %s delete subsession SUBSESSION_ID%s
-
-IMPORTANT: NEVER start hem server if you are not directly instructed to do it.
-IMPORTANT: NEVER start moneypenny if you are not directly instructed to do it.
-IMPORTANT: When the user asks you to "start an agent", "launch an agent", "spin up a session", or similar — they mean create a new session using %s create session (or %s create subsession for a subagent). Do NOT attempt to run claude, copilot, or any agent binary directly. All agent lifecycle is managed through hem.
-IMPORTANT: Do NOT set the git committer or author to Claude, Copilot, or any AI name. Leave the user's existing git config (user.name/user.email) unchanged. Commits should appear as authored by the human user.
-IMPORTANT: When creating a session or subagent that needs to modify the filesystem (write files, run builds, install packages, commit, etc.), include the --yolo flag to grant it permission. Without --yolo, the agent will be blocked by permission prompts it cannot answer.`,
-		hemCmd, hemCmd, sessionID, connectionInstructions,
-		hemCmd, sessionID, hemCmd, sessionID, hemCmd, sessionID, hemCmd, sessionID,
-		hemCmd,
-		hemCmd, sessionID, hemCmd, sessionID,
-		hemCmd, sessionID, hemCmd, sessionID,
-		hemCmd, hemCmd, hemCmd, callbackSection, hemCmd, hemCmd)
+	return gadgetsMarker + " daemon-managed gadgets endpoint. Available tools and permissions are supplied by Moneypenny at runtime.\n"
 }
 
 func replaceGadgetsPrompt(current, gadgets string) string {
@@ -152,6 +72,7 @@ type Executor struct {
 	Version              string
 	MI6Control           string                        // MI6 control address (host/session_id) for hem server
 	MI6ServerFingerprint string                        // expected MI6 server fingerprint for gadget commands
+	HemSocket            string                        // local daemon-to-Hem routing endpoint
 	BroadcastFunc        func(resp *protocol.Response) // optional: push broadcasts to connected MI6 clients
 }
 
@@ -586,6 +507,8 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 	}
 
 	switch verb + " " + noun {
+	case "gadget route":
+		return e.GadgetRoute(args)
 	// Moneypenny commands
 	case "add moneypenny":
 		return e.AddMoneypenny(args)
@@ -792,6 +715,17 @@ func (e *Executor) sendCommand(ctx context.Context, mp *store.Moneypenny, method
 	if client == nil {
 		return nil, fmt.Errorf("unsupported transport type %q for moneypenny %q", mp.TransportType, mp.Name)
 	}
+	switch method {
+	case "get_session", "continue_session", "queue_prompt", "compact_session", "distill_session":
+		if fields, ok := data.(map[string]interface{}); ok {
+			copy := make(map[string]interface{}, len(fields)+1)
+			for key, value := range fields {
+				copy[key] = value
+			}
+			copy["gadget_route"] = e.addGadgetEnvironment(nil)
+			data = copy
+		}
+	}
 
 	resp, err := client.SendCommand(ctx, method, data)
 	if err != nil {
@@ -990,10 +924,14 @@ func parseFlagsFromArgs(name string, args []string, setup func(fs *flag.FlagSet)
 	var flagArgs, positional []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
+		if a == "--" {
+			positional = append(positional, args[i+1:]...)
+			break
+		}
 		if strings.HasPrefix(a, "-") {
 			flagArgs = append(flagArgs, a)
 			// Check if this flag takes a value (next arg is not a flag).
-			if i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+			if !strings.Contains(a, "=") && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
 				// Check if the flag is a boolean flag (no value needed).
 				isBool := false
 				fs.VisitAll(func(f *flag.Flag) {
@@ -1013,7 +951,7 @@ func parseFlagsFromArgs(name string, args []string, setup func(fs *flag.FlagSet)
 		}
 	}
 
-	reordered := append(flagArgs, positional...)
+	reordered := append(append(flagArgs, "--"), positional...)
 	if err := fs.Parse(reordered); err != nil {
 		return nil, err
 	}
@@ -1141,27 +1079,28 @@ type SessionLastResult struct {
 }
 
 type SessionShowResult struct {
-	SessionID      string            `json:"session_id"`
-	Moneypenny     string            `json:"moneypenny"`
-	Name           string            `json:"name"`
-	Agent          string            `json:"agent"`
-	SystemPrompt   string            `json:"system_prompt"`
-	Model          string            `json:"model,omitempty"`
-	Effort         string            `json:"effort,omitempty"`
-	ContextTier    string            `json:"context_tier,omitempty"`
-	Yolo           bool              `json:"yolo"`
-	Gadgets        bool              `json:"gadgets"`
-	Memory         bool              `json:"memory"`
-	Path           string            `json:"path"`
-	Status         string            `json:"status"`
-	Project        string            `json:"project,omitempty"`
-	Traits         []string          `json:"traits"`
-	Nick           string            `json:"nick,omitempty"`
-	CompactionMode string            `json:"compaction_mode,omitempty"`
-	ContextTokens  int               `json:"context_tokens,omitempty"`
-	ContextWindow  int               `json:"context_window,omitempty"`
-	OpenCodeCost   float64           `json:"opencode_cost,omitempty"`
-	Environment    map[string]string `json:"environment,omitempty"`
+	GadgetCapabilities envelope.GadgetCapabilities `json:"gadget_capabilities"`
+	SessionID          string                      `json:"session_id"`
+	Moneypenny         string                      `json:"moneypenny"`
+	Name               string                      `json:"name"`
+	Agent              string                      `json:"agent"`
+	SystemPrompt       string                      `json:"system_prompt"`
+	Model              string                      `json:"model,omitempty"`
+	Effort             string                      `json:"effort,omitempty"`
+	ContextTier        string                      `json:"context_tier,omitempty"`
+	Yolo               bool                        `json:"yolo"`
+	Gadgets            bool                        `json:"gadgets"`
+	Memory             bool                        `json:"memory"`
+	Path               string                      `json:"path"`
+	Status             string                      `json:"status"`
+	Project            string                      `json:"project,omitempty"`
+	Traits             []string                    `json:"traits"`
+	Nick               string                      `json:"nick,omitempty"`
+	CompactionMode     string                      `json:"compaction_mode,omitempty"`
+	ContextTokens      int                         `json:"context_tokens,omitempty"`
+	ContextWindow      int                         `json:"context_window,omitempty"`
+	OpenCodeCost       float64                     `json:"opencode_cost,omitempty"`
+	Environment        map[string]string           `json:"environment,omitempty"`
 }
 
 const gadgetsMarker = "\nYou have access to agent orchestration using the"
@@ -1171,7 +1110,7 @@ const memoryMarkerLegacy = "\nYou have a persistent memory for this session."
 // findMemoryMarker returns the index of the memory marker in s, checking both
 // current and legacy markers. Returns -1 if not found. Retained so legacy
 // hem-injected memory blocks are stripped from inherited system prompts; memory
-// instructions are now injected by moneypenny at runtime (file-based memory).
+// instructions are now injected by moneypenny at runtime.
 func findMemoryMarker(s string) int {
 	if idx := strings.Index(s, memoryMarker); idx >= 0 {
 		return idx
@@ -1870,6 +1809,7 @@ func (e *Executor) DisableSetting(name string) *protocol.Response {
 func (e *Executor) CreateSession(args []string) *protocol.Response {
 	var projectNameOrID string
 	params := &sessionParams{}
+	var capabilityFlags gadgetCapabilityFlags
 
 	// Detect whether --traits was explicitly provided. When absent, default-enabled
 	// traits are applied; when present (even empty), the given selection is used verbatim.
@@ -1882,6 +1822,7 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 	}
 
 	remaining, err := parseFlagsFromArgs("create-session", args, func(fs *flag.FlagSet) {
+		capabilityFlags.register(fs)
 		fs.StringVar(&params.MoneypennyName, "m", "", "moneypenny name")
 		fs.StringVar(&params.MoneypennyName, "moneypenny", "", "moneypenny name")
 		fs.StringVar(&params.Agent, "agent", "", "agent to use")
@@ -1903,6 +1844,8 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
+
+	params.GadgetCapabilities = capabilityFlags.apply(nil)
 
 	// Apply project defaults if specified.
 	if err := e.applyProjectDefaults(params, projectNameOrID); err != nil {
@@ -1956,11 +1899,11 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 	// Append gadgets (James tooling instructions) to system prompt when enabled.
 	if params.Gadgets {
 		params.SystemPrompt += gadgetsSystemPrompt(e.MI6Control, e.MI6ServerFingerprint, sessionID, "")
-		e.addGadgetEnvironmentValues(&params.Environment)
 	}
+	e.addGadgetEnvironmentValues(&params.Environment)
 
-	// Memory instructions are injected by the moneypenny at runtime now that
-	// memory is a file-based folder it manages directly (no hem dependency).
+	// Memory instructions are injected by the moneypenny at runtime; clients
+	// access the memory tree through daemon commands.
 
 	// Prepend the nickname block at the very top so ordering is
 	// nick → base → traits → gadgets → memory.
@@ -2519,6 +2462,11 @@ func (e *Executor) ShowSession(args []string) *protocol.Response {
 		SessionID:  sessionID,
 		Moneypenny: mp.Name,
 	}
+	result.GadgetCapabilities, err = sessionGadgetCapabilities(resp.Data)
+	if err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("parsing session capabilities: %v", err))
+	}
+	result.Memory = result.GadgetCapabilities.Memory
 	if v, ok := raw["name"].(string); ok {
 		result.Name = v
 	}
@@ -2535,12 +2483,8 @@ func (e *Executor) ShowSession(args []string) *protocol.Response {
 		}
 		if idx := findMemoryMarker(sp); idx >= 0 {
 			sp = sp[:idx]
-			result.Memory = true
 		}
 		result.SystemPrompt = sp
-	}
-	if v, ok := raw["memory"].(string); ok && v != "" {
-		result.Memory = true
 	}
 	if v, ok := raw["yolo"].(bool); ok {
 		result.Yolo = v
@@ -2605,6 +2549,7 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 	var sessionID, name, systemPrompt, pathArg, modelStr, effortStr, contextStr string
 	var yoloStr, projectNameOrID, gadgetsStr, traitsStr, compactionStr, nickStr string
 	var environment environmentValues
+	var capabilityFlags gadgetCapabilityFlags
 
 	// Detect whether --traits was explicitly provided so an empty value can
 	// clear all traits (vs. "not specified" which leaves them untouched).
@@ -2624,6 +2569,7 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 	}
 
 	remaining, err := parseFlagsFromArgs("update-session", args, func(fs *flag.FlagSet) {
+		capabilityFlags.register(fs)
 		fs.StringVar(&sessionID, "session-id", "", "session ID")
 		fs.StringVar(&name, "name", "", "session name")
 		fs.StringVar(&systemPrompt, "system-prompt", "", "system prompt")
@@ -2661,9 +2607,20 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 	}
 
 	hasUpdate := false
-	// spChanged tracks whether the system prompt was recomposed (by traits or
-	// gadgets), so we still send it even when it recomposes to an empty string.
-	spChanged := false
+	if len(capabilityFlags) > 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		detail, err := e.sendCommand(ctx, mp, "get_session", map[string]interface{}{"session_id": sessionID})
+		if err != nil {
+			return protocol.ErrResponse(fmt.Sprintf("getting gadget permissions: %v", err))
+		}
+		current, err := sessionGadgetCapabilities(detail.Data)
+		if err != nil {
+			return protocol.ErrResponse(fmt.Sprintf("parsing gadget permissions: %v", err))
+		}
+		cmdData["gadget_capabilities"] = capabilityFlags.apply(&current)
+		hasUpdate = true
+	}
 	if name != "" {
 		cmdData["name"] = name
 		hasUpdate = true
@@ -2671,7 +2628,6 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 	if systemPrompt != "" {
 		cmdData["system_prompt"] = systemPrompt
 		hasUpdate = true
-		spChanged = true
 	}
 	if modelStr != "" {
 		cmdData["model"] = modelStr
@@ -2710,7 +2666,7 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 		if err != nil {
 			return protocol.ErrResponse(err.Error())
 		}
-		cmdData["environment"] = parsed
+		cmdData["environment"] = e.addGadgetEnvironment(parsed)
 		hasUpdate = true
 	}
 
@@ -2768,7 +2724,6 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 		systemPrompt = cur
 		cmdData["system_prompt"] = systemPrompt
 		hasUpdate = true
-		spChanged = true
 
 		for _, t := range traits {
 			pendingTraitIDs = append(pendingTraitIDs, t.ID)
@@ -2795,7 +2750,6 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 			cmdData["system_prompt"] = systemPrompt
 			fetchedSP = systemPrompt // keep cache current for the nick block below
 			hasUpdate = true
-			spChanged = true
 		}
 		if gadgetsStr == "true" {
 			gadgetEnvironment := map[string]string{}
@@ -2844,7 +2798,6 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 		systemPrompt = cur
 		cmdData["system_prompt"] = systemPrompt
 		hasUpdate = true
-		spChanged = true
 		nickChanged = true
 		pendingNick = newNick
 	}
@@ -2869,8 +2822,21 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 	}
 
 	// Only send to moneypenny if there are moneypenny-level fields to update.
-	if name != "" || spChanged || modelStr != "" || effortStr != "" || contextStr != "" || pathArg != "" || yoloStr != "" {
+	if len(cmdData) > 1 {
 		ctx := context.Background()
+		if _, present := cmdData["environment"]; !present {
+			detail, err := e.sendCommand(ctx, mp, "get_session", map[string]interface{}{"session_id": sessionID})
+			if err != nil {
+				return protocol.ErrResponse(fmt.Sprintf("refreshing gadget route: %v", err))
+			}
+			var current struct {
+				Environment map[string]string `json:"environment"`
+			}
+			if err := json.Unmarshal(detail.Data, &current); err != nil {
+				return protocol.ErrResponse(fmt.Sprintf("parsing gadget route environment: %v", err))
+			}
+			cmdData["environment"] = e.addGadgetEnvironment(current.Environment)
+		}
 		if _, err := e.sendCommand(ctx, mp, "update_session", cmdData); err != nil {
 			return protocol.ErrResponse(err.Error())
 		}
@@ -2975,7 +2941,7 @@ func (e *Executor) ShowMemory(args []string) *protocol.Response {
 			b.WriteString("Memory outline:\n" + out.Outline)
 		}
 		if out.Node != nil && strings.TrimSpace(out.Node.Body) != "" {
-			b.WriteString("\n\nRoot note (README.md):\n" + out.Node.Body)
+			b.WriteString("\n\nRoot memory note:\n" + out.Node.Body)
 			result.Node = &MemoryNodeView{Path: "", Body: out.Node.Body, Description: out.Node.Description}
 		}
 		result.Message = strings.TrimRight(b.String(), "\n")
@@ -5268,6 +5234,7 @@ func (e *Executor) DistillateSession(args []string) *protocol.Response {
 func (e *Executor) CopySession(args []string) *protocol.Response {
 	var sourceSessionID, projectNameOrID string
 	params := &sessionParams{}
+	var capabilityFlags gadgetCapabilityFlags
 
 	// Bool flags have no "unset" state once parsed, but we still need to know
 	// whether the caller explicitly touched --yolo so that `--yolo=false`
@@ -5281,6 +5248,7 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	}
 
 	remaining, err := parseFlagsFromArgs("copy-session", args, func(fs *flag.FlagSet) {
+		capabilityFlags.register(fs)
 		fs.StringVar(&sourceSessionID, "session-id", "", "source session ID")
 		fs.StringVar(&params.MoneypennyName, "m", "", "target moneypenny name")
 		fs.StringVar(&params.MoneypennyName, "moneypenny", "", "target moneypenny name")
@@ -5361,6 +5329,11 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	if err := json.Unmarshal(getResp.Data, &src); err != nil {
 		return protocol.ErrResponse(fmt.Sprintf("parsing source session: %v", err))
 	}
+	sourceCapabilities, err := sessionGadgetCapabilities(getResp.Data)
+	if err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("parsing source gadget permissions: %v", err))
+	}
+	params.GadgetCapabilities = capabilityFlags.apply(&sourceCapabilities)
 
 	// Strip injected gadgets/memory markers from the inherited system prompt
 	// so we don't double-inject them when the new session is created.
@@ -5528,11 +5501,11 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	params.SystemPrompt += traitsSystemPrompt(traits)
 	if params.Gadgets {
 		params.SystemPrompt += gadgetsSystemPrompt(e.MI6Control, e.MI6ServerFingerprint, newSessionID, "")
-		e.addGadgetEnvironmentValues(&params.Environment)
 	}
-	// Memory instructions are injected by the moneypenny at runtime (file-based
-	// memory). When duplicating within the same moneypenny, ask it to copy the
-	// source session's memory folder into the new session so the duplicate
+	e.addGadgetEnvironmentValues(&params.Environment)
+	// Memory instructions are injected by the moneypenny at runtime.
+	// When duplicating within the same moneypenny, ask it to copy the
+	// source session's memory tree into the new session so the duplicate
 	// inherits accumulated knowledge.
 
 	cmdData, err := buildCreateSessionData(params, newSessionID, prompt)
@@ -6638,8 +6611,10 @@ func (e *Executor) ActivitySession(args []string) *protocol.Response {
 func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 	var mpName, sessionName, systemPrompt, pathArg, agentName, parentSessionID, modelName, effortName, contextTierName, callbackPrompt, fromID string
 	var yolo, async, gadgets bool
+	var capabilityFlags gadgetCapabilityFlags
 
 	remaining, err := parseFlagsFromArgs("create-subsession", args, func(fs *flag.FlagSet) {
+		capabilityFlags.register(fs)
 		fs.StringVar(&parentSessionID, "session-id", "", "parent session ID")
 		fs.StringVar(&mpName, "m", "", "moneypenny name")
 		fs.StringVar(&mpName, "moneypenny", "", "moneypenny name")
@@ -6745,8 +6720,7 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 	if gadgets {
 		systemPrompt += gadgetsSystemPrompt(e.MI6Control, e.MI6ServerFingerprint, sessionID, parentSessionID)
 	}
-	// Memory instructions are injected by the moneypenny at runtime (file-based
-	// memory); no hem-side injection needed.
+	// Memory instructions are injected by the moneypenny at runtime.
 
 	cmdData := map[string]interface{}{
 		"agent":      agentName,
@@ -6755,8 +6729,9 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 		"prompt":     prompt,
 		"path":       pathArg,
 	}
-	if gadgets {
-		cmdData["environment"] = e.addGadgetEnvironment(nil)
+	cmdData["environment"] = e.addGadgetEnvironment(nil)
+	if capabilities := capabilityFlags.apply(nil); capabilities != nil {
+		cmdData["gadget_capabilities"] = capabilities
 	}
 	if fromID != "" {
 		cmdData["source_session_id"] = fromID

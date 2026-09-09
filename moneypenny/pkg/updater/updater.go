@@ -369,7 +369,7 @@ func exeSuffix() string {
 }
 
 // downloadAndStage downloads the platform-specific archive and extracts the
-// moneypenny, MI6, and Hem binaries that must remain protocol-compatible.
+// moneypenny, MI6, Hem, and gadgets binaries that must remain protocol-compatible.
 func (u *Updater) downloadAndStage(ctx context.Context, rel *gitHubRelease) (string, error) {
 	// Find the right asset: james-GOOS-GOARCH.tar.gz (or .zip on Windows).
 	ext := ".tar.gz"
@@ -458,53 +458,53 @@ func (u *Updater) downloadAndStage(ctx context.Context, rel *gitHubRelease) (str
 		return "", fmt.Errorf("create stage dir: %w", err)
 	}
 
-	suffix := exeSuffix()
-	wantBinaries := map[string]bool{
-		"moneypenny" + suffix: false,
-		"mi6-client" + suffix: false,
-		"hem" + suffix:        false,
-	}
-	if runtime.GOOS == "windows" {
-		wantBinaries["moneypenny-update-helper.exe"] = false
-	}
-
-	if runtime.GOOS == "windows" {
-		archive, openErr := os.Open(archivePath)
-		if openErr != nil {
-			err = openErr
-		} else {
-			err = u.extractZip(archive, stageDir, wantBinaries)
-			archive.Close()
-		}
-	} else {
-		archive, openErr := os.Open(archivePath)
-		if openErr != nil {
-			err = openErr
-		} else {
-			err = u.extractTarGz(archive, stageDir, wantBinaries)
-			archive.Close()
-		}
+	archive, err := os.Open(archivePath)
+	if err == nil {
+		err = u.extractArchive(archive, stageDir, runtime.GOOS)
+		archive.Close()
 	}
 	if err != nil {
 		os.RemoveAll(stageDir)
 		return "", err
 	}
-
-	// Verify at least moneypenny was extracted.
-	if !wantBinaries["moneypenny"+suffix] {
-		os.RemoveAll(stageDir)
-		return "", fmt.Errorf("moneypenny binary not found in archive")
-	}
-	if !wantBinaries["hem"+suffix] {
-		os.RemoveAll(stageDir)
-		return "", fmt.Errorf("hem binary not found in archive")
-	}
-	if runtime.GOOS == "windows" && !wantBinaries["moneypenny-update-helper.exe"] {
-		os.RemoveAll(stageDir)
-		return "", fmt.Errorf("update helper not found in archive")
-	}
-
 	return stageDir, nil
+}
+
+func (u *Updater) extractArchive(r io.Reader, stageDir, goos string) error {
+	suffix := ""
+	if goos == "windows" {
+		suffix = ".exe"
+	}
+	wantBinaries := map[string]bool{
+		"moneypenny" + suffix: false,
+		"mi6-client" + suffix: false,
+		"hem" + suffix:        false,
+		"gadgets" + suffix:    false,
+	}
+	if goos == "windows" {
+		wantBinaries["moneypenny-update-helper.exe"] = false
+	}
+
+	var err error
+	if goos == "windows" {
+		err = u.extractZip(r, stageDir, wantBinaries)
+	} else {
+		err = u.extractTarGz(r, stageDir, wantBinaries)
+	}
+	if err != nil {
+		return err
+	}
+
+	for _, name := range []string{"moneypenny", "hem", "gadgets"} {
+		if !wantBinaries[name+suffix] {
+			return fmt.Errorf("%s binary not found in archive", name)
+		}
+	}
+	if goos == "windows" && !wantBinaries["moneypenny-update-helper.exe"] {
+		return fmt.Errorf("update helper not found in archive")
+	}
+
+	return nil
 }
 
 // extractTarGz extracts wanted binaries from a tar.gz stream.
@@ -643,7 +643,24 @@ func (u *Updater) swapAndRestart(stagedDir string) error {
 	currentDir := filepath.Dir(currentExe)
 	currentMI6 := filepath.Join(currentDir, "mi6-client"+suffix)
 	currentHem := filepath.Join(currentDir, "hem"+suffix)
+	// Gadgets is a short-lived session tool, not the running daemon. Install it
+	// while sessions are idle, before restarting (or handing off on Windows).
+	if err := installGadgets(stagedDir, currentDir, suffix); err != nil {
+		return err
+	}
 	return installStagedUpdate(stagedDir, currentExe, currentMI6, currentHem, u.execArgs, u.beforeRestart, u.vlog)
+}
+
+func installGadgets(stagedDir, currentDir, suffix string) error {
+	source := filepath.Join(stagedDir, "gadgets"+suffix)
+	target := filepath.Join(currentDir, "gadgets"+suffix)
+	if _, err := os.Stat(source); err != nil {
+		return fmt.Errorf("staged gadgets binary not found: %w", err)
+	}
+	if err := atomicSwap(source, target); err != nil {
+		return fmt.Errorf("swap gadgets: %w", err)
+	}
+	return nil
 }
 
 // atomicSwap replaces dst with src using rename (atomic on same filesystem)
@@ -653,7 +670,7 @@ func atomicSwap(src, dst string) error {
 	backup := dst + ".old"
 	os.Remove(backup) // clean up any previous backup
 
-	if err := os.Rename(dst, backup); err != nil {
+	if err := os.Rename(dst, backup); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("backup old binary: %w", err)
 	}
 

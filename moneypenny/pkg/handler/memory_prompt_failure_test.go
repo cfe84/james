@@ -38,7 +38,7 @@ func TestRootMemoryFailureSurfacesAndReturnsIdle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(turns) != 1 || turns[0].Role != "system" || !strings.Contains(turns[0].Content, "root memory") {
+	if len(turns) != 1 || turns[0].Role != "system" || !strings.Contains(turns[0].Content, "memory") {
 		t.Fatalf("missing visible root-read failure: %+v", turns)
 	}
 }

@@ -13,19 +13,33 @@ const (
 	EventChatUserNotification = "chat_user_notification"
 )
 
+// GadgetCapabilities controls the session-scoped tools exposed to an agent.
+// Notifications to the operator are always available.
+type GadgetCapabilities struct {
+	Memory     bool `json:"memory"`
+	Subagents  bool `json:"subagents"`
+	Agents     bool `json:"agents"`
+	Scheduling bool `json:"scheduling"`
+}
+
+func DefaultGadgetCapabilities() GadgetCapabilities {
+	return GadgetCapabilities{Memory: true, Subagents: true, Scheduling: true}
+}
+
 // CreateSessionData is the data payload for create_session.
 type CreateSessionData struct {
-	Agent        string            `json:"agent"`
-	SystemPrompt string            `json:"system_prompt"`
-	Model        string            `json:"model,omitempty"`
-	Effort       string            `json:"effort,omitempty"`
-	ContextTier  string            `json:"context_tier,omitempty"`
-	Yolo         bool              `json:"yolo"`
-	Prompt       string            `json:"prompt"`
-	SessionID    string            `json:"session_id"`
-	Name         string            `json:"name"`
-	Path         string            `json:"path"`
-	Environment  map[string]string `json:"environment,omitempty"`
+	Agent              string              `json:"agent"`
+	SystemPrompt       string              `json:"system_prompt"`
+	Model              string              `json:"model,omitempty"`
+	Effort             string              `json:"effort,omitempty"`
+	ContextTier        string              `json:"context_tier,omitempty"`
+	Yolo               bool                `json:"yolo"`
+	Prompt             string              `json:"prompt"`
+	SessionID          string              `json:"session_id"`
+	Name               string              `json:"name"`
+	Path               string              `json:"path"`
+	Environment        map[string]string   `json:"environment,omitempty"`
+	GadgetCapabilities *GadgetCapabilities `json:"gadget_capabilities,omitempty"`
 	// SourceSessionID and SourceName attribute the initial prompt when this
 	// session was created by another James agent (such as a subagent).
 	SourceSessionID string `json:"source_session_id,omitempty"`
@@ -45,30 +59,32 @@ type CreateSessionData struct {
 // Model, Effort and ContextTier are optional per-prompt overrides (empty = use
 // the session's stored default).
 type ContinueSessionData struct {
-	SessionID       string   `json:"session_id"`
-	Prompt          string   `json:"prompt"`
-	Model           string   `json:"model,omitempty"`
-	Effort          string   `json:"effort,omitempty"`
-	ContextTier     string   `json:"context_tier,omitempty"`
-	Source          string   `json:"source,omitempty"`            // queue source marker (e.g. "callback") for queue_prompt
-	SourceSessionID string   `json:"source_session_id,omitempty"` // James session that invoked this prompt through a gadget
-	SourceName      string   `json:"source_name,omitempty"`       // resolved display name for SourceSessionID
-	Attachments     []string `json:"attachments,omitempty"`       // absolute paths of saved attachments
+	SessionID       string            `json:"session_id"`
+	Prompt          string            `json:"prompt"`
+	Model           string            `json:"model,omitempty"`
+	Effort          string            `json:"effort,omitempty"`
+	ContextTier     string            `json:"context_tier,omitempty"`
+	Source          string            `json:"source,omitempty"`            // queue source marker (e.g. "callback") for queue_prompt
+	SourceSessionID string            `json:"source_session_id,omitempty"` // James session that invoked this prompt through a gadget
+	SourceName      string            `json:"source_name,omitempty"`       // resolved display name for SourceSessionID
+	Attachments     []string          `json:"attachments,omitempty"`       // absolute paths of saved attachments
+	GadgetRoute     map[string]string `json:"gadget_route,omitempty"`      // operator-only daemon routing metadata
 }
 
 // UpdateSessionData is the data payload for update_session.
 // Only non-nil pointer fields are updated.
 type UpdateSessionData struct {
-	SessionID      string             `json:"session_id"`
-	Name           *string            `json:"name,omitempty"`
-	SystemPrompt   *string            `json:"system_prompt,omitempty"`
-	Model          *string            `json:"model,omitempty"`
-	Effort         *string            `json:"effort,omitempty"`
-	ContextTier    *string            `json:"context_tier,omitempty"`
-	Yolo           *bool              `json:"yolo,omitempty"`
-	Path           *string            `json:"path,omitempty"`
-	CompactionMode *string            `json:"compaction_mode,omitempty"`
-	Environment    *map[string]string `json:"environment,omitempty"`
+	SessionID          string              `json:"session_id"`
+	Name               *string             `json:"name,omitempty"`
+	SystemPrompt       *string             `json:"system_prompt,omitempty"`
+	Model              *string             `json:"model,omitempty"`
+	Effort             *string             `json:"effort,omitempty"`
+	ContextTier        *string             `json:"context_tier,omitempty"`
+	Yolo               *bool               `json:"yolo,omitempty"`
+	Path               *string             `json:"path,omitempty"`
+	CompactionMode     *string             `json:"compaction_mode,omitempty"`
+	Environment        *map[string]string  `json:"environment,omitempty"`
+	GadgetCapabilities *GadgetCapabilities `json:"gadget_capabilities,omitempty"`
 }
 
 // ImportSessionData is the data payload for import_session.
@@ -85,7 +101,8 @@ type ImportSessionData struct {
 
 // SessionIDData is used by methods that only need a session_id (get_session, delete_session, stop_session).
 type SessionIDData struct {
-	SessionID string `json:"session_id"`
+	SessionID   string            `json:"session_id"`
+	GadgetRoute map[string]string `json:"gadget_route,omitempty"`
 }
 
 // GetConversationData is the data payload for get_session_conversation.
@@ -142,10 +159,11 @@ type SessionDetail struct {
 	// of the underlying agent's context, and ContextWindow is the model's max.
 	// Both are 0 when never measured. Surfaced so clients can show usage and so
 	// the burned-in window table can be tuned by observation.
-	ContextTokens int               `json:"context_tokens,omitempty"`
-	ContextWindow int               `json:"context_window,omitempty"`
-	OpenCodeCost  float64           `json:"opencode_cost,omitempty"`
-	Environment   map[string]string `json:"environment,omitempty"`
+	ContextTokens      int                 `json:"context_tokens,omitempty"`
+	ContextWindow      int                 `json:"context_window,omitempty"`
+	OpenCodeCost       float64             `json:"opencode_cost,omitempty"`
+	Environment        map[string]string   `json:"environment,omitempty"`
+	GadgetCapabilities *GadgetCapabilities `json:"gadget_capabilities,omitempty"`
 }
 
 // SessionConversation is returned by get_session_conversation.

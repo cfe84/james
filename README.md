@@ -8,6 +8,7 @@ James is a set of tools for orchestrating AI agents (Bond pun intended). It lets
 - **Moneypenny** — Per-host daemon that runs agent sessions (Claude Code, GitHub Copilot, OpenCode)
 - **MI6** — Transport relay for remote agent communication
 - **Qew** — Web UI for remote access via MI6
+- **Gadgets** — Session-scoped agent tools (memory, messaging, subagents, schedules, notifications)
 
 ## Install
 
@@ -84,7 +85,14 @@ make test     # Run all tests
 make install  # Install to ~/bin
 ```
 
-Requires Go 1.25+. Each component (`hem/`, `moneypenny/`, `mi6/`, `qew/`) has its own `go.mod`.
+Requires Go 1.25+. Each component (`hem/`, `moneypenny/`, `mi6/`, `qew/`, `gadgets/`) has its own `go.mod`.
+
+## Agent gadgets
+
+`gadgets` is included in all platform release archives, source installs, and the
+Moneypenny and Hem/Qew Docker images. Agents invoke it using the session-scoped
+endpoint and bearer token injected by Moneypenny; there are no session override
+flags. Run `gadgets help` for commands, or see the [CLI contract](gadgets/README.md).
 
 ## License
 

@@ -19,18 +19,7 @@ func TestCompactionPromptsRespectMemoryPermissions(t *testing.T) {
 	for _, name := range []string{"claude", "copilot", "opencode"} {
 		for _, yolo := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/yolo=%t", name, yolo), func(t *testing.T) {
-				enabled := agent.MemoryEnabled(name, yolo)
-				task := compactionTaskPrompt(enabled)
-				if strings.Contains(task, "system memory contract") != enabled {
-					t.Fatalf("unexpected memory task: %s", task)
-				}
-				if !enabled && (!strings.Contains(task, "summary alone") || !strings.Contains(task, "memory is disabled")) {
-					t.Fatalf("disabled compaction is not standalone: %s", task)
-				}
-				if strings.Contains(task, "README.md") || strings.Contains(task, "4000") {
-					t.Fatal("task duplicates system memory usage rules")
-				}
-				h := &Handler{dataDir: t.TempDir()}
+				h, _ := newMemoryAuxiliaryTestHandler(t, name)
 				dir := filepath.Join(h.dataDir, "sessions", sid, "memory")
 				if err := os.MkdirAll(dir, 0700); err != nil {
 					t.Fatal(err)
@@ -43,11 +32,23 @@ func TestCompactionPromptsRespectMemoryPermissions(t *testing.T) {
 					if err := h.prepareRunInstructions(sid, &params); err != nil {
 						t.Fatal(err)
 					}
-					if strings.Contains(params.SystemPrompt, "<session-memory>") != enabled || (params.MemoryDir != "") != enabled {
+					if !strings.Contains(params.SystemPrompt, "<session-memory>") {
 						t.Fatalf("incorrect memory availability: %+v", params)
 					}
-					if !strings.Contains(params.SystemPrompt, notifyUserSystemPromptSuffix) {
+					if !strings.Contains(params.SystemPrompt, "gadgets notify") {
 						t.Fatal("missing memory-independent notification instructions")
+					}
+					for _, enabled := range []bool{false, true} {
+						task := compactionTaskPrompt(enabled)
+						if strings.Contains(task, "system memory contract") != enabled {
+							t.Fatalf("unexpected memory task: %s", task)
+						}
+						if !enabled && (!strings.Contains(task, "summary alone") || !strings.Contains(task, "memory is disabled")) {
+							t.Fatalf("disabled compaction is not standalone: %s", task)
+						}
+						if strings.Contains(task, "README.md") || strings.Contains(task, "4000") {
+							t.Fatal("task duplicates system memory usage rules")
+						}
 					}
 					if strings.Contains(params.SystemPrompt, "full history") || strings.Contains(params.SystemPrompt, "<memory-note>") {
 						t.Fatal("seed overstates available memory")
@@ -61,7 +62,7 @@ func TestCompactionPromptsRespectMemoryPermissions(t *testing.T) {
 	}
 }
 
-func newMemoryAuxiliaryTestHandler(t *testing.T, name string) (*Handler, string) {
+func newMemoryAuxiliaryTestHandler(t *testing.T, name string, capabilities ...envelope.GadgetCapabilities) (*Handler, string) {
 	t.Helper()
 	st, err := store.New(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -69,7 +70,15 @@ func newMemoryAuxiliaryTestHandler(t *testing.T, name string) (*Handler, string)
 	}
 	t.Cleanup(func() { st.Close() })
 	const sid = "123e4567-e89b-12d3-a456-426614174000"
-	if err := st.CreateSession(&store.Session{SessionID: sid, Name: "test", Agent: name, AgentSessionID: "original-agent"}); err != nil {
+	encoded := ""
+	if len(capabilities) > 0 {
+		raw, err := json.Marshal(capabilities[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		encoded = string(raw)
+	}
+	if err := st.CreateSession(&store.Session{SessionID: sid, Name: "test", Agent: name, AgentSessionID: "original-agent", GadgetCapabilities: encoded}); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.UpdateSessionStatus(sid, store.StateIdle); err != nil {
@@ -79,17 +88,18 @@ func newMemoryAuxiliaryTestHandler(t *testing.T, name string) (*Handler, string)
 }
 
 func TestDistillRejectsDisabledMemoryBeforeWorking(t *testing.T) {
-	for _, name := range []string{"copilot", "opencode"} {
+	for _, name := range []string{"claude", "copilot", "opencode"} {
 		t.Run(name, func(t *testing.T) {
-			h, sid := newMemoryAuxiliaryTestHandler(t, name)
+			h, sid := newMemoryAuxiliaryTestHandler(t, name, envelope.GadgetCapabilities{})
 			data, err := json.Marshal(envelope.DistillSessionData{SessionID: sid})
 			if err != nil {
 				t.Fatal(err)
 			}
 			response := h.distillSessionCmd(context.Background(), &envelope.Command{RequestID: "distill", Data: data})
-			if response.Status != envelope.StatusError || response.ErrorCode != envelope.ErrInvalidRequest || !strings.Contains(fmt.Sprint(response.Data), "cannot write session memory") {
+			if response.Status != envelope.StatusError || response.ErrorCode != envelope.ErrInvalidRequest || !strings.Contains(fmt.Sprint(response.Data), "memory capability is disabled") {
 				t.Fatalf("expected clear permission error: %+v", response)
 			}
+
 			sess, err := h.store.GetSession(sid)
 			if err != nil || sess.Status != store.StateIdle {
 				t.Fatalf("distillation changed session state: %+v, %v", sess, err)
@@ -98,6 +108,32 @@ func TestDistillRejectsDisabledMemoryBeforeWorking(t *testing.T) {
 				t.Fatalf("rejected distillation accessed session files: %v", err)
 			}
 		})
+	}
+}
+
+func TestDisabledMemoryRunDoesNotMigrateOrInject(t *testing.T) {
+	for _, name := range []string{"claude", "copilot", "opencode"} {
+		for _, yolo := range []bool{false, true} {
+			h, sid := newMemoryAuxiliaryTestHandler(t, name, envelope.GadgetCapabilities{})
+			root := filepath.Join(h.dataDir, "sessions", sid, "memory")
+			// Malformed legacy storage would fail migration if disabled memory were touched.
+			if err := os.MkdirAll(filepath.Join(root, "README.md"), 0700); err != nil {
+				t.Fatal(err)
+			}
+			params := agent.RunParams{Agent: name, Yolo: yolo, SystemPrompt: "Base"}
+			if err := h.prepareRunInstructions(sid, &params); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(params.SystemPrompt, "<session-memory>") || strings.Contains(params.SystemPrompt, "gadgets memory set") {
+				t.Fatalf("disabled memory instructions injected: %s", params.SystemPrompt)
+			}
+			if !strings.Contains(params.SystemPrompt, "Persistent session memory is disabled") {
+				t.Fatal("missing explicit revocation guidance")
+			}
+			if _, err := os.Stat(filepath.Join(filepath.Dir(root), "memory.db")); !os.IsNotExist(err) {
+				t.Fatalf("disabled memory was migrated: %v", err)
+			}
+		}
 	}
 }
 

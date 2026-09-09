@@ -1790,6 +1790,7 @@
         <input type="checkbox" id="wiz-gadgets"${copy && src.gadgets ? ' checked' : ''}>
         <label for="wiz-gadgets" style="margin:0;color:var(--text)">Gadgets (include James tooling in system prompt)</label>
       </div>
+      ${gadgetCapabilities.render('wiz', copy ? src.gadget_capabilities : undefined)}
       <label for="wiz-compaction">Compaction</label>
       <select id="wiz-compaction">
         <option value="custom"${(copy ? (src.compaction_mode || 'custom') : 'custom') === 'custom' ? ' selected' : ''}>Custom (distill to memory, then summarize)</option>
@@ -1913,6 +1914,7 @@
       args.push('--yolo');
     }
     if (document.getElementById('wiz-gadgets').checked) args.push('--gadgets');
+    args.push(...gadgetCapabilities.args('wiz'));
     const compaction = document.getElementById('wiz-compaction').value;
     if (compaction) args.push('--compaction', compaction);
     // Only emit explicit --traits once traits have loaded; emitting an empty
@@ -3441,8 +3443,8 @@
         <h3>${title}</h3>
         <label for="mem-f-path">Path (slash-delimited, e.g. project/conventions)</label>
         <input id="mem-f-path" type="text" value="${escapeHtml(node.path)}" ${isNew ? '' : 'readonly'} ${isRoot ? 'placeholder="(root)"' : ''}>
-        <label for="mem-f-body">Note (README.md — Markdown)</label>
-        <textarea id="mem-f-body" placeholder="This becomes the folder's README.md. Use a heading and keep parents as a concise synthesis + index of child folders.">${escapeHtml(node.body || '')}</textarea>
+        <label for="mem-f-body">Memory note (Markdown; maximum 4000 Unicode characters)</label>
+        <textarea id="mem-f-body" placeholder="Keep a concise summary and index of child node paths. Aim for 2000 characters in the root; split larger notes before saving.">${escapeHtml(node.body || '')}</textarea>
         <div class="modal-actions">
           <button class="btn-muted" id="mem-back">Back</button>
           ${(isNew || isRoot) ? '' : '<button class="btn-muted" id="mem-delete">Delete</button>'}
@@ -4349,6 +4351,7 @@
           <input type="checkbox" id="es-gadgets" ${s.gadgets ? 'checked' : ''}>
           <label for="es-gadgets" style="margin:0;color:var(--text)">Gadgets (include James tooling in system prompt)</label>
         </div>
+        ${gadgetCapabilities.render('es', s.gadget_capabilities)}
         <label for="es-compaction">Compaction</label>
         <select id="es-compaction">
           <option value="agent"${(s.compaction_mode || 'agent') === 'agent' ? ' selected' : ''}>Agent (rely on the agent's own compaction)</option>
@@ -4400,6 +4403,7 @@
         // same call would clobber that recomposition, so they're mutually exclusive
         // (mirrors the TUI edit form).
         const gadgets = document.getElementById('es-gadgets').checked;
+        args.push(...gadgetCapabilities.args('es', s.gadget_capabilities || null));
         const gadgetsChanged = gadgets !== !!s.gadgets;
         if (gadgetsChanged) {
           args.push('--gadgets', gadgets ? 'true' : 'false');

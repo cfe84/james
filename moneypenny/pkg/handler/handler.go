@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"james/moneypenny/pkg/agent"
@@ -93,17 +95,22 @@ var notifyUserTagRe = regexp.MustCompile(`(?s)<NOTIFY_USER>\s*(.{1,1000}?)\s*</N
 
 // Handler processes commands and returns responses.
 type Handler struct {
-	store             *store.Store
-	runner            *agent.Runner
-	version           string
-	dataDir           string // moneypenny data root; used for per-session storage
-	logFile           string
-	vlog              func(string, ...interface{})
-	updateStatusFunc  func() envelope.UpdateStatusResponse
-	triggerUpdateFunc func() bool                  // returns true if check was queued
-	notifyWriter      *envelope.NotificationWriter // for sending async notifications to hem
-	channels          *channel.Registry            // external communication channel providers
-	channelCmd        string                       // base command for provider MCP servers (default "agency")
+	store                *store.Store
+	runner               *agent.Runner
+	version              string
+	dataDir              string // moneypenny data root; used for per-session storage
+	logFile              string
+	vlog                 func(string, ...interface{})
+	updateStatusFunc     func() envelope.UpdateStatusResponse
+	triggerUpdateFunc    func() bool                  // returns true if check was queued
+	notifyWriter         *envelope.NotificationWriter // for sending async notifications to hem
+	channels             *channel.Registry            // external communication channel providers
+	channelCmd           string                       // base command for provider MCP servers (default "agency")
+	gadgetsMu            sync.Mutex
+	gadgetsServer        *http.Server
+	gadgetsURL           string
+	gadgetsTokens        map[[32]byte]string
+	gadgetsSessionTokens map[string]string
 }
 
 // resultCallback is called when an async agent execution completes.
@@ -187,10 +194,8 @@ func (h *Handler) sessionDirPath(sessionID string) (string, error) {
 	return dir, nil
 }
 
-// memoryDir returns the per-session memory folder (<sessionDir>/memory). The
-// agent reads and edits this folder directly with its native file tools; it is
-// also the single source of truth backing the show/list/search/update/delete
-// memory commands. Returns "" when no session dir is available.
+// memoryDir is the historical location used by the memory API to resolve the
+// authoritative sibling memory.db. Files here are retained migration backups.
 func (h *Handler) memoryDir(sessionID string) string {
 	sd := h.sessionDir(sessionID)
 	if sd == "" {
@@ -267,6 +272,9 @@ func (h *Handler) AllSessionsIdle() bool {
 // Handle dispatches a command to the appropriate method handler.
 // Returns a Response (never nil).
 func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.Response {
+	if err := h.refreshGadgetRoute(cmd); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
+	}
 	switch cmd.Method {
 	case "create_session":
 		return h.createSession(ctx, cmd)
@@ -419,8 +427,18 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 		AgentSessionID: initialAgentSessionID(data.Agent, data.SessionID),
 		CompactionMode: compactionMode,
 	}
+	if data.GadgetCapabilities != nil {
+		encoded, err := patchedGadgetCapabilities(cmd.Data, envelope.DefaultGadgetCapabilities())
+		if err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
+		}
+		sess.GadgetCapabilities = encoded
+	}
 	if err := h.store.CreateSession(sess); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionAlreadyExists, fmt.Sprintf("session already exists: %s", data.SessionID))
+	}
+	if err := h.MigrateSessionMemoryToSQLite(data.SessionID); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
 	}
 
 	// Set status to working.
@@ -433,17 +451,20 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 	// receives raw JSON, so this is the trust boundary that prevents a crafted
 	// copy_memory_from value (e.g. "../../") from escaping the sessions dir.
 	if data.CopyMemoryFrom != "" {
-		if _, err := h.store.GetSession(data.CopyMemoryFrom); err != nil {
-			h.vlog("copy_memory_from %q is not a known session: %v", data.CopyMemoryFrom, err)
+		if source, err := h.store.GetSession(data.CopyMemoryFrom); err != nil || source == nil {
+			_ = h.store.UpdateSessionStatus(data.SessionID, store.StateIdle)
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, "copy_memory_from is not a known session")
 		} else {
 			srcMem := h.memoryDir(data.CopyMemoryFrom)
-			// Ensure any legacy SQLite memory on the source is exported to files
-			// first so the copy captures it.
-			h.ensureMemoryMigrated(data.CopyMemoryFrom)
+			if err := h.MigrateSessionMemoryToSQLite(data.CopyMemoryFrom); err != nil {
+				_ = h.store.UpdateSessionStatus(data.SessionID, store.StateIdle)
+				return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
+			}
 			dstMem := h.memoryDir(data.SessionID)
 			if srcMem != "" && dstMem != "" {
 				if err := memory.CopyTree(srcMem, dstMem); err != nil {
-					h.vlog("copy memory %s -> %s: %v", data.CopyMemoryFrom, data.SessionID, err)
+					_ = h.store.UpdateSessionStatus(data.SessionID, store.StateIdle)
+					return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
 				}
 			}
 		}
@@ -790,8 +811,6 @@ func (h *Handler) summarizeSession(ctx context.Context, cmd *envelope.Command) *
 // runAgent executes the agent in the background, updating the store when done.
 // After completion, it checks the prompt queue and auto-continues if there are queued prompts.
 func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
-	promptErr := h.prepareRunInstructions(sessionID, &params)
-
 	// Provide the per-session persistent directory to the agent runner so it
 	// can use it for things like copilot's COPILOT_CUSTOM_INSTRUCTIONS_DIRS.
 	if params.SessionDir == "" {
@@ -810,6 +829,7 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 		}
 		params.Environment, err = sessionEnvironment(sess)
 	}
+	promptErr := h.prepareRunInstructions(sessionID, &params)
 	if promptErr != nil {
 		err = promptErr
 	}
@@ -1086,13 +1106,17 @@ func (h *Handler) getSession(_ context.Context, cmd *envelope.Command) *envelope
 		ContextTier:    sess.ContextTier,
 		Yolo:           sess.Yolo,
 		Path:           sess.Path,
-		Memory:         sess.Memory,
 		CompactionMode: sess.CompactionMode,
 		Environment:    sessionEnvironmentForDetail(sess.Environment),
 		ContextTokens:  sess.ContextTokens,
 		ContextWindow:  sess.ContextWindow,
 		OpenCodeCost:   sess.OpenCodeCost,
 	}
+	capabilities, err := h.gadgetCapabilities(data.SessionID)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
+	}
+	detail.GadgetCapabilities = &capabilities
 
 	if ts, err := h.store.GetSessionTimestamps(data.SessionID); err == nil && ts != nil {
 		detail.LastAccessed = ts.LastTurn.UTC().Format("2006-01-02T15:04:05Z")
@@ -1200,6 +1224,7 @@ func (h *Handler) deleteSession(_ context.Context, cmd *envelope.Command) *envel
 	if err := h.store.DeleteSession(data.SessionID); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to delete session: %v", err))
 	}
+	h.revokeGadgetToken(data.SessionID)
 
 	// Clean up the per-session persistent dir (best-effort).
 	if dir, err := h.sessionDirPath(data.SessionID); err != nil {
@@ -1237,102 +1262,26 @@ func (h *Handler) updateSession(_ context.Context, cmd *envelope.Command) *envel
 		}
 		environment = &encoded
 	}
-
-	if err := h.store.UpdateSessionFields(data.SessionID, data.Name, data.SystemPrompt, data.Model, data.Effort, data.ContextTier, data.Path, data.CompactionMode, environment, data.Yolo); err != nil {
+	var capabilities *string
+	if data.GadgetCapabilities != nil {
+		current, err := h.gadgetCapabilities(data.SessionID)
+		if err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
+		}
+		value, err := patchedGadgetCapabilities(cmd.Data, current)
+		if err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
+		}
+		capabilities = &value
+	}
+	if err := h.store.UpdateSessionFields(data.SessionID, data.Name, data.SystemPrompt, data.Model, data.Effort, data.ContextTier, data.Path, data.CompactionMode, environment, data.Yolo, capabilities); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to update session: %v", err))
 	}
 
 	return envelope.SuccessResponse(cmd.RequestID, map[string]string{"session_id": data.SessionID})
 }
 
-// MigrateMemoryToFiles exports every session's legacy SQLite memory into its
-// file-based memory folder, idempotently (skips sessions whose folder already
-// has content). Returns the number of sessions exported. Intended to run once
-// at moneypenny startup.
-//
-// TODO(2026-06-12): remove this migration helper and the SQLite memory store.
-func (h *Handler) MigrateMemoryToFiles() int {
-	sessions, err := h.store.ListSessions()
-	if err != nil {
-		h.vlog("memory migration: list sessions: %v", err)
-		return 0
-	}
-	migrated := 0
-	for _, s := range sessions {
-		memDir := h.memoryDir(s.SessionID)
-		if memDir == "" || !memory.IsEmpty(memDir) {
-			continue
-		}
-		count, _ := h.store.MemoryNodeCount(s.SessionID)
-		blob, _ := h.store.GetMemory(s.SessionID)
-		if count == 0 && strings.TrimSpace(blob) == "" {
-			continue
-		}
-		if err := h.exportLegacyMemory(s.SessionID, memDir); err != nil {
-			h.vlog("memory migration for session %s: %v", s.SessionID, err)
-			continue
-		}
-		migrated++
-	}
-	return migrated
-}
-
-// ensureMemoryMigrated lazily exports a session's legacy SQLite memory (the node
-// tree, or the older flat blob) into the file-based memory folder on first
-// access. Idempotent: it no-ops once the folder has any content.
-//
-// TODO(2026-06-12): remove this migration shim and the SQLite memory store once
-// all active sessions have been exported to the filesystem.
-func (h *Handler) ensureMemoryMigrated(sessionID string) {
-	memDir := h.memoryDir(sessionID)
-	if memDir == "" || !memory.IsEmpty(memDir) {
-		return
-	}
-	if err := h.exportLegacyMemory(sessionID, memDir); err != nil {
-		h.vlog("memory export for session %s: %v", sessionID, err)
-	}
-}
-
-// exportLegacyMemory writes the session's SQLite memory nodes out as README.md
-// files under memDir. Title/Description (which the file model folds into the
-// body) are preserved by prepending them as a heading + summary.
-func (h *Handler) exportLegacyMemory(sessionID, memDir string) error {
-	// Fold the oldest flat blob into a single node first, matching prior behavior.
-	if _, err := h.store.MigrateLegacyMemory(sessionID); err != nil {
-		h.vlog("legacy blob migration for session %s: %v", sessionID, err)
-	}
-	nodes, err := h.store.ListMemoryNodes(sessionID)
-	if err != nil {
-		return err
-	}
-	var firstErr error
-	for _, n := range nodes {
-		body := n.Body
-		if n.Title != "" || n.Description != "" {
-			var hb strings.Builder
-			if n.Title != "" {
-				hb.WriteString("# " + n.Title + "\n\n")
-			}
-			if n.Description != "" {
-				hb.WriteString(n.Description + "\n\n")
-			}
-			hb.WriteString(body)
-			body = hb.String()
-		}
-		if _, err := memory.Set(memDir, n.Path, body); err != nil {
-			h.vlog("export memory node %q for session %s: %v", n.Path, sessionID, err)
-			if firstErr == nil {
-				firstErr = err
-			}
-		}
-	}
-	// Surface a partial-export failure so the caller does not mark the session
-	// migrated; it will be retried (lazily or on next startup) until every node
-	// is written, avoiding silent data loss when the SQLite store is removed.
-	return firstErr
-}
-
-// memNodePayload converts a file-based memory node to its protocol payload.
+// memNodePayload converts an authoritative memory node to its protocol payload.
 func memNodePayload(n *memory.Node, withBody bool) envelope.MemoryNodePayload {
 	p := envelope.MemoryNodePayload{Path: n.Path, Description: n.Description}
 	if withBody {
@@ -1353,7 +1302,9 @@ func (h *Handler) showMemory(_ context.Context, cmd *envelope.Command) *envelope
 	if memDir == "" {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, "no session directory available")
 	}
-	h.ensureMemoryMigrated(data.SessionID)
+	if err := h.MigrateSessionMemoryToSQLite(data.SessionID); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
+	}
 
 	resp := envelope.ShowMemoryResponse{SessionID: data.SessionID, Path: data.Path}
 	if strings.TrimSpace(data.Path) == "" {
@@ -1419,7 +1370,9 @@ func (h *Handler) listMemory(_ context.Context, cmd *envelope.Command) *envelope
 	if memDir == "" {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, "no session directory available")
 	}
-	h.ensureMemoryMigrated(data.SessionID)
+	if err := h.MigrateSessionMemoryToSQLite(data.SessionID); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
+	}
 
 	parent := ""
 	if strings.TrimSpace(data.Path) != "" {
@@ -1455,7 +1408,9 @@ func (h *Handler) searchMemory(_ context.Context, cmd *envelope.Command) *envelo
 	if memDir == "" {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, "no session directory available")
 	}
-	h.ensureMemoryMigrated(data.SessionID)
+	if err := h.MigrateSessionMemoryToSQLite(data.SessionID); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
+	}
 
 	nodes, err := memory.Search(memDir, data.Query)
 	if err != nil {
@@ -1483,7 +1438,9 @@ func (h *Handler) updateMemory(_ context.Context, cmd *envelope.Command) *envelo
 	if memDir == "" {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, "no session directory available")
 	}
-	h.ensureMemoryMigrated(data.SessionID)
+	if err := h.MigrateSessionMemoryToSQLite(data.SessionID); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
+	}
 
 	// Body is authoritative for the file model. For backward compatibility with
 	// callers that still split Title/Description from Body, fold them into the
@@ -1525,7 +1482,9 @@ func (h *Handler) deleteMemory(_ context.Context, cmd *envelope.Command) *envelo
 	if memDir == "" {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, "no session directory available")
 	}
-	h.ensureMemoryMigrated(data.SessionID)
+	if err := h.MigrateSessionMemoryToSQLite(data.SessionID); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
+	}
 
 	deleted, err := memory.Delete(memDir, data.Path, data.Recursive)
 	if err != nil {
@@ -1971,6 +1930,10 @@ func (h *Handler) importSession(_ context.Context, cmd *envelope.Command) *envel
 	}
 	if err := h.store.CreateSession(sess); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionAlreadyExists, fmt.Sprintf("session already exists: %s", data.SessionID))
+	}
+
+	if err := h.MigrateSessionMemoryToSQLite(data.SessionID); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
 	}
 
 	// Import conversation turns.
@@ -2560,6 +2523,10 @@ var scheduleTagRe = regexp.MustCompile(`<schedule\s+at="([^"]+)">([\s\S]*?)</sch
 // parseAndCreateSchedules extracts <schedule> tags from agent output, creates schedule entries,
 // and returns the cleaned output with tags replaced by human-readable notes.
 func (h *Handler) parseAndCreateSchedules(sessionID, output string) string {
+	capabilities, err := h.gadgetCapabilities(sessionID)
+	if err != nil || !capabilities.Scheduling {
+		return output
+	}
 	return scheduleTagRe.ReplaceAllStringFunc(output, func(match string) string {
 		sub := scheduleTagRe.FindStringSubmatch(match)
 		if len(sub) != 3 {

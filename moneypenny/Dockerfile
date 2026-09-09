@@ -20,7 +20,13 @@ RUN go mod download
 COPY mi6/ .
 RUN CGO_ENABLED=0 go build -ldflags "-X main.Version=${VERSION}" -o mi6-client ./cmd/mi6-client/
 
-# Stage 3: Final image with Node.js (for Claude Code) + moneypenny + mi6-client
+FROM golang:1.25-alpine AS gadgets-builder
+ARG VERSION=dev
+WORKDIR /build
+COPY gadgets/ .
+RUN CGO_ENABLED=0 go build -ldflags "-X main.Version=${VERSION}" -o gadgets ./cmd/gadgets/
+
+# Final image with Node.js (for Claude Code) + moneypenny + mi6-client + gadgets
 FROM node:20-alpine
 
 # System dependencies: ca-certificates for HTTPS, tzdata for time zones,
@@ -34,6 +40,7 @@ RUN npm install -g @anthropic-ai/claude-code
 # Install moneypenny + mi6-client
 COPY --from=moneypenny-builder /build/moneypenny /usr/local/bin/moneypenny
 COPY --from=mi6-builder /build/mi6-client /usr/local/bin/mi6-client
+COPY --from=gadgets-builder /build/gadgets /usr/local/bin/gadgets
 
 # Create non-root user for running moneypenny + claude (Claude Code refuses
 # to run as root in YOLO mode). UID/GID 1001 because node:20-alpine already

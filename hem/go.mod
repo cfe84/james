@@ -9,7 +9,10 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.34
 	golang.org/x/crypto v0.52.0
 	golang.org/x/sys v0.45.0
+	james/moneypenny v0.0.0
 )
+
+replace james/moneypenny => ../moneypenny
 
 require (
 	github.com/alecthomas/chroma/v2 v2.14.0 // indirect

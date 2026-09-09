@@ -124,12 +124,15 @@ func main() {
 		h.SetLogFile(service.DefaultLogFile(*dataDir))
 	}
 
-	// One-time export of legacy SQLite memory into per-session memory folders.
-	// TODO(2026-06-12): remove this startup migration once all sessions have
-	// been exported to the filesystem.
-	if n := h.MigrateMemoryToFiles(); n > 0 {
-		log.Printf("memory: exported legacy memory for %d session(s) to files", n)
+	// Temporary importer: migrate all sessions before accepting any work.
+	// Failures are transactional and retryable on the next daemon startup.
+	if err := h.MigrateMemoryToSQLite(); err != nil {
+		log.Fatalf("memory migration failed (repair source/access and restart to retry): %v", err)
 	}
+	if err := h.StartGadgets(); err != nil {
+		log.Fatalf("start gadgets: %v", err)
+	}
+	defer h.CloseGadgets()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

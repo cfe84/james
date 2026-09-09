@@ -128,7 +128,7 @@ func newWizardModel(c *client) wizardModel {
 		async:       true, // TUI always creates async; polling is done by chat/dashboard
 		mpLoading:   true,
 		currentPath: defaultWizardPath(),
-		fields: []formField{
+		fields: append([]formField{
 			{label: "Prompt", flag: "", value: ""},
 			{label: "Name", flag: "--name", value: ""},
 			{label: "Nick", flag: "--nick", value: ""},
@@ -142,7 +142,7 @@ func newWizardModel(c *client) wizardModel {
 			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
 			{label: "Gadgets (James tooling)", flag: "--gadgets", isBool: true, value: "false"},
 			{label: "Compaction", flag: "--compaction", value: "custom", options: []string{"custom", "agent"}},
-		},
+		}, gadgetCapabilityFields(nil)...),
 	}
 }
 
@@ -331,6 +331,10 @@ func (m wizardModel) createSession() tea.Cmd {
 				prompt = f.value
 				continue
 			}
+			if f.explicitBool {
+				args = append(args, f.flag+"="+f.value)
+				continue
+			}
 			if f.value == "" || (f.isBool && f.value == "false") {
 				continue
 			}
@@ -429,6 +433,7 @@ func (m wizardModel) Update(msg tea.Msg) (wizardModel, tea.Cmd) {
 			return m, nil
 		}
 		src := msg.source
+		setGadgetCapabilityFields(m.fields, src.GadgetCapabilities)
 		m.sourceSessionName = src.Name
 		// Stash the source's moneypenny so the mp-loaded handler can
 		// pre-select it; if mps already loaded, fix the cursor now.
@@ -1279,6 +1284,7 @@ func (m wizardModel) viewPathStep() string {
 
 func (m wizardModel) viewFormStep() string {
 	var b strings.Builder
+	var rows []string
 
 	// Show selections from previous steps.
 	mpLabel := lipgloss.NewStyle().Foreground(colorMuted).Render("Moneypenny:")
@@ -1385,7 +1391,15 @@ func (m wizardModel) viewFormStep() string {
 				value = strings.Join(parts, "\n")
 			}
 		}
-		b.WriteString("  " + label + " " + value + "\n")
+		rows = append(rows, "  "+label+" "+value+"\n")
+	}
+	height := m.height - 8
+	if m.height == 0 {
+		height = len(rows)
+	}
+	b.WriteString(formViewport(rows, m.fCursor, height))
+	if !m.forProject {
+		b.WriteString(fieldInactiveStyle.Render(gadgetNotificationHint))
 	}
 
 	if m.creating {

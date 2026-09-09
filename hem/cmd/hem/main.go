@@ -589,6 +589,10 @@ func printResponse(data json.RawMessage, outputFmt string) {
 					{"agent", result.Agent},
 					{"system_prompt", result.SystemPrompt},
 					{"yolo", fmt.Sprintf("%v", result.Yolo)},
+					{"gadget_memory", fmt.Sprintf("%v", result.GadgetCapabilities.Memory)},
+					{"gadget_subagents", fmt.Sprintf("%v", result.GadgetCapabilities.Subagents)},
+					{"gadget_agents", fmt.Sprintf("%v", result.GadgetCapabilities.Agents)},
+					{"gadget_scheduling", fmt.Sprintf("%v", result.GadgetCapabilities.Scheduling)},
 					{"path", result.Path},
 					{"traits", strings.Join(result.Traits, ", ")},
 					{"status", result.Status},
@@ -888,6 +892,7 @@ func runServer() {
 	exec.Version = Version
 	exec.MI6Control = mi6Control
 	exec.MI6ServerFingerprint = mi6ServerFingerprint
+	exec.HemSocket = server.DefaultSocketPath()
 
 	// Check connectivity and sync sessions from moneypennies at startup.
 	exec.CheckConnectivity(log.Default())

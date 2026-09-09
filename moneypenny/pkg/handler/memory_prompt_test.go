@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"james/moneypenny/pkg/agent"
+	"james/moneypenny/pkg/memory"
 )
 
 func writePromptMemory(t *testing.T, dir, text string) {
@@ -35,13 +36,17 @@ func injectedRoot(t *testing.T, prompt string) string {
 }
 
 func TestMemoryPromptInjectsFreshRootOnly(t *testing.T) {
-	dir := t.TempDir()
+	dir := filepath.Join(t.TempDir(), "memory")
 	for _, text := range []string{
 		"# Project\n\n[Architecture](architecture/README.md): read before changing the protocol.\n",
 		"# Updated project\n\n[Architecture](architecture/README.md): transport and data ownership.\n",
 	} {
-		writePromptMemory(t, dir, text)
-		writePromptMemory(t, filepath.Join(dir, "architecture"), "# DescendantOnly\n\nDetailed child knowledge.")
+		if err := memory.SetBatch(dir, []*memory.Node{
+			{Path: "", Body: text},
+			{Path: "architecture", Body: "# DescendantOnly\n\nDetailed child knowledge."},
+		}); err != nil {
+			t.Fatal(err)
+		}
 		prompt, err := memorySystemPrompt(dir)
 		if err != nil {
 			t.Fatal(err)
@@ -68,9 +73,12 @@ func TestMemoryPromptRootCharacterBudget(t *testing.T) {
 	for _, char := range []string{"a", "é", "🕴"} {
 		for _, count := range []int{3999, 4000, 4001, 20000} {
 			t.Run(char+"/"+strconv.Itoa(count), func(t *testing.T) {
-				dir := t.TempDir()
+				dir := filepath.Join(t.TempDir(), "memory")
 				text := strings.Repeat(char, count)
 				writePromptMemory(t, dir, text)
+				if err := memory.Migrate(dir, nil); err != nil {
+					t.Fatal(err)
+				}
 				prompt, err := memorySystemPrompt(dir)
 				if err != nil {
 					t.Fatal(err)
@@ -83,12 +91,12 @@ func TestMemoryPromptRootCharacterBudget(t *testing.T) {
 				if strings.Contains(prompt, "Root excerpt truncated") != (count > 4000) {
 					t.Fatal("truncation notice does not match overflow")
 				}
-				if count > 4000 && !strings.Contains(prompt, filepath.Join(dir, "README.md")+" before restructuring") {
-					t.Fatal("missing full-file pointer")
+				if count > 4000 && !strings.Contains(prompt, "gadgets memory get to read the full root") {
+					t.Fatal("missing full-node command")
 				}
-				saved, err := os.ReadFile(filepath.Join(dir, "README.md"))
-				if err != nil || string(saved) != text {
-					t.Fatal("injection changed the file")
+				saved, err := memory.Get(dir, "")
+				if err != nil || saved.Body != text {
+					t.Fatal("injection changed authoritative content")
 				}
 			})
 		}
@@ -103,6 +111,13 @@ func TestMemoryPromptSeedsKnowledgeOnly(t *testing.T) {
 	}
 	if got := injectedRoot(t, prompt); got != rootReadmeTemplate {
 		t.Fatalf("unexpected new root: %q", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "README.md")); !os.IsNotExist(err) {
+		t.Fatalf("seeding created legacy memory file: %v", err)
+	}
+	node, err := memory.Get(dir, "")
+	if err != nil || node == nil || node.Body != rootReadmeTemplate {
+		t.Fatalf("root was not persisted in SQLite: %+v, %v", node, err)
 	}
 	for _, instruction := range []string{"Read this", "Organize", "instructions", "4000", "Each node"} {
 		if strings.Contains(rootReadmeTemplate, instruction) {
@@ -136,9 +151,8 @@ func TestRunInstructionsPermissionsAndNotifications(t *testing.T) {
 	const sid = "123e4567-e89b-12d3-a456-426614174000"
 	for _, name := range []string{"claude", "copilot", "opencode"} {
 		for _, yolo := range []bool{false, true} {
-			h := &Handler{dataDir: t.TempDir()}
+			h, _ := newMemoryAuxiliaryTestHandler(t, name)
 			dir := filepath.Join(h.dataDir, "sessions", sid, "memory")
-			// Existing memory bypasses legacy migration; no store or agent process is needed.
 			writePromptMemory(t, dir, "# Durable knowledge")
 			params := agent.RunParams{Agent: name, Yolo: yolo, SystemPrompt: "Base instructions"}
 			if err := h.prepareRunInstructions(sid, &params); err != nil {
@@ -147,13 +161,84 @@ func TestRunInstructionsPermissionsAndNotifications(t *testing.T) {
 			if !strings.HasPrefix(params.SystemPrompt, "Base instructions") {
 				t.Fatal("lost configured instructions")
 			}
-			if !strings.Contains(params.SystemPrompt, notifyUserSystemPromptSuffix) {
+			if !strings.Contains(params.SystemPrompt, "gadgets notify") {
 				t.Fatalf("%s yolo=%t lacks notification guidance", name, yolo)
 			}
-			enabled := name == "claude" || yolo
-			if strings.Contains(params.SystemPrompt, "<session-memory>") != enabled || (params.MemoryDir != "") != enabled {
+			if !strings.Contains(params.SystemPrompt, "<session-memory>") {
 				t.Fatalf("%s yolo=%t: memory access/injection mismatch", name, yolo)
 			}
 		}
+	}
+}
+
+func TestMemoryPromptUsesSQLiteAfterMigration(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "memory")
+	writePromptMemory(t, dir, "# Legacy")
+	if err := memory.Migrate(dir, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := memory.Set(dir, "", "# Authoritative"); err != nil {
+		t.Fatal(err)
+	}
+	writePromptMemory(t, dir, "# Stale backup")
+	prompt, err := memorySystemPrompt(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if injectedRoot(t, prompt) != "# Authoritative" {
+		t.Fatal("injected stale file instead of authoritative SQLite root")
+	}
+	for _, command := range []string{"get", "list", "search", "set", "batch", "delete", "revisions"} {
+		if !strings.Contains(prompt, "gadgets memory "+command) {
+			t.Errorf("missing gadget command %s", command)
+		}
+	}
+	for _, obsolete := range []string{dir, "native file tools to read and edit", "child's README.md"} {
+		if strings.Contains(prompt, obsolete) {
+			t.Errorf("injected obsolete memory instruction %q", obsolete)
+		}
+	}
+}
+
+func TestMemoryPromptWarnsAboutOversizedDescendants(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "memory")
+	if err := memory.Migrate(dir, []*memory.Node{
+		{Path: "", Body: "# Small root"},
+		{Path: "topic", Body: strings.Repeat("é", 4100)},
+		{Path: "topic/child", Body: strings.Repeat("🕴", 4200)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	prompt, err := memorySystemPrompt(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"topic": 4100 Unicode characters`, `"topic/child": 4200 Unicode characters`, "retaining useful knowledge"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	if strings.Contains(prompt, strings.Repeat("é", 100)) {
+		t.Fatal("descendant body injected")
+	}
+}
+
+func TestOversizedMemoryWarningIsBoundedAndPerNode(t *testing.T) {
+	nodes := []memory.Size{
+		{Path: "", Characters: 3000},
+		{Path: "child", Characters: 3000},
+	}
+	if warning := oversizedMemoryWarning(nodes); warning != "" {
+		t.Fatalf("aggregate size must not trigger warning: %s", warning)
+	}
+	for i := 0; i < 100; i++ {
+		nodes = append(nodes, memory.Size{Path: strings.Repeat("long/", 100) + strconv.Itoa(i), Characters: 4001 + i})
+	}
+	warning := oversizedMemoryWarning(nodes)
+	if utf8.RuneCountInString(warning) > memoryOversizedWarningCharacters {
+		t.Fatalf("warning exceeds bound: %d", utf8.RuneCountInString(warning))
+	}
+	if !strings.Contains(warning, "100 total") || !strings.Contains(warning, "additional oversized nodes omitted") {
+		t.Fatalf("missing bounded listing details: %s", warning)
 	}
 }

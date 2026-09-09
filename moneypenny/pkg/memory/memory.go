@@ -1,66 +1,66 @@
-// Package memory implements James's per-session memory as a plain folder of
-// Markdown files on the moneypenny host, rather than rows in SQLite. Every node
-// is a directory containing a README.md: the root note lives at
-// <root>/README.md, and a node at path "a/b" lives at <root>/a/b/README.md.
-//
-// This lets agents read and edit their own memory with their native file tools
-// (no shell-out to hem), which is both simpler and more reliable — the previous
-// design exposed memory only via hem shell commands, which agents sometimes
-// could not find in their tool list and worked around with ad-hoc notes files.
-//
-// All functions take an absolute root directory and operate purely on the
-// filesystem. Paths supplied by agents/users are normalized and validated to
-// prevent traversal outside root.
+// Package memory stores each session's authoritative memory in memory.db.
+// Public functions retain the historical <session>/memory directory argument;
+// README files in that directory are migration inputs, never live storage.
 package memory
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
-	"io"
+	"hash/fnv"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"unicode"
+	"unicode/utf8"
+
+	_ "github.com/mattn/go-sqlite3"
 )
 
 const (
-	// readmeName is the per-folder note/index file.
-	readmeName = "README.md"
-	// MaxPathSegmentLen bounds a single path segment. Paths are short slugs
-	// (e.g. "project/conventions/git"), not prose; a long segment almost always
-	// means content was passed as the PATH instead of the BODY.
+	readmeName        = "README.md"
 	MaxPathSegmentLen = 64
-	// outlineMaxLen bounds the body-less outline injected into the system prompt
-	// so a large tree can't blow up the prompt.
-	outlineMaxLen = 4000
-	// descriptionMaxLen bounds the derived one-line description for display.
+	MaxBodyChars      = 4000
+	RootTargetChars   = 2000
+	outlineMaxLen     = 4000
 	descriptionMaxLen = 200
-	// maxBodyReadBytes bounds how much of a README is read into memory for bulk
-	// operations (List/Children/Search/outline). Agents now edit memory files
-	// directly, so a pathologically large note must not be able to exhaust the
-	// daemon's memory or produce oversized responses. Normal notes are far
-	// smaller than this; truncation only affects degenerate cases.
-	maxBodyReadBytes = 1 << 20 // 1 MiB
+	maxOpenDatabases  = 16
+	migrationMarker   = "files-to-sqlite-v1"
 )
 
-// Node is a single memory node. Title is always empty (the file model has no
-// separate title); Description is derived from the body for display.
+// ErrMigrationRequired means the caller must run Migrate with legacy fallback
+// nodes before using this session. It is safe to retry after migration succeeds.
+var ErrMigrationRequired = errors.New("memory migration required; retry after Migrate succeeds")
+
+var connections = make(chan struct{}, maxOpenDatabases)
+var databaseLocks [64]sync.Mutex
+
+// Node is a hierarchical note. Revision increases on each committed replacement.
+// Title and Description preserve legacy metadata; absent descriptions are derived.
 type Node struct {
-	Path        string
-	Title       string
-	Description string
-	Body        string
+	Path        string `json:"path"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+	Body        string `json:"body"`
+	Revision    int64  `json:"revision"`
 }
 
-// NormalizePath cleans a user/agent-supplied memory path. It trims spaces and
-// slashes from each segment, drops empty segments, and rejects traversal,
-// absolute paths, control characters, path separators, and prose-length
-// segments. The empty path is valid and refers to the root node.
+// DatabasePath maps the historical memory directory to its sibling database.
+func DatabasePath(root string) string {
+	return filepath.Join(filepath.Dir(filepath.Clean(root)), "memory.db")
+}
+
+// NormalizePath accepts the empty root and normalizes slash-delimited slugs.
 func NormalizePath(path string) (string, error) {
-	// Normalize Windows separators to forward slashes first.
 	path = strings.ReplaceAll(path, "\\", "/")
-	raw := strings.Split(path, "/")
-	segs := make([]string, 0, len(raw))
-	for _, s := range raw {
+	segs := make([]string, 0)
+	for _, s := range strings.Split(path, "/") {
+		if strings.ContainsFunc(s, unicode.IsControl) {
+			return "", fmt.Errorf("path segment contains control characters")
+		}
 		s = strings.TrimSpace(s)
 		if s == "" {
 			continue
@@ -68,226 +68,334 @@ func NormalizePath(path string) (string, error) {
 		if s == "." || s == ".." {
 			return "", fmt.Errorf("path segment %q is not allowed", s)
 		}
-		if strings.ContainsAny(s, "\n\r\t\x00") {
-			return "", fmt.Errorf("path segment contains control characters")
+		if !utf8.ValidString(s) {
+			return "", fmt.Errorf("path is not valid UTF-8")
 		}
-		if len(s) > MaxPathSegmentLen {
-			return "", fmt.Errorf("path segment is %d chars (max %d). PATH must be a short slug like \"project/topic\"; put the content in BODY, not the path",
-				len(s), MaxPathSegmentLen)
+		if utf8.RuneCountInString(s) > MaxPathSegmentLen {
+			return "", fmt.Errorf("path segment exceeds %d characters; use a short slug and put content in BODY", MaxPathSegmentLen)
 		}
 		segs = append(segs, s)
 	}
 	return strings.Join(segs, "/"), nil
 }
 
-// dirFor returns the absolute directory for a normalized path under root.
-func dirFor(root, normPath string) string {
-	if normPath == "" {
-		return root
-	}
-	return filepath.Join(root, filepath.FromSlash(normPath))
-}
-
-// readmeFor returns the absolute README.md path for a normalized path.
-func readmeFor(root, normPath string) string {
-	return filepath.Join(dirFor(root, normPath), readmeName)
-}
-
-// deriveDescription returns a one-line summary derived from a README body: the
-// first markdown heading text, else the first non-empty line, trimmed and
-// capped.
 func deriveDescription(body string) string {
 	for _, line := range strings.Split(body, "\n") {
-		line = strings.TrimSpace(line)
+		line = strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(line), "#"))
 		if line == "" {
 			continue
 		}
-		line = strings.TrimLeft(line, "#")
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if len(line) > descriptionMaxLen {
-			line = line[:descriptionMaxLen] + "…"
+		runes := []rune(line)
+		if len(runes) > descriptionMaxLen {
+			line = string(runes[:descriptionMaxLen]) + "…"
 		}
 		return line
 	}
 	return ""
 }
 
-// readBody reads the README body for a normalized path, returning "" if absent.
-// The read is bounded by maxBodyReadBytes so a degenerate (huge) note can't
-// exhaust memory during bulk operations.
-func readBody(root, normPath string) string {
-	f, err := os.Open(readmeFor(root, normPath))
-	if err != nil {
-		return ""
-	}
-	defer f.Close()
-	buf := make([]byte, maxBodyReadBytes)
-	n, _ := io.ReadFull(f, buf)
-	return string(buf[:n])
+type database struct {
+	*sql.DB
+	lock *sync.Mutex
 }
 
-// Get returns the node at path, or nil if neither the directory nor its README
-// exists.
+func (db *database) close() {
+	db.DB.Close()
+	<-connections
+	db.lock.Unlock()
+}
+
+func open(root string, migrating bool) (_ *database, err error) {
+	if strings.TrimSpace(root) == "" {
+		return nil, errors.New("memory directory is empty")
+	}
+	path, err := filepath.Abs(DatabasePath(root))
+	if err != nil {
+		return nil, err
+	}
+	hash := fnv.New32a()
+	_, _ = hash.Write([]byte(path))
+	lock := &databaseLocks[hash.Sum32()%uint32(len(databaseLocks))]
+	// Fixed stripes bound bookkeeping without retaining one connection/mutex
+	// per session. Serialize journal/schema initialization and operations for
+	// a database: SQLite's busy timeout does not cover every WAL setup race.
+	lock.Lock()
+	connections <- struct{}{}
+	var db *sql.DB
+	defer func() {
+		if err != nil {
+			if db != nil {
+				db.Close()
+			}
+			<-connections
+			lock.Unlock()
+		}
+	}()
+	if err = os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, fmt.Errorf("create memory database directory: %w", err)
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open memory database: %w", err)
+	}
+	if err = file.Close(); err != nil {
+		return nil, err
+	}
+	uriPath := filepath.ToSlash(path)
+	if filepath.VolumeName(path) != "" && !strings.HasPrefix(uriPath, "/") {
+		uriPath = "/" + uriPath
+	}
+	u := url.URL{Scheme: "file", Path: uriPath}
+	u.RawQuery = "_busy_timeout=5000&_journal_mode=WAL&_synchronous=FULL&_txlock=immediate"
+	db, err = sql.Open("sqlite3", u.String())
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	_, err = db.Exec(`
+		CREATE TABLE IF NOT EXISTS memory_nodes (
+			path TEXT PRIMARY KEY COLLATE BINARY,
+			title TEXT NOT NULL DEFAULT '',
+			description TEXT NOT NULL DEFAULT '',
+			body TEXT NOT NULL DEFAULT '',
+			revision INTEGER NOT NULL DEFAULT 1
+		);
+		CREATE TABLE IF NOT EXISTS memory_metadata (
+			key TEXT PRIMARY KEY, value TEXT NOT NULL
+		);`)
+	if err != nil {
+		return nil, fmt.Errorf("initialize memory database: %w", err)
+	}
+	if !migrating {
+		var completed int
+		err = db.QueryRow("SELECT count(*) FROM memory_metadata WHERE key = ?", migrationMarker).Scan(&completed)
+		if err != nil {
+			return nil, err
+		}
+		if completed == 0 {
+			entries, readErr := os.ReadDir(root)
+			if readErr != nil && !os.IsNotExist(readErr) {
+				return nil, fmt.Errorf("inspect memory migration source: %w", readErr)
+			}
+			if len(entries) > 0 {
+				return nil, ErrMigrationRequired
+			}
+		}
+	}
+	return &database{DB: db, lock: lock}, nil
+}
+
+func scanNode(row interface{ Scan(...any) error }) (*Node, error) {
+	n := &Node{}
+	if err := row.Scan(&n.Path, &n.Title, &n.Description, &n.Body, &n.Revision); err != nil {
+		return nil, err
+	}
+	if n.Description == "" {
+		n.Description = deriveDescription(n.Body)
+	}
+	return n, nil
+}
+
+const nodeColumns = "path, title, description, body, revision"
+
+// Get returns a complete node, including grandfathered oversized imports.
 func Get(root, path string) (*Node, error) {
 	norm, err := NormalizePath(path)
 	if err != nil {
 		return nil, err
 	}
-	dir := dirFor(root, norm)
-	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
-		// Root may not exist yet; treat as absent.
-		return nil, nil
-	}
-	body := readBody(root, norm)
-	return &Node{Path: norm, Description: deriveDescription(body), Body: body}, nil
-}
-
-// List returns every node in the tree (each directory under root, including the
-// root) ordered by path. Bodies are included.
-func List(root string) ([]*Node, error) {
-	var nodes []*Node
-	if fi, err := os.Stat(root); err != nil || !fi.IsDir() {
-		return nil, nil
-	}
-	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if !d.IsDir() {
-			return nil
-		}
-		rel, rerr := filepath.Rel(root, p)
-		if rerr != nil {
-			return rerr
-		}
-		norm := filepath.ToSlash(rel)
-		if norm == "." {
-			norm = ""
-		}
-		body := readBody(root, norm)
-		nodes = append(nodes, &Node{Path: norm, Description: deriveDescription(body), Body: body})
-		return nil
-	})
+	db, err := open(root, false)
 	if err != nil {
-		return nil, fmt.Errorf("list memory: %w", err)
+		return nil, err
 	}
-	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Path < nodes[j].Path })
-	return nodes, nil
+	defer db.close()
+	n, err := scanNode(db.QueryRow("SELECT "+nodeColumns+" FROM memory_nodes WHERE path = ?", norm))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return n, err
 }
 
-// Children returns the immediate child nodes of parent (or top-level nodes when
-// parent is "").
+func queryNodes(root, where string, args ...any) ([]*Node, error) {
+	db, err := open(root, false)
+	if err != nil {
+		return nil, err
+	}
+	defer db.close()
+	rows, err := db.Query("SELECT "+nodeColumns+" FROM memory_nodes "+where+" ORDER BY path COLLATE BINARY", args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var nodes []*Node
+	for rows.Next() {
+		n, err := scanNode(rows)
+		if err != nil {
+			return nil, err
+		}
+		nodes = append(nodes, n)
+	}
+	return nodes, rows.Err()
+}
+
+// List returns the whole tree, root first, followed by path-sorted descendants.
+func List(root string) ([]*Node, error) {
+	return queryNodes(root, "")
+}
+
+// Children returns immediate children only, with case-sensitive path matching.
 func Children(root, parent string) ([]*Node, error) {
 	norm, err := NormalizePath(parent)
 	if err != nil {
 		return nil, err
 	}
-	dir := dirFor(root, norm)
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("list children: %w", err)
+	prefix := ""
+	if norm != "" {
+		prefix = norm + "/"
 	}
-	var out []*Node
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		childPath := e.Name()
-		if norm != "" {
-			childPath = norm + "/" + e.Name()
-		}
-		body := readBody(root, childPath)
-		out = append(out, &Node{Path: childPath, Description: deriveDescription(body), Body: body})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
-	return out, nil
+	return queryNodes(root, `WHERE path != '' AND substr(path, 1, length(?)) = ?
+		AND instr(substr(path, length(?) + 1), '/') = 0`, prefix, prefix, prefix)
 }
 
-// Set creates or replaces the node at path, writing body to its README.md.
-// Missing ancestor directories are created automatically.
+// Set atomically replaces a node and creates any missing ancestors.
 func Set(root, path, body string) (string, error) {
 	norm, err := NormalizePath(path)
 	if err != nil {
 		return "", err
 	}
-	dir := dirFor(root, norm)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", fmt.Errorf("create memory dir: %w", err)
-	}
-	// Write atomically (temp file + rename) so a failed or interrupted write
-	// never leaves a half-written README behind — important during migration,
-	// where a non-empty folder is treated as "already migrated".
-	target := filepath.Join(dir, readmeName)
-	tmp, err := os.CreateTemp(dir, ".readme-*.tmp")
-	if err != nil {
-		return "", fmt.Errorf("write memory note: %w", err)
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write([]byte(body)); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return "", fmt.Errorf("write memory note: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return "", fmt.Errorf("write memory note: %w", err)
-	}
-	if err := os.Rename(tmpName, target); err != nil {
-		os.Remove(tmpName)
-		return "", fmt.Errorf("write memory note: %w", err)
+	if err := SetBatch(root, []*Node{{Path: norm, Body: body}}); err != nil {
+		return "", err
 	}
 	return norm, nil
 }
 
-// Delete removes the node at path. When recursive is true, the whole subtree is
-// removed; otherwise it refuses if the node has child folders. The root node
-// (empty path) cannot be deleted. Returns the number of nodes removed.
+func normalizeNodes(nodes []*Node, enforceLimit bool) ([]*Node, error) {
+	out := make([]*Node, 0, len(nodes))
+	seen := make(map[string]bool)
+	for _, node := range nodes {
+		if node == nil {
+			return nil, errors.New("memory batch contains a nil node")
+		}
+		n := *node
+		var err error
+		n.Path, err = NormalizePath(n.Path)
+		if err != nil {
+			return nil, err
+		}
+		if seen[n.Path] {
+			return nil, fmt.Errorf("memory batch contains duplicate path %q", n.Path)
+		}
+		seen[n.Path] = true
+		if enforceLimit && (!utf8.ValidString(n.Body) || utf8.RuneCountInString(n.Body) > MaxBodyChars) {
+			return nil, fmt.Errorf("memory node %q body must be valid UTF-8 and at most %d Unicode characters (root target %d)", n.Path, MaxBodyChars, RootTargetChars)
+		}
+		out = append(out, &n)
+	}
+	return out, nil
+}
+
+// SetBatch commits all replacements and auto-created ancestors together, or none.
+// New/updated bodies are limited to MaxBodyChars Unicode code points. The root
+// target of RootTargetChars is advisory; migration and CopyTree preserve old bodies.
+// Duplicate normalized paths are rejected. Supplied Revision values are ignored.
+func SetBatch(root string, nodes []*Node) error {
+	normalized, err := normalizeNodes(nodes, true)
+	if err != nil {
+		return err
+	}
+	return setNodes(root, normalized)
+}
+
+func writeNodes(tx *sql.Tx, nodes []*Node) error {
+	for _, n := range nodes {
+		var ancestors []string
+		if n.Path != "" {
+			ancestors = append(ancestors, "")
+		}
+		for p := n.Path; strings.Contains(p, "/"); {
+			p = p[:strings.LastIndex(p, "/")]
+			ancestors = append(ancestors, p)
+		}
+		for _, p := range ancestors {
+			if _, err := tx.Exec("INSERT OR IGNORE INTO memory_nodes(path) VALUES (?)", p); err != nil {
+				return err
+			}
+		}
+		_, err := tx.Exec(`INSERT INTO memory_nodes(path, title, description, body) VALUES (?, ?, ?, ?)
+			ON CONFLICT(path) DO UPDATE SET title = excluded.title,
+			description = excluded.description, body = excluded.body, revision = memory_nodes.revision + 1`,
+			n.Path, n.Title, n.Description, n.Body)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func setNodes(root string, nodes []*Node) error {
+	if len(nodes) == 0 {
+		return nil
+	}
+	db, err := open(root, false)
+	if err != nil {
+		return err
+	}
+	defer db.close()
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := writeNodes(tx, nodes); err != nil {
+		return fmt.Errorf("write memory batch: %w", err)
+	}
+	return tx.Commit()
+}
+
+// Delete refuses root deletion and, unless recursive, deletion with descendants.
+// All subtree checks and removals occur in a single write transaction.
 func Delete(root, path string, recursive bool) (int, error) {
 	norm, err := NormalizePath(path)
 	if err != nil {
 		return 0, err
 	}
 	if norm == "" {
-		return 0, fmt.Errorf("cannot delete the root memory node")
+		return 0, errors.New("cannot delete the root memory node")
 	}
-	dir := dirFor(root, norm)
-	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
-		return 0, nil
+	db, err := open(root, false)
+	if err != nil {
+		return 0, err
 	}
-	// Count descendant nodes (directories) for the return value / child check.
-	var childDirs int
-	descendants := 0
-	_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
-		if err != nil || !d.IsDir() {
-			return nil
-		}
-		descendants++
-		if p != dir {
-			childDirs++
-		}
-		return nil
-	})
-	if !recursive && childDirs > 0 {
-		return 0, fmt.Errorf("node %q has %d child node(s); pass --recursive to delete the subtree", norm, childDirs)
+	defer db.close()
+	tx, err := db.Begin()
+	if err != nil {
+		return 0, err
 	}
-	if err := os.RemoveAll(dir); err != nil {
-		return 0, fmt.Errorf("delete memory node: %w", err)
+	defer tx.Rollback()
+	const match = "path = ? OR substr(path, 1, length(?)) = ?"
+	prefix := norm + "/"
+	var count int
+	if err := tx.QueryRow("SELECT count(*) FROM memory_nodes WHERE "+match, norm, prefix, prefix).Scan(&count); err != nil {
+		return 0, err
 	}
-	return descendants, nil
+	if count > 1 && !recursive {
+		return 0, fmt.Errorf("node %q has child nodes; pass --recursive to delete the subtree", norm)
+	}
+	if _, err := tx.Exec("DELETE FROM memory_nodes WHERE "+match, norm, prefix, prefix); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
-// Search returns nodes whose path or body matches query (case-insensitive
-// substring), ranked so path matches sort before body-only matches.
+// Search performs a Unicode case-insensitive substring search, path hits first.
 func Search(root, query string) ([]*Node, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
-		return nil, fmt.Errorf("search query is empty")
+		return nil, errors.New("search query is empty")
 	}
 	all, err := List(root)
 	if err != nil {
@@ -304,111 +412,96 @@ func Search(root, query string) ([]*Node, error) {
 		if strings.Contains(strings.ToLower(n.Path), q) {
 			score += 3
 		}
-		if strings.Contains(strings.ToLower(n.Body), q) {
+		if strings.Contains(strings.ToLower(n.Body), q) ||
+			strings.Contains(strings.ToLower(n.Title), q) ||
+			strings.Contains(strings.ToLower(n.Description), q) {
 			score++
 		}
 		if score > 0 {
-			hits = append(hits, scored{node: n, score: score})
+			hits = append(hits, scored{n, score})
 		}
 	}
-	sort.SliceStable(hits, func(i, j int) bool {
-		if hits[i].score != hits[j].score {
-			return hits[i].score > hits[j].score
-		}
-		return hits[i].node.Path < hits[j].node.Path
-	})
+	sort.SliceStable(hits, func(i, j int) bool { return hits[i].score > hits[j].score })
 	out := make([]*Node, len(hits))
-	for i, h := range hits {
-		out[i] = h.node
+	for i, hit := range hits {
+		out[i] = hit.node
 	}
 	return out, nil
 }
 
-// Outline returns a compact, body-less tree outline (path + derived
-// description, indented by depth), suitable for the system prompt. Returns ""
-// when the tree is empty (only the root with no content). Capped to
-// outlineMaxLen.
+// Outline returns a body-less, bounded root-first hierarchy for prompts.
 func Outline(root string) (string, error) {
 	nodes, err := List(root)
 	if err != nil {
 		return "", err
 	}
-	var b strings.Builder
+	const suffix = "…(outline truncated; use memory tools to browse)"
+	var lines []string
+	length := 0
 	for _, n := range nodes {
-		if n.Path == "" && strings.TrimSpace(n.Body) == "" {
+		if n.Path == "" && strings.TrimSpace(n.Body) == "" && n.Title == "" && n.Description == "" {
 			continue
 		}
-		depth := 0
-		label := n.Path
+		depth, label := strings.Count(n.Path, "/")+1, n.Path
 		if n.Path == "" {
-			label = "(root)"
-		} else {
-			depth = strings.Count(n.Path, "/") + 1
+			depth, label = 0, "(root)"
 		}
 		line := strings.Repeat("  ", depth) + label
-		if d := n.Description; d != "" {
-			line += " — " + d
+		if n.Description != "" {
+			line += " — " + n.Description
 		}
-		line += "\n"
-		if b.Len() > 0 && b.Len()+len(line) > outlineMaxLen {
-			b.WriteString("…(outline truncated; read individual README.md files to browse)\n")
+		if length+utf8.RuneCountInString(line)+1 > outlineMaxLen-utf8.RuneCountInString(suffix)-1 {
+			lines = append(lines, suffix)
 			break
 		}
-		b.WriteString(line)
+		lines = append(lines, line)
+		length += utf8.RuneCountInString(line) + 1
 	}
-	return strings.TrimRight(b.String(), "\n"), nil
+	return strings.Join(lines, "\n"), nil
 }
 
-// Count returns the number of nodes (directories) in the tree.
+// Count returns the number of nodes. Use CountWithError for operational decisions.
 func Count(root string) int {
-	nodes, _ := List(root)
-	return len(nodes)
+	count, _ := CountWithError(root)
+	return count
 }
 
-// IsEmpty reports whether the memory tree has no content: either the root dir is
-// absent, or it contains no README files at all.
+// CountWithError reports database and pending-migration errors rather than hiding them.
+func CountWithError(root string) (int, error) {
+	db, err := open(root, false)
+	if err != nil {
+		return 0, err
+	}
+	defer db.close()
+	var count int
+	err = db.QueryRow("SELECT count(*) FROM memory_nodes").Scan(&count)
+	return count, err
+}
+
+// IsEmpty is conservative on errors to prevent destructive "empty" fallbacks.
 func IsEmpty(root string) bool {
-	if fi, err := os.Stat(root); err != nil || !fi.IsDir() {
-		return true
-	}
-	empty := true
-	_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
-		}
-		if d.Name() == readmeName {
-			empty = false
-		}
-		return nil
-	})
-	return empty
+	empty, err := IsEmptyWithError(root)
+	return err == nil && empty
 }
 
-// CopyTree copies the entire memory tree from src to dst (used when duplicating
-// a session). It is a no-op when src does not exist.
-func CopyTree(src, dst string) error {
-	if fi, err := os.Stat(src); err != nil || !fi.IsDir() {
-		return nil
+// IsEmptyWithError reports whether no note contains content or metadata.
+func IsEmptyWithError(root string) (bool, error) {
+	db, err := open(root, false)
+	if err != nil {
+		return false, err
 	}
-	return filepath.WalkDir(src, func(p string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, rerr := filepath.Rel(src, p)
-		if rerr != nil {
-			return rerr
-		}
-		target := filepath.Join(dst, rel)
-		if d.IsDir() {
-			return os.MkdirAll(target, 0o755)
-		}
-		data, rerr := os.ReadFile(p)
-		if rerr != nil {
-			return rerr
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return err
-		}
-		return os.WriteFile(target, data, 0o644)
-	})
+	defer db.close()
+	var count int
+	err = db.QueryRow("SELECT count(*) FROM memory_nodes WHERE body != '' OR title != '' OR description != ''").Scan(&count)
+	return count == 0, err
+}
+
+// CopyTree atomically merges an authoritative snapshot into dst, preserving
+// oversized imported bodies. It never copies or consults backup README files.
+func CopyTree(src, dst string) error {
+	nodes, err := List(src)
+	if err != nil {
+		return err
+	}
+	return setNodes(dst, nodes)
 }

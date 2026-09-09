@@ -112,7 +112,7 @@ func (m memoryModel) saveNode() tea.Cmd {
 	path := m.fields[0].value
 	body := m.fields[1].value
 	return func() tea.Msg {
-		// Body is the full README.md content; title/description are derived.
+		// Body is the full Markdown note; title/description are derived.
 		err := client.saveMemoryNode(sessionID, path, "", "", body)
 		return memorySavedMsg{path: path, err: err}
 	}
@@ -145,7 +145,7 @@ func (m memoryModel) selectedNode() *memoryNodeView {
 
 // newEditFields builds the per-node edit form. When path is non-empty and
 // isNew is false, the Path field is locked (renaming is not supported — create
-// a new node instead). The body is the node's README.md content.
+// a new node instead). The body is the authoritative Markdown note.
 func newEditFields(path, body string, isNew bool) ([]formField, []string) {
 	bodyInput := newTextInput(true)
 	bodyInput.SetValue(body)
@@ -373,7 +373,7 @@ func (m memoryModel) submitEdit() (memoryModel, tea.Cmd) {
 	for i := range m.fields {
 		m.fields[i].syncFromInput()
 	}
-	if strings.TrimSpace(m.fields[0].value) == "" {
+	if m.isNew && strings.TrimSpace(m.fields[0].value) == "" {
 		m.err = fmt.Errorf("path is required")
 		return m, nil
 	}
