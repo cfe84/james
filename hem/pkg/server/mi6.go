@@ -114,7 +114,7 @@ func (m *MI6Listener) runOnce() error {
 		return fmt.Errorf("mi6-client not found: %w", err)
 	}
 
-	cmd := exec.Command(mi6Client, "--key", m.keyPath, "--server-fingerprint", m.serverFingerprint, m.addr)
+	cmd := exec.Command(mi6Client, "--line-mode", "--key", m.keyPath, "--server-fingerprint", m.serverFingerprint, m.addr)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("stdin pipe: %w", err)

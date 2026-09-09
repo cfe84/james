@@ -39,6 +39,7 @@ func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
 	batchTimeout := flag.Duration("batch-timeout", 100*time.Millisecond, "idle timeout for stdin batching")
 	batchSize := flag.Int("batch-size", 4096, "max batch size in bytes")
+	lineMode := flag.Bool("line-mode", false, "send each complete newline-delimited record as one frame (no partial flushes)")
 	flag.Parse()
 
 	if *showVersion {
@@ -286,7 +287,15 @@ func main() {
 				Payload: data,
 			})
 		}
-		if err := batcher.Run(ctx, os.Stdin, flush); err != nil {
+		var err error
+		if *lineMode {
+			// Leave room for the protocol header, nonce, authentication tag and
+			// compression marker, including peers without gzip support.
+			err = batch.RunLines(ctx, os.Stdin, protocol.MaxMessageSize-64, flush)
+		} else {
+			err = batcher.Run(ctx, os.Stdin, flush)
+		}
+		if err != nil {
 			if ctx.Err() != nil {
 				return
 			}

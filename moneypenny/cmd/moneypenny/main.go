@@ -490,7 +490,7 @@ func runMI6Once(ctx context.Context, h *handler.Handler, dispatcher *requestDisp
 	childCtx, childCancel := context.WithCancel(ctx)
 	defer childCancel()
 
-	cmd := exec.CommandContext(childCtx, mi6Client, "--key", keyPath, "--server-fingerprint", serverFingerprint, addr)
+	cmd := exec.CommandContext(childCtx, mi6Client, "--line-mode", "--key", keyPath, "--server-fingerprint", serverFingerprint, addr)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("failed to get mi6-client stdin: %w", err)

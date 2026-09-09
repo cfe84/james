@@ -120,6 +120,7 @@ MI6 is a transport abstraction that allows, by creating a central place that all
 - communication between client and server is encrypted using the ssh-key, with per-message gzip compression negotiated during handshake
 - 2 or more clients will open the same session on mi-6 server, then communicate through it.
 - Communication on the client happens through stdio. Client should batch some of the text coming through stdin, then send to the server. Server then broadcasts to all _other_ connected clients to their stdout.
+- James JSON transports invoke `mi6-client --line-mode`: each complete newline-delimited envelope is one MI6 frame, never a size/idle-triggered partial chunk. This prevents concurrent senders or mid-response joins from corrupting conversation JSON. Raw MI6 stream batching remains the default for other callers. Line mode rejects incomplete EOF records and records larger than 15 MiB minus 64 bytes of framing headroom. Upgrade the local `mi6-client` alongside Hem, Moneypenny, and Qew; no relay-server protocol change is required. Mixed old/new senders can still emit partial records until all James endpoints are upgraded.
 - For the client, let's support `mi6-client mi6.servername.com/session_id` as a valid command, in addition to flags.
 - We should be able to pass the ECDSA key as environment variable to mi6-client, or directly in a `--key-value` path.
 - Add a `--generate-key` that generates a key.

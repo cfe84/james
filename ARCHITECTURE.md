@@ -91,7 +91,7 @@ mi6/
 
 6. **Sessions**: Lazy creation (first client join creates session). In-memory only (no persistence). Server broadcasts data to all OTHER connected clients in the same session.
 
-7. **Batching**: Client batches stdin with triple trigger: newline, buffer size (4KB), or idle timeout (100ms).
+7. **Batching**: Raw client mode batches stdin with triple trigger: newline, buffer size (4KB), or idle timeout (100ms). James JSON senders use `--line-mode` (v1.77.1), implemented by `batch.RunLines`, to send a whole newline-delimited record as one `MsgData` frame. The former size/idle fragmentation let other relay senders splice data into long responses; per-request clients could also join halfway through a record. Atomic frames solve both without changing the relay wire protocol or hiding JSON parse errors. Line-mode input is bounded to `MaxMessageSize-64` bytes including the newline, reserving framing/encryption overhead; overflow and incomplete EOF fail explicitly without flushing a fragment. All James subprocess transports opt in: Moneypenny, Hem's MP client, Hem control listener, CLI/TUI MI6 sender, and Qew. Install the updated local mi6-client with each component; legacy senders continue raw fragmentation until upgraded. Slow-consumer dropping can still lose whole frames (causing timeouts), but cannot splice line-mode records.
 
 8. **authorized_keys**: Standard OpenSSH format, reloaded on SIGHUP.
 

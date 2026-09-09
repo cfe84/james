@@ -211,7 +211,7 @@ func (c *Client) sendMI6(ctx context.Context, cmd *Command) (*Response, error) {
 		return nil, err
 	}
 
-	proc := exec.CommandContext(ctx, mi6Client, "--key", c.mi6KeyPath, "--server-fingerprint", c.mi6ServerFingerprint, c.mi6Addr)
+	proc := exec.CommandContext(ctx, mi6Client, "--line-mode", "--key", c.mi6KeyPath, "--server-fingerprint", c.mi6ServerFingerprint, c.mi6Addr)
 	var stderrBuf bytes.Buffer
 	proc.Stderr = &stderrBuf
 

@@ -99,7 +99,7 @@ func (s *MI6Sender) connectInternal() error {
 		return err
 	}
 
-	cmd := exec.Command(mi6Client, "--key", s.KeyPath, "--server-fingerprint", s.ServerFingerprint, s.Addr)
+	cmd := exec.Command(mi6Client, "--line-mode", "--key", s.KeyPath, "--server-fingerprint", s.ServerFingerprint, s.Addr)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return fmt.Errorf("stdin pipe: %w", err)
