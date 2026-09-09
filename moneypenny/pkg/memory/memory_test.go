@@ -492,6 +492,40 @@ func TestMigrationNoFilesPreservesFallbackRoot(t *testing.T) {
 	}
 }
 
+func TestMigrationImportsLegacyDirectoryWithLongName(t *testing.T) {
+	root := memoryRoot(t)
+	long := "agent-created-directory-with-a-prose-name-that-exceeds-the-current-sixty-four-character-slug-limit"
+	body := "preserved legacy note"
+	writeReadme(t, root, long+"/child", body)
+
+	if err := Migrate(root, nil); err != nil {
+		t.Fatalf("migration rejected a legacy directory: %v", err)
+	}
+	nodes, err := List(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var imported *Node
+	for _, node := range nodes {
+		if node.Body == body {
+			imported = node
+			break
+		}
+	}
+	if imported == nil {
+		t.Fatal("legacy note was not imported")
+	}
+	if !strings.HasPrefix(imported.Path, "legacy-") || !strings.Contains(imported.Path, "/child") {
+		t.Fatalf("legacy path was not mapped safely: %+v", imported)
+	}
+	if !strings.Contains(imported.Description, "backup files") {
+		t.Fatalf("mapped path was not identified: %+v", imported)
+	}
+	if got, err := os.ReadFile(filepath.Join(root, long, "child", readmeName)); err != nil || string(got) != body {
+		t.Fatalf("legacy backup changed: %q, %v", got, err)
+	}
+}
+
 func TestMigrationSymlinksFailWithoutFollowing(t *testing.T) {
 	for _, linkKind := range []string{"root", "directory", "readme"} {
 		t.Run(linkKind, func(t *testing.T) {

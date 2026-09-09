@@ -1,12 +1,14 @@
 package memory
 
 import (
+	"crypto/sha256"
 	"database/sql"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // Migrate imports the retired memory directory and fallback legacy database
@@ -116,14 +118,14 @@ func readMigrationFiles(root string) ([]migrationNode, error) {
 			rel = ""
 		}
 		rel = filepath.ToSlash(rel)
-		norm, err := NormalizePath(rel)
+		norm, transformed, err := migrationPath(rel)
 		if err != nil {
 			return fmt.Errorf("invalid migration directory %q: %w", rel, err)
 		}
-		if norm != rel {
-			return fmt.Errorf("migration directory %q is not a canonical memory path", rel)
-		}
 		n := migrationNode{Node: &Node{Path: norm}}
+		if transformed {
+			n.Description = "Migrated from a legacy directory name; the original path is retained in the memory backup files."
+		}
 		readme := filepath.Join(path, readmeName)
 		stat, err := os.Lstat(readme)
 		if err != nil && !os.IsNotExist(err) {
@@ -144,4 +146,35 @@ func readMigrationFiles(root string) ([]migrationNode, error) {
 		return nil
 	})
 	return nodes, err
+}
+
+// migrationPath preserves canonical legacy paths and maps path components that
+// predate the current slug constraints to stable, valid names. The source
+// directory remains untouched as a backup, so an import must not make a
+// daemon unbootable merely because an agent once used prose as a folder name.
+func migrationPath(path string) (string, bool, error) {
+	if normalized, err := NormalizePath(path); err == nil && normalized == path {
+		return normalized, false, nil
+	}
+	if path == "" {
+		return "", false, nil
+	}
+	parts := strings.Split(path, "/")
+	safe := make([]string, 0, len(parts))
+	transformed := false
+	for _, part := range parts {
+		normalized, err := NormalizePath(part)
+		if err == nil && normalized == part {
+			safe = append(safe, normalized)
+			continue
+		}
+		sum := sha256.Sum256([]byte(part))
+		safe = append(safe, fmt.Sprintf("legacy-%x", sum[:12]))
+		transformed = true
+	}
+	normalized, err := NormalizePath(strings.Join(safe, "/"))
+	if err != nil {
+		return "", false, err
+	}
+	return normalized, transformed, nil
 }

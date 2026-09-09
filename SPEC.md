@@ -1017,8 +1017,11 @@ deleted notes must not be resurrected from stale rows. Empty README files count.
 Only when there is no README does the importer fall back to legacy `memory_nodes`,
 or the old flat `sessions.memory` blob as `notes` when there are no legacy nodes.
 README bodies—including oversized roots and descendants—are preserved intact;
-directories without a README remain navigable nodes. Invalid sources fail rather
-than silently lose knowledge.
+directories without a README remain navigable nodes. Legacy directory components
+that no longer meet the current 64-character slug rule are deterministically
+mapped to `legacy-<hash>` SQLite paths and flagged as such; their original files
+remain untouched backups. Unreadable sources, symlinks, and non-directory roots
+still fail rather than silently lose knowledge.
 
 Legacy files remain untouched **backups**, not writable authority; old operational
 memory rows are migration inputs only. Both the former startup and lazy

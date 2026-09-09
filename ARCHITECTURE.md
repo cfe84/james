@@ -256,7 +256,11 @@ The entry point aborts startup if the boot pass reports any failure, before
 starting the gadgets listener or accepting work; repair and restart is the boot
 retry path.
 
-`memory/migration.go` imports the retired directory tree transactionally. **Any
+`memory/migration.go` imports the retired directory tree transactionally. Legacy
+folder components that do not meet current memory slug rules (including the
+64-character maximum) map deterministically to `legacy-<hash>` node paths and
+are flagged in their metadata; the untouched source tree remains the record of
+the original name. **Any
 README.md anywhere in the tree makes the entire file tree authoritative over
 all stale operational-database rows**, including rows whose paths are missing
 from the files. An empty README also counts. This is deliberately not a per-path
