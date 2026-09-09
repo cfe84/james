@@ -73,6 +73,14 @@ func (cm *ClientManager) IsInCooldown(mpName string) bool {
 	return false
 }
 
+// IsUnavailable stays true after the retry delay expires, until a request succeeds.
+func (cm *ClientManager) IsUnavailable(mpName string) bool {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	_, failed := cm.cooldowns[mpName]
+	return failed
+}
+
 // ClearCooldown clears the cooldown for a moneypenny.
 func (cm *ClientManager) ClearCooldown(mpName string) {
 	cm.mu.Lock()

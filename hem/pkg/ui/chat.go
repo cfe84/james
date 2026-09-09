@@ -118,6 +118,7 @@ type chatModel struct {
 	scheduleAt            string // time for the scheduled prompt
 	editingScheduleID     int64  // >0 = editing this schedule in place (0 = creating)
 	editSchedPrompt       string // current prompt to prefill when editing
+	scheduleMarkReady     bool   // surface the completed scheduled result in Ready
 	pickingSchedule       bool   // schedule picker overlay
 	scheduleCursor        int
 	confirmDeleteSchedule bool
@@ -516,17 +517,17 @@ func (m chatModel) loadSchedules() tea.Cmd {
 	}
 }
 
-func (m chatModel) createSchedule(at, prompt string) tea.Cmd {
+func (m chatModel) createSchedule(at, prompt string, markReady bool) tea.Cmd {
 	return func() tea.Msg {
-		err := m.client.scheduleSession(m.sessionID, at, prompt)
+		err := m.client.scheduleSession(m.sessionID, at, prompt, markReady)
 		return scheduleCreatedMsg{err: err}
 	}
 }
 
 // editSchedule updates an existing pending schedule's time and prompt in place.
-func (m chatModel) editSchedule(id int64, at, prompt string) tea.Cmd {
+func (m chatModel) editSchedule(id int64, at, prompt string, markReady bool) tea.Cmd {
 	return func() tea.Msg {
-		err := m.client.editSchedule(m.sessionID, id, at, prompt)
+		err := m.client.editSchedule(m.sessionID, id, at, prompt, markReady)
 		return scheduleCreatedMsg{err: err}
 	}
 }
@@ -1001,6 +1002,7 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 		m.scheduleAt = ""
 		m.editingScheduleID = 0
 		m.editSchedPrompt = ""
+		m.scheduleMarkReady = false
 		if msg.err != nil {
 			m.err = msg.err
 		}
@@ -1281,6 +1283,7 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 					m.scheduling = true
 					m.editingScheduleID = sch.ID
 					m.editSchedPrompt = sch.Prompt
+					m.scheduleMarkReady = sch.MarkReady
 					m.scheduleAt = ""
 					m.chatInput.Reset()
 					m.chatInput.SetValue(sch.ScheduledAt)
@@ -1295,6 +1298,7 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 					m.scheduling = true
 					m.editingScheduleID = 0
 					m.editSchedPrompt = ""
+					m.scheduleMarkReady = false
 					m.scheduleAt = ""
 					m.chatInput.Reset()
 					return m, nil
@@ -1534,7 +1538,11 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 				m.scheduleAt = ""
 				m.editingScheduleID = 0
 				m.editSchedPrompt = ""
+				m.scheduleMarkReady = false
 				m.chatInput.Reset()
+				return m, nil
+			case "alt+r":
+				m.scheduleMarkReady = !m.scheduleMarkReady
 				return m, nil
 			case "enter":
 				if m.scheduleAt == "" {
@@ -1558,9 +1566,9 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 				}
 				m.chatInput.Reset()
 				if m.editingScheduleID != 0 {
-					return m, m.editSchedule(m.editingScheduleID, m.scheduleAt, prompt)
+					return m, m.editSchedule(m.editingScheduleID, m.scheduleAt, prompt, m.scheduleMarkReady)
 				}
-				return m, m.createSchedule(m.scheduleAt, prompt)
+				return m, m.createSchedule(m.scheduleAt, prompt, m.scheduleMarkReady)
 			}
 			// Fall through to normal input handling for text entry.
 		}
@@ -2148,6 +2156,9 @@ func (m chatModel) View() string {
 				prompt = prompt[:57] + "..."
 			}
 			line := fmt.Sprintf("  %s — %s", schedTime, prompt)
+			if sch.MarkReady {
+				line += " [Ready]"
+			}
 			if i == m.scheduleCursor {
 				b.WriteString(sessionSelectedStyle.Render(line))
 			} else {
@@ -2428,6 +2439,7 @@ func (m chatModel) View() string {
 		} else {
 			label = fmt.Sprintf(" %s %s [%s] Prompt: ", icon, verb, m.scheduleAt)
 		}
+		label += fmt.Sprintf("[Alt-R Ready: %t] ", m.scheduleMarkReady)
 		schedLabel := lipgloss.NewStyle().Foreground(colorWarning).Bold(true).Render(label)
 		b.WriteString(schedLabel + m.chatInput.Render())
 	} else if m.commandMode {

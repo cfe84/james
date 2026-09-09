@@ -117,6 +117,9 @@ type SessionInfo struct {
 	Agent        string `json:"agent,omitempty"`
 	CreatedAt    string `json:"created_at,omitempty"`
 	LastAccessed string `json:"last_accessed,omitempty"`
+	// ScheduleReadyAt is set when a schedule configured to mark its result
+	// ready has completed. Hem uses it as a monotonic attention marker.
+	ScheduleReadyAt string `json:"schedule_ready_at,omitempty"`
 }
 
 // SessionDetail is returned by get_session (metadata only, no conversation).
@@ -380,6 +383,7 @@ type ScheduleData struct {
 	// ReplyChannelID routes the scheduled prompt's output to a channel
 	// (channels.id). 0 = no channel routing.
 	ReplyChannelID int64 `json:"reply_channel_id,omitempty"`
+	MarkReady      bool  `json:"mark_ready"`
 }
 
 // ScheduleResponse is returned by schedule on success.
@@ -403,6 +407,7 @@ type ScheduleInfo struct {
 	Status         string `json:"status"`
 	CronExpr       string `json:"cron_expr,omitempty"`
 	ReplyChannelID int64  `json:"reply_channel_id,omitempty"`
+	MarkReady      bool   `json:"mark_ready"`
 	CreatedAt      string `json:"created_at"`
 }
 
@@ -426,6 +431,7 @@ type UpdateScheduleData struct {
 	// ReplyChannelID routes the scheduled prompt's output to a channel
 	// (channels.id). 0 = no channel routing.
 	ReplyChannelID int64 `json:"reply_channel_id,omitempty"`
+	MarkReady      bool  `json:"mark_ready"`
 }
 
 // UpdateScheduleResponse is returned by update_schedule on success.

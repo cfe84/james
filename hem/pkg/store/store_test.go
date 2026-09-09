@@ -52,6 +52,7 @@ func TestMoneypennyMI6FingerprintPersists(t *testing.T) {
 		MI6Addr:              "mi6.example:7007/remote",
 		MI6ServerFingerprint: "SHA256:trusted",
 	}
+
 	if err := s.AddMoneypenny(mp); err != nil {
 		t.Fatalf("AddMoneypenny: %v", err)
 	}
@@ -61,6 +62,41 @@ func TestMoneypennyMI6FingerprintPersists(t *testing.T) {
 	}
 	if got.MI6ServerFingerprint != mp.MI6ServerFingerprint {
 		t.Fatalf("MI6ServerFingerprint = %q, want %q", got.MI6ServerFingerprint, mp.MI6ServerFingerprint)
+	}
+}
+
+func TestProcessScheduleReadyOnlySurfacesNewResults(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.AddMoneypenny(&Moneypenny{
+		Name:          "mp",
+		TransportType: TransportFIFO,
+		FIFOIn:        "/tmp/in",
+		FIFOOut:       "/tmp/out",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TrackSession("scheduled", "mp"); err != nil {
+		t.Fatal(err)
+	}
+	readyAt := time.Now().UTC().Truncate(time.Second)
+	surfaced, err := s.ProcessScheduleReady("scheduled", readyAt)
+	if err != nil || !surfaced {
+		t.Fatalf("first marker = (%v, %v), want (true, nil)", surfaced, err)
+	}
+	sess, err := s.GetSession("scheduled")
+	if err != nil || sess == nil || sess.Reviewed {
+		t.Fatalf("scheduled session should be unreviewed: %+v, %v", sess, err)
+	}
+	if err := s.SetSessionReviewed("scheduled", true); err != nil {
+		t.Fatal(err)
+	}
+	surfaced, err = s.ProcessScheduleReady("scheduled", readyAt)
+	if err != nil || surfaced {
+		t.Fatalf("same marker = (%v, %v), want (false, nil)", surfaced, err)
+	}
+	surfaced, err = s.ProcessScheduleReady("scheduled", readyAt.Add(time.Second))
+	if err != nil || !surfaced {
+		t.Fatalf("newer marker = (%v, %v), want (true, nil)", surfaced, err)
 	}
 }
 
@@ -298,59 +334,59 @@ func TestDeleteMoneypennyCascadesToSessions(t *testing.T) {
 }
 
 func TestTraitEnabledByDefault(t *testing.T) {
-s := newTestStore(t)
-now := time.Now()
+	s := newTestStore(t)
+	now := time.Now()
 
-if err := s.CreateTrait(&Trait{ID: "t1", Name: "alpha", Prompt: "a", EnabledByDefault: true, CreatedAt: now, UpdatedAt: now}); err != nil {
-t.Fatalf("CreateTrait t1: %v", err)
-}
-if err := s.CreateTrait(&Trait{ID: "t2", Name: "beta", Prompt: "b", CreatedAt: now, UpdatedAt: now}); err != nil {
-t.Fatalf("CreateTrait t2: %v", err)
-}
+	if err := s.CreateTrait(&Trait{ID: "t1", Name: "alpha", Prompt: "a", EnabledByDefault: true, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("CreateTrait t1: %v", err)
+	}
+	if err := s.CreateTrait(&Trait{ID: "t2", Name: "beta", Prompt: "b", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("CreateTrait t2: %v", err)
+	}
 
-got, err := s.GetTrait("t1")
-if err != nil || got == nil {
-t.Fatalf("GetTrait t1: %v", err)
-}
-if !got.EnabledByDefault {
-t.Fatalf("t1 should be enabled by default")
-}
+	got, err := s.GetTrait("t1")
+	if err != nil || got == nil {
+		t.Fatalf("GetTrait t1: %v", err)
+	}
+	if !got.EnabledByDefault {
+		t.Fatalf("t1 should be enabled by default")
+	}
 
-got2, _ := s.GetTrait("t2")
-if got2.EnabledByDefault {
-t.Fatalf("t2 should not be enabled by default")
-}
+	got2, _ := s.GetTrait("t2")
+	if got2.EnabledByDefault {
+		t.Fatalf("t2 should not be enabled by default")
+	}
 
-// Toggle t1 off and t2 on via UpdateTrait.
-off, on := false, true
-if err := s.UpdateTrait("t1", nil, nil, &off); err != nil {
-t.Fatalf("UpdateTrait t1: %v", err)
-}
-if err := s.UpdateTrait("t2", nil, nil, &on); err != nil {
-t.Fatalf("UpdateTrait t2: %v", err)
-}
+	// Toggle t1 off and t2 on via UpdateTrait.
+	off, on := false, true
+	if err := s.UpdateTrait("t1", nil, nil, &off); err != nil {
+		t.Fatalf("UpdateTrait t1: %v", err)
+	}
+	if err := s.UpdateTrait("t2", nil, nil, &on); err != nil {
+		t.Fatalf("UpdateTrait t2: %v", err)
+	}
 
-// nil enabledByDefault must leave the flag unchanged.
-newName := "beta2"
-if err := s.UpdateTrait("t2", &newName, nil, nil); err != nil {
-t.Fatalf("UpdateTrait t2 name: %v", err)
-}
+	// nil enabledByDefault must leave the flag unchanged.
+	newName := "beta2"
+	if err := s.UpdateTrait("t2", &newName, nil, nil); err != nil {
+		t.Fatalf("UpdateTrait t2 name: %v", err)
+	}
 
-traits, err := s.ListTraits()
-if err != nil {
-t.Fatalf("ListTraits: %v", err)
-}
-byID := map[string]*Trait{}
-for _, tr := range traits {
-byID[tr.ID] = tr
-}
-if byID["t1"].EnabledByDefault {
-t.Fatalf("t1 should now be disabled")
-}
-if !byID["t2"].EnabledByDefault {
-t.Fatalf("t2 should now be enabled and unchanged by name update")
-}
-if byID["t2"].Name != "beta2" {
-t.Fatalf("t2 name not updated: %q", byID["t2"].Name)
-}
+	traits, err := s.ListTraits()
+	if err != nil {
+		t.Fatalf("ListTraits: %v", err)
+	}
+	byID := map[string]*Trait{}
+	for _, tr := range traits {
+		byID[tr.ID] = tr
+	}
+	if byID["t1"].EnabledByDefault {
+		t.Fatalf("t1 should now be disabled")
+	}
+	if !byID["t2"].EnabledByDefault {
+		t.Fatalf("t2 should now be enabled and unchanged by name update")
+	}
+	if byID["t2"].Name != "beta2" {
+		t.Fatalf("t2 name not updated: %q", byID["t2"].Name)
+	}
 }

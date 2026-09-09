@@ -48,8 +48,11 @@ type Session struct {
 	// OpenCodeCost is the cumulative provider-reported USD cost for this
 	// OpenCode session. It remains zero for other agents.
 	OpenCodeCost float64
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	// ScheduleReadyAt records the completion time of the latest scheduled run
+	// configured to surface its result as ready. A zero value means none.
+	ScheduleReadyAt time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // Compaction modes.
@@ -84,6 +87,7 @@ type Schedule struct {
 	ScheduledAt time.Time
 	Status      string
 	CronExpr    string // cron expression for recurring schedules (empty = one-shot)
+	MarkReady   bool   // true = surface the completed scheduled result as ready
 	// ReplyChannelID routes this scheduled prompt's output to an external
 	// communication channel (channels.id). 0 = no channel routing.
 	ReplyChannelID int64
@@ -174,6 +178,7 @@ CREATE TABLE IF NOT EXISTS schedules (
     scheduled_at DATETIME NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
     cron_expr TEXT NOT NULL DEFAULT '',
+    mark_ready INTEGER NOT NULL DEFAULT 0,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -233,6 +238,8 @@ CREATE INDEX IF NOT EXISTS idx_channel_outbox_pending ON channel_outbox(status);
 
 	// Migration: add cron_expr column to schedules if missing (for existing DBs).
 	db.Exec(`ALTER TABLE schedules ADD COLUMN cron_expr TEXT NOT NULL DEFAULT ''`)
+	db.Exec(`ALTER TABLE schedules ADD COLUMN mark_ready INTEGER NOT NULL DEFAULT 0`)
+	db.Exec(`ALTER TABLE sessions ADD COLUMN schedule_ready_at DATETIME`)
 
 	// Migration: add model column to sessions if missing.
 	db.Exec(`ALTER TABLE sessions ADD COLUMN model TEXT NOT NULL DEFAULT ''`)
@@ -283,6 +290,7 @@ CREATE INDEX IF NOT EXISTS idx_channel_outbox_pending ON channel_outbox(status);
 	// prompt_queue (channel-originated or channel-routed queued prompts) and on
 	// schedules (scheduled prompt whose output is delivered to a channel).
 	db.Exec(`ALTER TABLE prompt_queue ADD COLUMN reply_channel_id INTEGER NOT NULL DEFAULT 0`)
+	db.Exec(`ALTER TABLE prompt_queue ADD COLUMN mark_ready INTEGER NOT NULL DEFAULT 0`)
 	db.Exec(`ALTER TABLE schedules ADD COLUMN reply_channel_id INTEGER NOT NULL DEFAULT 0`)
 
 	// Channel @mention gating: only forward inbound messages containing the
@@ -332,16 +340,17 @@ func (s *Store) CreateSession(sess *Session) error {
 // GetSession retrieves a session by ID. Returns nil, nil if not found.
 func (s *Store) GetSession(sessionID string) (*Session, error) {
 	row := s.db.QueryRow(
-		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, status, memory, agent_session_id, compaction_mode, context_tokens, context_window, opencode_cost, created_at, updated_at
+		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, status, memory, agent_session_id, compaction_mode, context_tokens, context_window, opencode_cost, schedule_ready_at, created_at, updated_at
 		 FROM sessions WHERE session_id = ?`, sessionID,
 	)
 
 	sess := &Session{}
 	var yolo int
+	var scheduleReadyAt sql.NullTime
 	err := row.Scan(
 		&sess.SessionID, &sess.Name, &sess.Agent, &sess.SystemPrompt, &sess.Model, &sess.Effort, &sess.ContextTier,
 		&yolo, &sess.Path, &sess.Environment, &sess.Status, &sess.Memory, &sess.AgentSessionID, &sess.CompactionMode,
-		&sess.ContextTokens, &sess.ContextWindow, &sess.OpenCodeCost, &sess.CreatedAt, &sess.UpdatedAt,
+		&sess.ContextTokens, &sess.ContextWindow, &sess.OpenCodeCost, &scheduleReadyAt, &sess.CreatedAt, &sess.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -350,6 +359,9 @@ func (s *Store) GetSession(sessionID string) (*Session, error) {
 		return nil, fmt.Errorf("get session: %w", err)
 	}
 	sess.Yolo = yolo != 0
+	if scheduleReadyAt.Valid {
+		sess.ScheduleReadyAt = scheduleReadyAt.Time
+	}
 	if sess.AgentSessionID == "" {
 		sess.AgentSessionID = sess.SessionID
 	}
@@ -359,7 +371,7 @@ func (s *Store) GetSession(sessionID string) (*Session, error) {
 // ListSessions returns all sessions.
 func (s *Store) ListSessions() ([]*Session, error) {
 	rows, err := s.db.Query(
-		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, status, memory, agent_session_id, compaction_mode, context_tokens, context_window, opencode_cost, created_at, updated_at
+		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, status, memory, agent_session_id, compaction_mode, context_tokens, context_window, opencode_cost, schedule_ready_at, created_at, updated_at
 		 FROM sessions ORDER BY created_at`,
 	)
 	if err != nil {
@@ -371,14 +383,18 @@ func (s *Store) ListSessions() ([]*Session, error) {
 	for rows.Next() {
 		sess := &Session{}
 		var yolo int
+		var scheduleReadyAt sql.NullTime
 		if err := rows.Scan(
 			&sess.SessionID, &sess.Name, &sess.Agent, &sess.SystemPrompt, &sess.Model, &sess.Effort, &sess.ContextTier,
 			&yolo, &sess.Path, &sess.Environment, &sess.Status, &sess.Memory, &sess.AgentSessionID, &sess.CompactionMode,
-			&sess.ContextTokens, &sess.ContextWindow, &sess.OpenCodeCost, &sess.CreatedAt, &sess.UpdatedAt,
+			&sess.ContextTokens, &sess.ContextWindow, &sess.OpenCodeCost, &scheduleReadyAt, &sess.CreatedAt, &sess.UpdatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
 		sess.Yolo = yolo != 0
+		if scheduleReadyAt.Valid {
+			sess.ScheduleReadyAt = scheduleReadyAt.Time
+		}
 		if sess.AgentSessionID == "" {
 			sess.AgentSessionID = sess.SessionID
 		}
@@ -752,6 +768,14 @@ type QueuedPrompt struct {
 	// ReplyChannelID routes this prompt's response to an external channel
 	// (channels.id). 0 = no channel routing.
 	ReplyChannelID int64
+	MarkReady      bool
+}
+
+func boolToInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 // QueuePrompt adds a prompt to the queue for a session. The model/effort/
@@ -760,19 +784,19 @@ type QueuedPrompt struct {
 // records the prompt's origin ("" for user-typed, "scheduled" for
 // scheduler-fired, "channel" for external-channel-originated).
 func (s *Store) QueuePrompt(sessionID, prompt, model, effort, contextTier, source string) error {
-	return s.QueuePromptChannel(sessionID, prompt, model, effort, contextTier, source, 0)
+	return s.QueuePromptChannel(sessionID, prompt, model, effort, contextTier, source, 0, false)
 }
 
 // QueuePromptChannel is QueuePrompt with an explicit reply channel id (0 = none).
-func (s *Store) QueuePromptChannel(sessionID, prompt, model, effort, contextTier, source string, replyChannelID int64) error {
-	return s.QueuePromptChannelFrom(sessionID, prompt, model, effort, contextTier, source, "", "", replyChannelID)
+func (s *Store) QueuePromptChannel(sessionID, prompt, model, effort, contextTier, source string, replyChannelID int64, markReady bool) error {
+	return s.QueuePromptChannelFrom(sessionID, prompt, model, effort, contextTier, source, "", "", replyChannelID, markReady)
 }
 
 // QueuePromptChannelFrom is QueuePromptChannel with agent-origin provenance.
-func (s *Store) QueuePromptChannelFrom(sessionID, prompt, model, effort, contextTier, source, sourceSessionID, sourceName string, replyChannelID int64) error {
+func (s *Store) QueuePromptChannelFrom(sessionID, prompt, model, effort, contextTier, source, sourceSessionID, sourceName string, replyChannelID int64, markReady bool) error {
 	_, err := s.db.Exec(
-		`INSERT INTO prompt_queue (session_id, prompt, model, effort, context_tier, source, source_session_id, source_name, reply_channel_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sessionID, prompt, model, effort, contextTier, source, sourceSessionID, sourceName, replyChannelID,
+		`INSERT INTO prompt_queue (session_id, prompt, model, effort, context_tier, source, source_session_id, source_name, reply_channel_id, mark_ready) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sessionID, prompt, model, effort, contextTier, source, sourceSessionID, sourceName, replyChannelID, boolToInt(markReady),
 	)
 	if err != nil {
 		return fmt.Errorf("queue prompt: %w", err)
@@ -795,7 +819,7 @@ func (s *Store) DrainQueueGroup(sessionID string) ([]QueuedPrompt, error) {
 	defer tx.Rollback()
 
 	rows, err := tx.Query(
-		`SELECT id, prompt, model, effort, context_tier, source, source_session_id, source_name, reply_channel_id FROM prompt_queue WHERE session_id = ? ORDER BY created_at, id`, sessionID,
+		`SELECT id, prompt, model, effort, context_tier, source, source_session_id, source_name, reply_channel_id, mark_ready FROM prompt_queue WHERE session_id = ? ORDER BY created_at, id`, sessionID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("drain queue group: %w", err)
@@ -809,10 +833,12 @@ func (s *Store) DrainQueueGroup(sessionID string) ([]QueuedPrompt, error) {
 	for rows.Next() {
 		var id int64
 		var qp QueuedPrompt
-		if err := rows.Scan(&id, &qp.Prompt, &qp.Model, &qp.Effort, &qp.ContextTier, &qp.Source, &qp.SourceSessionID, &qp.SourceName, &qp.ReplyChannelID); err != nil {
+		var markReady int
+		if err := rows.Scan(&id, &qp.Prompt, &qp.Model, &qp.Effort, &qp.ContextTier, &qp.Source, &qp.SourceSessionID, &qp.SourceName, &qp.ReplyChannelID, &markReady); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("scan queued prompt: %w", err)
 		}
+		qp.MarkReady = markReady != 0
 		if !haveFirst {
 			haveFirst = true
 			firstModel, firstEffort, firstTier = qp.Model, qp.Effort, qp.ContextTier
@@ -890,20 +916,30 @@ func (s *Store) QueueLength(sessionID string) (int, error) {
 
 // CreateSchedule adds a scheduled prompt for a session.
 func (s *Store) CreateSchedule(sessionID, prompt string, scheduledAt time.Time) (int64, error) {
-	return s.CreateScheduleFull(sessionID, prompt, scheduledAt, "", 0)
+	return s.CreateScheduleFull(sessionID, prompt, scheduledAt, "", 0, false)
 }
 
 // CreateScheduleWithCron adds a scheduled prompt with an optional cron expression for recurrence.
 func (s *Store) CreateScheduleWithCron(sessionID, prompt string, scheduledAt time.Time, cronExpr string) (int64, error) {
-	return s.CreateScheduleFull(sessionID, prompt, scheduledAt, cronExpr, 0)
+	return s.CreateScheduleFull(sessionID, prompt, scheduledAt, cronExpr, 0, false)
+}
+
+// MarkScheduleResultReady records that a scheduled run completed with an
+// explicitly requested ready notification.
+func (s *Store) MarkScheduleResultReady(sessionID string) error {
+	_, err := s.db.Exec(`UPDATE sessions SET schedule_ready_at = ? WHERE session_id = ?`, time.Now().UTC(), sessionID)
+	if err != nil {
+		return fmt.Errorf("mark scheduled result ready: %w", err)
+	}
+	return nil
 }
 
 // CreateScheduleFull adds a scheduled prompt with optional cron recurrence and an
 // optional reply channel id (0 = none) whose output is delivered to that channel.
-func (s *Store) CreateScheduleFull(sessionID, prompt string, scheduledAt time.Time, cronExpr string, replyChannelID int64) (int64, error) {
+func (s *Store) CreateScheduleFull(sessionID, prompt string, scheduledAt time.Time, cronExpr string, replyChannelID int64, markReady bool) (int64, error) {
 	res, err := s.db.Exec(
-		`INSERT INTO schedules (session_id, prompt, scheduled_at, status, cron_expr, reply_channel_id) VALUES (?, ?, ?, ?, ?, ?)`,
-		sessionID, prompt, scheduledAt.UTC(), SchedulePending, cronExpr, replyChannelID,
+		`INSERT INTO schedules (session_id, prompt, scheduled_at, status, cron_expr, reply_channel_id, mark_ready) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		sessionID, prompt, scheduledAt.UTC(), SchedulePending, cronExpr, replyChannelID, boolToInt(markReady),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("create schedule: %w", err)
@@ -914,13 +950,15 @@ func (s *Store) CreateScheduleFull(sessionID, prompt string, scheduledAt time.Ti
 // GetSchedule retrieves a schedule by ID.
 func (s *Store) GetSchedule(id int64) (*Schedule, error) {
 	row := s.db.QueryRow(
-		`SELECT id, session_id, prompt, scheduled_at, status, cron_expr, reply_channel_id, created_at FROM schedules WHERE id = ?`, id,
+		`SELECT id, session_id, prompt, scheduled_at, status, cron_expr, reply_channel_id, mark_ready, created_at FROM schedules WHERE id = ?`, id,
 	)
 	sch := &Schedule{}
-	err := row.Scan(&sch.ID, &sch.SessionID, &sch.Prompt, &sch.ScheduledAt, &sch.Status, &sch.CronExpr, &sch.ReplyChannelID, &sch.CreatedAt)
+	var markReady int
+	err := row.Scan(&sch.ID, &sch.SessionID, &sch.Prompt, &sch.ScheduledAt, &sch.Status, &sch.CronExpr, &sch.ReplyChannelID, &markReady, &sch.CreatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
+	sch.MarkReady = markReady != 0
 	if err != nil {
 		return nil, fmt.Errorf("get schedule: %w", err)
 	}
@@ -933,12 +971,12 @@ func (s *Store) ListSchedules(sessionID string, statusFilter string) ([]*Schedul
 	var err error
 	if statusFilter != "" {
 		rows, err = s.db.Query(
-			`SELECT id, session_id, prompt, scheduled_at, status, cron_expr, reply_channel_id, created_at
+			`SELECT id, session_id, prompt, scheduled_at, status, cron_expr, reply_channel_id, mark_ready, created_at
 			 FROM schedules WHERE session_id = ? AND status = ? ORDER BY scheduled_at`, sessionID, statusFilter,
 		)
 	} else {
 		rows, err = s.db.Query(
-			`SELECT id, session_id, prompt, scheduled_at, status, cron_expr, reply_channel_id, created_at
+			`SELECT id, session_id, prompt, scheduled_at, status, cron_expr, reply_channel_id, mark_ready, created_at
 			 FROM schedules WHERE session_id = ? ORDER BY scheduled_at`, sessionID,
 		)
 	}
@@ -950,9 +988,11 @@ func (s *Store) ListSchedules(sessionID string, statusFilter string) ([]*Schedul
 	var schedules []*Schedule
 	for rows.Next() {
 		sch := &Schedule{}
-		if err := rows.Scan(&sch.ID, &sch.SessionID, &sch.Prompt, &sch.ScheduledAt, &sch.Status, &sch.CronExpr, &sch.ReplyChannelID, &sch.CreatedAt); err != nil {
+		var markReady int
+		if err := rows.Scan(&sch.ID, &sch.SessionID, &sch.Prompt, &sch.ScheduledAt, &sch.Status, &sch.CronExpr, &sch.ReplyChannelID, &markReady, &sch.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan schedule: %w", err)
 		}
+		sch.MarkReady = markReady != 0
 		schedules = append(schedules, sch)
 	}
 	return schedules, rows.Err()
@@ -962,7 +1002,7 @@ func (s *Store) ListSchedules(sessionID string, statusFilter string) ([]*Schedul
 func (s *Store) DueSchedules() ([]*Schedule, error) {
 	now := time.Now().UTC()
 	rows, err := s.db.Query(
-		`SELECT id, session_id, prompt, scheduled_at, status, cron_expr, reply_channel_id, created_at
+		`SELECT id, session_id, prompt, scheduled_at, status, cron_expr, reply_channel_id, mark_ready, created_at
 		 FROM schedules WHERE status = ? AND scheduled_at <= ? ORDER BY scheduled_at`,
 		SchedulePending, now,
 	)
@@ -974,9 +1014,11 @@ func (s *Store) DueSchedules() ([]*Schedule, error) {
 	var schedules []*Schedule
 	for rows.Next() {
 		sch := &Schedule{}
-		if err := rows.Scan(&sch.ID, &sch.SessionID, &sch.Prompt, &sch.ScheduledAt, &sch.Status, &sch.CronExpr, &sch.ReplyChannelID, &sch.CreatedAt); err != nil {
+		var markReady int
+		if err := rows.Scan(&sch.ID, &sch.SessionID, &sch.Prompt, &sch.ScheduledAt, &sch.Status, &sch.CronExpr, &sch.ReplyChannelID, &markReady, &sch.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan schedule: %w", err)
 		}
+		sch.MarkReady = markReady != 0
 		schedules = append(schedules, sch)
 	}
 	return schedules, rows.Err()
@@ -1012,10 +1054,10 @@ func (s *Store) CancelSchedule(id int64) error {
 // channel of an existing pending schedule in place (preserving its ID). Only
 // pending schedules can be edited. Returns an error if the schedule does not
 // exist or is not pending.
-func (s *Store) UpdateSchedule(id int64, prompt string, scheduledAt time.Time, cronExpr string, replyChannelID int64) error {
+func (s *Store) UpdateSchedule(id int64, prompt string, scheduledAt time.Time, cronExpr string, replyChannelID int64, markReady bool) error {
 	res, err := s.db.Exec(
-		`UPDATE schedules SET prompt = ?, scheduled_at = ?, cron_expr = ?, reply_channel_id = ? WHERE id = ? AND status = ?`,
-		prompt, scheduledAt.UTC(), cronExpr, replyChannelID, id, SchedulePending,
+		`UPDATE schedules SET prompt = ?, scheduled_at = ?, cron_expr = ?, reply_channel_id = ?, mark_ready = ? WHERE id = ? AND status = ?`,
+		prompt, scheduledAt.UTC(), cronExpr, replyChannelID, boolToInt(markReady), id, SchedulePending,
 	)
 	if err != nil {
 		return fmt.Errorf("update schedule: %w", err)

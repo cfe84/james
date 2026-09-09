@@ -3,6 +3,8 @@
 package service
 
 import (
+	"bytes"
+	"encoding/xml"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -65,4 +67,56 @@ func ResolveBinaryPath() (string, error) {
 		return "", fmt.Errorf("resolve symlinks: %w", err)
 	}
 	return exe, nil
+}
+
+// windowsTaskDefinition returns a Task Scheduler definition that restarts the
+// task on a nonzero daemon exit. The launcher propagates that exit code.
+func windowsTaskDefinition(cfg *Config, launcherPath, userID string) (string, error) {
+	if userID == "" {
+		return "", fmt.Errorf("Windows task user is required")
+	}
+
+	escape := func(value string) string {
+		var b bytes.Buffer
+		_ = xml.EscapeText(&b, []byte(value))
+		return b.String()
+	}
+	logonType := "InteractiveToken"
+	runLevel := "LeastPrivilege"
+	trigger := "<LogonTrigger><Enabled>true</Enabled></LogonTrigger>"
+	if !cfg.UserLevel {
+		userID = "S-1-5-18"
+		logonType = "ServiceAccount"
+		runLevel = "HighestAvailable"
+		trigger = "<BootTrigger><Enabled>true</Enabled></BootTrigger>"
+	}
+
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers>
+    %s
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>%s</UserId>
+      <LogonType>%s</LogonType>
+      <RunLevel>%s</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>999</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>wscript.exe</Command>
+      <Arguments>//B "%s"</Arguments>
+    </Exec>
+  </Actions>
+</Task>
+`, trigger, escape(userID), logonType, runLevel, escape(launcherPath)), nil
 }

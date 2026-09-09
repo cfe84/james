@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -48,7 +49,6 @@ type Client struct {
 	mi6Addr              string     // for mi6 transport
 	mi6KeyPath           string     // SSH key for mi6
 	mi6ServerFingerprint string     // expected MI6 server fingerprint
-	mi6Mu                sync.Mutex // serialise MI6 requests (concurrent clients cause response mixing)
 }
 
 // NewFIFOClient creates a client that communicates via named pipes.
@@ -105,14 +105,11 @@ func (c *Client) Send(ctx context.Context, cmd *Command) (*Response, error) {
 	}
 }
 
+var requestSequence uint64
+
 // generateRequestID generates a unique request ID for command tracking.
 func generateRequestID() string {
-	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
-	b := make([]byte, 12)
-	for i := range b {
-		b[i] = charset[byte(i*7)%byte(len(charset))]
-	}
-	return fmt.Sprintf("%d-%s", time.Now().UnixNano(), string(b))
+	return fmt.Sprintf("%d-%d-%d", time.Now().UnixNano(), os.Getpid(), atomic.AddUint64(&requestSequence, 1))
 }
 
 func (c *Client) sendFIFO(ctx context.Context, cmd *Command) (*Response, error) {
@@ -200,11 +197,14 @@ func isENXIO(err error) bool {
 }
 
 func (c *Client) sendMI6(ctx context.Context, cmd *Command) (*Response, error) {
-	// Serialise MI6 access — multiple mi6-client processes joining the same
-	// MI6 session causes the relay to broadcast responses to all participants,
-	// so concurrent requests would receive each other's responses.
-	c.mi6Mu.Lock()
-	defer c.mi6Mu.Unlock()
+	if cmd.RequestID == "" {
+		return nil, fmt.Errorf("MI6 command requires a request ID")
+	}
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		return nil, err
+	}
+	data = append(data, '\n')
 
 	mi6Client, err := findMI6Client()
 	if err != nil {
@@ -228,13 +228,12 @@ func (c *Client) sendMI6(ctx context.Context, cmd *Command) (*Response, error) {
 		return nil, fmt.Errorf("starting mi6-client: %w", err)
 	}
 
-	data, err := json.Marshal(cmd)
-	if err != nil {
+	if _, err := stdin.Write(data); err != nil {
+		stdin.Close()
+		proc.Process.Kill()
 		proc.Wait()
-		return nil, err
+		return nil, fmt.Errorf("writing MI6 command: %w", err)
 	}
-	data = append(data, '\n')
-	stdin.Write(data)
 
 	// Don't close stdin yet — closing it triggers mi6-client shutdown
 	// (stdin EOF → cancel → exit) before the response can arrive back
@@ -242,32 +241,38 @@ func (c *Client) sendMI6(ctx context.Context, cmd *Command) (*Response, error) {
 
 	scanner := bufio.NewScanner(stdout)
 	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024) // up to 16MB responses
-	if !scanner.Scan() {
-		stdin.Close()
-		waitErr := proc.Wait()
-		errParts := []string{"no response from moneypenny via MI6"}
-		if se := scanner.Err(); se != nil {
-			errParts = append(errParts, fmt.Sprintf("scan: %v", se))
+	for scanner.Scan() {
+		var resp Response
+		if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
+			stdin.Close()
+			proc.Process.Kill()
+			proc.Wait()
+			return nil, fmt.Errorf("parsing response: %w", err)
 		}
-		if waitErr != nil {
-			errParts = append(errParts, fmt.Sprintf("exit: %v", waitErr))
-		}
-		if stderr := strings.TrimSpace(stderrBuf.String()); stderr != "" {
-			errParts = append(errParts, fmt.Sprintf("stderr: %s", stderr))
-		}
-		return nil, fmt.Errorf("%s", strings.Join(errParts, "; "))
-	}
 
-	var resp Response
-	if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
+		// MI6 broadcasts to every participant. Correlate envelopes rather than
+		// serializing calls, so slow commands cannot block dashboard reads.
+		if resp.Type != "response" || resp.RequestID != cmd.RequestID {
+			continue
+		}
 		stdin.Close()
 		proc.Wait()
-		return nil, fmt.Errorf("parsing response: %w", err)
+		return &resp, nil
 	}
 
 	stdin.Close()
-	proc.Wait()
-	return &resp, nil
+	waitErr := proc.Wait()
+	errParts := []string{"no matching response from moneypenny via MI6"}
+	if se := scanner.Err(); se != nil {
+		errParts = append(errParts, fmt.Sprintf("scan: %v", se))
+	}
+	if waitErr != nil {
+		errParts = append(errParts, fmt.Sprintf("exit: %v", waitErr))
+	}
+	if stderr := strings.TrimSpace(stderrBuf.String()); stderr != "" {
+		errParts = append(errParts, fmt.Sprintf("stderr: %s", stderr))
+	}
+	return nil, fmt.Errorf("%s", strings.Join(errParts, "; "))
 }
 
 // TestMI6 tests connectivity to an MI6 server by spawning mi6-client and

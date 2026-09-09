@@ -12,13 +12,13 @@ func TestUpdateScheduleInPlace(t *testing.T) {
 	}
 
 	at := time.Now().Add(2 * time.Hour).UTC().Truncate(time.Second)
-	id, err := s.CreateScheduleFull("sess", "original prompt", at, "0 9 * * *", 7)
+	id, err := s.CreateScheduleFull("sess", "original prompt", at, "0 9 * * *", 7, true)
 	if err != nil {
 		t.Fatalf("CreateScheduleFull: %v", err)
 	}
 
 	newAt := time.Now().Add(5 * time.Hour).UTC().Truncate(time.Second)
-	if err := s.UpdateSchedule(id, "edited prompt", newAt, "0 13 * * 1-5", 42); err != nil {
+	if err := s.UpdateSchedule(id, "edited prompt", newAt, "0 13 * * 1-5", 42, false); err != nil {
 		t.Fatalf("UpdateSchedule: %v", err)
 	}
 
@@ -41,6 +41,9 @@ func TestUpdateScheduleInPlace(t *testing.T) {
 	if got.ReplyChannelID != 42 {
 		t.Errorf("ReplyChannelID = %d, want 42", got.ReplyChannelID)
 	}
+	if got.MarkReady {
+		t.Error("MarkReady = true, want false after update")
+	}
 	if got.Status != SchedulePending {
 		t.Errorf("Status = %q, want pending", got.Status)
 	}
@@ -52,11 +55,11 @@ func TestUpdateScheduleClearsCronAndChannel(t *testing.T) {
 		t.Fatalf("CreateSession: %v", err)
 	}
 	at := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
-	id, err := s.CreateScheduleFull("sess", "p", at, "0 9 * * *", 5)
+	id, err := s.CreateScheduleFull("sess", "p", at, "0 9 * * *", 5, false)
 	if err != nil {
 		t.Fatalf("CreateScheduleFull: %v", err)
 	}
-	if err := s.UpdateSchedule(id, "p", at, "", 0); err != nil {
+	if err := s.UpdateSchedule(id, "p", at, "", 0, false); err != nil {
 		t.Fatalf("UpdateSchedule: %v", err)
 	}
 	got, _ := s.GetSchedule(id)
@@ -74,21 +77,21 @@ func TestUpdateScheduleRejectsNonPending(t *testing.T) {
 		t.Fatalf("CreateSession: %v", err)
 	}
 	at := time.Now().Add(time.Hour).UTC()
-	id, err := s.CreateScheduleFull("sess", "p", at, "", 0)
+	id, err := s.CreateScheduleFull("sess", "p", at, "", 0, false)
 	if err != nil {
 		t.Fatalf("CreateScheduleFull: %v", err)
 	}
 	if err := s.UpdateScheduleStatus(id, ScheduleDone); err != nil {
 		t.Fatalf("UpdateScheduleStatus: %v", err)
 	}
-	if err := s.UpdateSchedule(id, "x", at, "", 0); err == nil {
+	if err := s.UpdateSchedule(id, "x", at, "", 0, false); err == nil {
 		t.Fatal("expected error updating a non-pending schedule, got nil")
 	}
 }
 
 func TestUpdateScheduleMissing(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.UpdateSchedule(9999, "x", time.Now(), "", 0); err == nil {
+	if err := s.UpdateSchedule(9999, "x", time.Now(), "", 0, false); err == nil {
 		t.Fatal("expected error updating a missing schedule, got nil")
 	}
 }

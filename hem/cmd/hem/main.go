@@ -84,6 +84,22 @@ func main() {
 	}
 	os.Args = filteredArgs
 
+	if len(os.Args) < 2 {
+		printUsage()
+		os.Exit(1)
+	}
+
+	// Version and help are local commands. They must remain usable when a
+	// caller has an incomplete remote Hem connection configuration.
+	if os.Args[1] == "-h" || os.Args[1] == "--help" || os.Args[1] == "help" {
+		printUsage()
+		return
+	}
+	if os.Args[1] == "--version" || os.Args[1] == "-v" || os.Args[1] == "version" {
+		fmt.Println(Version)
+		return
+	}
+
 	// Resolve server address: --hem flag > --local flag > stored default.
 	if mi6Addr == "" && !forceLocal {
 		if stored := getStoredDefaultServer(); stored != "" {
@@ -101,33 +117,6 @@ func main() {
 	sender = buildSender(mi6Addr, mi6ServerFingerprint)
 	if verbose {
 		sender = &verboseSender{inner: sender}
-	}
-
-	if len(os.Args) < 2 {
-		printUsage()
-		os.Exit(1)
-	}
-
-	// Handle help and version flags before parsing.
-	if os.Args[1] == "-h" || os.Args[1] == "--help" || os.Args[1] == "help" {
-		printUsage()
-		return
-	}
-	if os.Args[1] == "--version" || os.Args[1] == "-v" {
-		fmt.Printf("hem client: %s\n", Version)
-		req := &protocol.Request{Verb: "get-version"}
-		resp, err := sender.Send(req)
-		if err != nil {
-			fmt.Println("hem server: not running")
-		} else {
-			var result struct {
-				Version string `json:"version"`
-			}
-			if json.Unmarshal(resp.Data, &result) == nil {
-				fmt.Printf("hem server: %s\n", result.Version)
-			}
-		}
-		return
 	}
 
 	cmd, err := cli.Parse(os.Args[1:])

@@ -98,7 +98,7 @@ mi6/
 9. **Admin key management**: A separate `admin_keys` file (same OpenSSH format, same directory) grants admin access. Admin clients join the reserved `__admin__` session, which the server intercepts before the normal session join flow. Admin commands (list/add/delete authorized keys) are JSON over MsgData. File writes use atomic temp-file-rename to prevent corruption. After modifications, authorized_keys are reloaded in-process (same as SIGHUP). The mi6-client `--admin-command` flag provides single-shot admin request/response mode. Hem wraps this as `list/add/delete mi6-key` commands.
 
 10. **MI6 server fingerprint pinning**: Every MI6 client handshake requires a configured SHA-256 fingerprint for the relay server's SSH signing key. The client verifies this pin after verifying the server's signed ephemeral-key transcript and before authenticating itself, eliminating unattended trust-on-first-use. `known_hosts` remains a second local consistency check and is still populated after a pinned success. `mi6-client --display-server-fingerprint --server HOST:PORT` reads an existing trusted fingerprint without opening a connection, enabling safe migration to explicit pins. Moneypenny, Hem's MI6 control listener, direct `hem --hem` clients and MI6 key administration, registered MI6 moneypennies, and Qew pass pins to every spawned client. `MI6_SERVER_FINGERPRINT` configures the pin for direct Hem clients and Docker entrypoints, and serves as a migration fallback for legacy MI6 Moneypenny registrations that have no saved pin; a saved per-Moneypenny value takes precedence.
-11. **Windows service task wrapper**: Windows Task Scheduler limits an action command to 261 characters. Moneypenny service installation generates a `moneypenny-service.cmd` wrapper in the configured data directory containing the fully quoted Moneypenny command and a short `moneypenny-service.vbs` launcher. The task invokes `wscript.exe //B` on that launcher: WScript starts `cmd.exe` with window style `0` (hidden) and waits for it, so Task Scheduler tracks the daemon without opening an interruptible console window. This preserves long MI6 addresses, fingerprint pins, binary paths, and log paths without truncation.
+11. **Windows service task wrapper and watchdog**: Windows Task Scheduler limits an action command to 261 characters. Moneypenny service installation generates a `moneypenny-service.cmd` wrapper in the configured data directory containing the fully quoted Moneypenny command, a `moneypenny-service.vbs` launcher, and a Task Scheduler XML definition. The wrapper records the command's exit status; after a nonzero exit it copies the now-closed daemon log to `crash-logs/moneypenny-crash-YYYYMMDD-HHMMSS-exit-N.log` and retains the ten most recent snapshots. It then returns the original exit status. The task invokes `wscript.exe //B` on that launcher: WScript starts `cmd.exe` with window style `0` (hidden), waits for it, and returns its exit code so Task Scheduler can distinguish an unexpected failure from a clean shutdown. Task Scheduler restarts a nonzero exit after one minute up to 999 times and disables its execution-time limit; zero exits are not restarted, so Moneypenny's auto-update helper can replace and launch the binary without a competing stale process. User services use a logon trigger; system services use a boot trigger and the LocalSystem account. This preserves long MI6 addresses, fingerprint pins, binary paths, and log paths without truncation.
 12. **Session directory containment and safe Qew links**: Moneypenny accepts only canonical UUID session IDs for create/import operations, and validates the resolved relative path remains inside its `<data-dir>/sessions` root before creating or removing a persistent session directory. This prevents request-controlled IDs from reaching filesystem operations. Qew validates Markdown link destinations with the browser URL parser, permits only `http:` and `https:`, and attribute-escapes accepted URLs before rendering them.
 13. **Mutable session hierarchy**: Hem stores the parent relationship in `sessions.parent_session_id`, so adopting (`adopt session --parent`) or promoting (`promote session`) a session is a local relationship update only. Adoption requires the same Moneypenny and walks parent links to reject cycles; promotion clears only the selected session's parent, retaining its children. No Moneypenny state, history, memory, schedules, or active agent process changes.
 14. **Coordinated gadget client updates**: Moneypenny’s updater stages the matching `moneypenny`, `mi6-client`, and `hem` binaries from a signed release archive. It replaces all colocated binaries during the idle update transition so a gadget-invoked Hem CLI forwards the same MI6 authentication options expected by its client.
@@ -130,6 +130,30 @@ Client                              Server
 8. Dockerfile
 
 ## Moneypenny - Agent Session Manager
+
+**Nonblocking snapshot requests**: A daemon-lifetime dispatcher owns one ordered
+command worker and two independent workers for local read-only snapshots
+(`list_sessions`, session detail/history/activity, schedule/channel lists,
+version, daemon logs, and update status). Each queue holds at most 64 waiting requests;
+overflow returns an explicit error without blocking admission to the other lane.
+Subprocess-backed handlers are kept out of the snapshot lane. The dispatcher
+survives MI6 reconnects, preserving mutation ordering even if an old handler is
+still running. Disconnected connections cancel queued requests and suppress late
+replies; ordinary piped stdio drains replies after input EOF. Responses and
+notifications share a message-level writer lock to prevent JSON interleaving.
+Running agents retain a stable notification writer whose transport is switched
+under a lock on reconnect. Verbose logs record queue wait and durations of
+handlers taking at least one second, with method/request IDs to distinguish
+handler stalls from transport failures without extra per-poll completion logs.
+
+**Hem MI6 request concurrency**: Each request uses its own relay client and
+filters broadcast envelopes by both `type: "response"` and its unique
+`request_id`. Hem no longer holds a shared MI6 mutex while waiting for a reply,
+so slow commands cannot prevent dashboard snapshots from reaching Moneypenny's
+read workers. Request IDs include time, process ID, and an atomic sequence;
+connection checks use the same generated IDs. The local FIFO client remains
+serialized because independent readers cannot safely demultiplex its shared
+response pipe.
 
 Streamed agent activity is the boundary for user-intervention markup. The
 handler recognizes complete bounded `<NOTIFY_USER>` tags in persistent
@@ -294,13 +318,13 @@ hem/
 
 19. **Remote command execution**: `execute_command` runs shell commands on moneypenny hosts via `sh -c`. Exposed in hem as `hem run` and in the TUI as a shell view (`x` key). Shell view can be opened from any session/moneypenny context, inheriting the moneypenny and working directory.
 
-20. **Version display**: All components log their version on startup. `hem --version` shows both client and server versions. TUI shows the version in the status bar.
+20. **Version display**: All components log their version on startup. `hem version` and `hem --version` print the local client version before resolving a configured server or constructing a sender. This keeps diagnostics usable when a remote Hem configuration is incomplete, including a missing MI6 fingerprint. TUI shows the version in the status bar.
 
 21. **Client-side notifications**: Notification sounds are played client-side when a session transitions from WORKING to READY. The TUI detects these transitions during dashboard auto-refresh polling and plays the embedded WAV file via `afplay` (macOS) or `aplay` (Linux). The WAV is embedded at build time from `hem/assets/notification.wav` using `go:embed` and cached at `~/.config/james/hem/notification.wav`. The `--silent` flag on `hem ui` disables sound. Qew detects the same transitions during its dashboard polling and plays a Web Audio API chime, plus shows a slide-in pop-over notification. Qew has a header toggle button (bell icon) to enable/disable sound.
 
 22. **Create session wizard**: TUI session creation uses a 3-step wizard (`wizard.go`): (1) select moneypenny from a list, (2) browse remote filesystem to pick a working directory via `list_directory` moneypenny method, (3) fill in prompt and options. Esc navigates back through steps. The wizard replaces the old single-screen create form for all TUI entry points (dashboard, project detail, session list). The path browser tracks the moneypenny's resolved absolute path (returned by `list_directory`) so navigation stays correct even when a request is sent as `~`; `client.listDirectory` returns this resolved path alongside the entries. **Dead-path fallback:** when the prefilled path fails to list (commonly a duplicated session whose working dir was deleted, or a copy onto a different host), the wizard retries **once** with `~`, which the moneypenny resolves to its own home, then adopts that as `currentPath` — guarded by a `pathTriedHome` one-shot flag (reset on any successful load) to avoid looping if home also fails. Qew mirrors this in `renderPathBrowser` with a `wizardState.triedHome` guard.
 
-23. **Scheduled continuation**: Moneypenny supports time-delayed session continuations. Schedules are stored in a `schedules` SQLite table (`id`, `session_id`, `prompt`, `scheduled_at`, `status`, `created_at`, `cron_expr`). A scheduler goroutine ticks every 30 seconds and also runs on boot to catch any schedules that came due while offline. When a schedule fires: if the session is idle, the prompt is sent as a direct `continue_session`; if the session is busy, the prompt is queued via the existing `queue_prompt` mechanism (same as TUI message queuing). Recurring schedules are supported via `--cron` with standard 5-field cron expressions (minute hour dom month dow, numbers and `*`) and shorthands (`@hourly`, `@daily`, `@every 2h`); when a recurring schedule fires, a new occurrence is automatically created for the next matching time. When any schedule fires (one-shot or recurring), a "system" conversation turn is added to the chat, recording when the task was triggered; the TUI renders these system turns with a gear icon in muted/italic style. Agents can self-schedule by emitting `<schedule at="...">prompt</schedule>` tags in their output, which moneypenny parses from agent responses. Schedule instructions are appended to every session's system prompt via a `scheduleSystemPromptSuffix` constant so agents know the capability exists. Time values accept RFC3339, relative formats (`+2h`, `+30m`), and local time strings. In the TUI, schedules are displayed in chat view with a clock icon, and the `t` key in command mode opens schedule management.
+23. **Scheduled continuation**: Moneypenny supports time-delayed session continuations. Schedules are stored in a `schedules` SQLite table (`id`, `session_id`, `prompt`, `scheduled_at`, `status`, `created_at`, `cron_expr`, `mark_ready`). A scheduler goroutine ticks every 30 seconds and also runs on boot to catch any schedules that came due while offline. When a schedule fires: if the session is idle, the prompt is sent as a direct `continue_session`; if the session is busy, the prompt is queued via the existing `queue_prompt` mechanism (same as TUI message queuing). Recurring schedules are supported via `--cron` with standard 5-field cron expressions (minute hour dom month dow, numbers and `*`) and shorthands (`@hourly`, `@daily`, `@every 2h`); when a recurring schedule fires, a new occurrence is automatically created for the next matching time. When any schedule fires (one-shot or recurring), a "system" conversation turn is added to the chat, recording when the task was triggered; the TUI renders these system turns with a gear icon in muted/italic style. A `mark_ready` schedule writes its completion timestamp to `sessions.schedule_ready_at`; Hem sees that value during its existing dashboard Moneypenny refresh, persists the last consumed timestamp in `processed_schedule_ready`, and clears its local `reviewed` flag only for newer markers. This makes a result appear Ready exactly once, including after Hem restarts. Agents can self-schedule by emitting `<schedule at="...">prompt</schedule>` tags in their output, which moneypenny parses from agent responses. Schedule instructions are appended to every session's system prompt via a `scheduleSystemPromptSuffix` constant so agents know the capability exists. Time values accept RFC3339, relative formats (`+2h`, `+30m`), and local time strings. In the TUI, schedules are displayed in chat view with a clock icon, and the `t` key in command mode opens schedule management.
 
 24. **Git operations**: Moneypenny exposes `git_commit`, `git_branch`, and `git_push` methods alongside the existing `git_diff`. These run git commands in a session's working directory: `git_commit` stages all changes (`git add -A`) and commits; `git_branch` creates and checks out a new branch; `git_push` pushes the current branch to origin with `-u`. Hem exposes these as `hem commit session`, `hem branch session`, and `hem push session`.
 
@@ -517,6 +541,16 @@ The Executor (hem/pkg/commands) has been refactored to follow Single Responsibil
    - Handles background refresh coordination
    - Thread-safe with RWMutex
    - Methods: `GetSnapshot()`, `Update()`, `GetCacheTime()`, `IsRefreshing()`, `SetRefreshing()`
+
+   Session-cache invalidation retains the last known names, agent types, and
+   timestamps rather than deleting the Moneypenny's entries. Failed refreshes
+   overlay `offline` on that metadata until a valid successful response arrives;
+   expiry of the retry cooldown alone does not imply recovery. Successful
+   session sync also hydrates the same cache instead of discarding metadata.
+   Dashboard attention grouping does not turn offline unreviewed sessions (or
+   subsessions) into Ready. Qew consumes these corrected Hem rows unchanged.
+   This cache is in memory: a Hem restart while Moneypenny is unavailable still
+   cannot recover names that have not been fetched in the new process.
 
 3. **WatchManager** (`watch_manager.go`): Manages watch/polling for sub-session state
    - Tracks parent-child session relationships

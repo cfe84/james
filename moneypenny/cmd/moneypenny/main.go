@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -201,15 +202,16 @@ func main() {
 		os.Exit(0)
 	}()
 
+	dispatcher := newRequestDispatcher(ctx, h.Handle, vlog)
 	if *mi6Addr != "" {
 		if *mi6ServerFingerprint == "" {
 			log.Fatal("--mi6-server-fingerprint is required with --mi6")
 		}
-		runMI6(ctx, h, vlog, *mi6Addr, keyPath, *mi6ServerFingerprint)
+		runMI6(ctx, h, dispatcher, vlog, *mi6Addr, keyPath, *mi6ServerFingerprint)
 	} else if *fifoDir != "" {
-		runFIFO(ctx, h, vlog, *fifoDir)
+		runFIFO(ctx, h, dispatcher, vlog, *fifoDir)
 	} else {
-		runStdio(ctx, h, vlog, os.Stdin, os.Stdout)
+		runStdio(ctx, h, dispatcher, vlog, os.Stdin, os.Stdout, true)
 	}
 }
 
@@ -333,9 +335,25 @@ func truncateLog(b []byte, maxLen int) string {
 }
 
 // runStdio reads JSON commands from r (one per line), processes them, and writes responses to w.
-func runStdio(ctx context.Context, h *handler.Handler, vlog *log.Logger, r io.Reader, w io.Writer) {
+func runStdio(ctx context.Context, h *handler.Handler, dispatcher *requestDispatcher, vlog *log.Logger, r io.Reader, w io.Writer, drainResponses bool) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	// Set notification writer so handler can send async notifications.
-	h.SetNotificationWriter(envelope.NewNotificationWriter(w))
+	writer := envelope.NewNotificationWriter(w)
+	h.SetNotificationWriter(writer)
+	var pending sync.WaitGroup
+	respond := func(resp *envelope.Response) {
+		b, err := resp.Marshal()
+		if err != nil {
+			vlog.Printf("marshal response request_id=%s: %v", resp.RequestID, err)
+			b, _ = envelope.ErrorResponse(resp.RequestID, envelope.ErrInternalError, "failed to encode response").Marshal()
+		}
+		if n, err := writer.Write(b); err != nil || n != len(b) {
+			vlog.Printf("write response request_id=%s: bytes=%d/%d error=%v", resp.RequestID, n, len(b), err)
+			return
+		}
+		vlog.Printf("send: %s", truncateLog(b, 200))
+	}
 
 	scanner := bufio.NewScanner(r)
 	// Up to 16MB commands: base64-encoded attachments can be large (10MB raw
@@ -352,24 +370,26 @@ func runStdio(ctx context.Context, h *handler.Handler, vlog *log.Logger, r io.Re
 		vlog.Printf("recv: %s", truncateLog(line, 200))
 		cmd, err := envelope.ParseCommand(line)
 		if err != nil {
-			resp := envelope.ErrorResponse("", envelope.ErrInvalidRequest, err.Error())
-			b, _ := resp.Marshal()
-			vlog.Printf("send: %s", truncateLog(b, 200))
-			w.Write(b)
+			respond(envelope.ErrorResponse("", envelope.ErrInvalidRequest, err.Error()))
 			continue
 		}
-		vlog.Printf("exec: method=%s request_id=%s", cmd.Method, cmd.RequestID)
-		resp := h.Handle(ctx, cmd)
-		b, _ := resp.Marshal()
-		vlog.Printf("send: %s", truncateLog(b, 200))
-		w.Write(b)
+		pending.Add(1)
+		dispatcher.submit(ctx, cmd, respond, pending.Done)
+	}
+	if err := scanner.Err(); err != nil {
+		vlog.Printf("read commands: %v", err)
+	}
+	// Piped stdio callers may close input before reading replies. A disconnected
+	// MI6 transport instead cancels its requests immediately to allow reconnect.
+	if drainResponses && ctx.Err() == nil {
+		pending.Wait()
 	}
 }
 
 // runFIFO creates named pipes in the given directory and uses them for I/O.
 // moneypenny-in: reads commands from here (other processes write to it)
 // moneypenny-out: writes responses here (other processes read from it)
-func runFIFO(ctx context.Context, h *handler.Handler, vlog *log.Logger, dir string) {
+func runFIFO(ctx context.Context, h *handler.Handler, dispatcher *requestDispatcher, vlog *log.Logger, dir string) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		log.Fatalf("failed to create fifo directory: %v", err)
 	}
@@ -404,12 +424,12 @@ func runFIFO(ctx context.Context, h *handler.Handler, vlog *log.Logger, dir stri
 	defer outFile.Close()
 
 	vlog.Printf("fifos ready, waiting for commands")
-	runStdio(ctx, h, vlog, inFile, outFile)
+	runStdio(ctx, h, dispatcher, vlog, inFile, outFile, true)
 }
 
 // runMI6 connects to an MI6 server and processes commands received through it.
 // If the connection drops, it retries with exponential backoff (5s, 10s, 10s, ...).
-func runMI6(ctx context.Context, h *handler.Handler, vlog *log.Logger, addr string, keyPath, serverFingerprint string) {
+func runMI6(ctx context.Context, h *handler.Handler, dispatcher *requestDispatcher, vlog *log.Logger, addr string, keyPath, serverFingerprint string) {
 	// Parse addr: host/session_id or host:port/session_id
 	host, sessionID, err := parseMI6Addr(addr)
 	if err != nil {
@@ -442,7 +462,7 @@ func runMI6(ctx context.Context, h *handler.Handler, vlog *log.Logger, addr stri
 		}
 
 		log.Printf("connecting to MI6 at %s", addr)
-		err := runMI6Once(ctx, h, vlog, mi6Client, keyPath, addr, serverFingerprint)
+		err := runMI6Once(ctx, h, dispatcher, vlog, mi6Client, keyPath, addr, serverFingerprint)
 		if ctx.Err() != nil {
 			return
 		}
@@ -466,7 +486,7 @@ func runMI6(ctx context.Context, h *handler.Handler, vlog *log.Logger, addr stri
 	}
 }
 
-func runMI6Once(ctx context.Context, h *handler.Handler, vlog *log.Logger, mi6Client, keyPath, addr, serverFingerprint string) error {
+func runMI6Once(ctx context.Context, h *handler.Handler, dispatcher *requestDispatcher, vlog *log.Logger, mi6Client, keyPath, addr, serverFingerprint string) error {
 	childCtx, childCancel := context.WithCancel(ctx)
 	defer childCancel()
 
@@ -490,7 +510,7 @@ func runMI6Once(ctx context.Context, h *handler.Handler, vlog *log.Logger, mi6Cl
 	// No watchdog needed: MI6 server sends pings every 60s which mi6-client
 	// handles internally (pong responses). If the connection truly dies,
 	// mi6-client's Receive() will error out and the process exits.
-	runStdio(childCtx, h, vlog, stdout, stdin)
+	runStdio(childCtx, h, dispatcher, vlog, stdout, stdin, false)
 
 	stdin.Close()
 	return cmd.Wait()

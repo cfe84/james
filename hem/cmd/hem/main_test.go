@@ -50,6 +50,28 @@ func TestGadgetFingerprintForwarding(t *testing.T) {
 	}
 }
 
+func TestVersionDoesNotRequireRemoteFingerprint(t *testing.T) {
+	if os.Getenv("HEM_TEST_LOCAL_VERSION") == "1" {
+		os.Args = []string{"hem", "--hem", "relay.example:443/control", "version"}
+		main()
+		return
+	}
+	t.Setenv("HEM_TEST_LOCAL_VERSION", "1")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestVersionDoesNotRequireRemoteFingerprint$")
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatal(ctx.Err())
+	}
+	if err != nil {
+		t.Fatalf("hem version should not require a remote fingerprint: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), Version+"\n") {
+		t.Fatalf("hem version output = %q, want line %q", strings.TrimSpace(string(out)), Version)
+	}
+}
+
 func TestIsStartServerCommand(t *testing.T) {
 	if !isStartServerCommand([]string{"hem", "start", "server", "--mi6-control", "relay/control"}) {
 		t.Fatal("start server command was not recognized")

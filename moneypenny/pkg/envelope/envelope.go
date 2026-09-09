@@ -3,6 +3,7 @@ package envelope
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
 )
 
 // Message types
@@ -126,6 +127,7 @@ func (n *Notification) Marshal() ([]byte, error) {
 
 // NotificationWriter sends notifications to an output stream (stdout/MI6).
 type NotificationWriter struct {
+	mu     sync.Mutex
 	writer interface{ Write([]byte) (int, error) }
 }
 
@@ -134,9 +136,26 @@ func NewNotificationWriter(w interface{ Write([]byte) (int, error) }) *Notificat
 	return &NotificationWriter{writer: w}
 }
 
+// SetWriter switches transports without replacing the writer used by running agents.
+func (nw *NotificationWriter) SetWriter(w interface{ Write([]byte) (int, error) }) {
+	nw.mu.Lock()
+	defer nw.mu.Unlock()
+	nw.writer = w
+}
+
+// Write serializes whole protocol messages, including responses and notifications.
+func (nw *NotificationWriter) Write(b []byte) (int, error) {
+	nw.mu.Lock()
+	defer nw.mu.Unlock()
+	if nw.writer == nil {
+		return len(b), nil
+	}
+	return nw.writer.Write(b)
+}
+
 // Send sends a notification to the output stream.
 func (nw *NotificationWriter) Send(event, sessionID string, data interface{}) error {
-	if nw == nil || nw.writer == nil {
+	if nw == nil {
 		return nil // No-op if writer not set
 	}
 	notification := NewNotification(event, sessionID, data)
@@ -144,6 +163,6 @@ func (nw *NotificationWriter) Send(event, sessionID string, data interface{}) er
 	if err != nil {
 		return err
 	}
-	_, err = nw.writer.Write(b)
+	_, err = nw.Write(b)
 	return err
 }

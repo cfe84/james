@@ -18,6 +18,8 @@ const taskNameUser = "JamesMoneypenny"
 const taskNameSystem = "JamesMoneypennySystem"
 const taskWrapperName = "moneypenny-service.cmd"
 const taskLauncherName = "moneypenny-service.vbs"
+const taskDefinitionName = "moneypenny-service.xml"
+const crashLogDirectoryName = "crash-logs"
 
 func taskName(userLevel bool) string {
 	if userLevel {
@@ -57,22 +59,20 @@ func Install(cfg *Config) error {
 	}
 
 	tn := taskName(cfg.UserLevel)
+	definitionPath, err := writeTaskDefinition(cfg, launcherPath)
+	if err != nil {
+		return err
+	}
+	defer os.Remove(definitionPath)
 
-	// Task Scheduler limits /tr to 261 characters. Keep it short by storing
-	// the configured command in a managed wrapper in the data directory. Run
-	// it through wscript so the daemon's console window remains hidden.
+	// The task definition runs the managed wrapper through WScript so the
+	// daemon console remains hidden, has no execution time limit, and restarts
+	// after an unexpected nonzero exit.
 	schtasksArgs := []string{
 		"/create",
 		"/tn", tn,
-		"/tr", fmt.Sprintf(`wscript.exe //B "%s"`, launcherPath),
-		"/sc", "onlogon",
-		"/rl", "limited",
+		"/xml", definitionPath,
 		"/f", // force overwrite if exists
-	}
-
-	if !cfg.UserLevel {
-		// System-level: run whether user is logged on or not.
-		schtasksArgs = append(schtasksArgs, "/ru", "SYSTEM")
 	}
 
 	cmd := exec.Command("schtasks", schtasksArgs...)
@@ -102,6 +102,9 @@ func writeTaskWrapper(cfg *Config) (string, error) {
 	if cfg.DataDir == "" {
 		return "", fmt.Errorf("data directory is required for Windows service installation")
 	}
+	if cfg.LogFile == "" {
+		return "", fmt.Errorf("log file is required for Windows service installation")
+	}
 	if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
 		return "", fmt.Errorf("create data directory: %w", err)
 	}
@@ -114,6 +117,11 @@ func writeTaskWrapper(cfg *Config) (string, error) {
 			return "", fmt.Errorf("service command argument contains an invalid control character")
 		}
 	}
+	for _, path := range []string{cfg.DataDir, cfg.LogFile} {
+		if strings.ContainsAny(path, "\x00\r\n") {
+			return "", fmt.Errorf("service log path contains an invalid control character")
+		}
+	}
 
 	var script strings.Builder
 	script.WriteString("@echo off\r\n")
@@ -123,7 +131,23 @@ func writeTaskWrapper(cfg *Config) (string, error) {
 		}
 		script.WriteString(quoteBatchArg(arg))
 	}
+	script.WriteString("\r\nset \"exitCode=%ERRORLEVEL%\"\r\n")
+	script.WriteString("if \"%exitCode%\"==\"0\" exit /b 0\r\n")
+	script.WriteString("if exist ")
+	script.WriteString(quoteBatchArg(cfg.LogFile))
+	script.WriteString(" (\r\n")
+	script.WriteString("  if not exist ")
+	script.WriteString(quoteBatchArg(filepath.Join(cfg.DataDir, crashLogDirectoryName)))
+	script.WriteString(" mkdir ")
+	script.WriteString(quoteBatchArg(filepath.Join(cfg.DataDir, crashLogDirectoryName)))
 	script.WriteString("\r\n")
+	script.WriteString("  powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ")
+	script.WriteString(quoteBatchArg(crashLogPowerShellCommand))
+	script.WriteString(" ")
+	script.WriteString(quoteBatchArg(cfg.LogFile))
+	script.WriteString(" ")
+	script.WriteString(quoteBatchArg(filepath.Join(cfg.DataDir, crashLogDirectoryName)))
+	script.WriteString(" \"%exitCode%\"\r\n)\r\nexit /b %exitCode%\r\n")
 
 	path := filepath.Join(cfg.DataDir, taskWrapperName)
 	if err := os.WriteFile(path, []byte(script.String()), 0600); err != nil {
@@ -131,6 +155,11 @@ func writeTaskWrapper(cfg *Config) (string, error) {
 	}
 	return path, nil
 }
+
+const crashLogPowerShellCommand = `$logPath, $crashDir, $exitCode = $args; ` +
+	`$timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'; ` +
+	`Copy-Item -LiteralPath $logPath -Destination (Join-Path $crashDir ("moneypenny-crash-$timestamp-exit-$exitCode.log")) -Force; ` +
+	`Get-ChildItem -LiteralPath $crashDir -Filter 'moneypenny-crash-*.log' | Sort-Object LastWriteTimeUtc -Descending | Select-Object -Skip 10 | Remove-Item -Force`
 
 func writeTaskLauncher(cfg *Config) (string, error) {
 	wrapperPath, err := writeTaskWrapper(cfg)
@@ -140,13 +169,29 @@ func writeTaskLauncher(cfg *Config) (string, error) {
 
 	// WScript's window style 0 hides the cmd.exe console; waitOnReturn keeps
 	// Task Scheduler tracking the daemon process rather than the launcher.
+	// Propagating the child exit code lets Task Scheduler distinguish a clean
+	// update/shutdown from a crash for RestartOnFailure.
 	script := fmt.Sprintf(
-		`CreateObject("WScript.Shell").Run "cmd.exe /d /s /c """"%s""""", 0, True`+"\r\n",
+		`Set shell = CreateObject("WScript.Shell")`+"\r\n"+
+			`exitCode = shell.Run("cmd.exe /d /s /c """"%s""""", 0, True)`+"\r\n"+
+			`WScript.Quit exitCode`+"\r\n",
 		strings.ReplaceAll(wrapperPath, `"`, `""`),
 	)
 	path := filepath.Join(cfg.DataDir, taskLauncherName)
 	if err := os.WriteFile(path, []byte(script), 0600); err != nil {
 		return "", fmt.Errorf("write task launcher: %w", err)
+	}
+	return path, nil
+}
+
+func writeTaskDefinition(cfg *Config, launcherPath string) (string, error) {
+	definition, err := windowsTaskDefinition(cfg, launcherPath, os.Getenv("USERNAME"))
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(cfg.DataDir, taskDefinitionName)
+	if err := os.WriteFile(path, []byte(definition), 0600); err != nil {
+		return "", fmt.Errorf("write task definition: %w", err)
 	}
 	return path, nil
 }

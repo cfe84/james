@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"james/hem/pkg/hemclient"
@@ -1109,6 +1110,7 @@ type scheduleInfo struct {
 	Status         string `json:"status"`
 	CronExpr       string `json:"cron_expr"`
 	ReplyChannelID int64  `json:"reply_channel_id"`
+	MarkReady      bool   `json:"mark_ready"`
 	CreatedAt      string `json:"created_at"`
 }
 
@@ -1176,8 +1178,12 @@ func (c *client) listSchedules(sessionID string) ([]scheduleInfo, error) {
 	return schedules, nil
 }
 
-func (c *client) scheduleSession(sessionID, at, prompt string) error {
-	resp, err := c.send("schedule", "session", sessionID, "--at", at, "--prompt", prompt)
+func (c *client) scheduleSession(sessionID, at, prompt string, markReady bool) error {
+	args := []string{sessionID, "--at", at, "--prompt", prompt}
+	if markReady {
+		args = append(args, "--mark-ready")
+	}
+	resp, err := c.send("schedule", "session", args...)
 	if err != nil {
 		return err
 	}
@@ -1187,10 +1193,10 @@ func (c *client) scheduleSession(sessionID, at, prompt string) error {
 	return nil
 }
 
-// editSchedule updates a pending schedule's time and prompt in place. Cron and
-// channel are retained by the server since they are not passed.
-func (c *client) editSchedule(sessionID string, id int64, at, prompt string) error {
-	resp, err := c.send("edit", "schedule", fmt.Sprintf("%d", id), "--session-id", sessionID, "--at", at, "--prompt", prompt)
+// editSchedule updates a pending schedule's time, prompt, and Ready behavior.
+// Cron and channel are retained by the server since they are not passed.
+func (c *client) editSchedule(sessionID string, id int64, at, prompt string, markReady bool) error {
+	resp, err := c.send("edit", "schedule", fmt.Sprintf("%d", id), "--session-id", sessionID, "--at", at, "--prompt", prompt, "--mark-ready="+strconv.FormatBool(markReady))
 	if err != nil {
 		return err
 	}

@@ -299,6 +299,9 @@ type RunParams struct {
 	// assistant text. It is pure routing metadata: the runner ignores it, and
 	// the handler enqueues the response to that channel's outbox on completion.
 	ReplyChannelID int64
+	// MarkReady requests that Hem surface this completed scheduled run in its
+	// Ready group after the agent becomes idle.
+	MarkReady bool
 }
 
 // agentSessionID returns the id to hand to the underlying agent CLI.

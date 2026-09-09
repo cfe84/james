@@ -390,7 +390,7 @@ func (h *Handler) forwardInbound(ch *store.Channel, msgs []channel.Message) bool
 	}
 
 	if sess.Status != store.StateIdle {
-		if err := h.store.QueuePromptChannel(ch.SessionID, prompt, "", "", "", "channel", ch.ID); err != nil {
+		if err := h.store.QueuePromptChannel(ch.SessionID, prompt, "", "", "", "channel", ch.ID, false); err != nil {
 			h.vlog("channel %d: queue failed: %v", ch.ID, err)
 			return false
 		}

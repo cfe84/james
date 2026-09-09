@@ -236,7 +236,7 @@ func TestAgentMessageProvenancePersistsForImmediateAndQueuedTurns(t *testing.T) 
 	if err := s.AddConversationTurnFrom("target", "user", "immediate", "source-id", "ian"); err != nil {
 		t.Fatalf("AddConversationTurnFrom: %v", err)
 	}
-	if err := s.QueuePromptChannelFrom("target", "queued", "", "", "", "", "source-id", "ian", 0); err != nil {
+	if err := s.QueuePromptChannelFrom("target", "queued", "", "", "", "", "source-id", "ian", 0, false); err != nil {
 		t.Fatalf("QueuePromptChannelFrom: %v", err)
 	}
 	queued, err := s.DrainQueueGroup("target")

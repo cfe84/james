@@ -128,6 +128,11 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS processed_schedule_ready (
+    session_id TEXT PRIMARY KEY,
+    ready_at DATETIME NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS defaults (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -831,6 +836,38 @@ func (s *Store) SetSessionReviewed(sessionID string, reviewed bool) error {
 		return fmt.Errorf("set session reviewed %q: %w", sessionID, err)
 	}
 	return nil
+}
+
+// ProcessScheduleReady marks a session unreviewed exactly once for each newer
+// scheduled result marker. It returns true when the marker surfaced as Ready.
+func (s *Store) ProcessScheduleReady(sessionID string, readyAt time.Time) (bool, error) {
+	if readyAt.IsZero() {
+		return false, nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, fmt.Errorf("begin scheduled ready: %w", err)
+	}
+	defer tx.Rollback()
+
+	var previous time.Time
+	err = tx.QueryRow(`SELECT ready_at FROM processed_schedule_ready WHERE session_id = ?`, sessionID).Scan(&previous)
+	if err != nil && err != sql.ErrNoRows {
+		return false, fmt.Errorf("get scheduled ready: %w", err)
+	}
+	if !previous.IsZero() && !readyAt.After(previous) {
+		return false, nil
+	}
+	if _, err := tx.Exec(`INSERT INTO processed_schedule_ready (session_id, ready_at) VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET ready_at = excluded.ready_at`, sessionID, readyAt.UTC()); err != nil {
+		return false, fmt.Errorf("record scheduled ready: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE sessions SET reviewed = 0 WHERE session_id = ?`, sessionID); err != nil {
+		return false, fmt.Errorf("mark scheduled result ready: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit scheduled ready: %w", err)
+	}
+	return true, nil
 }
 
 // GetSessionHemStatus returns the hem_status for a session. Returns "" if not found.

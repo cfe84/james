@@ -3718,7 +3718,7 @@
             return resp.data.schedules.map(s => ({
               id: s.id, status: s.status, scheduledAt: s.scheduled_at,
               prompt: s.prompt || '', cron: s.cron_expr || '',
-              channelId: s.reply_channel_id || 0,
+              channelId: s.reply_channel_id || 0, markReady: !!s.mark_ready,
             }));
           }
           if (Array.isArray(resp.data.rows)) {
@@ -3822,6 +3822,7 @@
         <input id="sched-at" type="datetime-local" value="${escapeAttr(atVal)}">
         <label for="sched-cron">Repeat (cron, optional)</label>
         <input id="sched-cron" type="text" placeholder="e.g. 0 9 * * *  (every day at 09:00)" value="${editing ? escapeAttr(editSched.cron || '') : ''}">
+        <label class="check-label"><input id="sched-mark-ready" type="checkbox"${editing && editSched.markReady ? ' checked' : ''}> Mark result Ready when the agent finishes</label>
         ${channelSelect}
         <label for="sched-prompt">Prompt</label>
         <textarea id="sched-prompt" rows="4" placeholder="What should the agent do?">${editing ? escapeHtml(editSched.prompt || '') : ''}</textarea>
@@ -3850,17 +3851,19 @@
       btn.textContent = editing ? 'Saving…' : 'Creating…';
       const channelEl = document.getElementById('sched-channel');
       const channelVal = channelEl ? channelEl.value : '';
+      const markReady = document.getElementById('sched-mark-ready').checked;
       let verb, noun, args;
       if (editing) {
         // Edit in place; pass all fields so cron/channel can be changed or
         // cleared ("" cron and 0 channel clear on the server).
         verb = 'edit'; noun = 'schedule';
-        args = [String(editSched.id), '--session-id', sid, '--at', iso, '--cron', cron, '--channel', channelVal || '0', '--prompt', prompt];
+        args = [String(editSched.id), '--session-id', sid, '--at', iso, '--cron', cron, '--channel', channelVal || '0', '--mark-ready=' + markReady, '--prompt', prompt];
       } else {
         verb = 'schedule'; noun = 'session';
         args = [sid, '--at', iso];
         if (cron) args.push('--cron', cron);
         if (channelVal) args.push('--channel', channelVal);
+        if (markReady) args.push('--mark-ready');
         args.push('--prompt', prompt);
       }
       try {

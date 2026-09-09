@@ -129,12 +129,13 @@ func gadgetsParentID(e *Executor, sessionID string) string {
 
 // mpSessionInfo holds cached session data from a moneypenny's list_sessions response.
 type mpSessionInfo struct {
-	Status       string `json:"status"`
-	Name         string `json:"name"`
-	Agent        string `json:"agent"`
-	SessionID    string `json:"session_id"`
-	CreatedAt    string `json:"created_at"`
-	LastAccessed string `json:"last_accessed"`
+	Status          string `json:"status"`
+	Name            string `json:"name"`
+	Agent           string `json:"agent"`
+	SessionID       string `json:"session_id"`
+	CreatedAt       string `json:"created_at"`
+	LastAccessed    string `json:"last_accessed"`
+	ScheduleReadyAt string `json:"schedule_ready_at"`
 }
 
 // Executor runs commands using the store and transport layer.
@@ -161,7 +162,41 @@ func New(s *store.Store, mi6KeyPath string) *Executor {
 
 // getMPData returns a snapshot of cached moneypenny session data.
 func (e *Executor) getMPData() map[string]map[string]mpSessionInfo {
-	return e.cacheManager.GetSnapshot()
+	data := e.cacheManager.GetSnapshot()
+	for mpName, sessions := range data {
+		if e.clientManager.IsUnavailable(mpName) {
+			for id, info := range sessions {
+				info.Status = "offline"
+				sessions[id] = info
+			}
+		}
+	}
+	return data
+}
+
+func (e *Executor) markMPUnavailable(mpName string) {
+	wasUnavailable := e.clientManager.IsUnavailable(mpName)
+	e.clientManager.SetCooldown(mpName)
+	if !wasUnavailable {
+		e.emitDashboardRefresh()
+	}
+}
+
+func (e *Executor) processScheduleReady(sessions map[string]mpSessionInfo) {
+	for sessionID, session := range sessions {
+		if session.ScheduleReadyAt == "" {
+			continue
+		}
+		readyAt, err := time.Parse(time.RFC3339, session.ScheduleReadyAt)
+		if err != nil {
+			continue
+		}
+		if surfaced, err := e.store.ProcessScheduleReady(sessionID, readyAt); err != nil {
+			continue
+		} else if surfaced {
+			e.emitDashboardRefresh()
+		}
+	}
 }
 
 // emitDashboardRefresh sends a broadcast to connected clients indicating that
@@ -206,12 +241,12 @@ func (e *Executor) refreshMPSessions(mpNames []string) {
 			defer wg.Done()
 			resp, err := e.sendCommand(ctx, mp, "list_sessions", nil)
 			if err != nil {
-				e.clientManager.SetCooldown(mp.Name)
+				e.markMPUnavailable(mp.Name)
 				return
 			}
-			e.clientManager.ClearCooldown(mp.Name)
 			var sessions []mpSessionInfo
 			if err := json.Unmarshal(resp.Data, &sessions); err != nil {
+				e.markMPUnavailable(mp.Name)
 				return
 			}
 			m := make(map[string]mpSessionInfo, len(sessions))
@@ -231,7 +266,9 @@ func (e *Executor) refreshMPSessions(mpNames []string) {
 	// don't wait for slow/unreachable ones. Emit a broadcast after each
 	// update so connected TUI clients can refresh incrementally.
 	for res := range ch {
+		e.processScheduleReady(res.sessions)
 		e.cacheManager.UpdateMP(res.mpName, res.sessions)
+		e.clientManager.ClearCooldown(res.mpName)
 		e.emitDashboardRefresh()
 	}
 }
@@ -267,12 +304,12 @@ func (e *Executor) refreshMPSessionsQuick(mpNames []string) {
 			defer wg.Done()
 			resp, err := e.sendCommand(ctx, mp, "list_sessions", nil)
 			if err != nil {
-				e.clientManager.SetCooldown(mp.Name)
+				e.markMPUnavailable(mp.Name)
 				return
 			}
-			e.clientManager.ClearCooldown(mp.Name)
 			var sessions []mpSessionInfo
 			if err := json.Unmarshal(resp.Data, &sessions); err != nil {
+				e.markMPUnavailable(mp.Name)
 				return
 			}
 			m := make(map[string]mpSessionInfo, len(sessions))
@@ -297,6 +334,8 @@ func (e *Executor) refreshMPSessionsQuick(mpNames []string) {
 		// Drain any remaining results that arrived after foreground returned.
 		for res := range ch {
 			e.cacheManager.UpdateMP(res.mpName, res.sessions)
+			e.clientManager.ClearCooldown(res.mpName)
+			e.processScheduleReady(res.sessions)
 			e.emitDashboardRefresh()
 		}
 		cancel()
@@ -315,6 +354,8 @@ func (e *Executor) refreshMPSessionsQuick(mpNames []string) {
 				return // all done within 3s
 			}
 			e.cacheManager.UpdateMP(res.mpName, res.sessions)
+			e.clientManager.ClearCooldown(res.mpName)
+			e.processScheduleReady(res.sessions)
 		case <-timer.C:
 			// Drain any results that arrived just now.
 			for {
@@ -324,6 +365,8 @@ func (e *Executor) refreshMPSessionsQuick(mpNames []string) {
 						return
 					}
 					e.cacheManager.UpdateMP(res.mpName, res.sessions)
+					e.clientManager.ClearCooldown(res.mpName)
+					e.processScheduleReady(res.sessions)
 				default:
 					return
 				}
@@ -340,12 +383,9 @@ func (e *Executor) ensureMPRefresh(mpNames []string) {
 	go e.refreshMPSessions(mpNames)
 }
 
-// invalidateMPCache removes cached data for a moneypenny and triggers a refresh.
+// invalidateMPCache refreshes a moneypenny while retaining last-known metadata
+// in case the refresh fails.
 func (e *Executor) invalidateMPCache(mpName string) {
-	// Get current cache, remove the moneypenny, and update
-	cache := e.cacheManager.GetSnapshot()
-	delete(cache, mpName)
-	e.cacheManager.Update(cache)
 	e.ensureMPRefresh([]string{mpName})
 }
 
@@ -384,7 +424,7 @@ func (e *Executor) CheckConnectivity(logger *log.Logger) {
 		case r := <-ch:
 			if r.err != nil {
 				logger.Printf("WARNING: moneypenny %q (%s) is unreachable: %v", r.name, r.addr, r.err)
-				e.clientManager.SetCooldown(r.name)
+				e.markMPUnavailable(r.name)
 			} else {
 				logger.Printf("moneypenny %q (%s) OK", r.name, r.addr)
 			}
@@ -410,9 +450,7 @@ func (e *Executor) SyncSessions(logger *log.Logger) {
 
 	type syncResult struct {
 		mpName   string
-		sessions []struct {
-			SessionID string `json:"session_id"`
-		}
+		sessions []mpSessionInfo
 	}
 	ch := make(chan *syncResult, len(mps))
 	var wg sync.WaitGroup
@@ -426,12 +464,12 @@ func (e *Executor) SyncSessions(logger *log.Logger) {
 			defer wg.Done()
 			resp, err := e.sendCommand(ctx, mp, "list_sessions", nil)
 			if err != nil {
-				e.clientManager.SetCooldown(mp.Name)
+				e.markMPUnavailable(mp.Name)
 				return
 			}
-			e.clientManager.ClearCooldown(mp.Name)
 			r := &syncResult{mpName: mp.Name}
 			if err := json.Unmarshal(resp.Data, &r.sessions); err != nil {
+				e.markMPUnavailable(mp.Name)
 				return
 			}
 			ch <- r
@@ -445,7 +483,9 @@ func (e *Executor) SyncSessions(logger *log.Logger) {
 
 	for r := range ch {
 		adopted := 0
+		sessions := make(map[string]mpSessionInfo, len(r.sessions))
 		for _, s := range r.sessions {
+			sessions[s.SessionID] = s
 			isNew, err := e.store.TrackSessionIfNew(s.SessionID, r.mpName)
 			if err != nil {
 				logger.Printf("sync: failed to track session %s: %v", s.SessionID, err)
@@ -456,6 +496,10 @@ func (e *Executor) SyncSessions(logger *log.Logger) {
 		if adopted > 0 {
 			logger.Printf("sync: adopted %d new sessions from moneypenny %q", adopted, r.mpName)
 		}
+		e.cacheManager.UpdateMP(r.mpName, sessions)
+		e.clientManager.ClearCooldown(r.mpName)
+		e.processScheduleReady(sessions)
+		e.emitDashboardRefresh()
 	}
 }
 
@@ -1438,16 +1482,10 @@ func (e *Executor) AddMoneypenny(args []string) *protocol.Response {
 
 	// Validate connectivity by sending get_version.
 	client := e.clientForMoneypenny(mp)
-	pingCmd := &transport.Command{
-		Type:      "request",
-		Method:    "get_version",
-		RequestID: "ping",
-		Data:      nil,
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	resp, err := client.Send(ctx, pingCmd)
+	resp, err := client.SendCommand(ctx, "get_version", nil)
 	if err != nil {
 		_ = e.store.DeleteMoneypenny(name)
 		return protocol.ErrResponse(fmt.Sprintf("connectivity check failed for %q: %v", name, err))
@@ -1525,7 +1563,7 @@ func (e *Executor) PingMoneypenny(args []string) *protocol.Response {
 
 	resp, err := e.sendCommand(ctx, mp, "get_version", nil)
 	if err != nil {
-		e.clientManager.SetCooldown(name)
+		e.markMPUnavailable(name)
 		return protocol.ErrResponse(fmt.Sprintf("ping failed: %v", err))
 	}
 
@@ -5685,6 +5723,9 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 			mpStatus = "offline"
 			log.Printf("dashboard: moneypenny %q unreachable for session %s", sess.MoneypennyName, sess.SessionID)
 		}
+		if e.clientManager.IsUnavailable(sess.MoneypennyName) {
+			mpStatus = "offline"
+		}
 
 		// Fallback to hem's tracked creation time if moneypenny didn't send timestamps.
 		if createdAt == "" && !sess.CreatedAt.IsZero() {
@@ -5697,10 +5738,10 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 		sortKey := 1 // WORKING
 		if sess.HemStatus == "completed" {
 			sortKey = 3
-		} else if mpStatus == "unknown" {
-			// Moneypenny is reachable but doesn't know this session — always IDLE.
+		} else if mpStatus == "unknown" || mpStatus == "offline" {
+			// Missing or unavailable sessions cannot be confirmed ready.
 			sortKey = 2
-		} else if mpStatus == "idle" || mpStatus == "offline" {
+		} else if mpStatus == "idle" {
 			if sess.Reviewed {
 				sortKey = 2 // IDLE
 			} else {
@@ -5710,7 +5751,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 
 		// Promote to READY if any subagent is ready (idle + unreviewed).
 		subReady := false
-		if sortKey != 0 && sess.HemStatus != "completed" {
+		if sortKey != 0 && sess.HemStatus != "completed" && mpStatus != "offline" {
 			for _, sub := range subsByParent[sess.SessionID] {
 				if sub.HemStatus == "completed" || sub.Reviewed {
 					continue
@@ -5729,7 +5770,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 		displayStatus := mpStatus
 		if subReady {
 			displayStatus = "ready"
-		} else if (mpStatus == "idle" || mpStatus == "offline") && !sess.Reviewed {
+		} else if mpStatus == "idle" && !sess.Reviewed {
 			displayStatus = "ready"
 		}
 
@@ -5767,7 +5808,9 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 				continue
 			}
 			var subMPStatus, subName, subCreated, subLastAccessed, subAgent string
+			subMPStatus = "offline"
 			if mpSessions, ok := mpData[sub.MoneypennyName]; ok {
+				subMPStatus = "unknown"
 				if info, found := mpSessions[sub.SessionID]; found {
 					subMPStatus = info.Status
 					subName = info.Name
@@ -5775,6 +5818,9 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 					subLastAccessed = info.LastAccessed
 					subAgent = info.Agent
 				}
+			}
+			if e.clientManager.IsUnavailable(sub.MoneypennyName) {
+				subMPStatus = "offline"
 			}
 			subDisplayStatus := subMPStatus
 			if subMPStatus == "idle" && !sub.Reviewed {
@@ -6128,6 +6174,7 @@ func (e *Executor) MI6DeleteKey(args []string) *protocol.Response {
 func (e *Executor) ScheduleSession(args []string) *protocol.Response {
 	var sessionID, atStr, prompt, cronExpr string
 	var channelID int64
+	var markReady bool
 
 	remaining, err := parseFlagsFromArgs("schedule-session", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&sessionID, "session-id", "", "session ID")
@@ -6135,6 +6182,7 @@ func (e *Executor) ScheduleSession(args []string) *protocol.Response {
 		fs.StringVar(&prompt, "prompt", "", "prompt to send")
 		fs.StringVar(&cronExpr, "cron", "", "cron expression for recurring schedules")
 		fs.Int64Var(&channelID, "channel", 0, "channel ID to deliver the output to")
+		fs.BoolVar(&markReady, "mark-ready", false, "mark the completed scheduled result as ready")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -6180,6 +6228,9 @@ func (e *Executor) ScheduleSession(args []string) *protocol.Response {
 	}
 	if channelID != 0 {
 		cmdData["reply_channel_id"] = channelID
+	}
+	if markReady {
+		cmdData["mark_ready"] = true
 	}
 
 	ctx := context.Background()
@@ -6254,11 +6305,12 @@ func (e *Executor) ListSchedules(args []string) *protocol.Response {
 			s.ScheduledAt,
 			truncPrompt,
 			s.CronExpr,
+			strconv.FormatBool(s.MarkReady),
 		})
 	}
 
 	return protocol.OKResponse(ScheduleTableResult{
-		Headers:   []string{"ID", "Status", "Scheduled At", "Prompt", "Cron"},
+		Headers:   []string{"ID", "Status", "Scheduled At", "Prompt", "Cron", "Mark Ready"},
 		Rows:      rows,
 		Schedules: result.Schedules,
 	})
@@ -6316,6 +6368,7 @@ func (e *Executor) CancelSchedule(args []string) *protocol.Response {
 func (e *Executor) EditSchedule(args []string) *protocol.Response {
 	var sessionID, atStr, prompt, cronExpr string
 	var channelID int64
+	var markReady bool
 
 	remaining, err := parseFlagsFromArgs("edit-schedule", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&sessionID, "session-id", "", "session ID")
@@ -6323,6 +6376,7 @@ func (e *Executor) EditSchedule(args []string) *protocol.Response {
 		fs.StringVar(&prompt, "prompt", "", "prompt to send")
 		fs.StringVar(&cronExpr, "cron", "", "cron expression for recurring schedules (empty clears)")
 		fs.Int64Var(&channelID, "channel", 0, "channel ID to deliver the output to (0 clears)")
+		fs.BoolVar(&markReady, "mark-ready", false, "mark the completed scheduled result as ready")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -6341,6 +6395,8 @@ func (e *Executor) EditSchedule(args []string) *protocol.Response {
 			setFlags["cron"] = true
 		case a == "--channel" || strings.HasPrefix(a, "--channel="):
 			setFlags["channel"] = true
+		case a == "--mark-ready" || strings.HasPrefix(a, "--mark-ready="):
+			setFlags["mark-ready"] = true
 		}
 	}
 
@@ -6422,6 +6478,10 @@ func (e *Executor) EditSchedule(args []string) *protocol.Response {
 	if setFlags["channel"] {
 		effChannel = channelID
 	}
+	effMarkReady := current.MarkReady
+	if setFlags["mark-ready"] {
+		effMarkReady = markReady
+	}
 
 	cmdData := map[string]interface{}{
 		"schedule_id":      scheduleID,
@@ -6429,6 +6489,7 @@ func (e *Executor) EditSchedule(args []string) *protocol.Response {
 		"scheduled_at":     scheduledAt.UTC().Format(time.RFC3339),
 		"cron_expr":        effCron,
 		"reply_channel_id": effChannel,
+		"mark_ready":       effMarkReady,
 	}
 
 	resp, err := e.sendCommand(ctx, mp, "update_schedule", cmdData)
@@ -6464,6 +6525,7 @@ type ScheduleInfoResult struct {
 	Status         string `json:"status"`
 	CronExpr       string `json:"cron_expr"`
 	ReplyChannelID int64  `json:"reply_channel_id"`
+	MarkReady      bool   `json:"mark_ready"`
 	CreatedAt      string `json:"created_at"`
 }
 

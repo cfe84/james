@@ -121,6 +121,9 @@ type resultCallback func(sessionID, response string, err error)
 // used to allocate per-session persistent directories (sessions/<sessionID>/).
 func New(s *store.Store, runner *agent.Runner, version, dataDir string) *Handler {
 	h := &Handler{store: s, runner: runner, version: version, dataDir: dataDir, vlog: func(string, ...interface{}) {}}
+	h.notifyWriter = envelope.NewNotificationWriter(nil)
+	s.SetNotificationWriter(h.notifyWriter)
+	runner.SetNotificationWriter(h.notifyWriter)
 	h.channelCmd = os.Getenv("MONEYPENNY_CHANNEL_CMD")
 	if h.channelCmd == "" {
 		h.channelCmd = "agency"
@@ -244,9 +247,11 @@ func (h *Handler) SetTriggerUpdateFunc(f func() bool) {
 
 // SetNotificationWriter sets the writer for sending async notifications.
 func (h *Handler) SetNotificationWriter(nw *envelope.NotificationWriter) {
-	h.notifyWriter = nw
-	h.store.SetNotificationWriter(nw)
-	h.runner.SetNotificationWriter(nw)
+	if nw == nil {
+		h.notifyWriter.SetWriter(nil)
+	} else {
+		h.notifyWriter.SetWriter(nw)
+	}
 }
 
 // AllSessionsIdle returns true if no sessions are in the "working" state.
@@ -608,7 +613,7 @@ func (h *Handler) queuePrompt(_ context.Context, cmd *envelope.Command) *envelop
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, fmt.Sprintf("session not found: %s", data.SessionID))
 	}
 
-	if err := h.store.QueuePromptChannelFrom(data.SessionID, data.Prompt, data.Model, data.Effort, data.ContextTier, data.Source, data.SourceSessionID, data.SourceName, 0); err != nil {
+	if err := h.store.QueuePromptChannelFrom(data.SessionID, data.Prompt, data.Model, data.Effort, data.ContextTier, data.Source, data.SourceSessionID, data.SourceName, 0, false); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to queue prompt: %v", err))
 	}
 
@@ -935,6 +940,11 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 			h.vlog("failed to record OpenCode cost for session %s: %v", sessionID, err)
 		}
 	}
+	if params.MarkReady {
+		if err := h.store.MarkScheduleResultReady(sessionID); err != nil {
+			h.vlog("failed to mark scheduled result ready for session %s: %v", sessionID, err)
+		}
+	}
 
 	// Check for queued prompts before going idle. Drain one override-group at a
 	// time: prompts sharing the same per-prompt model/effort override are
@@ -1013,6 +1023,7 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 			Path:           sess.Path,
 			Resume:         true,
 			ReplyChannelID: first.ReplyChannelID,
+			MarkReady:      first.MarkReady,
 		})
 		return
 	}
@@ -1056,6 +1067,9 @@ func (h *Handler) listSessions(_ context.Context, cmd *envelope.Command) *envelo
 		}
 		if info.LastAccessed == "" {
 			info.LastAccessed = s.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z")
+		}
+		if !s.ScheduleReadyAt.IsZero() {
+			info.ScheduleReadyAt = s.ScheduleReadyAt.UTC().Format("2006-01-02T15:04:05Z")
 		}
 		infos = append(infos, info)
 	}
@@ -2456,7 +2470,7 @@ func (h *Handler) schedule(_ context.Context, cmd *envelope.Command) *envelope.R
 		}
 	}
 
-	id, err := h.store.CreateScheduleFull(data.SessionID, data.Prompt, scheduledAt, data.CronExpr, data.ReplyChannelID)
+	id, err := h.store.CreateScheduleFull(data.SessionID, data.Prompt, scheduledAt, data.CronExpr, data.ReplyChannelID, data.MarkReady)
 	if err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to create schedule: %v", err))
 	}
@@ -2505,6 +2519,7 @@ func (h *Handler) listSchedules(_ context.Context, cmd *envelope.Command) *envel
 			Status:         s.Status,
 			CronExpr:       s.CronExpr,
 			ReplyChannelID: s.ReplyChannelID,
+			MarkReady:      s.MarkReady,
 			CreatedAt:      s.CreatedAt.UTC().Format(time.RFC3339),
 		})
 	}
@@ -2579,7 +2594,7 @@ func (h *Handler) updateSchedule(_ context.Context, cmd *envelope.Command) *enve
 		}
 	}
 
-	if err := h.store.UpdateSchedule(data.ScheduleID, data.Prompt, scheduledAt, data.CronExpr, data.ReplyChannelID); err != nil {
+	if err := h.store.UpdateSchedule(data.ScheduleID, data.Prompt, scheduledAt, data.CronExpr, data.ReplyChannelID, data.MarkReady); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to update schedule: %v", err))
 	}
 
@@ -2747,10 +2762,11 @@ func (h *Handler) processDueSchedules() {
 				Path:           sess.Path,
 				Resume:         true,
 				ReplyChannelID: sch.ReplyChannelID,
+				MarkReady:      sch.MarkReady,
 			})
 		} else {
 			// Session is busy — queue the prompt, it'll run after current task finishes.
-			if err := h.store.QueuePromptChannel(sch.SessionID, sch.Prompt, "", "", "", "scheduled", sch.ReplyChannelID); err != nil {
+			if err := h.store.QueuePromptChannel(sch.SessionID, sch.Prompt, "", "", "", "scheduled", sch.ReplyChannelID, sch.MarkReady); err != nil {
 				h.vlog("scheduler: failed to queue prompt for session %s: %v", sch.SessionID, err)
 				_ = h.store.UpdateScheduleStatus(sch.ID, store.SchedulePending)
 				continue
@@ -2774,7 +2790,7 @@ func (h *Handler) scheduleNextCron(sch *store.Schedule) {
 		h.vlog("scheduler: invalid cron expression %q for schedule %d: %v", sch.CronExpr, sch.ID, err)
 		return
 	}
-	id, err := h.store.CreateScheduleFull(sch.SessionID, sch.Prompt, next, sch.CronExpr, sch.ReplyChannelID)
+	id, err := h.store.CreateScheduleFull(sch.SessionID, sch.Prompt, next, sch.CronExpr, sch.ReplyChannelID, sch.MarkReady)
 	if err != nil {
 		h.vlog("scheduler: failed to create next cron occurrence for schedule %d: %v", sch.ID, err)
 		return
