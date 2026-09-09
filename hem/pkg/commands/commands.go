@@ -68,8 +68,12 @@ Scheduling:
   Schedule a follow-up: %s schedule session %s --at TIME --prompt "your prompt"
   TIME accepts RFC3339 timestamps or relative durations like +2h, +30m.
   Add --cron EXPR for recurring tasks (e.g. --cron "@every 2h", --cron "0 9 * * 1").
+  Add --mark-ready when the completed result should surface in the user's Ready group.
   List schedules: %s list schedules --session-id %s
-  Cancel a schedule: %s cancel schedule SCHEDULE_ID
+  Edit a pending schedule: %s edit schedule SCHEDULE_ID --session-id %s --at TIME --prompt "updated prompt"
+  Omitted edit flags retain their values. Use --cron "" to clear recurrence,
+  --channel 0 to clear reply routing, and --mark-ready=true|false to change Ready behavior.
+  Cancel a schedule: %s cancel schedule SCHEDULE_ID --session-id %s
 
 Direct messages to another agent:
   Send a message: %s continue session TARGET_SESSION_ID "your message"
@@ -95,7 +99,7 @@ IMPORTANT: When the user asks you to "start an agent", "launch an agent", "spin 
 IMPORTANT: Do NOT set the git committer or author to Claude, Copilot, or any AI name. Leave the user's existing git config (user.name/user.email) unchanged. Commits should appear as authored by the human user.
 IMPORTANT: When creating a session or subagent that needs to modify the filesystem (write files, run builds, install packages, commit, etc.), include the --yolo flag to grant it permission. Without --yolo, the agent will be blocked by permission prompts it cannot answer.`,
 		hemCmd, hemCmd, sessionID, connectionInstructions,
-		hemCmd, sessionID, hemCmd, sessionID, hemCmd,
+		hemCmd, sessionID, hemCmd, sessionID, hemCmd, sessionID, hemCmd, sessionID,
 		hemCmd,
 		hemCmd, sessionID, hemCmd, sessionID,
 		hemCmd, sessionID, hemCmd, sessionID,

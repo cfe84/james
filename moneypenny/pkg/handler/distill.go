@@ -16,13 +16,9 @@ import (
 // relies on the live agent's accumulated context), distillation runs over a
 // fresh agent session and is therefore handed the transcript explicitly.
 const distillPrompt = `[SYSTEM: MEMORY DISTILLATION]
-Below is the full transcript of a conversation. Your job is to extract ALL durable, important information from it into your memory folder. Do the following, in order:
+Below is the stored conversation transcript. Extract its durable knowledge and relevant working state according to the system memory contract: the original task, key decisions and rationale, important context (file paths, names, conventions, learnings), current state, and pending actions.
 
-1. First inspect your EXISTING memory (read its README.md and browse the topic folders) to see what is already recorded and how it is organized.
-
-2. Then go through the transcript and SAVE everything important into memory by creating/editing README.md files in topic folders: the original task, key decisions and their rationale, important context (file paths, names, conventions, learnings), the current state of the work, and any pending actions. Where the transcript adds to or changes something already in memory, UPDATE the existing README.md rather than duplicating it. Reorganize the folders if that makes it clearer. Keep high-level synthesis in parent folders' README.md and detail in child folders so nothing is lost.
-
-3. When done, briefly report what you wrote or updated as your final message.
+When done, briefly report what you wrote or updated as your final message.
 
 Transcript:
 %s`
@@ -68,6 +64,10 @@ func (h *Handler) distillSessionCmd(_ context.Context, cmd *envelope.Command) *e
 	if sess == nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, fmt.Sprintf("session not found: %s", data.SessionID))
 	}
+	if !agent.MemoryEnabled(sess.Agent, sess.Yolo) {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest,
+			fmt.Sprintf("memory distillation is unavailable: %s cannot write session memory without yolo permissions", sess.Agent))
+	}
 	if sess.Status != store.StateIdle {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotIdle, fmt.Sprintf("session is not idle: %s", sess.Status))
 	}
@@ -94,23 +94,27 @@ func (h *Handler) distillSessionCmd(_ context.Context, cmd *envelope.Command) *e
 // tools — so the live transcript is left clean. The caller must have set the
 // session status to working; this resets it to idle when finished.
 func (h *Handler) runDistillation(sessionID string) {
+	reason := "distillation_failed"
 	defer func() {
-		_ = h.store.UpdateSessionStatus(sessionID, store.StateIdle)
+		if err := h.store.UpdateSessionStatus(sessionID, store.StateIdle); err != nil {
+			h.vlog("distillation: cannot restore idle state for session %s: %v", sessionID, err)
+		}
 		if h.notifyWriter != nil {
-			_ = h.notifyWriter.Send(envelope.EventSessionStateChanged, sessionID, map[string]string{
-				"status": store.StateIdle,
-				"reason": "distilled",
-			})
-			_ = h.notifyWriter.Send(envelope.EventChatStatus, sessionID, map[string]string{
-				"status": store.StateIdle,
-				"reason": "distilled",
-			})
+			for _, event := range []string{envelope.EventSessionStateChanged, envelope.EventChatStatus} {
+				if err := h.notifyWriter.Send(event, sessionID, map[string]string{"status": store.StateIdle, "reason": reason}); err != nil {
+					h.vlog("distillation: cannot notify idle state for session %s: %v", sessionID, err)
+				}
+			}
 		}
 	}()
 
 	sess, err := h.store.GetSession(sessionID)
 	if err != nil || sess == nil {
 		h.vlog("distillation: cannot load session %s: %v", sessionID, err)
+		return
+	}
+	if !agent.MemoryEnabled(sess.Agent, sess.Yolo) {
+		h.vlog("distillation: memory is disabled for session %s", sessionID)
 		return
 	}
 	h.ensureMemoryMigrated(sessionID)
@@ -123,21 +127,27 @@ func (h *Handler) runDistillation(sessionID string) {
 	transcript := cleanTranscript(turns)
 	if strings.TrimSpace(transcript) == "" {
 		h.vlog("distillation: nothing to distill for session %s (empty transcript)", sessionID)
+		reason = "distilled"
 		return
 	}
 
 	// Run the agent with the session's system prompt plus the file-based memory
-	// instructions and a body-less outline of the current memory tree, so it can
-	// target/extend existing nodes. Use a throwaway underlying agent session id
+	// contract and root index. Use a throwaway underlying agent session id
 	// (NOT persisted) so the live agent session is untouched.
 	systemPrompt := sess.SystemPrompt
 	memDir := h.memoryDir(sessionID)
-	if !agent.MemoryEnabled(sess.Agent, sess.Yolo) {
-		memDir = ""
+	if memDir == "" {
+		h.vlog("distillation: session memory directory unavailable for session %s", sessionID)
+		return
 	}
-	if memDir != "" {
-		systemPrompt += memorySystemPrompt(memDir)
+	memoryPrompt, err := memorySystemPrompt(memDir)
+	if err != nil {
+		h.vlog("distillation: cannot prepare memory for session %s: %v", sessionID, err)
+		return
 	}
+	systemPrompt += memoryPrompt
+	// NoPersistTurns bypasses persistent notification handling; do not inject
+	// notifyUserSystemPromptSuffix and promise notifications this run cannot send.
 
 	params := agent.RunParams{
 		SessionID:      sessionID,
@@ -159,6 +169,7 @@ func (h *Handler) runDistillation(sessionID string) {
 	if _, runErr := h.runner.Run(context.Background(), params); runErr != nil {
 		h.vlog("distillation agent failed for session %s: %v", sessionID, runErr)
 	} else {
+		reason = "distilled"
 		h.vlog("distillation completed for session %s", sessionID)
 	}
 }

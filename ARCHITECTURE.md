@@ -131,6 +131,36 @@ Client                              Server
 
 ## Moneypenny - Agent Session Manager
 
+**Root-first memory prompt (v1.77.0; updates the runtime behavior in #45/#46/#48 below)**:
+`handler/memory_prompt.go` owns the shared memory contract. `memorySystemPrompt`
+seeds a knowledge-only root if absent and returns the actual root README inside
+`<root-memory>`, plus system-level retrieval, maintenance, and size rules.
+It does not walk descendants or inject the body-less outline (the outline
+remains available to memory-management clients). Every README has an instructed
+4,000-Unicode-character maximum, with a 2,000-character root target. Agents split
+oversized notes and indexes into children and maintain annotated parent links;
+the daemon does not destructively enforce file sizes. Root reads are bounded,
+and injection clips at 4,000 runes with an explicit full-file pointer and repair
+notice. Creation/read failures return errors rather than suppressing memory.
+Each invocation reloads the root; existing stored prompts need no migration for
+this runtime block. Normal runs, compaction, and distillation share the same
+contract, avoiding duplicate usage instructions in task prompts or memory files.
+Compaction without memory summarizes only, and distillation without memory is
+rejected before entering the working state. Fresh compaction sessions no longer
+assert that memory contains the complete prior history.
+
+**Prompt/tooling alignment (v1.77.0)**: Normal-run notification guidance is no
+longer conditional on memory permissions. Gadgets show `cancel schedule` with
+the required `--session-id`, pending-schedule editing with preserve/clear
+semantics, and `--mark-ready`. The unused legacy scheduling prompt constant is
+removed without removing the legacy tag parser. Gadgets remain stored session
+instructions: existing sessions can refresh them with `update session ID
+--gadgets=true`; newly created sessions receive the updated text automatically.
+The legacy `schedule-system-prompt` setting is not a permissions control and
+does not gate these instructions. Adapter delivery remains unchanged: Claude's
+system-prompt flag, Copilot's custom instructions file, and OpenCode's task
+prefix (not a distinct system-role message).
+
 **Nonblocking snapshot requests**: A daemon-lifetime dispatcher owns one ordered
 command worker and two independent workers for local read-only snapshots
 (`list_sessions`, session detail/history/activity, schedule/channel lists,

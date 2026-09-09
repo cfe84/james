@@ -30,8 +30,28 @@ func TestLocalGadgetsPrompt(t *testing.T) {
 	if strings.Contains(prompt, "--mi6-server-fingerprint") || strings.Contains(prompt, "--hem") {
 		t.Fatal("local prompt contains MI6 flags")
 	}
+
 	if !strings.Contains(prompt, "hem schedule session local") {
 		t.Fatal("missing local command")
+	}
+}
+
+func TestGadgetsScheduleExamples(t *testing.T) {
+	for _, remote := range []string{"", "relay.example/control"} {
+		prompt := gadgetsSystemPrompt(remote, "SHA256:trusted", "session-id", "")
+		for _, text := range []string{
+			"cancel schedule SCHEDULE_ID --session-id session-id",
+			"edit schedule SCHEDULE_ID --session-id session-id --at TIME --prompt",
+			"--mark-ready", "--mark-ready=true|false", `--cron ""`, "--channel 0",
+			"Omitted edit flags retain their values.",
+		} {
+			if !strings.Contains(prompt, text) {
+				t.Errorf("missing schedule guidance %q", text)
+			}
+		}
+		if strings.Contains(prompt, "%!") {
+			t.Fatalf("broken prompt formatting: %s", prompt)
+		}
 	}
 }
 

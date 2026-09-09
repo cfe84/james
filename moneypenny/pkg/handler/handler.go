@@ -78,19 +78,13 @@ func sessionEnvironmentForDetail(encoded string) map[string]string {
 	return environment
 }
 
-const scheduleSystemPromptSuffix = `
-
-You can schedule a follow-up task by including a tag in your response:
-<schedule at="2026-03-07T15:00:00Z">Your follow-up prompt here</schedule>
-The "at" attribute accepts RFC3339 timestamps or relative durations like "+2h", "+30m".
-When you schedule a follow-up, the system will automatically send that prompt to you at the specified time.
-Use this to set reminders, check on long-running processes, or break work into timed phases.`
-
 const notifyUserSystemPromptSuffix = `
 
 User intervention:
 When the user must take action while you continue working, write:
 <NOTIFY_USER>Concise action the user must take.</NOTIFY_USER>
+Emit the complete tag in one streamed thinking or intermediate-text message,
+with at most 1000 characters inside it; do not rely on a final-only reply.
 Use this only for authentication, permission dialogs, missing credentials,
 irreversible decisions, or blocked external dependencies—not routine progress.
 The message is saved and shown to the user immediately while you keep working.`
@@ -796,20 +790,7 @@ func (h *Handler) summarizeSession(ctx context.Context, cmd *envelope.Command) *
 // runAgent executes the agent in the background, updating the store when done.
 // After completion, it checks the prompt queue and auto-continues if there are queued prompts.
 func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
-	// Inject the file-based memory instructions plus a compact, body-less outline
-	// of the session's memory tree into the system prompt at runtime. The agent
-	// edits its memory folder directly with its native file tools, so it always
-	// sees an up-to-date map of what it knows and where to write. Memory is
-	// skipped for agent/permission combinations that can't write it without an
-	// interactive prompt (non-yolo Copilot/OpenCode — see agent.MemoryEnabled).
-	if agent.MemoryEnabled(params.Agent, params.Yolo) {
-		h.ensureMemoryMigrated(sessionID)
-		if memDir := h.memoryDir(sessionID); memDir != "" {
-			params.MemoryDir = memDir
-			params.SystemPrompt += memorySystemPrompt(memDir)
-		}
-		params.SystemPrompt += notifyUserSystemPromptSuffix
-	}
+	promptErr := h.prepareRunInstructions(sessionID, &params)
 
 	// Provide the per-session persistent directory to the agent runner so it
 	// can use it for things like copilot's COPILOT_CUSTOM_INSTRUCTIONS_DIRS.
@@ -828,6 +809,9 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 			params.AgentSessionID = sess.AgentSessionID
 		}
 		params.Environment, err = sessionEnvironment(sess)
+	}
+	if promptErr != nil {
+		err = promptErr
 	}
 
 	ctx := context.Background()
@@ -1346,53 +1330,6 @@ func (h *Handler) exportLegacyMemory(sessionID, memDir string) error {
 	// migrated; it will be retried (lazily or on next startup) until every node
 	// is written, avoiding silent data loss when the SQLite store is removed.
 	return firstErr
-}
-
-// rootReadmeTemplate seeds a fresh memory folder so the agent has a starting
-// index to extend.
-const rootReadmeTemplate = `# Session Memory
-
-Persistent memory for this agent session. Organize knowledge hierarchically:
-each topic is a folder with its own README.md that serves as both the topic note
-and an index of its sub-topics. Read this file first, then drill into folders.
-
-## Index
-
-(Add links to topic folders here as you create them.)
-`
-
-// seedRootReadme writes the root README.md if the folder has no root note yet.
-func seedRootReadme(memDir string) {
-	readme := filepath.Join(memDir, "README.md")
-	if _, err := os.Stat(readme); err == nil {
-		return
-	}
-	_ = os.MkdirAll(memDir, 0o755)
-	_ = os.WriteFile(readme, []byte(rootReadmeTemplate), 0o644)
-}
-
-// memorySystemPrompt builds the system-prompt block that points the agent at its
-// file-based memory folder. It ensures the folder exists, seeds a root README on
-// first use, and appends an up-to-date outline of the tree.
-func memorySystemPrompt(memDir string) string {
-	_ = os.MkdirAll(memDir, 0o755)
-	seedRootReadme(memDir)
-	var b strings.Builder
-	b.WriteString("\n\n<session-memory>\n")
-	b.WriteString("You have a persistent MEMORY FOLDER at:\n  ")
-	b.WriteString(memDir)
-	b.WriteString("\nThis folder is yours to read and edit with your normal file tools. It survives this session's compactions and restarts, so use it as your long-term knowledge base — record the task, key decisions and rationale, conventions, important paths/names, current state, and pending actions.\n\n")
-	b.WriteString("Structure (uniform hierarchy):\n")
-	b.WriteString("- Every topic is a FOLDER containing a README.md that is both that topic's note and an index of its sub-topics.\n")
-	b.WriteString("- The root note is " + filepath.Join(memDir, "README.md") + " — keep a high-level overview and a table of contents there.\n")
-	b.WriteString("- Put detail in nested topic folders (e.g. project/conventions/README.md). Keep each note focused; update existing notes instead of duplicating; summarize in parent READMEs so nothing is lost.\n")
-	if outline, err := memory.Outline(memDir); err == nil && strings.TrimSpace(outline) != "" {
-		b.WriteString("\nCurrent memory tree:\n")
-		b.WriteString(outline)
-		b.WriteString("\n")
-	}
-	b.WriteString("</session-memory>\n")
-	return b.String()
 }
 
 // memNodePayload converts a file-based memory node to its protocol payload.

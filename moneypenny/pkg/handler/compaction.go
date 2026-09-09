@@ -23,9 +23,26 @@ const compactionThreshold = 0.75
 const compactionDistillPrompt = `[SYSTEM: CONTEXT COMPACTION]
 Your context is getting large and is about to be compacted into a fresh session. Do the following, in order:
 
-1. Review your memory folder (read its README.md and browse the topic folders to see what's already there). Reorganize it if needed and SAVE everything important from the current conversation into memory by creating/editing README.md files in topic folders: the original task, key decisions and their rationale, important context (file paths, names, conventions, learnings), the current state of the work, and any pending actions. Keep high-level synthesis in parent folders' README.md and detail in child folders so nothing is lost.
+1. Preserve the durable knowledge and working state from the current conversation according to the system memory contract.
 
-2. After memory is saved, output a comprehensive handoff summary of the current conversation as your FINAL message. It must be detailed enough that the work can be resumed from the summary plus memory alone: original task, key decisions, current state, and pending actions. Output ONLY the summary text as your final message — no preamble or meta-commentary.`
+2. Output a comprehensive handoff summary as your FINAL message: original task, key decisions and rationale, important context, current state, and pending actions. Include enough context to resume work, with references to any details you actually saved. Output ONLY the summary text — no preamble or meta-commentary.`
+
+func compactionTaskPrompt(memoryEnabled bool) string {
+	if memoryEnabled {
+		return compactionDistillPrompt
+	}
+	return `[SYSTEM: CONTEXT COMPACTION]
+Your context is getting large and is about to be compacted into a fresh session. Persistent memory is disabled for this run; do not read or write a memory folder.
+
+Output a standalone, comprehensive handoff summary of the available conversation as your FINAL message. The fresh session must be able to resume from this summary alone: include the original task, key decisions and rationale, important context (file paths, names, conventions, learnings), current state, and pending actions. Do not assume access to earlier history or external notes. Output ONLY the summary text — no preamble or meta-commentary.`
+}
+
+func compactionSeedSystemPrompt(systemPrompt, summary string) string {
+	if summary != "" {
+		systemPrompt += "\n\n<prior-session-summary>\n" + summary + "\n</prior-session-summary>"
+	}
+	return systemPrompt
+}
 
 // newAgentSessionID returns a fresh UUID v4 to use as an underlying agent
 // session id.
@@ -165,8 +182,8 @@ func (h *Handler) compactSessionCmd(_ context.Context, cmd *envelope.Command) *e
 //  1. Distillation + summary (in-session): the live agent reorganizes/saves its
 //     working context into hierarchical memory and emits a handoff summary.
 //  2. Substitution: a fresh underlying agent session (new agent_session_id, same
-//     James session) is started, seeded with the summary, a note that memory
-//     holds the full detail, and the given next prompt.
+//     James session) is started, seeded with the summary and the given next
+//     prompt. Memory is used only when enabled by the agent's permissions.
 //
 // nextPrompt is the prompt to seed the fresh session with: the actual next
 // prompt for automatic compaction, or "Await next instructions." for manual
@@ -174,24 +191,34 @@ func (h *Handler) compactSessionCmd(_ context.Context, cmd *envelope.Command) *e
 //
 // The caller must have set the session status to working.
 func (h *Handler) runCompaction(sessionID, nextPrompt, effModel, effEffort string) {
+	handedOff := false
+	defer func() {
+		if handedOff {
+			return
+		}
+		if err := h.store.UpdateSessionStatus(sessionID, store.StateIdle); err != nil {
+			h.vlog("compaction: cannot restore idle state for session %s: %v", sessionID, err)
+		}
+		if h.notifyWriter != nil {
+			for _, event := range []string{envelope.EventSessionStateChanged, envelope.EventChatStatus} {
+				if err := h.notifyWriter.Send(event, sessionID, map[string]string{"status": store.StateIdle, "reason": "compaction_failed"}); err != nil {
+					h.vlog("compaction: cannot notify idle state for session %s: %v", sessionID, err)
+				}
+			}
+		}
+	}()
 	sess, err := h.store.GetSession(sessionID)
 	if err != nil || sess == nil {
 		h.vlog("compaction: cannot load session %s: %v", sessionID, err)
-		_ = h.store.UpdateSessionStatus(sessionID, store.StateIdle)
 		return
 	}
-
-	// Collapsed history marker. The distillation's thinking/agent_text turns
-	// (persisted by the runner) provide the chain-of-thought detail shown when
-	// train-of-thought is enabled.
-	_ = h.store.AddConversationTurn(sessionID, "compaction", "compacted")
 
 	// 1. In-session distillation + handoff summary against the CURRENT
 	// underlying agent session, so all of its context is available.
 	distillParams := agent.RunParams{
 		SessionID:      sessionID,
 		Agent:          sess.Agent,
-		Prompt:         compactionDistillPrompt,
+		Prompt:         compactionTaskPrompt(agent.MemoryEnabled(sess.Agent, sess.Yolo)),
 		SystemPrompt:   sess.SystemPrompt,
 		Model:          effModel,
 		Effort:         effEffort,
@@ -202,10 +229,16 @@ func (h *Handler) runCompaction(sessionID, nextPrompt, effModel, effEffort strin
 		AgentSessionID: sess.AgentSessionID,
 		SessionDir:     h.sessionDir(sessionID),
 	}
-	if memDir := h.memoryDir(sessionID); memDir != "" && agent.MemoryEnabled(sess.Agent, sess.Yolo) {
-		distillParams.MemoryDir = memDir
-		distillParams.SystemPrompt += memorySystemPrompt(memDir)
+	if err := h.prepareRunInstructions(sessionID, &distillParams); err != nil {
+		h.vlog("compaction: cannot prepare memory for session %s: %v", sessionID, err)
+		if saveErr := h.store.AddConversationTurn(sessionID, "system", fmt.Sprintf("Compaction failed: %v", err)); saveErr != nil {
+			h.vlog("compaction: cannot record failure for session %s: %v", sessionID, saveErr)
+		}
+		return
 	}
+
+	// The marker starts the compacted context; do not insert it if preparation fails.
+	_ = h.store.AddConversationTurn(sessionID, "compaction", "compacted")
 
 	ctx := context.Background()
 	var summary string
@@ -234,11 +267,7 @@ func (h *Handler) runCompaction(sessionID, nextPrompt, effModel, effEffort strin
 	}
 	_ = h.store.SetContextUsage(sessionID, 0, window)
 
-	seedSystem := sess.SystemPrompt
-	if summary != "" {
-		seedSystem += "\n\n<prior-session-summary>\n" + summary + "\n</prior-session-summary>"
-	}
-	seedSystem += "\n\n<memory-note>\nYour memory folder contains the full history of important details from before this point. Read its README.md and browse the topic folders to retrieve specifics when needed.\n</memory-note>"
+	seedSystem := compactionSeedSystemPrompt(sess.SystemPrompt, summary)
 
 	seedPrompt := strings.TrimSpace(nextPrompt)
 	if seedPrompt == "" {
@@ -247,7 +276,8 @@ func (h *Handler) runCompaction(sessionID, nextPrompt, effModel, effEffort strin
 
 	// Run the fresh session through the normal path so assistant-turn storage,
 	// queue draining, context tracking, and idle notification all apply.
-	// runAgent appends the current memory outline and uses the new agent id.
+	// runAgent appends the current memory contract/root when enabled.
+	handedOff = true
 	h.runAgent(sessionID, agent.RunParams{
 		SessionID:      sessionID,
 		Agent:          sess.Agent,

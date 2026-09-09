@@ -818,12 +818,15 @@ Each session has a persistent memory — a **folder of Markdown files** on the m
 - The structure is a **uniform hierarchy**: every node is a *folder* containing a `README.md` that serves as both that topic's note and an index of its sub-topics. The root note is `memory/README.md`; a node at path `a/b` is `memory/a/b/README.md`.
 - Hierarchy comes purely from the folder path. There are no separate title/description/body fields — a node *is* its `README.md`. For display (outline/browser), a one-line **description** is derived from the README's first heading or first non-empty line.
 - Paths are short slugs. `NormalizePath` rejects traversal (`..`/`.`), absolute paths, control characters, and prose-length segments (over 64 chars), so an agent can never escape the memory folder or pass a whole note as the path.
-- Hierarchization is encouraged by instruction (soft), not enforced with hard size caps.
+- System instructions require **every README to stay at most 4,000 Unicode characters**, including headings and index; the root targets **2,000 or fewer**. Before exceeding the limit, agents split details into focused children and replace the moved material with a summary and annotated index, recursively grouping large indexes into intermediate topics. File writes are not rejected or truncated automatically.
 
 ### How it works
 
 - The agent edits memory with its normal file tools. The folder is outside the project working directory, so moneypenny passes `--add-dir <memoryDir>` so the agent can reach it. For **non-yolo** sessions it also pre-authorizes the file-writing tools so memory edits don't trigger permission prompts that would be auto-denied in non-interactive (`-p`) mode — but only where they can be path-scoped: Claude gets path-scoped `Read/Write/Edit/MultiEdit(<memoryDir>/**)`. **Copilot can't scope a tool by path**, and we won't grant a non-yolo session broad write access, so **non-yolo Copilot sessions have memory disabled** (no folder access, no injection). Yolo sessions (Claude or Copilot) already allow everything, so they get memory with just `--add-dir`.
-- Each run, moneypenny injects a `<session-memory>` block into the system prompt: the absolute memory-folder path, the uniform-hierarchy convention, and an up-to-date **body-less outline** of the current tree. On first use it seeds a root `README.md` template.
+- Each run, moneypenny injects a `<session-memory>` block containing the memory-use rules and the **actual root README contents** in `<root-memory>`, not a recursive outline or descendant bodies. The root is a big-picture overview and annotated topic index: each link explains what a child contains and when to consult it. Agents descend only through relevant branches and repair incomplete indexes by inspecting immediate child folders.
+- Usage instructions belong only in the system prompt, never in memory files. The root seed contains only an empty knowledge overview and topic index. Agents update parent indexes on child creation, moves, renames, or deletion; update ancestor summaries when scope changes; and maintain durable knowledge before handoff/compaction and when relevant facts or decisions change.
+- Root injection is bounded to **4,000 Unicode characters** (not bytes or tokens). Oversized roots produce a clearly marked excerpt with the full file path and instructions to restructure without losing knowledge. Existing files are never rewritten by injection. Root creation/read failures are surfaced as errors instead of silently dropping memory. Descendant notes are checked and split by the agent as it reads or edits them.
+- Non-yolo OpenCode sessions, like non-yolo Copilot sessions, do not receive memory access or injection. Agent delivery remains native to each adapter: Claude uses `--system-prompt`, Copilot uses its custom instructions file, and OpenCode prepends the instructions to its task prompt.
 - Because memory is local files managed by moneypenny, it works **without any hem/MI6 connectivity** — agents no longer shell out to `hem` to read or write memory.
 - When a session is **duplicated**, the source session's `memory/` folder is copied into the new session (same-moneypenny only) so the copy inherits accumulated knowledge.
 
@@ -849,9 +852,10 @@ Memory previously lived in moneypenny's SQLite (`memory_nodes` table, plus an ev
 
 ### Agent prompt
 
-Agents are instructed to treat the memory folder as their long-term knowledge base: read `README.md` first, organize hierarchically with a `README.md` per folder, keep parents as concise synthesis + index of children, update existing notes instead of duplicating, and record the task, key decisions and rationale, conventions, important paths/names, current state, and pending actions.
+Agents use the injected root as a compact navigation map, follow relevant branches from broad context to fine-grained notes, verify potentially stale facts, and update existing knowledge instead of duplicating it. Memory files contain durable knowledge, relevant state, and navigation only; the shared system-prompt contract owns usage and size rules for normal runs, compaction, and distillation.
 
-While an agent is working, it can request human intervention by emitting
+Normal runs receive notification guidance independently of memory permissions,
+including non-yolo Copilot/OpenCode. While an agent is working, it can request human intervention by emitting
 `<NOTIFY_USER>message</NOTIFY_USER>` in streamed thinking or intermediate text.
 Moneypenny removes complete tags from persisted activity, saves each bounded
 message as a durable `notification` turn, and broadcasts it immediately. Hem
@@ -1042,8 +1046,8 @@ Controls how a session's context is condensed as it grows. Set per session via t
 - **`custom`** (default for new sessions): when context reaches **75%** of the model's window, James runs a custom compaction before the next turn so session knowledge is preserved.
 
 **Custom compaction pipeline:**
-1. **Distillation (in-session):** the live agent is asked to reorganize its hierarchical memory and save everything important (task, decisions, current state, pending actions) into it, then emit a standalone handoff summary as its final message.
-2. **Substitution:** a fresh underlying agent session is started (the James session id is unchanged) seeded with the summary and a note that its hierarchical memory holds the full detail. For automatic compaction the pending prompt is then run; for manual compaction the agent is told to "Await next instructions."
+1. **Distillation (in-session):** when memory is enabled, the live agent preserves durable knowledge under the shared system-level memory contract, then emits a standalone handoff summary. When memory is disabled, it summarizes without requesting memory access.
+2. **Substitution:** a fresh underlying agent session is started (the James session id is unchanged) seeded with the summary. Memory-enabled runs also receive the refreshed root index, without claiming memory holds the full history. For automatic compaction the pending prompt is then run; for manual compaction the agent is told to "Await next instructions."
 
 **Context usage** is tracked per turn and shown in the chat header (`🗃️ N% (Xk/Yk)`). Claude reports real token usage and its context window directly; Copilot exposes none, so usage is estimated (~4 chars/token) against a burned-in, code-tunable per-model window table.
 
@@ -1057,14 +1061,14 @@ Controls how a session's context is condensed as it grows. Set per session via t
 
 - Available in the CLI (`hem distillate session ID`), TUI (chat command-mode `D`), and Qew (command palette `D` or Actions ▸ Distill to Memory).
 - Runs asynchronously on the moneypenny; the session shows busy (`distilling`) while the agent inspects and writes memory, then returns to idle.
-- The session must be idle. Requires the session to have memory tooling available (created with an MI6 control channel), same as compaction.
+- The session must be idle and permit file-based memory access. Non-yolo Copilot/OpenCode sessions are rejected explicitly before becoming busy; no Hem/MI6 connectivity is required for memory. Distillation uses the same system-level memory contract, without duplicating it in task instructions.
 
 ## Settings
 
 `hem enable SETTING` / `hem disable SETTING` — toggle boolean settings stored in the defaults table.
 
 Available settings:
-- **schedule-system-prompt** — when enabled (default: enabled), schedule instructions are appended to every session's system prompt, informing agents of the `<schedule at="...">prompt</schedule>` self-scheduling syntax. Disable to prevent agents from creating their own schedules.
+- **schedule-system-prompt** — legacy stored setting; it does not currently gate prompt injection or scheduling permissions. Current scheduling guidance comes from session **gadgets**, using Hem commands. Legacy `<schedule>` output tags remain supported for compatibility.
 
 ## Remote Execution
 

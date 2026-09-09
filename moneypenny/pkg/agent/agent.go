@@ -264,7 +264,7 @@ type RunParams struct {
 	SessionID    string
 	Agent        string // "claude" for now
 	Prompt       string
-	SystemPrompt string // only used on first invocation
+	SystemPrompt string // supplied on each invocation, including resumes
 	Model        string // model override (e.g. "sonnet", "opus")
 	Effort       string // reasoning effort level (e.g. "low", "medium", "high")
 	// ContextTier selects copilot's context-window tier via --context (e.g.
