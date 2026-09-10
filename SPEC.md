@@ -833,6 +833,7 @@ operator's administrative CLI/server, with TUI and Qew as operator interfaces.
 | Memory | On, revocable | Get/list/search/set/batch/delete memory; inspect current revision |
 | Subagents | On, revocable | Create own subagents; list/message direct children and reply to parent |
 | Agents | Off, explicit combined grant | Discover and message all Hem-tracked agents |
+| Create agents | Off, separate explicit grant | Create independent top-level agents on the caller's Moneypenny |
 | Traits | Off, explicit grant | List/view existing shared traits and replace their prompt bodies |
 | Scheduling | On, revocable | List/create/delete schedules belonging to this session |
 | Notifications | Always available | Send actionable operator notifications |
@@ -844,9 +845,35 @@ the parent's current capabilities; agents cannot override permissions during
 creation. Operator changes to a parent are not a promise of recursively changing
 already-created children's settings.
 
+The separate `create_agents` grant enables `gadgets agents create` with a
+nonempty prompt on stdin and optional `--name`, `--agent`, `--model`, `--path`, and `--traits`.
+It returns a new session ID immediately (`async: true`). The session is top-level,
+on the creator's Moneypenny by default (or any registered target named with
+`--moneypenny`), and inherits the creator's current gadget permissions;
+agent/model/path defaults otherwise follow ordinary `hem create session`.
+The creator's project, parent relationship, and yolo setting are not inherited.
+The daemon binds identity from credentials, and Hem supplies
+`--from=<creator-session-id>` so the initial prompt displays the originating
+agent's name. `hem create session --from ID` also supports this attribution for
+operator calls without creating a parent/child relationship.
+Agents cannot supply `--from`, routing credentials, or override permissions.
+`gadgets subagents create` accepts the same optional target Moneypenny while
+remaining a child of the authenticated creator.
+This grant does not imply discovery, messaging, or session management access.
+
+Both `gadgets agents create` and `gadgets subagents create` accept
+`--traits "Name,trait-id"`; `hem create subsession` also accepts this option.
+Names and IDs use the existing resolver with deduplication. Selected prompts
+are composed before gadget instructions and their IDs persisted in `session_traits`.
+Unknown traits fail before creating a session. Explicit `--traits=""` selects
+none; omitted applies default-enabled traits for top-level agents and none for
+subagents, preserving existing behavior. Neither inherits the creator's selected
+traits. Selection during creation requires only the corresponding creation
+permission, not the opt-in permission for listing/viewing/editing shared traits.
+
 Capability defaults apply when an older session has no stored capability object.
-Hem's create/copy/edit and subsession commands expose the five explicit
-`--gadget-memory`, `--gadget-subagents`, `--gadget-agents`, `--gadget-traits`, and
+Hem's create/copy/edit and subsession commands expose the six explicit
+`--gadget-memory`, `--gadget-subagents`, `--gadget-agents`, `--gadget-create-agents`, `--gadget-traits`, and
 `--gadget-scheduling` booleans. The existing TUI wizard/edit forms and Qew
 create/copy/edit dialogs expose matching permission controls and an
 always-available-notifications hint. Copy inherits permissions unless overridden;
@@ -903,12 +930,13 @@ gadgets memory set [path] [--body text]
 gadgets memory batch
 gadgets memory delete path [--recursive]
 gadgets agents list
+gadgets agents create [--name name] [--agent agent] [--model model] [--path path] [--traits names-or-IDs]
 gadgets agents message id [--body text]
 gadgets traits list
 gadgets traits get ID
 gadgets traits edit ID
 gadgets subagents list
-gadgets subagents create [--name name] [--agent agent] [--model model] [--path path]
+gadgets subagents create [--name name] [--agent agent] [--model model] [--path path] [--traits names-or-IDs]
 gadgets subagents message id [--body text]
 gadgets schedule list
 gadgets schedule create (--cron expr | --at timestamp) --prompt text

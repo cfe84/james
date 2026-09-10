@@ -1807,7 +1807,7 @@ func (e *Executor) DisableSetting(name string) *protocol.Response {
 // ---------------------------------------------------------------------------
 
 func (e *Executor) CreateSession(args []string) *protocol.Response {
-	var projectNameOrID string
+	var projectNameOrID, fromID string
 	params := &sessionParams{}
 	var capabilityFlags gadgetCapabilityFlags
 
@@ -1823,6 +1823,7 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 
 	remaining, err := parseFlagsFromArgs("create-session", args, func(fs *flag.FlagSet) {
 		capabilityFlags.register(fs)
+		fs.StringVar(&fromID, "from", "", "originating agent session ID (set automatically by gadgets)")
 		fs.StringVar(&params.MoneypennyName, "m", "", "moneypenny name")
 		fs.StringVar(&params.MoneypennyName, "moneypenny", "", "moneypenny name")
 		fs.StringVar(&params.Agent, "agent", "", "agent to use")
@@ -1921,6 +1922,10 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 	cmdData, err := buildCreateSessionData(params, sessionID, prompt)
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
+	}
+	if fromID != "" {
+		cmdData["source_session_id"] = fromID
+		cmdData["source_name"] = e.agentOriginLabel(fromID)
 	}
 
 	// Track session locally.
@@ -6626,11 +6631,13 @@ func (e *Executor) ActivitySession(args []string) *protocol.Response {
 // CreateSubSession creates a sub-session under a parent session.
 func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 	var mpName, sessionName, systemPrompt, pathArg, agentName, parentSessionID, modelName, effortName, contextTierName, callbackPrompt, fromID string
+	var traitsSpec string
 	var yolo, async, gadgets bool
 	var capabilityFlags gadgetCapabilityFlags
 
 	remaining, err := parseFlagsFromArgs("create-subsession", args, func(fs *flag.FlagSet) {
 		capabilityFlags.register(fs)
+		fs.StringVar(&traitsSpec, "traits", "", "comma-separated trait IDs/names (default: none)")
 		fs.StringVar(&parentSessionID, "session-id", "", "parent session ID")
 		fs.StringVar(&mpName, "m", "", "moneypenny name")
 		fs.StringVar(&mpName, "moneypenny", "", "moneypenny name")
@@ -6663,6 +6670,16 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 	if prompt == "" {
 		return protocol.ErrResponse("prompt is required")
 	}
+
+	traits, err := e.resolveTraits(traitsSpec)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	var traitIDs []string
+	for _, trait := range traits {
+		traitIDs = append(traitIDs, trait.ID)
+	}
+	systemPrompt += traitsSystemPrompt(traits)
 
 	// Resolve parent session to get defaults.
 	parentMP, err := e.resolveSessionMoneypenny(parentSessionID)
@@ -6801,6 +6818,12 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 	}
 	e.invalidateMPCache(mp.Name)
 	e.asyncRefreshModelCache(mp, agentName)
+
+	if len(traitIDs) > 0 {
+		if err := e.store.SetSessionTraits(sessionID, traitIDs); err != nil {
+			return protocol.ErrResponse(fmt.Sprintf("persisting session traits: %v", err))
+		}
+	}
 
 	if async {
 		return protocol.OKResponse(SessionCreatedResult{

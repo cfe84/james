@@ -59,6 +59,8 @@ func patchedGadgetCapabilities(raw json.RawMessage, base envelope.GadgetCapabili
 			base.Subagents = *value
 		case "agents":
 			base.Agents = *value
+		case "create_agents":
+			base.CreateAgents = *value
 		case "traits":
 			base.Traits = *value
 		case "scheduling":
@@ -193,10 +195,13 @@ func (h *Handler) prepareGadgets(sessionID string, params *agent.RunParams) erro
 	params.SystemPrompt = stripManagedGadgetInstructions(params.SystemPrompt)
 	params.SystemPrompt += "\n\n<gadgets>\nUse the gadgets executable for session tools. Identity is bound by the daemon; never supply another session ID or alter credentials. Commands return structured JSON and writes accept stdin. Permissions are checked for every request and may be revoked. Do not bypass tools with direct Hem commands, files, or database access.\n"
 	if caps.Subagents {
-		params.SystemPrompt += "Own subagents: gadgets subagents list; gadgets subagents create [--name name] [--agent agent] [--model model] [--path path] (prompt on stdin); gadgets subagents message ID (body on stdin). Message only your direct children or reply to your parent; creation inherits your permissions.\n"
+		params.SystemPrompt += "Own subagents: gadgets subagents list; gadgets subagents create [--name name] [--agent agent] [--model model] [--path path] [--traits names-or-IDs] (prompt on stdin); gadgets subagents message ID (body on stdin). Message only your direct children or reply to your parent; creation inherits your permissions. Traits are comma-separated names or IDs; omitted or empty selects none.\n"
 	}
 	if caps.Agents {
 		params.SystemPrompt += "All-agent discovery and messaging: gadgets agents list; gadgets agents message ID (body on stdin). This does not grant session editing or deletion.\n"
+	}
+	if caps.CreateAgents {
+		params.SystemPrompt += "Create independent top-level agents: gadgets agents create [--name name] [--agent agent] [--model model] [--path path] [--traits names-or-IDs] (prompt on stdin). Creation uses your moneypenny and inherits your current gadget permissions. Traits are comma-separated names or IDs; omitted applies Hem defaults, empty selects none. The initial prompt is automatically attributed to you; do not supply --from. This does not grant discovery, messaging, or management access.\n"
 	}
 	if caps.Traits {
 		params.SystemPrompt += "Shared trait definitions: gadgets traits list; gadgets traits get ID; gadgets traits edit ID (complete replacement body on stdin; empty stdin clears it). IDs or exact names are accepted. You may edit only traits assigned to your own session; edits affect future use by all agents, not already-injected session prompts. No trait creation, deletion, assignment, renaming, or default changes are permitted.\n"
@@ -308,6 +313,8 @@ func (h *Handler) executeGadget(ctx context.Context, sessionID string, request g
 		allowed = caps.Memory
 	case "agents.list", "agents.message":
 		allowed = caps.Agents
+	case "agents.create":
+		allowed = caps.CreateAgents
 	case "traits.list", "traits.get", "traits.edit":
 		allowed = caps.Traits
 	case "subagents.list", "subagents.message", "subagents.create":
@@ -327,6 +334,11 @@ func (h *Handler) executeGadget(ctx context.Context, sessionID string, request g
 	}
 	if strings.HasPrefix(request.Method, "traits.") {
 		if _, err := envelope.DecodeTraitGadget(request.Method, request.Data); err != nil {
+			return nil, &gadgetError{"invalid_request", err.Error()}
+		}
+	}
+	if request.Method == "agents.create" || request.Method == "subagents.create" {
+		if _, err := envelope.DecodeCreateAgentGadget(request.Data); err != nil {
 			return nil, &gadgetError{"invalid_request", err.Error()}
 		}
 	}

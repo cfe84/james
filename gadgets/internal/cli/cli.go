@@ -30,12 +30,14 @@ Usage:
   gadgets memory delete path [--recursive]
   gadgets memory revisions [path]
   gadgets agents list
+  gadgets agents create [--name name] [--agent agent] [--model model] [--path path] [--moneypenny name] [--traits names-or-IDs]
+                                             (prompt on stdin; creates a top-level agent)
   gadgets agents message id [--body text]     (otherwise reads stdin)
   gadgets traits list
   gadgets traits get ID                      (ID or exact name)
   gadgets traits edit ID                     (complete body on stdin; empty clears; own traits only)
   gadgets subagents list
-  gadgets subagents create [--name name] [--agent agent] [--model model] [--path path]
+  gadgets subagents create [--name name] [--agent agent] [--model model] [--path path] [--moneypenny name] [--traits names-or-IDs]
                                              (prompt on stdin)
   gadgets subagents message id [--body text]   (otherwise reads stdin)
   gadgets schedule list
@@ -47,6 +49,13 @@ Usage:
 
 Flags may follow positional arguments; -- ends flag parsing.
 Omitted memory paths refer to the root. Batch updates are atomic on the daemon.
+Creating top-level agents requires separate opt-in permission (default: false).
+Creation uses your moneypenny unless --moneypenny names another registered host, inherits your current gadget permissions, and
+automatically attributes the initial prompt to you. No --from override is accepted.
+Discovery/messaging requires the separate Agents permission.
+Creation --traits accepts comma-separated names or IDs; --traits="" selects none.
+Omitting it applies default traits for top-level agents and none for subagents.
+Selecting traits during creation does not require permission to edit shared traits.
 Traits require opt-in permission (default: false). Edits replace shared trait
 bodies for future use by all agents, not already-injected session prompts. Agents
 may edit only traits assigned to their own session.

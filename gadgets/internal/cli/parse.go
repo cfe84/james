@@ -22,7 +22,7 @@ func command(args []string) (string, []string, error) {
 	method := args[0] + "." + args[1]
 	switch method {
 	case "memory.get", "memory.list", "memory.search", "memory.set", "memory.batch", "memory.delete", "memory.revisions",
-		"agents.list", "agents.message", "subagents.list", "subagents.create", "subagents.message",
+		"agents.list", "agents.message", "agents.create", "subagents.list", "subagents.create", "subagents.message",
 		"traits.list", "traits.get", "traits.edit",
 		"schedule.list", "schedule.create", "schedule.delete":
 		return method, args[2:], nil
@@ -43,8 +43,8 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 		allowed["body"] = true
 	case "memory.delete":
 		allowed["recursive"] = true
-	case "subagents.create":
-		for _, key := range []string{"name", "agent", "model", "path"} {
+	case "subagents.create", "agents.create":
+		for _, key := range []string{"name", "agent", "model", "path", "moneypenny", "traits"} {
 			allowed[key] = true
 		}
 	case "schedule.create":
@@ -148,7 +148,7 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 			data["id"] = pos[0]
 			err = body("body", true)
 		}
-	case "subagents.create":
+	case "subagents.create", "agents.create":
 		if err = arity(0, 0); err == nil {
 			err = body("prompt", true)
 		}

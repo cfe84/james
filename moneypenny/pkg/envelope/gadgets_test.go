@@ -5,6 +5,34 @@ import (
 	"testing"
 )
 
+func TestCreateAgentTraits(t *testing.T) {
+	for _, tc := range []struct {
+		data    string
+		present bool
+		want    string
+	}{
+		{`{"prompt":"task"}`, false, ""},
+		{`{"prompt":"task","traits":""}`, true, ""},
+		{`{"prompt":"task","traits":"Clean code,test-id"}`, true, "Clean code,test-id"},
+	} {
+		got, err := DecodeCreateAgentGadget(json.RawMessage(tc.data))
+		if err != nil || (got.Traits != nil) != tc.present {
+			t.Fatalf("decode %s: %+v %v", tc.data, got, err)
+		}
+		if got, err := DecodeCreateAgentGadget(json.RawMessage(`{"prompt":"task","moneypenny":"chfeval-dev"}`)); err != nil || got.Moneypenny != "chfeval-dev" {
+			t.Fatalf("moneypenny changed: %+v %v", got, err)
+		}
+		if got.Traits != nil && *got.Traits != tc.want {
+			t.Fatalf("traits changed: %q", *got.Traits)
+		}
+	}
+	for _, data := range []string{`{"prompt":"task","traits":[]}`, `{"prompt":"task","traits":42}`} {
+		if _, err := DecodeCreateAgentGadget(json.RawMessage(data)); err == nil {
+			t.Fatalf("invalid traits accepted: %s", data)
+		}
+	}
+}
+
 func TestTraitGadgetStrictData(t *testing.T) {
 	for _, tc := range []struct{ method, data string }{
 		{"traits.list", ""},

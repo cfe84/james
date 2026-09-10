@@ -11,6 +11,7 @@ import (
 
 	"james/hem/pkg/protocol"
 	"james/hem/pkg/store"
+	"james/moneypenny/pkg/envelope"
 )
 
 func decodeGadgetData(data []byte, target any) error {
@@ -66,19 +67,10 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 			return protocol.ErrResponse("subagents may message only direct children or their parent")
 		}
 		return e.messageGadgetAgent(source, target, message.Body)
-	case "subagents.create":
-		var create struct {
-			Prompt string `json:"prompt"`
-			Name   string `json:"name"`
-			Agent  string `json:"agent"`
-			Model  string `json:"model"`
-			Path   string `json:"path"`
-		}
-		if err := decodeGadgetData(route.Data, &create); err != nil {
+	case "subagents.create", "agents.create":
+		create, err := envelope.DecodeCreateAgentGadget(route.Data)
+		if err != nil {
 			return protocol.ErrResponse(err.Error())
-		}
-		if strings.TrimSpace(create.Prompt) == "" {
-			return protocol.ErrResponse("subagent prompt is required")
 		}
 		mp, err := e.store.GetMoneypenny(source.MoneypennyName)
 		if err != nil || mp == nil {
@@ -90,27 +82,52 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 		if err != nil {
 			return protocol.ErrResponse(fmt.Sprintf("getting parent permissions: %v", err))
 		}
+		if detail.Status != "ok" {
+			return protocol.ErrResponse("invalid response while getting creation permissions")
+		}
 		capabilities, err := sessionGadgetCapabilities(detail.Data)
 		if err != nil {
 			return protocol.ErrResponse(err.Error())
 		}
-		if !capabilities.Subagents {
+		if route.Method == "subagents.create" && !capabilities.Subagents {
 			return protocol.ErrResponse("parent subagents capability is disabled")
 		}
+		if route.Method == "agents.create" && !capabilities.CreateAgents {
+			return protocol.ErrResponse("create agents capability is disabled")
+		}
 		createArgs := []string{
-			"--session-id=" + source.SessionID, "--from=" + source.SessionID, "--async", "--gadgets",
+			"--from=" + source.SessionID, "--async", "--gadgets",
 			fmt.Sprintf("--gadget-memory=%t", capabilities.Memory),
 			fmt.Sprintf("--gadget-subagents=%t", capabilities.Subagents),
 			fmt.Sprintf("--gadget-agents=%t", capabilities.Agents),
+			fmt.Sprintf("--gadget-create-agents=%t", capabilities.CreateAgents),
 			fmt.Sprintf("--gadget-traits=%t", capabilities.Traits),
 			fmt.Sprintf("--gadget-scheduling=%t", capabilities.Scheduling),
+		}
+		if route.Method == "agents.create" {
+			target := create.Moneypenny
+			if target == "" {
+				target = source.MoneypennyName
+			}
+			createArgs = append(createArgs, "--moneypenny="+target)
+		} else {
+			createArgs = append(createArgs, "--session-id="+source.SessionID)
+			if create.Moneypenny != "" {
+				createArgs = append(createArgs, "--moneypenny="+create.Moneypenny)
+			}
 		}
 		for key, value := range map[string]string{"name": create.Name, "agent": create.Agent, "model": create.Model, "path": create.Path} {
 			if value != "" {
 				createArgs = append(createArgs, "--"+key+"="+value)
 			}
 		}
+		if create.Traits != nil {
+			createArgs = append(createArgs, "--traits="+*create.Traits)
+		}
 		// Delimit user-controlled text so it cannot become an operator flag.
+		if route.Method == "agents.create" {
+			return e.CreateSession(append(createArgs, "--", create.Prompt))
+		}
 		return e.CreateSubSession(append(createArgs, "--", create.Prompt))
 	default:
 		return protocol.ErrResponse("unsupported gadget routing method")

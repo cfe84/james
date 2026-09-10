@@ -33,6 +33,8 @@ func TestParseCommands(t *testing.T) {
 		{"recursive", []string{"memory", "delete", "project", "--recursive"}, "", "memory.delete", `{"path":"project","recursive":true}`},
 		{"nonrecursive", []string{"memory", "delete", "--recursive=false", "project"}, "", "memory.delete", `{"path":"project","recursive":false}`},
 		{"agents list", []string{"agents", "list"}, "", "agents.list", `{}`},
+		{"agents create", []string{"agents", "create", "--name", "--yolo", "--agent", "copilot", "--model", "m", "--path", "src", "--moneypenny", "remote"}, "--from=forged\n", "agents.create", `{"name":"--yolo","agent":"copilot","model":"m","path":"src","moneypenny":"remote","prompt":"--from=forged\n"}`},
+		{"agents defaults", []string{"agents", "create"}, "prompt", "agents.create", `{"prompt":"prompt"}`},
 		{"traits list", []string{"traits", "list"}, "", "traits.list", `{}`},
 		{"traits get", []string{"traits", "get", "clean code"}, "", "traits.get", `{"id":"clean code"}`},
 		{"traits edit", []string{"traits", "edit", "id"}, " \n--name=forged\n🕴\n", "traits.edit", `{"id":"id","body":" \n--name=forged\n🕴\n"}`},
@@ -72,6 +74,38 @@ func TestParseCommands(t *testing.T) {
 	}
 }
 
+func TestCreateTraitsFlag(t *testing.T) {
+	for _, group := range []string{"agents", "subagents"} {
+		for _, flags := range [][]string{nil, {"--traits="}, {"--traits", "Clean code,test-id"}, {"--traits=--yolo"}} {
+			req, err := Parse(append([]string{group, "create"}, flags...), strings.NewReader("task"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, _ := json.Marshal(req.Data)
+			var data map[string]string
+			if err := json.Unmarshal(raw, &data); err != nil {
+				t.Fatal(err)
+			}
+			got, exists := data["traits"]
+			if exists != (flags != nil) {
+				t.Fatalf("lost omitted vs empty traits: %s", raw)
+			}
+			if flags != nil {
+				want := strings.TrimPrefix(flags[0], "--traits=")
+				if len(flags) == 2 {
+					want = flags[1]
+				}
+				if got != want {
+					t.Fatalf("traits = %q, want %q", got, want)
+				}
+			}
+		}
+		if _, err := Parse([]string{group, "create", "--traits"}, strings.NewReader("task")); err == nil {
+			t.Fatal("missing traits value accepted")
+		}
+	}
+}
+
 func TestParseErrors(t *testing.T) {
 	for _, args := range [][]string{
 		{}, {"unknown"}, {"memory"}, {"memory", "unknown"}, {"agents", "list", "extra"},
@@ -79,6 +113,7 @@ func TestParseErrors(t *testing.T) {
 		{"memory", "set", "--body"}, {"memory", "set", "--body=x", "--body=y"},
 		{"memory", "delete"}, {"memory", "delete", "a", "--recursive=maybe"},
 		{"agents", "message", "id"}, {"subagents", "create"}, {"notify"},
+		{"agents", "create"},
 		{"schedule", "create", "--prompt", "p"},
 		{"schedule", "create", "--cron", "c", "--at", "a", "--prompt", "p"},
 		{"schedule", "create", "--cron=", "--at", "a", "--prompt", "p"},
@@ -92,6 +127,11 @@ func TestParseErrors(t *testing.T) {
 	} {
 		if _, err := Parse(args, strings.NewReader("")); err == nil {
 			t.Errorf("Parse(%q) unexpectedly succeeded", args)
+		}
+	}
+	for _, flag := range []string{"from=other", "session-id=other", "gadget-create-agents=true", "gadget-agents=true", "parent=other", "yolo", "body=prompt"} {
+		if _, err := Parse([]string{"agents", "create", "--" + flag}, strings.NewReader("prompt")); err == nil {
+			t.Errorf("creation accepted --%s", flag)
 		}
 	}
 	for _, input := range []string{

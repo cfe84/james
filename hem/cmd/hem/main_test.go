@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"james/hem/pkg/cli"
+	"james/hem/pkg/store"
 )
 
 func TestGadgetFingerprintForwarding(t *testing.T) {
@@ -89,6 +90,45 @@ func TestSetDefaultMI6DoesNotRequireServer(t *testing.T) {
 	}
 	if err != nil || !strings.Contains(string(out), `Default mi6 set to "relay.example/control".`) {
 		t.Fatalf("offline set-default mi6 failed: %v\n%s", err, out)
+	}
+}
+
+func TestListDefaultsDoesNotRequireServer(t *testing.T) {
+	if os.Getenv("HEM_TEST_LOCAL_LIST_DEFAULTS") == "1" {
+		os.Args = []string{"hem", "list", "defaults"}
+		main()
+		return
+	}
+	home := t.TempDir()
+	dataDir := filepath.Join(home, ".config", "james", "hem")
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.New(filepath.Join(dataDir, "hem.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetDefault("agent", "copilot"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetDefault("mi6", "relay.example/control"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HEM_TEST_LOCAL_LIST_DEFAULTS", "1")
+	t.Setenv("HOME", home)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestListDefaultsDoesNotRequireServer$")
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatal(ctx.Err())
+	}
+	if err != nil || !strings.Contains(string(out), "agent") || !strings.Contains(string(out), "copilot") ||
+		!strings.Contains(string(out), "mi6") || !strings.Contains(string(out), "relay.example/control") {
+		t.Fatalf("offline list defaults failed: %v\n%s", err, out)
 	}
 }
 

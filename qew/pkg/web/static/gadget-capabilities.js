@@ -5,6 +5,7 @@
     { name: 'memory', label: 'Session memory', defaultValue: true },
     { name: 'subagents', label: 'Create and communicate with own subagents; reply to parent', defaultValue: true },
     { name: 'agents', label: 'Discover and message any agents (no management access)', defaultValue: false },
+    { name: 'create_agents', label: 'Create top-level agents (inherit creator gadget permissions)', defaultValue: false },
     { name: 'traits', label: 'List, view and edit shared trait bodies (affects future use by all agents)', defaultValue: false },
     { name: 'scheduling', label: 'Schedule prompts for this session', defaultValue: true },
   ];
@@ -29,7 +30,7 @@
     const previous = original === undefined ? null : values(original);
     return permissions.flatMap(p => {
       const enabled = documentRoot.getElementById(`${prefix}-gadget-${p.name}`).checked;
-      return previous && previous[p.name] === enabled ? [] : [`--gadget-${p.name}=${enabled}`];
+      return previous && previous[p.name] === enabled ? [] : [`--gadget-${p.name.replaceAll('_', '-')}=${enabled}`];
     });
   }
 

@@ -15,12 +15,13 @@ gadgets memory batch
 gadgets memory delete path [--recursive]
 gadgets memory revisions [path]
 gadgets agents list
+gadgets agents create [--name name] [--agent agent] [--model model] [--path path] [--moneypenny name] [--traits names-or-IDs]
 gadgets agents message id [--body text]
 gadgets traits list
 gadgets traits get ID
 gadgets traits edit ID
 gadgets subagents list
-gadgets subagents create [--name name] [--agent agent] [--model model] [--path path]
+gadgets subagents create [--name name] [--agent agent] [--model model] [--path path] [--moneypenny name] [--traits names-or-IDs]
 gadgets subagents message id [--body text]
 gadgets schedule list
 gadgets schedule create (--cron expr | --at timestamp) --prompt text
@@ -35,7 +36,43 @@ or follow positional arguments; `--` ends flag parsing, and `--flag=value` is
 supported. `--recursive=false` explicitly disables recursion. No session,
 endpoint, credential, or permission override flags are accepted.
 
+### Top-level agent creation (opt-in)
+
+`agents create` reads a nonempty prompt from stdin and creates an independent
+top-level session on the caller's Moneypenny by default, or a different
+registered Moneypenny named with `--moneypenny`. It returns the new `session_id`
+with `async: true`; it does not wait for the initial task to finish. Optional
+name, agent, model, and path flags use ordinary Hem session-creation defaults
+when omitted. It does not inherit the caller's project, parent, or yolo setting.
+
+Operators enable the separate `create_agents` permission (default **false**)
+with `--gadget-create-agents=true` or the TUI/Qew controls. The created session
+inherits the creator's current gadget permissions, including this grant; agents
+cannot override permissions during creation. Discovery/messaging still requires
+the separate `agents` grant. Creating an agent does not make it a child or
+authorize later management of it.
+
+Moneypenny binds the source from the caller's credential. Hem checks the fresh
+creation permission and calls `create session --from=<caller-session-id>`,
+preserving the creator's ID and resolved display name on the initial prompt.
+Agents cannot provide `--from`, parent IDs, routing credentials, or permissions.
+`subagents create` accepts the same target override; it remains a child of the
+authenticated caller even when it runs on another Moneypenny.
+
+```sh
+printf 'Maintain the project documentation' | gadgets agents create --name docs
+```
+
 ### Shared traits (opt-in)
+
+Both `agents create` and `subagents create` accept `--traits "Name,trait-id"`.
+Selection uses Hem's existing name/ID resolver, deduplicates traits, composes their
+text into the new system prompt, and persists the assignments. Unknown traits
+fail before creation. `--traits=""` explicitly selects none. Omitting the flag
+preserves the existing defaults: default-enabled traits for top-level agents,
+none for subagents (neither inherits the creator's selection).
+Selecting traits for a new session uses the relevant creation permission,
+not the separate shared-trait editing permission described below.
 
 `traits list` lists existing shared definitions. `traits get ID` returns the full
 definition; IDs or exact names are accepted. `traits edit ID` replaces only its
@@ -69,8 +106,8 @@ accepts 1–64000 characters. `data.characters` is the full node size. Paging do
 not change stored content and allows reading notes larger than the response cap.
 
 `memory set` and both `message` commands read stdin verbatim unless `--body`
-is present (including an explicitly empty value). `subagents create` always reads
-its prompt from stdin. `notify` reads stdin when text is omitted.
+is present (including an explicitly empty value). `agents create` and
+`subagents create` always read their prompt from stdin. `notify` reads stdin when text is omitted.
 `memory batch` reads a JSON array of objects with string `path` and `body`
 fields; the entire array is submitted in one request. It never performs
 individual writes or retries.
@@ -111,7 +148,7 @@ and `Authorization: Bearer <token>`. Body:
 | traits list | `traits.list` | `{}` |
 | traits get | `traits.get` | `{"id":"..."}` |
 | traits edit | `traits.edit` | `{"id":"...","body":"..."}`; complete string body required, empty allowed |
-| subagents create | `subagents.create` | `{"prompt":"...", "name":"...", "agent":"...", "model":"...", "path":"..."}`; optional flags omitted unless supplied |
+| agents/subagents create | `agents.create` / `subagents.create` | `{"prompt":"...", "name":"...", "agent":"...", "model":"...", "path":"...", "traits":"Name,id"}`; optional flags omitted unless supplied; empty traits selects none; caller identity and permissions cannot be supplied |
 | schedule list | `schedule.list` | `{}` |
 | schedule create | `schedule.create` | `{"cron":"...", "prompt":"..."}` or `{"at":"...", "prompt":"..."}` |
 | schedule delete | `schedule.delete` | `{"id":"..."}` |

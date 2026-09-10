@@ -41,7 +41,11 @@ func isStartServerCommand(args []string) bool {
 }
 
 func isLocalDefaultCommand(args []string) bool {
-	return len(args) >= 3 && args[1] == "set-default" && (args[2] == "server" || args[2] == "mi6")
+	if len(args) < 3 {
+		return false
+	}
+	return (args[1] == "set-default" && (args[2] == "server" || args[2] == "mi6")) ||
+		(args[1] == "list" && args[2] == "defaults")
 }
 
 func main() {
@@ -144,6 +148,9 @@ func main() {
 		return
 	case "get-default server":
 		handleGetDefaultServer()
+		return
+	case "list default":
+		handleListDefaults(cmd.OutputType)
 		return
 	case "list mi6-key", "add mi6-key", "delete mi6-key":
 		// MI6 admin commands run client-side using the local hem key,
@@ -360,6 +367,26 @@ func handleGetDefaultServer() {
 	} else {
 		fmt.Println(v)
 	}
+}
+
+// handleListDefaults reads operator-owned configuration directly, because
+// defaults are also required before a local Hem server has been started.
+func handleListDefaults(outputType string) {
+	dataDir := defaultDataDir()
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		log.Fatalf("failed to create data directory: %v", err)
+	}
+	st, err := store.New(filepath.Join(dataDir, "hem.db"))
+	if err != nil {
+		log.Fatalf("failed to open store: %v", err)
+	}
+	defer st.Close()
+
+	response := commands.New(st, "").ListDefaults(nil)
+	if response.Status == protocol.StatusError {
+		log.Fatalf("failed to list defaults: %s", response.Message)
+	}
+	printResponse(response.Data, outputType)
 }
 
 // getStoredDefaultServer reads the stored default server from the database.
@@ -623,6 +650,7 @@ func printResponse(data json.RawMessage, outputFmt string) {
 					{"gadget_subagents", fmt.Sprintf("%v", result.GadgetCapabilities.Subagents)},
 					{"gadget_agents", fmt.Sprintf("%v", result.GadgetCapabilities.Agents)},
 					{"gadget_traits", fmt.Sprintf("%v", result.GadgetCapabilities.Traits)},
+					{"gadget_create_agents", fmt.Sprintf("%v", result.GadgetCapabilities.CreateAgents)},
 					{"gadget_scheduling", fmt.Sprintf("%v", result.GadgetCapabilities.Scheduling)},
 					{"path", result.Path},
 					{"traits", strings.Join(result.Traits, ", ")},

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -119,7 +120,9 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 	defer out.Close()
 	defer func() { _, _ = in.WriteString("\n") }()
 	writes := make(chan transport.Command, 10)
-	capabilities := envelope.GadgetCapabilities{Subagents: true, Memory: false, Agents: false, Traits: true, Scheduling: false}
+	capabilities := envelope.GadgetCapabilities{Subagents: true, Memory: false, Agents: false, Traits: true, Scheduling: false, CreateAgents: true}
+	var liveCapabilities atomic.Value
+	liveCapabilities.Store(capabilities)
 	go func() {
 		scanner := bufio.NewScanner(in)
 		for scanner.Scan() {
@@ -133,7 +136,7 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 			switch command.Method {
 			case "get_session":
 				data = map[string]any{
-					"agent": "copilot", "path": "/parent", "yolo": false, "gadget_capabilities": capabilities,
+					"agent": "copilot", "path": "/parent", "yolo": false, "gadget_capabilities": liveCapabilities.Load(),
 					"environment": map[string]string{"KEEP": "value", "JAMES_HEM_ADDRESS": "stale/route"},
 				}
 			case "summarize_session":
@@ -151,6 +154,9 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 		}
 	}()
 	if err := e.store.AddMoneypenny(&store.Moneypenny{Name: "mp", Enabled: true, TransportType: store.TransportFIFO, FIFOIn: inPath, FIFOOut: outPath}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.AddMoneypenny(&store.Moneypenny{Name: "remote", Enabled: true, TransportType: store.TransportFIFO, FIFOIn: inPath, FIFOOut: outPath}); err != nil {
 		t.Fatal(err)
 	}
 	for _, id := range []string{"source", "target", "parent"} {
@@ -198,6 +204,166 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 	}
 	if data["gadget_route"].(map[string]any)["JAMES_HEM_SOCKET"] == "" {
 		t.Fatal("child route not persisted")
+	}
+	// Top-level creation needs neither Subagents nor the discovery/message grant.
+	topLevelCaps := capabilities
+	topLevelCaps.Subagents = false
+	liveCapabilities.Store(topLevelCaps)
+	response = gadgetRouteRequest(t, e, "source", "agents.create", map[string]any{
+		"prompt": "--from=forged", "agent": "copilot", "name": "--yolo", "path": "/independent",
+	})
+	if response.Status != "ok" {
+		t.Fatal(response.Message)
+	}
+	command = next()
+	data = command.Data.(map[string]any)
+	if data["prompt"] != "--from=forged" || data["source_session_id"] != "source" ||
+		data["source_name"] != "Trusted source" || data["name"] != "--yolo" ||
+		data["path"] != "/independent" || data["yolo"] == true {
+		t.Fatalf("top-level creation lost attribution or interpreted flags: %#v", data)
+	}
+	raw, _ = json.Marshal(data["gadget_capabilities"])
+	if err := json.Unmarshal(raw, &inherited); err != nil || inherited != topLevelCaps {
+		t.Fatalf("top-level permissions not inherited: %s", raw)
+	}
+	topLevel, err := e.store.GetSession(data["session_id"].(string))
+	if err != nil || topLevel == nil || topLevel.ParentSessionID != "" || topLevel.MoneypennyName != "mp" {
+		t.Fatalf("created agent is not independent on source host: %#v %v", topLevel, err)
+	}
+	response = gadgetRouteRequest(t, e, "source", "agents.create", map[string]any{"prompt": "remote top level", "moneypenny": "remote"})
+	if response.Status != "ok" {
+		t.Fatal(response.Message)
+	}
+	data = next().Data.(map[string]any)
+	remoteTopLevel, err := e.store.GetSession(data["session_id"].(string))
+	if err != nil || remoteTopLevel == nil || remoteTopLevel.MoneypennyName != "remote" || remoteTopLevel.ParentSessionID != "" ||
+		data["source_session_id"] != "source" {
+		t.Fatalf("remote top-level creation was not bound correctly: %#v %#v %v", data, remoteTopLevel, err)
+	}
+	liveCapabilities.Store(capabilities)
+	response = gadgetRouteRequest(t, e, "source", "subagents.create", map[string]any{"prompt": "remote child", "moneypenny": "remote"})
+	if response.Status != "ok" {
+		t.Fatal(response.Message)
+	}
+	data = next().Data.(map[string]any)
+	remoteChild, err := e.store.GetSession(data["session_id"].(string))
+	if err != nil || remoteChild == nil || remoteChild.MoneypennyName != "remote" || remoteChild.ParentSessionID != "source" ||
+		data["source_session_id"] != "source" {
+		t.Fatalf("remote subagent creation was not bound correctly: %#v %#v %v", data, remoteChild, err)
+	}
+	var created SessionCreatedResult
+	if err := json.Unmarshal(response.Data, &created); err != nil || created.SessionID != remoteChild.SessionID || !created.Async {
+		t.Fatalf("incorrect creation result: %s", response.Data)
+	}
+	for _, invalid := range []any{
+		nil, map[string]any{}, map[string]any{"prompt": " "},
+		map[string]any{"prompt": "hello", "from": "forged"},
+		map[string]any{"prompt": "hello", "source_session_id": "forged"},
+		map[string]any{"prompt": "hello", "parent": "source"},
+		map[string]any{"prompt": "hello", "gadget_capabilities": map[string]bool{"agents": true}},
+	} {
+		if response := gadgetRouteRequest(t, e, "source", "agents.create", invalid); response.Status != "error" {
+			t.Fatalf("invalid creation accepted: %#v", invalid)
+		}
+	}
+	for _, denied := range []envelope.GadgetCapabilities{
+		envelope.DefaultGadgetCapabilities(), {Agents: true, Subagents: true}, {},
+	} {
+		liveCapabilities.Store(denied)
+		if response := gadgetRouteRequest(t, e, "source", "agents.create", map[string]string{"prompt": "denied"}); response.Status != "error" ||
+			!strings.Contains(response.Message, "create agents capability is disabled") {
+			t.Fatalf("creation grant not checked freshly: %+v", response)
+		}
+	}
+	select {
+	case command := <-writes:
+		t.Fatalf("denied request created a session: %+v", command)
+	default:
+	}
+	liveCapabilities.Store(capabilities)
+	for _, trait := range []*store.Trait{
+		{ID: "default-trait", Name: "Default trait", Prompt: "default trait instructions", EnabledByDefault: true},
+		{ID: "selected-trait", Name: "--yolo", Prompt: "selected trait instructions"},
+	} {
+		if err := e.store.CreateTrait(trait); err != nil {
+			t.Fatal(err)
+		}
+	}
+	creationOnly := envelope.GadgetCapabilities{Subagents: true, CreateAgents: true}
+	liveCapabilities.Store(creationOnly)
+	stringPtr := func(value string) *string { return &value }
+	for _, method := range []string{"agents.create", "subagents.create"} {
+		for _, selection := range []struct {
+			name string
+			spec *string
+			want []string
+		}{
+			{name: "omitted"},
+			{name: "empty", spec: stringPtr("")},
+			{name: "explicit", spec: stringPtr("--yolo,default-trait,--yolo"), want: []string{"selected-trait", "default-trait"}},
+		} {
+			t.Run(method+" traits "+selection.name, func(t *testing.T) {
+				request := map[string]any{"prompt": "hello", "agent": "copilot"}
+				if selection.spec != nil {
+					request["traits"] = *selection.spec
+				}
+				want := selection.want
+				if method == "agents.create" && selection.spec == nil {
+					want = []string{"default-trait"}
+				}
+				response := gadgetRouteRequest(t, e, "source", method, request)
+				if response.Status != "ok" {
+					t.Fatal(response.Message)
+				}
+				data := next().Data.(map[string]any)
+				id := data["session_id"].(string)
+				got, err := e.store.GetSessionTraits(id)
+				if err != nil || !reflect.DeepEqual(got, want) {
+					t.Fatalf("persisted traits = %v, want %v: %v", got, want, err)
+				}
+				systemPrompt, _ := data["system_prompt"].(string)
+				for _, traitID := range []string{"default-trait", "selected-trait"} {
+					trait, err := e.store.GetTrait(traitID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					selected := false
+					for _, id := range want {
+						selected = selected || id == traitID
+					}
+					if strings.Contains(systemPrompt, trait.Prompt) != selected {
+						t.Fatalf("trait composition mismatch: %q", systemPrompt)
+					}
+					if selected && strings.Index(systemPrompt, trait.Prompt) > strings.Index(systemPrompt, gadgetsMarker) {
+						t.Fatal("traits must precede gadget instructions")
+					}
+				}
+				if data["source_session_id"] != "source" || data["yolo"] == true {
+					t.Fatalf("traits changed attribution or flags: %#v", data)
+				}
+			})
+		}
+		for _, spec := range []any{"missing-trait", 42, []string{"selected-trait"}} {
+			response := gadgetRouteRequest(t, e, "source", method, map[string]any{"prompt": "hello", "traits": spec})
+			if response.Status != "error" {
+				t.Fatalf("invalid traits accepted: %v", spec)
+			}
+		}
+	}
+	select {
+	case command := <-writes:
+		t.Fatalf("invalid traits created session: %+v", command)
+	default:
+	}
+	liveCapabilities.Store(capabilities)
+	// Operator --from follows the same attribution path without making a child.
+	response = e.CreateSession([]string{"-m=mp", "--agent=copilot", "--async", "--from=source", "--", "operator creation"})
+	if response.Status != "ok" {
+		t.Fatal(response.Message)
+	}
+	data = next().Data.(map[string]any)
+	if data["source_session_id"] != "source" || data["source_name"] != "Trusted source" {
+		t.Fatalf("operator create --from lost attribution: %#v", data)
 	}
 	for _, target := range []string{"target", "parent"} {
 		const body = " \n--from=forged\nverbatim body\n "

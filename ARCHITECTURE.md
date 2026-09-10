@@ -160,9 +160,9 @@ deadline, and never retries writes. Client-side restrictions are defense in
 depth, not the source of session authorization.
 
 `sessions.gadget_capabilities` in the **operational** database persists
-`memory`, `subagents`, `agents`, `traits`, and `scheduling`; typed envelope fields carry
+`memory`, `subagents`, `agents`, `create_agents`, `traits`, and `scheduling`; typed envelope fields carry
 these through create/update/detail. Missing legacy values use defaults:
-Memory, Subagents, and Scheduling true; Agents and Traits false. Every gadget request reads
+Memory, Subagents, and Scheduling true; Agents, CreateAgents, and Traits false. Every gadget request reads
 current capabilities, so revocation does not wait for a new agent invocation.
 `notify` is always allowed for a valid session. Agents is a single list/message
 grant across Hem-tracked agents, **never** session edit/delete authority.
@@ -173,10 +173,31 @@ recursive revocation of already-created children.
 
 Hem's shared capability flag helper and the existing TUI/Qew form components
 expose explicit `--gadget-memory`, `--gadget-subagents`, `--gadget-agents`,
-`--gadget-traits`, and `--gadget-scheduling` true/false controls. Copy inherits the source values
+`--gadget-create-agents`, `--gadget-traits`, and `--gadget-scheduling` true/false controls. Copy inherits the source values
 unless overridden; updates apply only specified settings. Notifications have an
 always-available hint rather than a toggle. The legacy `--gadgets` setting
 persists only an instruction notice; it does not turn tools on or off.
+
+`agents.create` has a separate opt-in `CreateAgents` capability; neither the
+global discovery/message grant nor Subagents authorizes it. It shares the
+strict `envelope.DecodeCreateAgentGadget` payload decoder with `subagents.create`
+at the daemon and Hem boundaries. The payload allows only prompt/name/agent/model/path/traits.
+The optional traits string preserves omitted versus explicit empty selection;
+Hem forwards it as an equals-form `--traits` argument, never parses its value
+as flags. Both creation paths reuse `resolveTraits` and `traitsSystemPrompt`.
+Subsession creation now persists selected IDs in `session_traits` after successful
+daemon creation, like top-level creation. Unknown traits fail before session
+creation. Omitted traits retain existing behavior (top-level defaults, no subagent
+traits); explicit empty selects none. Selection does not grant trait management.
+Both creation routes fetch fresh permissions from the source Moneypenny and
+inherit all current gadget permissions without request-controlled overrides.
+Top-level creation calls the existing `CreateSession` with the source Moneypenny
+by default (or the user-supplied registered `--moneypenny` target), `--async`,
+and `--from=<authenticated-source-id>`, rather than `CreateSubSession`.
+Its ordinary session defaults do not inherit a parent, project, or yolo setting.
+`CreateSession --from` sets `source_session_id` and resolved `source_name` on the
+existing create envelope; Moneypenny persists them on the first conversation
+turn for existing chat attribution rendering. It does not set `parent_session_id`.
 
 Shared traits use only `traits.list`, `traits.get`, and `traits.edit` on the
 existing daemon-to-Hem `gadget route`. The daemon binds source identity from

@@ -56,7 +56,7 @@ func TestCreateFormsSendExplicitGadgetPermissions(t *testing.T) {
 			t.Fatalf("unexpected request: %#v", sender.request)
 		}
 		got := permissionArgs(sender.request.Args)
-		if len(got) != 5 {
+		if len(got) != 6 {
 			t.Fatalf("wizard=%v omitted permissions: %v", wizard, sender.request.Args)
 		}
 		for flag, value := range got {
@@ -71,7 +71,7 @@ func TestWizardCopiesGadgetPermissions(t *testing.T) {
 	sender := &permissionTestSender{}
 	m := newWizardModel(&client{sender: sender})
 	m.sourceSessionID = "source"
-	caps := envelope.GadgetCapabilities{Agents: true, Traits: true}
+	caps := envelope.GadgetCapabilities{Agents: true, Traits: true, CreateAgents: true}
 	m, _ = m.Update(wizardSourceLoadedMsg{source: &sessionDetail{
 		SessionID: "source", Agent: "copilot", GadgetCapabilities: &caps,
 	}})
@@ -83,13 +83,13 @@ func TestWizardCopiesGadgetPermissions(t *testing.T) {
 	}
 	args := permissionArgs(sender.request.Args)
 	if args["--gadget-agents"] != "true" || args["--gadget-traits"] != "true" || args["--gadget-memory"] != "false" ||
-		args["--gadget-subagents"] != "false" || args["--gadget-scheduling"] != "false" {
+		args["--gadget-subagents"] != "false" || args["--gadget-scheduling"] != "false" || args["--gadget-create-agents"] != "true" {
 		t.Fatalf("copy lost permissions: %v", args)
 	}
 }
 
 func TestEditFormLoadsAndUpdatesGadgetPermissions(t *testing.T) {
-	for _, caps := range []*envelope.GadgetCapabilities{nil, {}, {Traits: true}} {
+	for _, caps := range []*envelope.GadgetCapabilities{nil, {}, {Traits: true, CreateAgents: true}} {
 		sender := &permissionTestSender{}
 		m := newEditModel(&client{sender: sender}, "session")
 		m, _ = m.Update(sessionDetailLoadedMsg{detail: &sessionDetail{GadgetCapabilities: caps}})

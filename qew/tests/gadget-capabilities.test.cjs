@@ -4,8 +4,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const controls = require('../pkg/web/static/gadget-capabilities.js');
 
-const defaults = { memory: true, subagents: true, agents: false, traits: false, scheduling: true };
-const allOff = { memory: false, subagents: false, agents: false, traits: false, scheduling: false };
+const defaults = { memory: true, subagents: true, agents: false, create_agents: false, traits: false, scheduling: true };
+const allOff = { memory: false, subagents: false, agents: false, create_agents: false, traits: false, scheduling: false };
 const documentFor = (values) => ({
   getElementById(id) {
     return { checked: values[id.split('-').at(-1)] };
@@ -19,11 +19,19 @@ test('legacy details use defaults without replacing explicit false', () => {
   assert.deepEqual(controls.values({ agents: true }), { ...defaults, agents: true });
 });
 
-test('create and copy emit all five explicit permissions, including false', () => {
+test('create and copy emit all six explicit permissions, including false', () => {
   assert.deepEqual(controls.args('wiz', undefined, documentFor(allOff)), [
     '--gadget-memory=false', '--gadget-subagents=false',
-    '--gadget-agents=false', '--gadget-traits=false', '--gadget-scheduling=false',
+    '--gadget-agents=false', '--gadget-create-agents=false', '--gadget-traits=false', '--gadget-scheduling=false',
   ]);
+});
+
+test('top-level creation is an independent opt-in grant', () => {
+  const granted = { ...defaults, create_agents: true };
+  assert.deepEqual(controls.values(granted), granted);
+  assert.ok(controls.args('wiz', undefined, documentFor(granted)).includes('--gadget-create-agents=true'));
+  assert.deepEqual(controls.args('es', defaults, documentFor(granted)), ['--gadget-create-agents=true']);
+  assert.deepEqual(controls.args('es', granted, documentFor(defaults)), ['--gadget-create-agents=false']);
 });
 
 test('edit emits only changed settings and supports revocation', () => {
@@ -50,7 +58,7 @@ test('reusable controls render accessible toggles and permanent notifications', 
     assert.ok(rendered.includes(`for="wiz-gadget-${name}"`));
     assert.ok(rendered.includes(`id="wiz-gadget-${name}"${defaults[name] ? ' checked' : ''}>`));
   }
-  assert.equal((rendered.match(/type="checkbox"/g) || []).length, 5);
+  assert.equal((rendered.match(/type="checkbox"/g) || []).length, 6);
   assert.match(rendered, /Notifications to you are always available/);
   assert.match(rendered, /no management access/);
   assert.match(rendered, /shared trait bodies.*future use by all agents/);

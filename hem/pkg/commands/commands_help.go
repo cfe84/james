@@ -1,7 +1,9 @@
 package commands
 
 func init() {
-	const permissionsHelp = "\n\nGadget permissions (operator settings, true/false):\n  --gadget-memory       Session memory (default: true)\n  --gadget-subagents    Own subagent creation, communication and replies (default: true)\n  --gadget-agents       Discover and message any agents, without management access (default: false)\n  --gadget-traits       List/view shared trait bodies; edit only traits assigned to this session (default: false)\n  --gadget-scheduling   This session's scheduled prompts (default: true)\n\nNotifications to the operator are always available. Copy inherits permissions;\nupdate preserves omitted permissions. Example: --gadget-memory=false."
+	const permissionsHelp = "\n\nGadget permissions (operator settings, true/false):\n  --gadget-memory       Session memory (default: true)\n  --gadget-subagents    Own subagent creation, communication and replies (default: true)\n  --gadget-agents       Discover and message any agents, without management access (default: false)\n  --gadget-create-agents Create independent top-level agents with inherited gadget permissions (default: false)\n  --gadget-traits       List/view shared trait bodies; edit only traits assigned to this session (default: false)\n  --gadget-scheduling   This session's scheduled prompts (default: true)\n\nNotifications to the operator are always available. Copy inherits permissions;\nupdate preserves omitted permissions. Example: --gadget-memory=false."
+	CommandHelp["create session"] += "\n  --from             Originating agent session ID; attributes the initial prompt without creating a parent/child relationship"
+	CommandHelp["create subsession"] += "\n  --traits           Comma-separated trait IDs/names (omitted or empty selects none)"
 	for _, command := range []string{"create session", "create subsession", "copy session", "update session"} {
 		CommandHelp[command] += permissionsHelp
 	}
