@@ -198,6 +198,9 @@ Its ordinary session defaults do not inherit a parent, project, or yolo setting.
 `CreateSession --from` sets `source_session_id` and resolved `source_name` on the
 existing create envelope; Moneypenny persists them on the first conversation
 turn for existing chat attribution rendering. It does not set `parent_session_id`.
+The same fresh source-session detail is the authorization source for optional
+`--yolo`: gadget creation forwards it only when that authenticated source is
+already yolo. Daemon runtime instructions advertise the flag only in that case.
 
 Shared traits use only `traits.list`, `traits.get`, and `traits.edit` on the
 existing daemon-to-Hem `gadget route`. The daemon binds source identity from

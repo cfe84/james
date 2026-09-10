@@ -85,6 +85,13 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 		if detail.Status != envelope.StatusSuccess {
 			return protocol.ErrResponse("invalid response while getting creation permissions")
 		}
+		var sourceDetail struct {
+			GadgetCapabilities *envelope.GadgetCapabilities `json:"gadget_capabilities"`
+			Yolo               bool                         `json:"yolo"`
+		}
+		if err := json.Unmarshal(detail.Data, &sourceDetail); err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
 		capabilities, err := sessionGadgetCapabilities(detail.Data)
 		if err != nil {
 			return protocol.ErrResponse(err.Error())
@@ -94,6 +101,9 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 		}
 		if route.Method == "agents.create" && !capabilities.CreateAgents {
 			return protocol.ErrResponse("create agents capability is disabled")
+		}
+		if create.Yolo != nil && *create.Yolo && !sourceDetail.Yolo {
+			return protocol.ErrResponse("License to Kill may be requested only by an agent that already has it")
 		}
 		createArgs := []string{
 			"--from=" + source.SessionID, "--async", "--gadgets",
@@ -123,6 +133,9 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 		}
 		if create.Traits != nil {
 			createArgs = append(createArgs, "--traits="+*create.Traits)
+		}
+		if create.Yolo != nil && *create.Yolo {
+			createArgs = append(createArgs, "--yolo")
 		}
 		// Delimit user-controlled text so it cannot become an operator flag.
 		if route.Method == "agents.create" {

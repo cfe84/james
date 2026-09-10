@@ -15,13 +15,13 @@ gadgets memory batch
 gadgets memory delete path [--recursive]
 gadgets memory revisions [path]
 gadgets agents list
-gadgets agents create [--name name] [--agent agent] [--model model] [--path path] [--moneypenny name] [--traits names-or-IDs]
+gadgets agents create [--name name] [--agent agent] [--model model] [--path path] [--moneypenny name] [--traits names-or-IDs] [--yolo]
 gadgets agents message id [--body text]
 gadgets traits list
 gadgets traits get ID
 gadgets traits edit ID
 gadgets subagents list
-gadgets subagents create [--name name] [--agent agent] [--model model] [--path path] [--moneypenny name] [--traits names-or-IDs]
+gadgets subagents create [--name name] [--agent agent] [--model model] [--path path] [--moneypenny name] [--traits names-or-IDs] [--yolo]
 gadgets subagents message id [--body text]
 gadgets schedule list
 gadgets schedule create (--cron expr | --at timestamp) --prompt text
@@ -58,6 +58,8 @@ preserving the creator's ID and resolved display name on the initial prompt.
 Agents cannot provide `--from`, parent IDs, routing credentials, or permissions.
 `subagents create` accepts the same target override; it remains a child of the
 authenticated caller even when it runs on another Moneypenny.
+`--yolo` is accepted only if the authenticated caller currently has License to
+Kill; Hem verifies that from a fresh source-session lookup before forwarding it.
 
 ```sh
 printf 'Maintain the project documentation' | gadgets agents create --name docs

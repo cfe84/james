@@ -44,7 +44,7 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 	case "memory.delete":
 		allowed["recursive"] = true
 	case "subagents.create", "agents.create":
-		for _, key := range []string{"name", "agent", "model", "path", "moneypenny", "traits"} {
+		for _, key := range []string{"name", "agent", "model", "path", "moneypenny", "traits", "yolo"} {
 			allowed[key] = true
 		}
 	case "schedule.create":
@@ -59,6 +59,9 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 	data := map[string]any{}
 	for key, value := range flags {
 		data[key] = value
+		if key == "yolo" {
+			data[key] = value == "true"
+		}
 		if key == "offset" || key == "limit" {
 			n, err := strconv.Atoi(value)
 			if err != nil || n < 0 || (key == "limit" && (n == 0 || n > 64000)) {
@@ -197,12 +200,12 @@ func parseFlags(args []string, allowed map[string]bool) (map[string]string, []st
 		if _, exists := flags[name]; exists {
 			return nil, nil, fmt.Errorf("duplicate flag --%s", name)
 		}
-		if name == "recursive" {
+		if name == "recursive" || name == "yolo" {
 			if !hasValue {
 				value = "true"
 			}
 			if value != "true" && value != "false" {
-				return nil, nil, errors.New("--recursive expects true or false")
+				return nil, nil, fmt.Errorf("--%s expects true or false", name)
 			}
 		} else if !hasValue {
 			i++

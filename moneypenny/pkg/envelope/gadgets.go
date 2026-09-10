@@ -16,6 +16,7 @@ type CreateAgentGadgetData struct {
 	Path       string  `json:"path"`
 	Moneypenny string  `json:"moneypenny"`
 	Traits     *string `json:"traits,omitempty"`
+	Yolo       *bool   `json:"yolo,omitempty"`
 }
 
 func DecodeCreateAgentGadget(data json.RawMessage) (CreateAgentGadgetData, error) {

@@ -30,14 +30,14 @@ Usage:
   gadgets memory delete path [--recursive]
   gadgets memory revisions [path]
   gadgets agents list
-  gadgets agents create [--name name] [--agent agent] [--model model] [--path path] [--moneypenny name] [--traits names-or-IDs]
+  gadgets agents create [--name name] [--agent agent] [--model model] [--path path] [--moneypenny name] [--traits names-or-IDs] [--yolo]
                                              (prompt on stdin; creates a top-level agent)
   gadgets agents message id [--body text]     (otherwise reads stdin)
   gadgets traits list
   gadgets traits get ID                      (ID or exact name)
   gadgets traits edit ID                     (complete body on stdin; empty clears; own traits only)
   gadgets subagents list
-  gadgets subagents create [--name name] [--agent agent] [--model model] [--path path] [--moneypenny name] [--traits names-or-IDs]
+  gadgets subagents create [--name name] [--agent agent] [--model model] [--path path] [--moneypenny name] [--traits names-or-IDs] [--yolo]
                                              (prompt on stdin)
   gadgets subagents message id [--body text]   (otherwise reads stdin)
   gadgets schedule list
@@ -56,6 +56,8 @@ Discovery/messaging requires the separate Agents permission.
 Creation --traits accepts comma-separated names or IDs; --traits="" selects none.
 Omitting it applies default traits for top-level agents and none for subagents.
 Selecting traits during creation does not require permission to edit shared traits.
+Creation accepts --yolo only when the creating agent already has License to Kill;
+otherwise the daemon rejects the request.
 Traits require opt-in permission (default: false). Edits replace shared trait
 bodies for future use by all agents, not already-injected session prompts. Agents
 may edit only traits assigned to their own session.

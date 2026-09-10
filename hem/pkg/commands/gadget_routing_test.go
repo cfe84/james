@@ -123,6 +123,7 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 	capabilities := envelope.GadgetCapabilities{Subagents: true, Memory: false, Agents: false, Traits: true, Scheduling: false, CreateAgents: true}
 	var liveCapabilities atomic.Value
 	liveCapabilities.Store(capabilities)
+	var sourceYolo atomic.Bool
 	go func() {
 		scanner := bufio.NewScanner(in)
 		for scanner.Scan() {
@@ -136,7 +137,7 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 			switch command.Method {
 			case "get_session":
 				data = map[string]any{
-					"agent": "copilot", "path": "/parent", "yolo": false, "gadget_capabilities": liveCapabilities.Load(),
+					"agent": "copilot", "path": "/parent", "yolo": sourceYolo.Load(), "gadget_capabilities": liveCapabilities.Load(),
 					"environment": map[string]string{"KEEP": "value", "JAMES_HEM_ADDRESS": "stale/route"},
 				}
 			case "summarize_session":
@@ -230,6 +231,19 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 	if err != nil || topLevel == nil || topLevel.ParentSessionID != "" || topLevel.MoneypennyName != "mp" {
 		t.Fatalf("created agent is not independent on source host: %#v %v", topLevel, err)
 	}
+	response = gadgetRouteRequest(t, e, "source", "agents.create", map[string]any{"prompt": "denied yolo", "yolo": true})
+	if response.Status != "error" || !strings.Contains(response.Message, "already has it") {
+		t.Fatalf("non-yolo source requested License to Kill: %+v", response)
+	}
+	sourceYolo.Store(true)
+	response = gadgetRouteRequest(t, e, "source", "agents.create", map[string]any{"prompt": "approved yolo", "yolo": true})
+	if response.Status != "ok" {
+		t.Fatal(response.Message)
+	}
+	if data := next().Data.(map[string]any); data["yolo"] != true || data["source_session_id"] != "source" {
+		t.Fatalf("authorized License to Kill was not forwarded: %#v", data)
+	}
+	sourceYolo.Store(false)
 	response = gadgetRouteRequest(t, e, "source", "agents.create", map[string]any{"prompt": "remote top level", "moneypenny": "remote"})
 	if response.Status != "ok" {
 		t.Fatal(response.Message)

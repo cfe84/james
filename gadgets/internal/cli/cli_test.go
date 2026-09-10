@@ -35,6 +35,7 @@ func TestParseCommands(t *testing.T) {
 		{"agents list", []string{"agents", "list"}, "", "agents.list", `{}`},
 		{"agents create", []string{"agents", "create", "--name", "--yolo", "--agent", "copilot", "--model", "m", "--path", "src", "--moneypenny", "remote"}, "--from=forged\n", "agents.create", `{"name":"--yolo","agent":"copilot","model":"m","path":"src","moneypenny":"remote","prompt":"--from=forged\n"}`},
 		{"agents defaults", []string{"agents", "create"}, "prompt", "agents.create", `{"prompt":"prompt"}`},
+		{"agents yolo", []string{"agents", "create", "--yolo"}, "prompt", "agents.create", `{"yolo":true,"prompt":"prompt"}`},
 		{"traits list", []string{"traits", "list"}, "", "traits.list", `{}`},
 		{"traits get", []string{"traits", "get", "clean code"}, "", "traits.get", `{"id":"clean code"}`},
 		{"traits edit", []string{"traits", "edit", "id"}, " \n--name=forged\n🕴\n", "traits.edit", `{"id":"id","body":" \n--name=forged\n🕴\n"}`},
@@ -129,7 +130,7 @@ func TestParseErrors(t *testing.T) {
 			t.Errorf("Parse(%q) unexpectedly succeeded", args)
 		}
 	}
-	for _, flag := range []string{"from=other", "session-id=other", "gadget-create-agents=true", "gadget-agents=true", "parent=other", "yolo", "body=prompt"} {
+	for _, flag := range []string{"from=other", "session-id=other", "gadget-create-agents=true", "gadget-agents=true", "parent=other", "body=prompt"} {
 		if _, err := Parse([]string{"agents", "create", "--" + flag}, strings.NewReader("prompt")); err == nil {
 			t.Errorf("creation accepted --%s", flag)
 		}

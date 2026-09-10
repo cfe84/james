@@ -77,6 +77,17 @@ func TestCreateAgentsGadgetGrantBindingAndRevocation(t *testing.T) {
 	if !strings.Contains(params.SystemPrompt, "gadgets agents create") || strings.Contains(params.SystemPrompt, "gadgets agents list") {
 		t.Fatal("prompt does not reflect independent creation grant")
 	}
+	yolo := true
+	update, _ := json.Marshal(envelope.UpdateSessionData{SessionID: gadgetSession, Yolo: &yolo})
+	if response := h.Handle(context.Background(), &envelope.Command{Method: "update_session", Data: update}); response.Status != envelope.StatusSuccess {
+		t.Fatal(response)
+	}
+	if err := h.prepareRunInstructions(gadgetSession, &params); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(params.SystemPrompt, "gadgets agents create") || !strings.Contains(params.SystemPrompt, "[--yolo]") {
+		t.Fatal("yolo source was not authorized to request yolo creation")
+	}
 	setGadgetCaps(t, h, envelope.GadgetCapabilities{})
 	requireGadgetError(t, gadgetCall(t, params, "agents.create", prompt), "permission_denied")
 	if err := h.prepareRunInstructions(gadgetSession, &params); err != nil {

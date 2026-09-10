@@ -195,13 +195,29 @@ func (h *Handler) prepareGadgets(sessionID string, params *agent.RunParams) erro
 	params.SystemPrompt = stripManagedGadgetInstructions(params.SystemPrompt)
 	params.SystemPrompt += "\n\n<gadgets>\nUse the gadgets executable for session tools. Identity is bound by the daemon; never supply another session ID or alter credentials. Commands return structured JSON and writes accept stdin. Permissions are checked for every request and may be revoked. Do not bypass tools with direct Hem commands, files, or database access.\n"
 	if caps.Subagents {
-		params.SystemPrompt += "Own subagents: gadgets subagents list; gadgets subagents create [--name name] [--agent agent] [--model model] [--path path] [--traits names-or-IDs] (prompt on stdin); gadgets subagents message ID (body on stdin). Message only your direct children or reply to your parent; creation inherits your permissions. Traits are comma-separated names or IDs; omitted or empty selects none.\n"
+		params.SystemPrompt += "Own subagents: gadgets subagents list; gadgets subagents create [--name name] [--agent agent] [--model model] [--path path] [--traits names-or-IDs]"
+		if session.Yolo {
+			params.SystemPrompt += " [--yolo]"
+		}
+		params.SystemPrompt += " (prompt on stdin); gadgets subagents message ID (body on stdin). Message only your direct children or reply to your parent; creation inherits your permissions. Traits are comma-separated names or IDs; omitted or empty selects none."
+		if session.Yolo {
+			params.SystemPrompt += " You may request --yolo because this agent already has License to Kill."
+		}
+		params.SystemPrompt += "\n"
 	}
 	if caps.Agents {
 		params.SystemPrompt += "All-agent discovery and messaging: gadgets agents list; gadgets agents message ID (body on stdin). This does not grant session editing or deletion.\n"
 	}
 	if caps.CreateAgents {
-		params.SystemPrompt += "Create independent top-level agents: gadgets agents create [--name name] [--agent agent] [--model model] [--path path] [--traits names-or-IDs] (prompt on stdin). Creation uses your moneypenny and inherits your current gadget permissions. Traits are comma-separated names or IDs; omitted applies Hem defaults, empty selects none. The initial prompt is automatically attributed to you; do not supply --from. This does not grant discovery, messaging, or management access.\n"
+		params.SystemPrompt += "Create independent top-level agents: gadgets agents create [--name name] [--agent agent] [--model model] [--path path] [--traits names-or-IDs]"
+		if session.Yolo {
+			params.SystemPrompt += " [--yolo]"
+		}
+		params.SystemPrompt += " (prompt on stdin). Creation uses your moneypenny and inherits your current gadget permissions. Traits are comma-separated names or IDs; omitted applies Hem defaults, empty selects none. The initial prompt is automatically attributed to you; do not supply --from. This does not grant discovery, messaging, or management access."
+		if session.Yolo {
+			params.SystemPrompt += " You may request --yolo because this agent already has License to Kill."
+		}
+		params.SystemPrompt += "\n"
 	}
 	if caps.Traits {
 		params.SystemPrompt += "Shared trait definitions: gadgets traits list; gadgets traits get ID; gadgets traits edit ID (complete replacement body on stdin; empty stdin clears it). IDs or exact names are accepted. You may edit only traits assigned to your own session; edits affect future use by all agents, not already-injected session prompts. No trait creation, deletion, assignment, renaming, or default changes are permitted.\n"

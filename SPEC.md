@@ -859,6 +859,10 @@ operator calls without creating a parent/child relationship.
 Agents cannot supply `--from`, routing credentials, or override permissions.
 `gadgets subagents create` accepts the same optional target Moneypenny while
 remaining a child of the authenticated creator.
+Both creation commands also accept `--yolo` only when the authenticated creator
+currently has License to Kill. Hem obtains that state from its fresh source
+Moneypenny lookup and rejects requests from ordinary agents, so an agent cannot
+escalate through a request field.
 This grant does not imply discovery, messaging, or session management access.
 
 Both `gadgets agents create` and `gadgets subagents create` accept
