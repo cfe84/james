@@ -67,6 +67,8 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 			return protocol.ErrResponse("subagents may message only direct children or their parent")
 		}
 		return e.messageGadgetAgent(source, target, message.Body)
+	case "sessions.edit":
+		return e.editGadgetSession(source, route.Data)
 	case "subagents.create", "agents.create":
 		create, err := envelope.DecodeCreateAgentGadget(route.Data)
 		if err != nil {
@@ -111,6 +113,8 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 			fmt.Sprintf("--gadget-subagents=%t", capabilities.Subagents),
 			fmt.Sprintf("--gadget-agents=%t", capabilities.Agents),
 			fmt.Sprintf("--gadget-create-agents=%t", capabilities.CreateAgents),
+			fmt.Sprintf("--gadget-edit-sessions=%t", capabilities.EditSessions),
+			fmt.Sprintf("--gadget-edit-own-session=%t", capabilities.EditOwnSession),
 			fmt.Sprintf("--gadget-traits=%t", capabilities.Traits),
 			fmt.Sprintf("--gadget-scheduling=%t", capabilities.Scheduling),
 		}
@@ -150,6 +154,83 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 func gadgetRelated(source, target *store.Session) bool {
 	return source.SessionID != target.SessionID &&
 		(target.ParentSessionID == source.SessionID || source.ParentSessionID == target.SessionID)
+}
+
+func (e *Executor) editGadgetSession(source *store.Session, raw json.RawMessage) *protocol.Response {
+	var update envelope.UpdateSessionData
+	if err := decodeGadgetData(raw, &update); err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	targetID := update.SessionID
+	if targetID == "" {
+		targetID = source.SessionID
+	}
+	if targetID != source.SessionID {
+		caps, err := e.currentGadgetCapabilities(source)
+		if err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		if !caps.EditSessions {
+			return protocol.ErrResponse("edit sessions capability is disabled")
+		}
+	} else {
+		caps, err := e.currentGadgetCapabilities(source)
+		if err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		if !caps.EditOwnSession && !caps.EditSessions {
+			return protocol.ErrResponse("edit own session capability is disabled")
+		}
+	}
+	if update.GadgetCapabilities != nil || update.GadgetRoute != nil {
+		return protocol.ErrResponse("session editing cannot change gadget permissions or routing")
+	}
+	target, err := e.store.GetSession(targetID)
+	if err != nil || target == nil {
+		return protocol.ErrResponse("gadget target session is not tracked by this Hem")
+	}
+	args := []string{targetID}
+	appendString := func(flag string, value *string) {
+		if value != nil {
+			args = append(args, "--"+flag+"="+*value)
+		}
+	}
+	appendString("name", update.Name)
+	appendString("system-prompt", update.SystemPrompt)
+	appendString("model", update.Model)
+	appendString("effort", update.Effort)
+	appendString("context", update.ContextTier)
+	appendString("path", update.Path)
+	appendString("compaction", update.CompactionMode)
+	if update.Yolo != nil {
+		args = append(args, fmt.Sprintf("--yolo=%t", *update.Yolo))
+	}
+	if update.Environment != nil {
+		for name, value := range *update.Environment {
+			args = append(args, "--env="+name+"="+value)
+		}
+	}
+	if len(args) == 1 {
+		return protocol.ErrResponse("session edit requires at least one editable field")
+	}
+	return e.UpdateSession(args)
+}
+
+func (e *Executor) currentGadgetCapabilities(source *store.Session) (envelope.GadgetCapabilities, error) {
+	mp, err := e.store.GetMoneypenny(source.MoneypennyName)
+	if err != nil || mp == nil {
+		return envelope.GadgetCapabilities{}, fmt.Errorf("gadget source moneypenny is not registered")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	detail, err := e.sendCommand(ctx, mp, "get_session", map[string]interface{}{"session_id": source.SessionID})
+	if err != nil {
+		return envelope.GadgetCapabilities{}, fmt.Errorf("getting session permissions: %w", err)
+	}
+	if detail.Status != envelope.StatusSuccess {
+		return envelope.GadgetCapabilities{}, fmt.Errorf("invalid response while getting session permissions")
+	}
+	return sessionGadgetCapabilities(detail.Data)
 }
 
 type gadgetAgent struct {

@@ -1139,6 +1139,7 @@ Subagents report results back to their parent as **callbacks**, which render as 
 - The live TUI and Qew chat views show only non-completed subagents, keeping finished work from crowding active conversations and numbered quick navigation.
 - Both clients provide an **All subagents** view that includes completed work: Hem's `Esc` → `a` picker and Qew's command-palette `l` shortcut. Entries can be opened from either view. Qew's modal supports `j`/`k` and `↓`/`↑` selection (clamped at the ends), `Enter` to open the selected agent, and `Escape` to close.
 - Runtime gadget instructions expose only permitted tools. The combined agents capability grants list/message across tracked agents, not editing or deletion. Subagent creation is bound to the authenticated parent and inherits its current capabilities without accepting permission overrides.
+- Gadget session editing is separately permissioned: `edit-own-session` permits `gadgets sessions edit` for the authenticated session, while `edit-sessions` permits editing any tracked session. Both exclude gadget permissions and trusted routing; the broader permission also covers the agent's own session.
 
 ### Qew Omnibar Recency
 

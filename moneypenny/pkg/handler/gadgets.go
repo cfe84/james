@@ -61,6 +61,10 @@ func patchedGadgetCapabilities(raw json.RawMessage, base envelope.GadgetCapabili
 			base.Agents = *value
 		case "create_agents":
 			base.CreateAgents = *value
+		case "edit_sessions":
+			base.EditSessions = *value
+		case "edit_own_session":
+			base.EditOwnSession = *value
 		case "traits":
 			base.Traits = *value
 		case "scheduling":
@@ -208,6 +212,15 @@ func (h *Handler) prepareGadgets(sessionID string, params *agent.RunParams) erro
 	if caps.Agents {
 		params.SystemPrompt += "All-agent discovery and messaging: gadgets agents list; gadgets agents message ID (body on stdin). This does not grant session editing or deletion.\n"
 	}
+	if caps.EditSessions || caps.EditOwnSession {
+		params.SystemPrompt += "Session editing: gadgets sessions edit [SESSION_ID] [--name name] [--system-prompt text] [--model model] [--effort value] [--context tier] [--path path] [--compaction mode] [--yolo=true|false]. "
+		if caps.EditSessions {
+			params.SystemPrompt += "You may edit any tracked session."
+		} else {
+			params.SystemPrompt += "You may edit only your authenticated session."
+		}
+		params.SystemPrompt += " Gadget permissions and trusted routing cannot be changed.\n"
+	}
 	if caps.CreateAgents {
 		params.SystemPrompt += "Create independent top-level agents: gadgets agents create [--name name] [--agent agent] [--model model] [--path path] [--traits names-or-IDs]"
 		if session.Yolo {
@@ -331,6 +344,8 @@ func (h *Handler) executeGadget(ctx context.Context, sessionID string, request g
 		allowed = caps.Agents
 	case "agents.create":
 		allowed = caps.CreateAgents
+	case "sessions.edit":
+		allowed = caps.EditSessions || caps.EditOwnSession
 	case "traits.list", "traits.get", "traits.edit":
 		allowed = caps.Traits
 	case "subagents.list", "subagents.message", "subagents.create":

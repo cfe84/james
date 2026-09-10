@@ -23,7 +23,7 @@ func command(args []string) (string, []string, error) {
 	switch method {
 	case "memory.get", "memory.list", "memory.search", "memory.set", "memory.batch", "memory.delete", "memory.revisions",
 		"agents.list", "agents.message", "agents.create", "subagents.list", "subagents.create", "subagents.message",
-		"traits.list", "traits.get", "traits.edit",
+		"traits.list", "traits.get", "traits.edit", "sessions.edit",
 		"schedule.list", "schedule.create", "schedule.delete":
 		return method, args[2:], nil
 	}
@@ -45,6 +45,10 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 		allowed["recursive"] = true
 	case "subagents.create", "agents.create":
 		for _, key := range []string{"name", "agent", "model", "path", "moneypenny", "traits", "yolo"} {
+			allowed[key] = true
+		}
+	case "sessions.edit":
+		for _, key := range []string{"name", "system-prompt", "model", "effort", "context", "path", "yolo", "compaction", "env"} {
 			allowed[key] = true
 		}
 	case "schedule.create":
@@ -154,6 +158,32 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 	case "subagents.create", "agents.create":
 		if err = arity(0, 0); err == nil {
 			err = body("prompt", true)
+		}
+	case "sessions.edit":
+		if err = arity(0, 1); err == nil {
+			if len(pos) == 1 {
+				data["session_id"] = pos[0]
+			}
+			delete(data, "env")
+			for _, key := range []string{"name", "system-prompt", "model", "effort", "context", "path", "compaction"} {
+				if value, ok := flags[key]; ok {
+					data[strings.ReplaceAll(key, "-", "_")] = value
+				}
+			}
+			if value, ok := flags["yolo"]; ok {
+				data["yolo"] = value == "true"
+			}
+			if value, ok := flags["env"]; ok {
+				parts := strings.SplitN(value, "=", 2)
+				if len(parts) != 2 || parts[0] == "" {
+					err = errors.New("--env must be NAME=VALUE")
+				} else {
+					data["environment"] = map[string]string{parts[0]: parts[1]}
+				}
+			}
+			if len(data) == 0 {
+				err = errors.New("sessions edit requires a session ID or editable flags")
+			}
 		}
 	case "schedule.create":
 		err = arity(0, 0)

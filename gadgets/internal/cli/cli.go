@@ -40,6 +40,7 @@ Usage:
   gadgets subagents create [--name name] [--agent agent] [--model model] [--path path] [--moneypenny name] [--traits names-or-IDs] [--yolo]
                                              (prompt on stdin)
   gadgets subagents message id [--body text]   (otherwise reads stdin)
+  gadgets sessions edit [session-id] [--name name] [--system-prompt text] [--model model] [--effort value] [--context tier] [--path path] [--compaction mode] [--yolo=true|false] [--env NAME=VALUE]
   gadgets schedule list
   gadgets schedule create (--cron expr | --at timestamp) --prompt text
   gadgets schedule delete id
@@ -58,6 +59,9 @@ Omitting it applies default traits for top-level agents and none for subagents.
 Selecting traits during creation does not require permission to edit shared traits.
 Creation accepts --yolo only when the creating agent already has License to Kill;
 otherwise the daemon rejects the request.
+Session editing requires an explicit edit permission. edit-own-session permits
+editing the authenticated session; edit-sessions permits editing any tracked
+session. Neither permission can change gadget permissions or routing.
 Traits require opt-in permission (default: false). Edits replace shared trait
 bodies for future use by all agents, not already-injected session prompts. Agents
 may edit only traits assigned to their own session.

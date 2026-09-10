@@ -16,12 +16,14 @@ const (
 // GadgetCapabilities controls the session-scoped tools exposed to an agent.
 // Notifications to the operator are always available.
 type GadgetCapabilities struct {
-	Memory       bool `json:"memory"`
-	Subagents    bool `json:"subagents"`
-	Agents       bool `json:"agents"`
-	CreateAgents bool `json:"create_agents"`
-	Traits       bool `json:"traits"`
-	Scheduling   bool `json:"scheduling"`
+	Memory         bool `json:"memory"`
+	Subagents      bool `json:"subagents"`
+	Agents         bool `json:"agents"`
+	CreateAgents   bool `json:"create_agents"`
+	EditSessions   bool `json:"edit_sessions"`
+	EditOwnSession bool `json:"edit_own_session"`
+	Traits         bool `json:"traits"`
+	Scheduling     bool `json:"scheduling"`
 }
 
 func DefaultGadgetCapabilities() GadgetCapabilities {
