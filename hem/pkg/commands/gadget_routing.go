@@ -82,7 +82,7 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 		if err != nil {
 			return protocol.ErrResponse(fmt.Sprintf("getting parent permissions: %v", err))
 		}
-		if detail.Status != "ok" {
+		if detail.Status != envelope.StatusSuccess {
 			return protocol.ErrResponse("invalid response while getting creation permissions")
 		}
 		capabilities, err := sessionGadgetCapabilities(detail.Data)

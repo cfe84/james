@@ -28,7 +28,7 @@ func (e *Executor) traitsGadget(source *store.Session, method string, raw json.R
 	if err != nil {
 		return protocol.ErrResponse(fmt.Sprintf("getting trait permissions: %v", err))
 	}
-	if detail.Status != "ok" {
+	if detail.Status != envelope.StatusSuccess {
 		return protocol.ErrResponse("invalid response while getting trait permissions")
 	}
 	caps, err := sessionGadgetCapabilities(detail.Data)

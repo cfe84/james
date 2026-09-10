@@ -13,6 +13,7 @@ import (
 
 	"james/hem/pkg/store"
 	"james/hem/pkg/transport"
+	"james/moneypenny/pkg/envelope"
 )
 
 func TestTraitGadgetPersistenceAndFreshPermissions(t *testing.T) {
@@ -43,7 +44,7 @@ func TestTraitGadgetPersistenceAndFreshPermissions(t *testing.T) {
 	var detail atomic.Value
 	detail.Store(`{"gadget_capabilities":{"traits":true}}`)
 	var status atomic.Value
-	status.Store("ok")
+	status.Store(envelope.StatusSuccess)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

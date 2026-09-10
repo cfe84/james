@@ -131,7 +131,7 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 				return
 			}
 			data := any(map[string]any{})
-			status := "ok"
+			status := envelope.StatusSuccess
 			errorCode := ""
 			switch command.Method {
 			case "get_session":
