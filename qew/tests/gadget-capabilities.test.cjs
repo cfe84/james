@@ -75,7 +75,20 @@ test('create, copy and edit surfaces load and use the reusable controls', () => 
   assert.ok(app.includes("gadgetCapabilities.args('es', s.gadget_capabilities || null)"));
 });
 
-test('Escape closes the all-subagents dialog', () => {
+test('all-subagents dialog supports keyboard navigation and Escape dismissal', () => {
   const app = fs.readFileSync(path.join(__dirname, '../pkg/web/static/app.js'), 'utf8');
   assert.match(app, /const closeRoot = modal \|\| overlay\.querySelector\('\.cmd-palette'\)/);
+  assert.match(app, /function handleAllSubagentsKey\(e\)/);
+  assert.match(app, /e\.key === 'ArrowDown' \|\| e\.key === 'j'/);
+  assert.match(app, /e\.key === 'ArrowUp' \|\| e\.key === 'k'/);
+  assert.match(app, /openAllSubagent\(allSubagentsCursor\)/);
+  assert.match(app, /if \(handleAllSubagentsKey\(e\)\) return/);
+});
+
+test('Escape on the session list opens its shortcut reference', () => {
+  const app = fs.readFileSync(path.join(__dirname, '../pkg/web/static/app.js'), 'utf8');
+  assert.match(app, /function showDashboardShortcuts\(\)/);
+  assert.match(app, /aria-label="Session list shortcuts"/);
+  assert.match(app, /<kbd>c<\/kbd> Complete selected session/);
+  assert.match(app, /else \{\s*e\.preventDefault\(\);\s*showDashboardShortcuts\(\);/);
 });

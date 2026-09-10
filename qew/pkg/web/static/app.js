@@ -29,6 +29,7 @@
   let lastSchedules = [];      // cached so an older-history re-render needn't refetch
   let lastSubagents = [];     // non-completed subagents shown in the live chat
   let allSubagents = [];      // complete list, retained for the all-subagents view
+  let allSubagentsCursor = 0;
   let lastActivity = [];
   const CHAT_PAGE_SIZE = 50;
   let lastSessionStates = {}; // track WORKING→READY transitions for notifications
@@ -1564,10 +1565,11 @@
   }
 
   function showAllSubagents() {
+    allSubagentsCursor = 0;
     const items = allSubagents.length
       ? allSubagents.map((sub, i) => {
           const name = sub.name || (sub.sessionId ? sub.sessionId.substring(0, 12) + '...' : '?');
-          return `<button class="cmd-item" data-all-sub-idx="${i}">🕴️ ${escapeHtml(name)} <span style="color:var(--muted)">[${escapeHtml(sub.status || 'unknown')}]</span></button>`;
+          return `<button class="cmd-item all-subagent-item${i === allSubagentsCursor ? ' selected' : ''}" data-all-sub-idx="${i}">🕴️ ${escapeHtml(name)} <span style="color:var(--muted)">[${escapeHtml(sub.status || 'unknown')}]</span></button>`;
         }).join('')
       : '<div class="empty-state">No subagents</div>';
     renderWizardModal(`
@@ -1582,16 +1584,73 @@
       palette.addEventListener('click', (e) => {
         const button = e.target.closest('[data-all-sub-idx]');
         if (!button) return;
-        const sub = allSubagents[parseInt(button.dataset.allSubIdx, 10)];
-        if (!sub) return;
-        const name = sub.name || (sub.sessionId ? sub.sessionId.substring(0, 12) : sub.sessionId);
-        closeWizard();
-        window._openSubagent(sub.sessionId, name);
+        openAllSubagent(parseInt(button.dataset.allSubIdx, 10));
       });
       palette.focus();
     }
   }
   window._qewCloseAllSubagents = function() { closeWizard(); };
+
+  function showDashboardShortcuts() {
+    renderWizardModal(`
+      <div class="cmd-palette" tabindex="-1" role="dialog" aria-modal="true" aria-label="Session list shortcuts">
+        <h3>Session list shortcuts</h3>
+        <div class="cmd-list">
+          <div class="cmd-item"><kbd>j</kbd>/<kbd>k</kbd> or <kbd>↓</kbd>/<kbd>↑</kbd> Select session</div>
+          <div class="cmd-item"><kbd>Enter</kbd> Open selected session</div>
+          <div class="cmd-item"><kbd>/</kbd> Filter sessions</div>
+          <div class="cmd-item"><kbd>o</kbd> Quick switcher</div>
+          <div class="cmd-item"><kbd>n</kbd> New agent</div>
+          <div class="cmd-item"><kbd>m</kbd> Moneypennies</div>
+          <div class="cmd-item"><kbd>p</kbd> Projects</div>
+          <div class="cmd-item"><kbd>t</kbd> Traits</div>
+          <div class="cmd-item"><kbd>b</kbd> Toggle completion sound</div>
+          <div class="cmd-item"><kbd>c</kbd> Complete selected session</div>
+          <div class="cmd-item"><kbd>u</kbd> Mark selected session ready</div>
+          <div class="cmd-item"><kbd>e</kbd> Edit selected session</div>
+          <div class="cmd-item"><kbd>y</kbd> Duplicate selected session</div>
+          <div class="cmd-item"><kbd>d</kbd> Delete selected session</div>
+        </div>
+        <div class="modal-actions"><button class="btn-muted" onclick="window._qewCloseDashboardShortcuts()">Close (Esc)</button></div>
+      </div>
+    `);
+    const palette = document.querySelector('.cmd-palette');
+    if (palette) palette.focus();
+  }
+  window._qewCloseDashboardShortcuts = function() { closeWizard(); };
+
+  function openAllSubagent(index) {
+    const sub = allSubagents[index];
+    if (!sub) return;
+    const name = sub.name || (sub.sessionId ? sub.sessionId.substring(0, 12) : sub.sessionId);
+    closeWizard();
+    window._openSubagent(sub.sessionId, name);
+  }
+
+  function handleAllSubagentsKey(e) {
+    const palette = document.querySelector('.cmd-palette[aria-label="All subagents"]');
+    if (!palette || e.ctrlKey || e.metaKey || e.altKey || allSubagents.length === 0) return false;
+    if (e.key === 'ArrowDown' || e.key === 'j') {
+      e.preventDefault();
+      allSubagentsCursor = Math.min(allSubagentsCursor + 1, allSubagents.length - 1);
+    } else if (e.key === 'ArrowUp' || e.key === 'k') {
+      e.preventDefault();
+      allSubagentsCursor = Math.max(allSubagentsCursor - 1, 0);
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      openAllSubagent(allSubagentsCursor);
+      return true;
+    } else {
+      return false;
+    }
+    const selected = palette.querySelector(`[data-all-sub-idx="${allSubagentsCursor}"]`);
+    if (selected) {
+      palette.querySelectorAll('.all-subagent-item.selected').forEach(item => item.classList.remove('selected'));
+      selected.classList.add('selected');
+      selected.scrollIntoView({ block: 'nearest' });
+    }
+    return true;
+  }
 
   async function showWizardStep1() {
     // Load moneypennies.
@@ -5823,6 +5882,7 @@
         if (submitModalCTA()) e.preventDefault();
         return;
       }
+      if (handleAllSubagentsKey(e)) return;
       if (handleDiffModalKey(e)) return;
       handleWizardListKey(e);
       return;
@@ -5950,6 +6010,9 @@
           const fi = document.getElementById('dash-filter');
           if (fi) { fi.value = ''; fi.style.display = 'none'; }
           if (lastDashboardData) renderDashboard(lastDashboardData);
+        } else {
+          e.preventDefault();
+          showDashboardShortcuts();
         }
         break;
       case '/': e.preventDefault(); openDashFilter(); break;
