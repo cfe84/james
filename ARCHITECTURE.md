@@ -733,13 +733,15 @@ hem/
 
 91. **Qew Ctrl+J/K in all navigable lists (`v1.65.0`)**: Every Qew surface that supports arrow-key selection—wizard moneypenny/path lists, diff and changed-file review lists, override pickers, and management lists—also accepts `Ctrl+J`/`Ctrl+K` as down/up movement. The command-palette form uses the same shortcuts to enter the existing conversation transcript navigation mode. Meta/Alt shortcuts remain available to the browser and are not intercepted.
 
-92. **Explicit Qew development mode (unreleased)**: Unauthenticated Qew operation is an explicit local-development exception. The `--development` flag is accepted only with a loopback listen address (`127.0.0.1`, `::1`, or `localhost`), preventing an accidental network-exposed no-password server. The Docker entrypoint requires `QEW_PASSWORD` and never adds `--development` implicitly; unauthenticated development runs must be started directly with an explicitly loopback-bound address.
+92. **Qew transient connection recovery**: `app.js` centralizes connectivity in `setConnectionState`, which updates the header status and disables `#chat-send` whenever the API is unavailable or a send is in flight. `loadChat` treats history errors (including HTTP 502 during deployment) as transient: it leaves the current `#chat-messages` DOM and conversation state untouched, marks Qew disconnected, and relies on the existing 3-second `startChatPoll` loop to retry. A successful refresh marks the connection restored and re-enables Send. Dashboard request failures use the same status indicator, avoiding replacement of an active conversation with an error screen.
 
-93. **Security hardening (unreleased)**: Owner-only channel polling fails closed when provider identity lookup fails, rather than forwarding messages without sender verification. Uploaded attachment names normalize both Unix and Windows separators before reducing to a basename, preventing cross-platform path traversal. The release workflow pins `softprops/action-gh-release` to the immutable commit for `v2`.
+93. **Explicit Qew development mode (unreleased)**: Unauthenticated Qew operation is an explicit local-development exception. The `--development` flag is accepted only with a loopback listen address (`127.0.0.1`, `::1`, or `localhost`), preventing an accidental network-exposed no-password server. The Docker entrypoint requires `QEW_PASSWORD` and never adds `--development` implicitly; unauthenticated development runs must be started directly with an explicitly loopback-bound address.
 
-94. **Signed release manifests (v1.66.0; audit logs v1.67.0)**: Cross-platform updater trust is provided by a detached Ed25519 signature over the exact bytes of `james-manifest.json`. The manifest records the release version and SHA-256 digest for every platform archive. Moneypenny embeds only the public key, verifies the signature before parsing the JSON, requires the manifest version to match the GitHub tag, and hashes the complete selected archive before extracting it. The updater writes explicit standard-log audit entries only after manifest-signature and archive-digest validation succeeds. The release workflow generates the manifest only after the Windows Authenticode-signed ZIP is available, signs it with the protected `JAMES_RELEASE_SIGNING_KEY` secret, and publishes both the manifest and its raw detached signature. The private key is never committed; Windows Authenticode remains an additional OS-level trust signal rather than the cross-platform verification mechanism.
+94. **Security hardening (unreleased)**: Owner-only channel polling fails closed when provider identity lookup fails, rather than forwarding messages without sender verification. Uploaded attachment names normalize both Unix and Windows separators before reducing to a basename, preventing cross-platform path traversal. The release workflow pins `softprops/action-gh-release` to the immutable commit for `v2`.
 
-95. **Release keypair utility (v1.66.0)**: `hem generate release-keypair` is a
+96. **Signed release manifests (v1.66.0; audit logs v1.67.0)**: Cross-platform updater trust is provided by a detached Ed25519 signature over the exact bytes of `james-manifest.json`. The manifest records the release version and SHA-256 digest for every platform archive. Moneypenny embeds only the public key, verifies the signature before parsing the JSON, requires the manifest version to match the GitHub tag, and hashes the complete selected archive before extracting it. The updater writes explicit standard-log audit entries only after manifest-signature and archive-digest validation succeeds. The release workflow generates the manifest only after the Windows Authenticode-signed ZIP is available, signs it with the protected `JAMES_RELEASE_SIGNING_KEY` secret, and publishes both the manifest and its raw detached signature. The private key is never committed; Windows Authenticode remains an additional OS-level trust signal rather than the cross-platform verification mechanism.
+
+97. **Release keypair utility (v1.66.0)**: `hem generate release-keypair` is a
 local-only CLI operation using Go's standard-library Ed25519 implementation. It
 creates three exclusive files in the selected output directory: a base64 public
 key (`james-release-public.key`, mode 0644), the raw private key
@@ -748,7 +750,7 @@ key (`james-release-public.key`, mode 0644), the raw private key
 refuses to overwrite any existing output, avoiding accidental key rotation or
 destruction.
 
-96. **Per-agent environment variables (v1.67.0)**: Session create/update
+98. **Per-agent environment variables (v1.67.0)**: Session create/update
 accept repeatable `--env NAME=VALUE` flags. Hem sends the parsed mapping to
 Moneypenny, which validates portable variable names and NUL-free values at its
 protocol boundary, serializes it in the session row, and applies it only while
@@ -759,7 +761,7 @@ they can be reviewed and changed; they are never propagated to the Moneypenny
 daemon environment. Hem TUI and Qew expose the mapping as a multiline
 `NAME=VALUE` editor.
 
-97. **Windows update helper (`v1.67.1`)**: Windows prevents renaming a running
+99. **Windows update helper (`v1.67.1`)**: Windows prevents renaming a running
 executable, so the prior generic updater could never complete its
 `currentExe → .old` swap before it reached `reExec`. Windows releases now include
 `moneypenny-update-helper.exe`. After the signed archive is staged, Moneypenny writes

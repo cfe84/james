@@ -59,6 +59,20 @@
   let pendingAttachments = []; // files staged for the next send: [{name,size,type,b64,url}]
   const ATTACH_MAX_BYTES = 10 * 1024 * 1024; // 10MB per-file cap (mirrors moneypenny)
   let multilineCompose = false; // per-session preference; true means Enter inserts a newline
+  let qewConnected = false;
+  let sendInFlight = false;
+
+  function setConnectionState(connected) {
+    qewConnected = connected;
+    const status = document.getElementById('conn-status');
+    if (status) {
+      status.innerHTML = connected
+        ? '<span class="status-dot connected"></span>Connected'
+        : '<span class="status-dot disconnected"></span>Disconnected — retrying';
+    }
+    const send = document.getElementById('chat-send');
+    if (send) send.disabled = !connected || sendInFlight;
+  }
 
   // --- API ---
 
@@ -244,8 +258,10 @@
       if (resp.status === 'error') {
         document.getElementById('dash-content').innerHTML =
           `<div class="empty-state">Error: ${escapeHtml(resp.message)}</div>`;
+        setConnectionState(false);
         return;
       }
+      setConnectionState(true);
       // Detect WORKING→READY transitions for notifications.
       if (resp.data && resp.data.rows) {
         for (const row of resp.data.rows) {
@@ -265,6 +281,7 @@
     } catch (e) {
       document.getElementById('dash-content').innerHTML =
         `<div class="empty-state">Connection error: ${escapeHtml(e.message)}</div>`;
+      setConnectionState(false);
       dashEntries = [];
       dashSelectedId = '';
     } finally {
@@ -841,9 +858,7 @@
       // otherwise we'd overwrite the new session's state with stale data.
       if (currentSession !== sessAtStart) return;
       if (histResp.status === 'error') {
-        document.getElementById('chat-messages').innerHTML =
-          `<div class="empty-state">Error: ${escapeHtml(histResp.message)}</div>`;
-        return;
+        throw new Error(histResp.message || 'Unable to load conversation');
       }
       // Extract session status and moneypenny.
       currentSessionStatus = '';
@@ -924,11 +939,11 @@
       lastSubagents = subagents.filter(sub => !String(sub.status || '').toLowerCase().includes('completed'));
       lastActivity = activity;
       mergeRecentHistory(histResp.data);
+      setConnectionState(true);
       renderChat(false);
     } catch (e) {
       if (currentSession !== sessAtStart) return;
-      document.getElementById('chat-messages').innerHTML =
-        `<div class="empty-state">Error: ${escapeHtml(e.message)}</div>`;
+      setConnectionState(false);
     }
   }
 
@@ -1357,7 +1372,7 @@
     const input = document.getElementById('chat-input');
     let text = input.value.trim();
     const hasAttachments = pendingAttachments.length > 0;
-    if ((!text && !hasAttachments) || !currentSession) return;
+    if ((!text && !hasAttachments) || !currentSession || !qewConnected) return;
 
     // Idle-only gating for attachments (v1): the agent must not be busy.
     if (hasAttachments && currentSessionStatus === 'working') {
@@ -1371,7 +1386,8 @@
     input.value = '';
     input.style.height = 'auto';
     delete chatInputCache[currentSession];
-    document.getElementById('chat-send').disabled = true;
+    sendInFlight = true;
+    setConnectionState(qewConnected);
 
     try {
       let attachmentPaths = [];
@@ -1395,7 +1411,8 @@
     } catch (e) {
       alert('Send error: ' + e.message);
     } finally {
-      document.getElementById('chat-send').disabled = false;
+      sendInFlight = false;
+      setConnectionState(qewConnected);
     }
   }
 
@@ -6059,13 +6076,11 @@
 
   // Initial load.
   Promise.all([loadProjects(), loadTraitsCache(), loadDashboard()]).then(() => {
-    document.getElementById('conn-status').innerHTML =
-      '<span class="status-dot connected"></span>Connected';
+    setConnectionState(true);
     startDashboardPoll();
     // Check initial hash route after dashboard is loaded.
     handleRoute();
   }).catch(() => {
-    document.getElementById('conn-status').innerHTML =
-      '<span class="status-dot disconnected"></span>Disconnected';
+    setConnectionState(false);
   });
 })();

@@ -92,3 +92,15 @@ test('Escape on the session list opens its shortcut reference', () => {
   assert.match(app, /<kbd>c<\/kbd> Complete selected session/);
   assert.match(app, /else \{\s*e\.preventDefault\(\);\s*showDashboardShortcuts\(\);/);
 });
+
+test('chat connection loss preserves the transcript and gates sending', () => {
+  const app = fs.readFileSync(path.join(__dirname, '../pkg/web/static/app.js'), 'utf8');
+  assert.match(app, /let qewConnected = false/);
+  assert.match(app, /function setConnectionState\(connected\)/);
+  assert.match(app, /Disconnected — retrying/);
+  assert.match(app, /send\.disabled = !connected \|\| sendInFlight/);
+  assert.match(app, /if \(\(!text && !hasAttachments\) \|\| !currentSession \|\| !qewConnected\) return/);
+  assert.match(app, /throw new Error\(histResp\.message \|\| 'Unable to load conversation'\)/);
+  assert.match(app, /setConnectionState\(false\);\s*\n\s*\}/);
+  assert.equal(app.includes("document.getElementById('chat-messages').innerHTML =\n        `<div class=\"empty-state\">Error:"), false);
+});
