@@ -11,6 +11,7 @@ func TestWindowsTaskDefinitionRestartsUnexpectedFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
+		`<?xml version="1.0" encoding="UTF-16"?>`,
 		`<LogonType>InteractiveToken</LogonType>`,
 		`<LogonTrigger><Enabled>true</Enabled></LogonTrigger>`,
 		`<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>`,

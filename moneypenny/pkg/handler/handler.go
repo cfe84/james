@@ -411,6 +411,10 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 	if err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
 	}
+	gadgetRoute, err := validateGadgetRoute(data.GadgetRoute)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
+	}
 
 	// Create session in store.
 	sess := &store.Session{
@@ -424,6 +428,7 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 		Yolo:           data.Yolo,
 		Path:           data.Path,
 		Environment:    environment,
+		GadgetRoute:    gadgetRoute,
 		AgentSessionID: initialAgentSessionID(data.Agent, data.SessionID),
 		CompactionMode: compactionMode,
 	}
@@ -1262,6 +1267,14 @@ func (h *Handler) updateSession(_ context.Context, cmd *envelope.Command) *envel
 		}
 		environment = &encoded
 	}
+	var route *string
+	if data.GadgetRoute != nil {
+		encoded, err := validateGadgetRoute(*data.GadgetRoute)
+		if err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
+		}
+		route = &encoded
+	}
 	var capabilities *string
 	if data.GadgetCapabilities != nil {
 		current, err := h.gadgetCapabilities(data.SessionID)
@@ -1274,7 +1287,7 @@ func (h *Handler) updateSession(_ context.Context, cmd *envelope.Command) *envel
 		}
 		capabilities = &value
 	}
-	if err := h.store.UpdateSessionFields(data.SessionID, data.Name, data.SystemPrompt, data.Model, data.Effort, data.ContextTier, data.Path, data.CompactionMode, environment, data.Yolo, capabilities); err != nil {
+	if err := h.store.UpdateSessionFields(data.SessionID, data.Name, data.SystemPrompt, data.Model, data.Effort, data.ContextTier, data.Path, data.CompactionMode, environment, route, data.Yolo, capabilities); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to update session: %v", err))
 	}
 

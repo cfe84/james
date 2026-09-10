@@ -16,6 +16,9 @@ gadgets memory delete path [--recursive]
 gadgets memory revisions [path]
 gadgets agents list
 gadgets agents message id [--body text]
+gadgets traits list
+gadgets traits get ID
+gadgets traits edit ID
 gadgets subagents list
 gadgets subagents create [--name name] [--agent agent] [--model model] [--path path]
 gadgets subagents message id [--body text]
@@ -32,7 +35,35 @@ or follow positional arguments; `--` ends flag parsing, and `--flag=value` is
 supported. `--recursive=false` explicitly disables recursion. No session,
 endpoint, credential, or permission override flags are accepted.
 
-Reads return up to 64000 Unicode characters by default. For very large imported
+### Shared traits (opt-in)
+
+`traits list` lists existing shared definitions. `traits get ID` returns the full
+definition; IDs or exact names are accepted. `traits edit ID` replaces only its
+prompt body, reading the complete text verbatim from stdin (empty stdin clears
+the body). Agents may edit only traits assigned to their own session; list and
+get can view all definitions. It returns the updated definition. No `--body`
+flag is accepted:
+
+```sh
+gadgets traits list
+gadgets traits get 'Clean code'
+printf 'Reuse existing implementations.\n' | gadgets traits edit 'Clean code'
+```
+
+The `traits` permission defaults to **false**, including legacy sessions. Operators
+grant it with `hem update session SESSION_ID --gadget-traits=true`, or the existing
+TUI/Qew permission controls; create/copy/subsession commands also accept that flag.
+Gadget-created children inherit the parent's current permissions. Revocation is
+checked on every request by Moneypenny and again through a fresh daemon lookup
+at Hem. Hem must be reachable via the operator-configured route.
+
+Definitions are shared across agents managed by that Hem. Editing affects their
+**future use**, not prompts already composed into sessions. Names, default-enabled
+settings, session assignments and unrelated definitions remain unchanged. These
+commands cannot create/delete traits, rename them, change defaults, assign traits,
+or manage sessions.
+
+Memory reads return up to 64000 Unicode characters by default. For very large imported
 notes, follow `data.next_offset` using `--offset` until it is absent; `--limit`
 accepts 1–64000 characters. `data.characters` is the full node size. Paging does
 not change stored content and allows reading notes larger than the response cap.
@@ -77,6 +108,9 @@ and `Authorization: Bearer <token>`. Body:
 | memory delete | `memory.delete` | `{"path":"...","recursive":false}` |
 | agents/subagents list | `agents.list` / `subagents.list` | `{}` |
 | agents/subagents message | `agents.message` / `subagents.message` | `{"id":"...","body":"..."}` |
+| traits list | `traits.list` | `{}` |
+| traits get | `traits.get` | `{"id":"..."}` |
+| traits edit | `traits.edit` | `{"id":"...","body":"..."}`; complete string body required, empty allowed |
 | subagents create | `subagents.create` | `{"prompt":"...", "name":"...", "agent":"...", "model":"...", "path":"..."}`; optional flags omitted unless supplied |
 | schedule list | `schedule.list` | `{}` |
 | schedule create | `schedule.create` | `{"cron":"...", "prompt":"..."}` or `{"at":"...", "prompt":"..."}` |
@@ -100,6 +134,12 @@ Help is plain text; version is `{"version":"1.78.0"}` (or the injected build ver
 Requests (including stdin) are limited to 1 MiB, responses to 4 MiB, response
 headers to 32 KiB. HTTP calls have a 30-second deadline and a 5-second connection
 timeout. The client does not retry operations.
+
+Trait list results reuse Hem's table shape (`headers`, `rows`), with prompt previews.
+Trait get/edit results contain `id`, `name`, `prompt`, and `enabled_by_default`.
+Traits use the same request/response limits, without paging. Missing traits or
+Hem route failures return an error envelope; denied requests never fall back to
+operator management commands.
 
 ## Development
 

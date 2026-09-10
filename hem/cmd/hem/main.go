@@ -40,15 +40,19 @@ func isStartServerCommand(args []string) bool {
 	return len(args) >= 3 && args[1] == "start" && args[2] == "server"
 }
 
+func isLocalDefaultCommand(args []string) bool {
+	return len(args) >= 3 && args[1] == "set-default" && (args[2] == "server" || args[2] == "mi6")
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(1)
 	}
 
-	// Check if this is `set-default server` — if so, don't consume --hem/--local
+	// Check if this is a local default command — if so, don't consume --hem/--local
 	// as global flags since they're arguments to the command itself.
-	isSetDefaultServer := len(os.Args) >= 3 && os.Args[1] == "set-default" && os.Args[2] == "server"
+	isLocalDefault := isLocalDefaultCommand(os.Args)
 	isStartServer := isStartServerCommand(os.Args)
 	// Server startup owns its --mi6-control and --mi6-server-fingerprint
 	// arguments. It must not construct a client using a persisted remote
@@ -64,17 +68,17 @@ func main() {
 	filteredArgs := make([]string, 0, len(os.Args))
 	filteredArgs = append(filteredArgs, os.Args[0])
 	for i := 1; i < len(os.Args); i++ {
-		if !isSetDefaultServer && os.Args[i] == "--hem" && i+1 < len(os.Args) {
+		if !isLocalDefault && os.Args[i] == "--hem" && i+1 < len(os.Args) {
 			i++
 			mi6Addr = os.Args[i]
-		} else if !isSetDefaultServer && os.Args[i] == "--mi6-server-fingerprint" && i+1 < len(os.Args) {
+		} else if !isLocalDefault && os.Args[i] == "--mi6-server-fingerprint" && i+1 < len(os.Args) {
 			i++
 			mi6ServerFingerprint = os.Args[i]
 		} else if os.Args[i] == "--silent" {
 			silent = true
 		} else if os.Args[i] == "--verbose" {
 			verbose = true
-		} else if !isSetDefaultServer && os.Args[i] == "--local" {
+		} else if !isLocalDefault && os.Args[i] == "--local" {
 			forceLocal = true
 		} else if os.Args[i] == "--ff-use-notifications" {
 			ffUseNotifications = true
@@ -134,6 +138,9 @@ func main() {
 	switch cmd.Verb + " " + cmd.Noun {
 	case "set-default server":
 		handleSetDefaultServer(cmd.Args)
+		return
+	case "set-default mi6":
+		handleSetDefaultMI6(cmd.Args)
 		return
 	case "get-default server":
 		handleGetDefaultServer()
@@ -293,6 +300,7 @@ func handleSetDefaultServer(args []string) {
 		fmt.Fprintf(os.Stderr, "%sError: %v%s\n", colorRed, err, colorReset)
 		os.Exit(1)
 	}
+
 	if hemAddr == "" && !local {
 		fmt.Fprintf(os.Stderr, "Usage: hem set-default server --hem HOST/SESSION | --local\n")
 		os.Exit(1)
@@ -320,6 +328,28 @@ func handleSetDefaultServer(args []string) {
 		}
 		fmt.Printf("Default server set to MI6 %q.\n", hemAddr)
 	}
+}
+
+// handleSetDefaultMI6 persists the relay default directly because it is needed
+// before a Hem server can be contacted or started.
+func handleSetDefaultMI6(args []string) {
+	if len(args) != 1 || strings.TrimSpace(args[0]) == "" {
+		fmt.Fprintln(os.Stderr, "Usage: hem set-default mi6 HOST/SESSION")
+		os.Exit(1)
+	}
+	dataDir := defaultDataDir()
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
+		log.Fatalf("failed to create data directory: %v", err)
+	}
+	st, err := store.New(filepath.Join(dataDir, "hem.db"))
+	if err != nil {
+		log.Fatalf("failed to open store: %v", err)
+	}
+	defer st.Close()
+	if err := st.SetDefault("mi6", args[0]); err != nil {
+		log.Fatalf("failed to set default: %v", err)
+	}
+	fmt.Printf("Default mi6 set to %q.\n", args[0])
 }
 
 // handleGetDefaultServer handles `hem get-default server` locally (no server needed).
@@ -592,6 +622,7 @@ func printResponse(data json.RawMessage, outputFmt string) {
 					{"gadget_memory", fmt.Sprintf("%v", result.GadgetCapabilities.Memory)},
 					{"gadget_subagents", fmt.Sprintf("%v", result.GadgetCapabilities.Subagents)},
 					{"gadget_agents", fmt.Sprintf("%v", result.GadgetCapabilities.Agents)},
+					{"gadget_traits", fmt.Sprintf("%v", result.GadgetCapabilities.Traits)},
 					{"gadget_scheduling", fmt.Sprintf("%v", result.GadgetCapabilities.Scheduling)},
 					{"path", result.Path},
 					{"traits", strings.Join(result.Traits, ", ")},

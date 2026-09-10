@@ -24,7 +24,7 @@ import (
 // cannot call Handle or supply this field.
 func (h *Handler) refreshGadgetRoute(cmd *envelope.Command) error {
 	switch cmd.Method {
-	case "get_session", "continue_session", "queue_prompt", "compact_session", "distill_session":
+	case "create_session", "get_session", "continue_session", "queue_prompt", "compact_session", "distill_session", "update_session":
 	default:
 		return nil
 	}
@@ -55,31 +55,65 @@ func (h *Handler) refreshGadgetRoute(cmd *envelope.Command) error {
 	if session == nil {
 		return nil
 	}
-	env, err := sessionEnvironment(session)
+	environment, err := sessionEnvironment(session)
 	if err != nil {
 		return err
 	}
-	if env == nil {
-		env = make(map[string]string)
-	}
-	changed := false
+	cleaned := false
 	for _, key := range []string{"JAMES_HEM_SOCKET", "JAMES_HEM_ADDRESS", "JAMES_HEM_FINGERPRINT"} {
-		if env[key] != data.Route[key] {
-			changed = true
+		if _, ok := environment[key]; ok {
+			delete(environment, key)
+			cleaned = true
 		}
-		delete(env, key)
 	}
-	for key, value := range data.Route {
-		env[key] = value
-	}
-	if !changed {
-		return nil
-	}
-	encoded, err := validateEnvironment(env)
+	encoded, err := validateEnvironment(data.Route)
 	if err != nil {
 		return err
 	}
-	return h.store.UpdateSessionFields(data.SessionID, nil, nil, nil, nil, nil, nil, nil, &encoded, nil)
+	var cleanEnvironment *string
+	if cleaned {
+		value, err := validateEnvironment(environment)
+		if err != nil {
+			return err
+		}
+		cleanEnvironment = &value
+	}
+	return h.store.UpdateSessionFields(data.SessionID, nil, nil, nil, nil, nil, nil, nil, cleanEnvironment, &encoded, nil)
+}
+
+func gadgetRoute(encoded string) (map[string]string, error) {
+	if encoded == "" || encoded == "{}" {
+		return nil, nil
+	}
+	var route map[string]string
+	if err := json.Unmarshal([]byte(encoded), &route); err != nil {
+		return nil, fmt.Errorf("decode gadget route: %w", err)
+	}
+	for key := range route {
+		if key != "JAMES_HEM_SOCKET" && key != "JAMES_HEM_ADDRESS" && key != "JAMES_HEM_FINGERPRINT" {
+			return nil, fmt.Errorf("invalid gadget route field %q", key)
+		}
+	}
+	return route, nil
+}
+
+func validateGadgetRoute(route map[string]string) (string, error) {
+	if route == nil {
+		return "{}", nil
+	}
+	for key, value := range route {
+		if key != "JAMES_HEM_SOCKET" && key != "JAMES_HEM_ADDRESS" && key != "JAMES_HEM_FINGERPRINT" {
+			return "", fmt.Errorf("invalid gadget route field %q", key)
+		}
+		if strings.ContainsRune(value, 0) {
+			return "", fmt.Errorf("invalid gadget route value")
+		}
+	}
+	encoded, err := json.Marshal(route)
+	if err != nil {
+		return "", fmt.Errorf("encode gadget route: %w", err)
+	}
+	return string(encoded), nil
 }
 
 // These wire types deliberately keep the daemon independent of the Hem module.
@@ -99,7 +133,8 @@ type gadgetHemResponse struct {
 
 func (h *Handler) routeGadget(ctx context.Context, sessionID, method string, data json.RawMessage) (any, error) {
 	switch method {
-	case "agents.list", "agents.message", "subagents.list", "subagents.create", "subagents.message":
+	case "agents.list", "agents.message", "subagents.list", "subagents.create", "subagents.message",
+		"traits.list", "traits.get", "traits.edit":
 	default:
 		return nil, fmt.Errorf("unsupported routed gadget method %q", method)
 	}
@@ -110,10 +145,11 @@ func (h *Handler) routeGadget(ctx context.Context, sessionID, method string, dat
 	if session == nil {
 		return nil, fmt.Errorf("gadget source session not found")
 	}
-	environment, err := sessionEnvironment(session)
+	environment, err := gadgetRoute(session.GadgetRoute)
 	if err != nil {
 		return nil, err
 	}
+
 	// Source identity is never accepted from gadget request data or process env.
 	payload, err := json.Marshal(struct {
 		SourceSessionID string          `json:"source_session_id"`

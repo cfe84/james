@@ -72,6 +72,26 @@ func TestVersionDoesNotRequireRemoteFingerprint(t *testing.T) {
 	}
 }
 
+func TestSetDefaultMI6DoesNotRequireServer(t *testing.T) {
+	if os.Getenv("HEM_TEST_LOCAL_MI6_DEFAULT") == "1" {
+		os.Args = []string{"hem", "set-default", "mi6", "relay.example/control"}
+		main()
+		return
+	}
+	t.Setenv("HEM_TEST_LOCAL_MI6_DEFAULT", "1")
+	t.Setenv("HOME", t.TempDir())
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestSetDefaultMI6DoesNotRequireServer$")
+	out, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatal(ctx.Err())
+	}
+	if err != nil || !strings.Contains(string(out), `Default mi6 set to "relay.example/control".`) {
+		t.Fatalf("offline set-default mi6 failed: %v\n%s", err, out)
+	}
+}
+
 func TestIsStartServerCommand(t *testing.T) {
 	if !isStartServerCommand([]string{"hem", "start", "server", "--mi6-control", "relay/control"}) {
 		t.Fatal("start server command was not recognized")

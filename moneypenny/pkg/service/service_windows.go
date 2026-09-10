@@ -3,11 +3,13 @@
 package service
 
 import (
+	"encoding/binary"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"unicode/utf16"
 )
 
 // needsLogFileArg is true on Windows because Task Scheduler has no built-in
@@ -190,10 +192,22 @@ func writeTaskDefinition(cfg *Config, launcherPath string) (string, error) {
 		return "", err
 	}
 	path := filepath.Join(cfg.DataDir, taskDefinitionName)
-	if err := os.WriteFile(path, []byte(definition), 0600); err != nil {
+	if err := os.WriteFile(path, utf16LEWithBOM(definition), 0600); err != nil {
 		return "", fmt.Errorf("write task definition: %w", err)
 	}
 	return path, nil
+}
+
+// schtasks is inconsistent about UTF-8 task-definition files. UTF-16LE with a
+// BOM is the native Task Scheduler XML encoding and avoids code-page switching.
+func utf16LEWithBOM(s string) []byte {
+	runes := utf16.Encode([]rune(s))
+	data := make([]byte, 2+len(runes)*2)
+	binary.LittleEndian.PutUint16(data, 0xFEFF)
+	for i, r := range runes {
+		binary.LittleEndian.PutUint16(data[2+i*2:], r)
+	}
+	return data
 }
 
 func quoteBatchArg(arg string) string {

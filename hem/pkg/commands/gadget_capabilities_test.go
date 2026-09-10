@@ -22,15 +22,15 @@ import (
 
 func TestGadgetCapabilityFlags(t *testing.T) {
 	for _, args := range [][]string{
-		{"--gadget-memory=false", "prompt", "--gadget-agents=true"},
-		{"prompt", "--gadget-memory", "false", "--gadget-agents", "true"},
+		{"--gadget-memory=false", "prompt", "--gadget-agents=true", "--gadget-traits=true"},
+		{"prompt", "--gadget-memory", "false", "--gadget-agents", "true", "--gadget-traits", "true"},
 	} {
 		var flags gadgetCapabilityFlags
 		remaining, err := parseFlagsFromArgs("test", args, flags.register)
 		if err != nil || !reflect.DeepEqual(remaining, []string{"prompt"}) {
 			t.Fatalf("parse %v: remaining=%v err=%v", args, remaining, err)
 		}
-		want := envelope.GadgetCapabilities{Memory: false, Subagents: true, Agents: true, Scheduling: true}
+		want := envelope.GadgetCapabilities{Memory: false, Subagents: true, Agents: true, Traits: true, Scheduling: true}
 		if got := flags.apply(nil); got == nil || *got != want {
 			t.Fatalf("capabilities = %#v, want %#v", got, want)
 		}
@@ -93,7 +93,7 @@ func TestGadgetCapabilityStorePersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = s.Close() }()
-	const initial = `{"memory":false,"subagents":true,"agents":true,"scheduling":false}`
+	const initial = `{"memory":false,"subagents":true,"agents":true,"traits":true,"scheduling":false}`
 	if err := s.CreateSession(&mpstore.Session{SessionID: "session", GadgetCapabilities: initial}); err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestGadgetCapabilityStorePersistence(t *testing.T) {
 	}
 	// Existing callers that omit the new argument must preserve permissions.
 	name := "renamed"
-	if err := s.UpdateSessionFields("session", &name, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
+	if err := s.UpdateSessionFields("session", &name, nil, nil, nil, nil, nil, nil, nil, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	all, err := s.ListSessions()
@@ -111,7 +111,7 @@ func TestGadgetCapabilityStorePersistence(t *testing.T) {
 		t.Fatalf("list/update lost permissions: %#v, %v", all, err)
 	}
 	replacement := `{"memory":false,"subagents":false,"agents":false,"scheduling":false}`
-	if err := s.UpdateSessionFields("session", nil, nil, nil, nil, nil, nil, nil, nil, nil, &replacement); err != nil {
+	if err := s.UpdateSessionFields("session", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, &replacement); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {
@@ -187,7 +187,7 @@ func TestGadgetCapabilitiesCommandForwarding(t *testing.T) {
 	}
 	defer out.Close()
 	writes := make(chan json.RawMessage, 16)
-	original := envelope.GadgetCapabilities{Memory: false, Subagents: true, Agents: true, Scheduling: false}
+	original := envelope.GadgetCapabilities{Memory: false, Subagents: true, Agents: true, Traits: true, Scheduling: false}
 	defer func() { _, _ = in.WriteString("\n") }()
 	go func() {
 		source := map[string]interface{}{
@@ -247,8 +247,8 @@ func TestGadgetCapabilitiesCommandForwarding(t *testing.T) {
 			t.Fatal("permissions were not forwarded")
 		}
 	}
-	check(e.CreateSession([]string{"-m", "mp", "--agent", "copilot", "--async", "--gadget-memory=false", "hello"}),
-		envelope.GadgetCapabilities{Subagents: true, Scheduling: true})
+	check(e.CreateSession([]string{"-m", "mp", "--agent", "copilot", "--async", "--gadget-memory=false", "--gadget-traits=true", "hello"}),
+		envelope.GadgetCapabilities{Subagents: true, Traits: true, Scheduling: true})
 	check(e.CreateSubSession([]string{"source", "--async", "--gadget-scheduling=false", "hello"}),
 		envelope.GadgetCapabilities{Memory: true, Subagents: true})
 	updated := original
@@ -266,6 +266,11 @@ func TestGadgetCapabilitiesCommandForwarding(t *testing.T) {
 	copied := updated
 	copied.Agents = false
 	check(e.CopySession([]string{"source", "--async", "--gadget-agents=false"}), copied)
+	copied = updated
+	copied.Traits = false
+	check(e.CopySession([]string{"source", "--async", "--gadget-traits=false"}), copied)
+	updated.Traits = false
+	check(e.UpdateSession([]string{"source", "--gadget-traits=false"}), updated)
 	if resp := e.UpdateSession([]string{"source", "--gadget-agents=maybe"}); resp.Status != "error" || !strings.Contains(resp.Message, "true or false") {
 		t.Fatalf("invalid boolean was accepted: %#v", resp)
 	}

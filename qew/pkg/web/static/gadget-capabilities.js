@@ -5,6 +5,7 @@
     { name: 'memory', label: 'Session memory', defaultValue: true },
     { name: 'subagents', label: 'Create and communicate with own subagents; reply to parent', defaultValue: true },
     { name: 'agents', label: 'Discover and message any agents (no management access)', defaultValue: false },
+    { name: 'traits', label: 'List, view and edit shared trait bodies (affects future use by all agents)', defaultValue: false },
     { name: 'scheduling', label: 'Schedule prompts for this session', defaultValue: true },
   ];
 

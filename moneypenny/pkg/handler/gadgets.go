@@ -59,6 +59,8 @@ func patchedGadgetCapabilities(raw json.RawMessage, base envelope.GadgetCapabili
 			base.Subagents = *value
 		case "agents":
 			base.Agents = *value
+		case "traits":
+			base.Traits = *value
 		case "scheduling":
 			base.Scheduling = *value
 		default:
@@ -196,6 +198,9 @@ func (h *Handler) prepareGadgets(sessionID string, params *agent.RunParams) erro
 	if caps.Agents {
 		params.SystemPrompt += "All-agent discovery and messaging: gadgets agents list; gadgets agents message ID (body on stdin). This does not grant session editing or deletion.\n"
 	}
+	if caps.Traits {
+		params.SystemPrompt += "Shared trait definitions: gadgets traits list; gadgets traits get ID; gadgets traits edit ID (complete replacement body on stdin; empty stdin clears it). IDs or exact names are accepted. You may edit only traits assigned to your own session; edits affect future use by all agents, not already-injected session prompts. No trait creation, deletion, assignment, renaming, or default changes are permitted.\n"
+	}
 	if caps.Scheduling {
 		params.SystemPrompt += "Your scheduled prompts: gadgets schedule list; gadgets schedule create (--at RFC3339 | --cron 'five fields') --prompt 'task'; gadgets schedule delete ID. These commands act only on your session.\n"
 	}
@@ -303,6 +308,8 @@ func (h *Handler) executeGadget(ctx context.Context, sessionID string, request g
 		allowed = caps.Memory
 	case "agents.list", "agents.message":
 		allowed = caps.Agents
+	case "traits.list", "traits.get", "traits.edit":
+		allowed = caps.Traits
 	case "subagents.list", "subagents.message", "subagents.create":
 		allowed = caps.Subagents
 	case "schedule.list", "schedule.create", "schedule.delete":
@@ -318,7 +325,12 @@ func (h *Handler) executeGadget(ctx context.Context, sessionID string, request g
 	if strings.HasPrefix(request.Method, "memory.") {
 		return h.memoryGadget(sessionID, request)
 	}
-	if strings.HasPrefix(request.Method, "agents.") || strings.HasPrefix(request.Method, "subagents.") {
+	if strings.HasPrefix(request.Method, "traits.") {
+		if _, err := envelope.DecodeTraitGadget(request.Method, request.Data); err != nil {
+			return nil, &gadgetError{"invalid_request", err.Error()}
+		}
+	}
+	if strings.HasPrefix(request.Method, "agents.") || strings.HasPrefix(request.Method, "subagents.") || strings.HasPrefix(request.Method, "traits.") {
 		return h.routeGadget(ctx, sessionID, request.Method, request.Data)
 	}
 	if strings.HasPrefix(request.Method, "schedule.") {

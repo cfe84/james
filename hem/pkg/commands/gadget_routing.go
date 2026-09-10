@@ -43,6 +43,8 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 		return protocol.ErrResponse("gadget source session is not tracked by this Hem")
 	}
 	switch route.Method {
+	case "traits.list", "traits.get", "traits.edit":
+		return e.traitsGadget(source, route.Method, route.Data)
 	case "agents.list", "subagents.list":
 		if err := decodeGadgetData(route.Data, &struct{}{}); err != nil {
 			return protocol.ErrResponse(err.Error())
@@ -100,6 +102,7 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 			fmt.Sprintf("--gadget-memory=%t", capabilities.Memory),
 			fmt.Sprintf("--gadget-subagents=%t", capabilities.Subagents),
 			fmt.Sprintf("--gadget-agents=%t", capabilities.Agents),
+			fmt.Sprintf("--gadget-traits=%t", capabilities.Traits),
 			fmt.Sprintf("--gadget-scheduling=%t", capabilities.Scheduling),
 		}
 		for key, value := range map[string]string{"name": create.Name, "agent": create.Agent, "model": create.Model, "path": create.Path} {

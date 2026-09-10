@@ -65,36 +65,39 @@ func (v environmentValues) Map() (map[string]string, error) {
 	return environment, nil
 }
 
-// Route metadata is persisted for the daemon, not advertised to agent processes.
+// Agent environment excludes operator-only gadget routing metadata.
 func (e *Executor) addGadgetEnvironment(environment map[string]string) map[string]string {
-	result := make(map[string]string, len(environment)+3)
+	result := make(map[string]string, len(environment))
 	for key, value := range environment {
 		if !strings.HasPrefix(key, "JAMES_HEM_") {
 			result[key] = value
 		}
 	}
-	if e.MI6Control != "" {
-		result["JAMES_HEM_ADDRESS"] = e.MI6Control
-		result["JAMES_HEM_FINGERPRINT"] = e.MI6ServerFingerprint
-	} else if e.HemSocket != "" {
-		result["JAMES_HEM_SOCKET"] = e.HemSocket
-	} else if home, err := os.UserHomeDir(); err == nil {
-		result["JAMES_HEM_SOCKET"] = filepath.Join(home, ".config", "james", "hem", "hem.sock")
-	}
 	return result
 }
 
 func (e *Executor) addGadgetEnvironmentValues(values *environmentValues) {
-	filtered := make(environmentValues, 0, len(*values)+3)
+	filtered := make(environmentValues, 0, len(*values))
 	for _, value := range *values {
 		if !strings.HasPrefix(value, "JAMES_HEM_") {
 			filtered = append(filtered, value)
 		}
 	}
-	for key, value := range e.addGadgetEnvironment(nil) {
-		filtered = append(filtered, key+"="+value)
-	}
 	*values = filtered
+}
+
+func (e *Executor) gadgetRoute() map[string]string {
+	if e.MI6Control != "" {
+		return map[string]string{"JAMES_HEM_ADDRESS": e.MI6Control, "JAMES_HEM_FINGERPRINT": e.MI6ServerFingerprint}
+	}
+	if e.HemSocket != "" {
+		return map[string]string{"JAMES_HEM_SOCKET": e.HemSocket}
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	return map[string]string{"JAMES_HEM_SOCKET": filepath.Join(home, ".config", "james", "hem", "hem.sock")}
 }
 
 // resolveMoneypennyForSession resolves the moneypenny to use for a session.

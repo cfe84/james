@@ -1054,6 +1054,23 @@ func (s *Store) GetSessionTraits(sessionID string) ([]string, error) {
 	return ids, rows.Err()
 }
 
+// SessionOwnsTrait reports whether a trait is assigned to the session.
+// Assignment is the ownership boundary for agent-facing trait edits.
+func (s *Store) SessionOwnsTrait(sessionID, traitID string) (bool, error) {
+	var exists int
+	err := s.db.QueryRow(
+		`SELECT EXISTS(
+			SELECT 1 FROM session_traits
+			WHERE session_id = ? AND trait_id = ?
+		)`,
+		sessionID, traitID,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("check trait ownership for session %q: %w", sessionID, err)
+	}
+	return exists != 0, nil
+}
+
 func scanTrait(row *sql.Row) (*Trait, error) {
 	var t Trait
 	var enabledByDefault int

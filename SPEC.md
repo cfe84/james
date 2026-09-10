@@ -250,7 +250,7 @@ Method: **create_directory**: creates a new directory (including missing parents
 
 Method: **get_version**: returns the version of moneypenny
 
-Method: **get_logs**: returns the newest lines from Moneypenny's configured daemon log. Data: `{ "lines": 100 }`; `lines` defaults to 100 and must be between 1 and 10,000. Returns `{ "content": "...", "lines": 100, "truncated": false }`. To keep transport responses bounded, Moneypenny reads at most the final 2 MiB of the file; `truncated` is true when older bytes were omitted. Hem exposes this as `hem logs moneypenny -n NAME [--lines N]`, which works through FIFO and MI6 transports. The configured Windows `--log-file` is used directly; Unix service installations use their default service log path. Windows service installation writes the full Moneypenny command to `moneypenny-service.cmd`, a short `moneypenny-service.vbs` launcher, and a Task Scheduler definition in the configured data directory. On an unexpected nonzero exit, the wrapper snapshots the completed daemon log as `crash-logs/moneypenny-crash-YYYYMMDD-HHMMSS-exit-N.log` before Task Scheduler restarts it; the ten newest snapshots are retained. The launcher propagates Moneypenny's exit code; Task Scheduler restarts unexpected nonzero exits after one minute (up to 999 times) and has no execution-time limit. A clean zero exit, including an auto-update handoff, is not restarted. Its hidden-window mode runs the command without a visible console while retaining MI6 pin and auto-update settings.
+Method: **get_logs**: returns the newest lines from Moneypenny's configured daemon log. Data: `{ "lines": 100 }`; `lines` defaults to 100 and must be between 1 and 10,000. Returns `{ "content": "...", "lines": 100, "truncated": false }`. To keep transport responses bounded, Moneypenny reads at most the final 2 MiB of the file; `truncated` is true when older bytes were omitted. Hem exposes this as `hem logs moneypenny -n NAME [--lines N]`, which works through FIFO and MI6 transports. The configured Windows `--log-file` is used directly; Unix service installations use their default service log path. Windows service installation writes the full Moneypenny command to `moneypenny-service.cmd`, a short `moneypenny-service.vbs` launcher, and a Task Scheduler definition in the configured data directory. On an unexpected nonzero exit, the wrapper snapshots the completed daemon log as `crash-logs/moneypenny-crash-YYYYMMDD-HHMMSS-exit-N.log` before Task Scheduler restarts it; the ten newest snapshots are retained. The launcher propagates Moneypenny's exit code; Task Scheduler restarts unexpected nonzero exits after one minute (up to 999 times) and has no execution-time limit. The definition is UTF-16LE with a BOM—the native Task Scheduler XML encoding—so `schtasks` does not fail on installations that reject UTF-8 task files. A clean zero exit, including an auto-update handoff, is not restarted. Its hidden-window mode runs the command without a visible console while retaining MI6 pin and auto-update settings.
 
 Moneypenny session IDs must be canonical UUIDs. This validation applies to create and import requests before storage and to persistent session-directory operations. Session directories are additionally resolved relative to the configured sessions root and rejected if they could escape it.
 
@@ -499,8 +499,8 @@ moneypenny install --non-interactive --user \
 - By default: waits for the agent to complete, prints the session_id and the response.
 - With `--async`: prints the session_id and returns immediately without waiting.
 - Flags: `--agent NAME` (default "claude"), `--name NAME` (session name, default empty), `--nick NICK` (optional short nickname/alias, see [Nicknames](#nicknames)), `--system-prompt TEXT`, `--traits ID1,ID2` (apply reusable traits, see Traits; when omitted, default-enabled traits are applied), `--yolo` (skip permissions), `--path PATH` (working directory for the agent), `--gadgets` (include James tooling instructions in system prompt), `--model VALUE` (agent model), `--effort VALUE` (reasoning effort), `--context VALUE` (copilot context-window tier, see [Context tier](#context-tier)).
-- `--gadgets`: Appends a minimal daemon-managed notice; Moneypenny supplies capability-filtered `gadgets` instructions at runtime, never direct Hem commands. Hem persists trusted daemon routing metadata on session creation, copying, subagent creation, and daemon-level updates: `JAMES_HEM_ADDRESS` plus `JAMES_HEM_FINGERPRINT` for MI6, or `JAMES_HEM_SOCKET` locally. Agent requests cannot override the route or their source identity.
-- `--gadget-memory=true|false`, `--gadget-subagents=true|false`, `--gadget-agents=true|false`, `--gadget-scheduling=true|false`: explicit operator capability settings, also supported by copy, subsession creation, and update. `--gadgets` is a legacy instruction-notice flag, **not** a capability toggle; disabling it does not disable runtime tools.
+- `--gadgets`: Appends a minimal daemon-managed notice; Moneypenny supplies capability-filtered `gadgets` instructions at runtime, never direct Hem commands. Hem injects trusted daemon routing metadata on session creation, copying, subagent creation, and daemon-level updates, storing it separately from the editable agent environment. Agent requests cannot override the route or their source identity.
+- `--gadget-memory=true|false`, `--gadget-subagents=true|false`, `--gadget-agents=true|false`, `--gadget-traits=true|false`, `--gadget-scheduling=true|false`: explicit operator capability settings, also supported by copy, subsession creation, and update. Traits defaults to false because definitions are shared. `--gadgets` is a legacy instruction-notice flag, **not** a capability toggle; disabling it does not disable runtime tools.
 
 ### Continue
 
@@ -548,14 +548,14 @@ moneypenny install --non-interactive --user \
 when it is already enabled. It replaces legacy direct-Hem instructions with a
 daemon-managed notice, preserving base instructions, traits, nickname and memory.
 Daemon-level updates also refresh trusted Hem routing metadata while preserving
-unrelated environment entries. Opening, continuing, queuing work, compacting, or
+an environment containing only user-provided variables. Opening, continuing, queuing work, compacting, or
 distilling an existing session through Hem also refreshes its route automatically.
 No Hem address, key or command prefix is advertised
 in the prompt. Sessions without a configured route receive an explicit error for
 agent-routing operations rather than falling back to an agent-controlled endpoint.
 
 Use `--gadget-memory=false`, `--gadget-subagents=false`,
-`--gadget-agents=false`, or `--gadget-scheduling=false` to revoke individual
+`--gadget-agents=false`, `--gadget-traits=false`, or `--gadget-scheduling=false` to revoke individual
 agent capabilities; `true` grants them. Omitted capability fields remain unchanged.
 The daemon checks current permissions on every gadget request, including during
 an already-running agent turn. Notifications cannot be disabled by these flags.
@@ -603,7 +603,7 @@ an already-running agent turn. Notifications cannot be disabled by these flags.
 `hem copy session SOURCE_ID [PROMPT...] [flags]`
 
 - Creates a new session bootstrapped from a summary of an existing one. Source session is preserved (no state migration, no completion).
-- All flags from `create session` apply and override the source's values: `-m/--moneypenny`, `--agent`, `--model`, `--effort`, `--context`, `--name`, `--system-prompt`, `--traits`, `--yolo`, `--gadgets`, `--path`, `--compaction`, `--project`, `--async`. Any flag omitted is copied from the source (traits are inherited from the source unless `--traits` is given; the compaction mode is inherited from the source unless `--compaction` is given).
+- All flags from `create session` apply and override the source's values: `-m/--moneypenny`, `--agent`, `--model`, `--effort`, `--context`, `--name`, `--system-prompt`, `--traits`, `--env`, `--yolo`, `--gadgets`, `--path`, `--compaction`, `--project`, `--async`. Any flag omitted is copied from the source (traits are inherited from the source unless `--traits` is given; the compaction mode and user-provided environment are inherited unless explicitly replaced).
 - The target moneypenny can differ from the source's (cross-host copy). The source's conversation history stays on the source moneypenny — only the summary is transferred.
 - **The summary is generated with the _target_ agent's parameters, not the source's.** Summarization is pure text-processing of the stored transcript, so it runs on whichever agent the copy targets (resolved `--agent`/`--model`/`--effort`/`--context`/`--yolo`). This means a copy targeting a working agent no longer depends on the source agent being available — e.g. duplicating a Claude session to Copilot works even when Claude is broken/unauthenticated. (The one-shot still executes on the source moneypenny, which owns the transcript, so the target agent must be installed there.)
 - **Cross-agent copies drop the source model/effort/context** unless explicitly overridden: when `--agent` changes the agent from the source's, the source's `--model`/`--effort`/`--context` are NOT inherited (they belong to a different model namespace and would be invalid for the new agent); the new agent picks its own defaults instead. Passing any of those flags explicitly still overrides. When the agent is unchanged, all three are inherited as before.
@@ -822,7 +822,7 @@ Provider-scoped commands (`list channel-providers`, `search channel`) resolve th
 
 `gadgets` is the agent-facing, dependency-free Go client for Moneypenny's
 session-scoped tools. Agents use **only the new gadgets commands** for memory,
-agent communication, subagent creation, scheduling, and notifications—not direct
+agent communication, subagent creation, shared traits, scheduling, and notifications—not direct
 Hem commands, legacy memory files, or direct database access. Hem remains the
 operator's administrative CLI/server, with TUI and Qew as operator interfaces.
 
@@ -833,6 +833,7 @@ operator's administrative CLI/server, with TUI and Qew as operator interfaces.
 | Memory | On, revocable | Get/list/search/set/batch/delete memory; inspect current revision |
 | Subagents | On, revocable | Create own subagents; list/message direct children and reply to parent |
 | Agents | Off, explicit combined grant | Discover and message all Hem-tracked agents |
+| Traits | Off, explicit grant | List/view existing shared traits and replace their prompt bodies |
 | Scheduling | On, revocable | List/create/delete schedules belonging to this session |
 | Notifications | Always available | Send actionable operator notifications |
 
@@ -844,13 +845,27 @@ creation. Operator changes to a parent are not a promise of recursively changing
 already-created children's settings.
 
 Capability defaults apply when an older session has no stored capability object.
-Hem's create/copy/edit and subsession commands expose the four explicit
-`--gadget-memory`, `--gadget-subagents`, `--gadget-agents`, and
+Hem's create/copy/edit and subsession commands expose the five explicit
+`--gadget-memory`, `--gadget-subagents`, `--gadget-agents`, `--gadget-traits`, and
 `--gadget-scheduling` booleans. The existing TUI wizard/edit forms and Qew
 create/copy/edit dialogs expose matching permission controls and an
 always-available-notifications hint. Copy inherits permissions unless overridden;
 updates preserve unspecified values. `--gadgets` controls only the legacy stored
 instruction notice: neither it nor `schedule-system-prompt` authorizes tools.
+
+The Traits grant is opt-in (`false` for new and legacy sessions). It permits
+`gadgets traits list`, `gadgets traits get ID`, and `gadgets traits edit ID`.
+IDs or exact names use the existing trait resolver. Edit reads the complete
+replacement prompt body from stdin, preserving whitespace; empty stdin clears
+the body. It does not rename, create, delete, change default-enabled settings,
+assign traits, or change unrelated fields. An agent may edit only a trait
+assigned to its own session; list and get can still view all definitions.
+Definitions are shared across all agents on the owning Hem: edits affect
+**future use**, not already-composed session prompts. List returns Hem's trait
+table with previews; get/edit return
+the full definition. Missing IDs, missing/null body fields, unknown fields,
+and unsupported operations fail without changes. The existing 1 MiB request
+and 4 MiB response limits apply; trait results have no paging.
 
 ### Transport and permission boundary
 
@@ -863,11 +878,13 @@ in an active turn. There are no agent identity, endpoint, credential, route, or
 permission override flags.
 
 Memory, schedules, and notifications are handled locally without Hem/MI6.
-Agent discovery, messaging, and subagent creation go daemon→existing Hem
+Agent discovery, messaging, subagent creation, and shared trait access go daemon→existing Hem
 infrastructure using operator-supplied routing metadata, over its Unix socket or
 MI6 control channel. Hem supplies current hierarchy checks and normal
 create/continue/queue behavior; parent replies are callbacks. Missing routing or
 transport failures are explicit errors, not a fallback to direct agent Hem access.
+Trait requests are strictly allowlisted and checked against a fresh capability
+lookup both at the daemon gateway and at Hem, never request-supplied permissions.
 
 Non-yolo Claude and Copilot receive narrow execution grants for `gadgets`, not
 memory-directory or general file-write grants. Capability-based memory is not
@@ -887,6 +904,9 @@ gadgets memory batch
 gadgets memory delete path [--recursive]
 gadgets agents list
 gadgets agents message id [--body text]
+gadgets traits list
+gadgets traits get ID
+gadgets traits edit ID
 gadgets subagents list
 gadgets subagents create [--name name] [--agent agent] [--model model] [--path path]
 gadgets subagents message id [--body text]

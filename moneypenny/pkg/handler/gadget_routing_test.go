@@ -22,7 +22,7 @@ func gadgetRoutingHandler(t *testing.T, environment map[string]string) *Handler 
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	raw, _ := json.Marshal(environment)
-	if err := s.CreateSession(&store.Session{SessionID: "bound-session", Environment: string(raw)}); err != nil {
+	if err := s.CreateSession(&store.Session{SessionID: "bound-session", GadgetRoute: string(raw)}); err != nil {
 		t.Fatal(err)
 	}
 	return &Handler{store: s, dataDir: t.TempDir()}

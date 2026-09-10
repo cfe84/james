@@ -37,8 +37,8 @@ func TestGadgetEnvironment(t *testing.T) {
 		"JAMES_HEM_FINGERPRINT": "SHA256:untrusted",
 		"JAMES_HEM_SOCKET":      "untrusted.sock",
 	})
-	if got["JAMES_HEM_FINGERPRINT"] != "SHA256:trusted" || got["JAMES_HEM_ADDRESS"] != "relay/control" || got["JAMES_HEM_SOCKET"] != "" {
-		t.Fatalf("unexpected remote route: %v", got)
+	if got["JAMES_HEM_FINGERPRINT"] != "" || got["JAMES_HEM_ADDRESS"] != "" || got["JAMES_HEM_SOCKET"] != "" {
+		t.Fatalf("operator route leaked into agent environment: %v", got)
 	}
 	if got["FEATURE_FLAG"] != "true" {
 		t.Fatal("existing environment was not preserved")
@@ -49,14 +49,16 @@ func TestGadgetEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if parsed["JAMES_HEM_FINGERPRINT"] != "SHA256:trusted" || parsed["JAMES_HEM_SOCKET"] != "" {
-		t.Fatalf("unexpected create route: %v", parsed)
+	if parsed["JAMES_HEM_FINGERPRINT"] != "" || parsed["JAMES_HEM_SOCKET"] != "" {
+		t.Fatalf("operator route leaked into create environment: %v", parsed)
 	}
-	e.MI6Control = ""
-	e.HemSocket = "/configured/hem.sock"
-	got = e.addGadgetEnvironment(got)
-	if got["JAMES_HEM_SOCKET"] != e.HemSocket || got["JAMES_HEM_ADDRESS"] != "" || got["JAMES_HEM_FINGERPRINT"] != "" {
-		t.Fatalf("unexpected local route: %v", got)
+	route := e.gadgetRoute()
+	if route["JAMES_HEM_ADDRESS"] != "relay/control" || route["JAMES_HEM_FINGERPRINT"] != "SHA256:trusted" {
+		t.Fatalf("missing internal remote route: %v", route)
+	}
+	e.MI6Control, e.HemSocket = "", "/configured/hem.sock"
+	if route = e.gadgetRoute(); route["JAMES_HEM_SOCKET"] != e.HemSocket {
+		t.Fatalf("missing internal local route: %v", route)
 	}
 }
 

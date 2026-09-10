@@ -31,6 +31,9 @@ Usage:
   gadgets memory revisions [path]
   gadgets agents list
   gadgets agents message id [--body text]     (otherwise reads stdin)
+  gadgets traits list
+  gadgets traits get ID                      (ID or exact name)
+  gadgets traits edit ID                     (complete body on stdin; empty clears; own traits only)
   gadgets subagents list
   gadgets subagents create [--name name] [--agent agent] [--model model] [--path path]
                                              (prompt on stdin)
@@ -44,6 +47,10 @@ Usage:
 
 Flags may follow positional arguments; -- ends flag parsing.
 Omitted memory paths refer to the root. Batch updates are atomic on the daemon.
+Traits require opt-in permission (default: false). Edits replace shared trait
+bodies for future use by all agents, not already-injected session prompts. Agents
+may edit only traits assigned to their own session.
+No trait create/delete, assignment, rename, or default-setting commands exist.
 JAMES_GADGETS_URL and JAMES_GADGETS_TOKEN are supplied by the daemon.
 Success envelopes are written as JSON to stdout, error envelopes to stderr.
 `
@@ -82,7 +89,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(s
 		return 0
 	}
 	if (len(args) == 2 || len(args) == 3) && (args[len(args)-1] == "--help" || args[len(args)-1] == "-h") {
-		groupHelp := len(args) == 2 && (args[0] == "memory" || args[0] == "agents" || args[0] == "subagents" || args[0] == "schedule" || args[0] == "notify")
+		groupHelp := len(args) == 2 && (args[0] == "memory" || args[0] == "agents" || args[0] == "traits" || args[0] == "subagents" || args[0] == "schedule" || args[0] == "notify")
 		_, rest, err := command(args)
 		if groupHelp || (len(args) == 3 && err == nil && len(rest) == 1) {
 			_, _ = io.WriteString(stdout, Help)

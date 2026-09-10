@@ -119,7 +119,7 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 	defer out.Close()
 	defer func() { _, _ = in.WriteString("\n") }()
 	writes := make(chan transport.Command, 10)
-	capabilities := envelope.GadgetCapabilities{Subagents: true, Memory: false, Agents: false, Scheduling: false}
+	capabilities := envelope.GadgetCapabilities{Subagents: true, Memory: false, Agents: false, Traits: true, Scheduling: false}
 	go func() {
 		scanner := bufio.NewScanner(in)
 		for scanner.Scan() {
@@ -196,7 +196,7 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 	if err != nil || child == nil || child.ParentSessionID != "source" {
 		t.Fatalf("child not bound to authenticated source: %#v %v", child, err)
 	}
-	if data["environment"].(map[string]any)["JAMES_HEM_SOCKET"] == "" {
+	if data["gadget_route"].(map[string]any)["JAMES_HEM_SOCKET"] == "" {
 		t.Fatal("child route not persisted")
 	}
 	for _, target := range []string{"target", "parent"} {
@@ -225,7 +225,7 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 			return e.CreateSession([]string{"-m=mp", "--agent=copilot", "--async", "--env=JAMES_HEM_ADDRESS=untrusted/route", "hello"})
 		},
 		"copy": func() *protocol.Response {
-			return e.CopySession([]string{"source", "--async"})
+			return e.CopySession([]string{"source", "--async", "--env", "KEEP=copy-value"})
 		},
 		"update": func() *protocol.Response {
 			return e.UpdateSession([]string{"source", "--name=renamed"})
@@ -238,12 +238,20 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 			}
 			command := next()
 			data := command.Data.(map[string]any)
-			environment := data["environment"].(map[string]any)
-			if environment["JAMES_HEM_SOCKET"] == nil || environment["JAMES_HEM_SOCKET"] == "untrusted.sock" || environment["JAMES_HEM_ADDRESS"] != nil {
-				t.Fatalf("untrusted or missing route: %#v", environment)
+			route := data["gadget_route"].(map[string]any)
+			socket, _ := route["JAMES_HEM_SOCKET"].(string)
+			if socket == "" || socket == "untrusted.sock" || route["JAMES_HEM_ADDRESS"] != nil {
+				t.Fatalf("untrusted or missing internal route: %#v", route)
+			}
+			environment, _ := data["environment"].(map[string]any)
+			if environment["JAMES_HEM_ADDRESS"] != nil || environment["JAMES_HEM_SOCKET"] != nil {
+				t.Fatalf("route leaked into agent environment: %#v", environment)
 			}
 			if name == "update" && environment["KEEP"] != "value" {
 				t.Fatalf("update lost unrelated environment: %#v", environment)
+			}
+			if name == "copy" && environment["KEEP"] != "copy-value" {
+				t.Fatalf("copy did not accept the replacement environment: %#v", environment)
 			}
 		})
 	}

@@ -100,7 +100,7 @@ mi6/
 9. **Admin key management**: A separate `admin_keys` file (same OpenSSH format, same directory) grants admin access. Admin clients join the reserved `__admin__` session, which the server intercepts before the normal session join flow. Admin commands (list/add/delete authorized keys) are JSON over MsgData. File writes use atomic temp-file-rename to prevent corruption. After modifications, authorized_keys are reloaded in-process (same as SIGHUP). The mi6-client `--admin-command` flag provides single-shot admin request/response mode. Hem wraps this as `list/add/delete mi6-key` commands.
 
 10. **MI6 server fingerprint pinning**: Every MI6 client handshake requires a configured SHA-256 fingerprint for the relay server's SSH signing key. The client verifies this pin after verifying the server's signed ephemeral-key transcript and before authenticating itself, eliminating unattended trust-on-first-use. `known_hosts` remains a second local consistency check and is still populated after a pinned success. `mi6-client --display-server-fingerprint --server HOST:PORT` reads an existing trusted fingerprint without opening a connection, enabling safe migration to explicit pins. Moneypenny, Hem's MI6 control listener, direct `hem --hem` clients and MI6 key administration, registered MI6 moneypennies, and Qew pass pins to every spawned client. `MI6_SERVER_FINGERPRINT` configures the pin for direct Hem clients and Docker entrypoints, and serves as a migration fallback for legacy MI6 Moneypenny registrations that have no saved pin; a saved per-Moneypenny value takes precedence.
-11. **Windows service task wrapper and watchdog**: Windows Task Scheduler limits an action command to 261 characters. Moneypenny service installation generates a `moneypenny-service.cmd` wrapper in the configured data directory containing the fully quoted Moneypenny command, a `moneypenny-service.vbs` launcher, and a Task Scheduler XML definition. The wrapper records the command's exit status; after a nonzero exit it copies the now-closed daemon log to `crash-logs/moneypenny-crash-YYYYMMDD-HHMMSS-exit-N.log` and retains the ten most recent snapshots. It then returns the original exit status. The task invokes `wscript.exe //B` on that launcher: WScript starts `cmd.exe` with window style `0` (hidden), waits for it, and returns its exit code so Task Scheduler can distinguish an unexpected failure from a clean shutdown. Task Scheduler restarts a nonzero exit after one minute up to 999 times and disables its execution-time limit; zero exits are not restarted, so Moneypenny's auto-update helper can replace and launch the binary without a competing stale process. User services use a logon trigger; system services use a boot trigger and the LocalSystem account. This preserves long MI6 addresses, fingerprint pins, binary paths, and log paths without truncation.
+11. **Windows service task wrapper and watchdog**: Windows Task Scheduler limits an action command to 261 characters. Moneypenny service installation generates a `moneypenny-service.cmd` wrapper in the configured data directory containing the fully quoted Moneypenny command, a `moneypenny-service.vbs` launcher, and a UTF-16LE-with-BOM Task Scheduler XML definition. The native encoding avoids `schtasks` code-page switching failures on Windows installations that reject UTF-8 task files. The wrapper records the command's exit status; after a nonzero exit it copies the now-closed daemon log to `crash-logs/moneypenny-crash-YYYYMMDD-HHMMSS-exit-N.log` and retains the ten most recent snapshots. It then returns the original exit status. The task invokes `wscript.exe //B` on that launcher: WScript starts `cmd.exe` with window style `0` (hidden), waits for it, and returns its exit code so Task Scheduler can distinguish an unexpected failure from a clean shutdown. Task Scheduler restarts a nonzero exit after one minute up to 999 times and disables its execution-time limit; zero exits are not restarted, so Moneypenny's auto-update helper can replace and launch the binary without a competing stale process. User services use a logon trigger; system services use a boot trigger and the LocalSystem account. This preserves long MI6 addresses, fingerprint pins, binary paths, and log paths without truncation.
 12. **Session directory containment and safe Qew links**: Moneypenny accepts only canonical UUID session IDs for create/import operations, and validates the resolved relative path remains inside its `<data-dir>/sessions` root before creating or removing a persistent session directory. This prevents request-controlled IDs from reaching filesystem operations. Qew validates Markdown link destinations with the browser URL parser, permits only `http:` and `https:`, and attribute-escapes accepted URLs before rendering them.
 13. **Mutable session hierarchy**: Hem stores the parent relationship in `sessions.parent_session_id`, so adopting (`adopt session --parent`) or promoting (`promote session`) a session is a local relationship update only. Adoption requires the same Moneypenny and walks parent links to reject cycles; promotion clears only the selected session's parent, retaining its children. No Moneypenny state, history, memory, schedules, or active agent process changes.
 14. **Coordinated gadget client updates (v1.78.0)**: Moneypenny's updater stages matching `moneypenny`, `mi6-client`, `hem`, and `gadgets` binaries from the release archive. The idle update transition installs `gadgets` even when absent from an older installation. Agents invoke the new scoped client, not Hem; daemon→Hem MI6 routing still requires the matching relay client. Top-level build/test/install and release packaging include the standalone, CGO-free `gadgets` binary.
@@ -160,9 +160,9 @@ deadline, and never retries writes. Client-side restrictions are defense in
 depth, not the source of session authorization.
 
 `sessions.gadget_capabilities` in the **operational** database persists
-`memory`, `subagents`, `agents`, and `scheduling`; typed envelope fields carry
+`memory`, `subagents`, `agents`, `traits`, and `scheduling`; typed envelope fields carry
 these through create/update/detail. Missing legacy values use defaults:
-Memory, Subagents, and Scheduling true; Agents false. Every gadget request reads
+Memory, Subagents, and Scheduling true; Agents and Traits false. Every gadget request reads
 current capabilities, so revocation does not wait for a new agent invocation.
 `notify` is always allowed for a valid session. Agents is a single list/message
 grant across Hem-tracked agents, **never** session edit/delete authority.
@@ -173,10 +173,31 @@ recursive revocation of already-created children.
 
 Hem's shared capability flag helper and the existing TUI/Qew form components
 expose explicit `--gadget-memory`, `--gadget-subagents`, `--gadget-agents`,
-and `--gadget-scheduling` true/false controls. Copy inherits the source values
+`--gadget-traits`, and `--gadget-scheduling` true/false controls. Copy inherits the source values
 unless overridden; updates apply only specified settings. Notifications have an
 always-available hint rather than a toggle. The legacy `--gadgets` setting
 persists only an instruction notice; it does not turn tools on or off.
+
+Shared traits use only `traits.list`, `traits.get`, and `traits.edit` on the
+existing daemon-to-Hem `gadget route`. The daemon binds source identity from
+credentials, validates the narrowly typed data, and checks the current Traits
+grant before forwarding. Hem's `gadget_traits.go` repeats strict validation using
+the shared `envelope.DecodeTraitGadget` decoder and requests fresh `get_session`
+capabilities from the source's registered Moneypenny; missing/disabled grants and
+lookup failures fail closed. No cached or request-asserted grant authorizes an
+edit. Hem treats a trait assigned through `session_traits` as owned by that
+session and permits agent-facing edits only for those traits; list/get remain
+read-only access to all definitions. This extends the existing trusted
+operator-transport boundary, not a general trait-management route.
+
+Trait listing/showing reuse existing commands and name/ID resolution; body-only
+edits call the existing `Store.UpdateTrait` with name/default pointers unset.
+Bodies are not interpreted as CLI flags. The body is required, empty strings
+explicitly clear it, and additional fields are rejected. Names, creation times,
+default-enabled flags, and session mappings are preserved. Compose-at-write
+semantics remain unchanged: editing a shared definition affects future trait
+composition, not prompts already injected into running or stored sessions.
+Runtime prompts and CLI/TUI/Qew controls identify this shared impact.
 
 `prepareGadgets` replaces obsolete stored direct-Hem instructions with a
 runtime, permission-filtered `<gadgets>` block and always adds notification
@@ -402,17 +423,14 @@ moneypenny/
 Hem stores only a minimal daemon-managed gadgets notice, retaining the legacy
 marker for prompt recomposition. `update session --gadgets true` replaces stale
 direct-Hem instructions while preserving surrounding base/traits/nickname and
-memory blocks. Trusted routing is persisted separately in session environment:
-`JAMES_HEM_ADDRESS` and `JAMES_HEM_FINGERPRINT` for MI6, or `JAMES_HEM_SOCKET`
-for a local server. Create/copy/subsession and daemon-level updates overwrite
-route keys from the executor configuration rather than caller environment values.
-Hem also includes operator-only `gadget_route` metadata when getting, continuing,
-queuing, compacting or distilling a session. The daemon merges these route keys
-into its persisted environment, retaining unrelated values and removing stale
-routes, so existing sessions acquire routing when next opened or used.
-Moneypenny reads these operator-managed keys for routing and omits both
-`JAMES_HEM_*` and stored `JAMES_GADGETS_*` overrides from the agent environment,
-supplying only its own local gadget endpoint/credential.
+memory blocks. Trusted routing is persisted in the hidden `sessions.gadget_route`
+field—not the editable agent environment—as `JAMES_HEM_ADDRESS` plus
+`JAMES_HEM_FINGERPRINT` for MI6, or `JAMES_HEM_SOCKET` for a local server.
+Create/copy/subsession and daemon-level updates overwrite the route from executor
+configuration rather than caller environment values. Hem includes operator-only
+`gadget_route` metadata with lifecycle commands so existing sessions acquire the
+internal route when next opened or used. Moneypenny reads this hidden metadata
+for routing and supplies the agent only its local gadget endpoint/credential.
 
 Moneypenny's scoped endpoint routes agent operations using an internal `gadget
 route` Hem request with one JSON argument `{source_session_id, method, data}`.

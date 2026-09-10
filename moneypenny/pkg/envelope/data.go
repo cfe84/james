@@ -19,6 +19,7 @@ type GadgetCapabilities struct {
 	Memory     bool `json:"memory"`
 	Subagents  bool `json:"subagents"`
 	Agents     bool `json:"agents"`
+	Traits     bool `json:"traits"`
 	Scheduling bool `json:"scheduling"`
 }
 
@@ -39,6 +40,7 @@ type CreateSessionData struct {
 	Name               string              `json:"name"`
 	Path               string              `json:"path"`
 	Environment        map[string]string   `json:"environment,omitempty"`
+	GadgetRoute        map[string]string   `json:"gadget_route,omitempty"` // operator-only daemon routing metadata
 	GadgetCapabilities *GadgetCapabilities `json:"gadget_capabilities,omitempty"`
 	// SourceSessionID and SourceName attribute the initial prompt when this
 	// session was created by another James agent (such as a subagent).
@@ -84,6 +86,7 @@ type UpdateSessionData struct {
 	Path               *string             `json:"path,omitempty"`
 	CompactionMode     *string             `json:"compaction_mode,omitempty"`
 	Environment        *map[string]string  `json:"environment,omitempty"`
+	GadgetRoute        *map[string]string  `json:"gadget_route,omitempty"` // operator-only daemon routing metadata
 	GadgetCapabilities *GadgetCapabilities `json:"gadget_capabilities,omitempty"`
 }
 

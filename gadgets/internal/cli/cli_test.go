@@ -33,6 +33,11 @@ func TestParseCommands(t *testing.T) {
 		{"recursive", []string{"memory", "delete", "project", "--recursive"}, "", "memory.delete", `{"path":"project","recursive":true}`},
 		{"nonrecursive", []string{"memory", "delete", "--recursive=false", "project"}, "", "memory.delete", `{"path":"project","recursive":false}`},
 		{"agents list", []string{"agents", "list"}, "", "agents.list", `{}`},
+		{"traits list", []string{"traits", "list"}, "", "traits.list", `{}`},
+		{"traits get", []string{"traits", "get", "clean code"}, "", "traits.get", `{"id":"clean code"}`},
+		{"traits edit", []string{"traits", "edit", "id"}, " \n--name=forged\n🕴\n", "traits.edit", `{"id":"id","body":" \n--name=forged\n🕴\n"}`},
+		{"traits clear", []string{"traits", "edit", "id"}, "", "traits.edit", `{"id":"id","body":""}`},
+		{"traits literal ID", []string{"traits", "get", "--", "--default"}, "", "traits.get", `{"id":"--default"}`},
 		{"agents message", []string{"agents", "message", "id", "--body", "hello"}, "", "agents.message", `{"id":"id","body":"hello"}`},
 		{"subagents list", []string{"subagents", "list"}, "", "subagents.list", `{}`},
 		{"subagents message", []string{"subagents", "message", "id"}, "hello\n", "subagents.message", `{"id":"id","body":"hello\n"}`},
@@ -79,6 +84,11 @@ func TestParseErrors(t *testing.T) {
 		{"schedule", "create", "--cron=", "--at", "a", "--prompt", "p"},
 		{"schedule", "create", "--at", "a"},
 		{"schedule", "delete", "--id", "id"},
+		{"traits", "get"}, {"traits", "edit"}, {"traits", "list", "extra"},
+		{"traits", "edit", "id", "extra"}, {"traits", "get", ""}, {"traits", "edit", " "},
+		{"traits", "create"}, {"traits", "delete", "id"}, {"traits", "assign", "id"},
+		{"traits", "edit", "id", "--body=x"}, {"traits", "edit", "id", "--name=x"},
+		{"traits", "edit", "id", "--default=true"}, {"traits", "get", "id", "--session-id=other"},
 	} {
 		if _, err := Parse(args, strings.NewReader("")); err == nil {
 			t.Errorf("Parse(%q) unexpectedly succeeded", args)
@@ -210,7 +220,7 @@ func TestBoundsAndConfiguration(t *testing.T) {
 }
 
 func TestHelpVersion(t *testing.T) {
-	for _, args := range [][]string{{}, {"help"}, {"--help"}, {"memory", "--help"}, {"memory", "set", "--help"}, {"version"}, {"--version"}} {
+	for _, args := range [][]string{{}, {"help"}, {"--help"}, {"memory", "--help"}, {"memory", "set", "--help"}, {"traits", "--help"}, {"traits", "list", "--help"}, {"traits", "get", "--help"}, {"traits", "edit", "--help"}, {"version"}, {"--version"}} {
 		var stdout, stderr bytes.Buffer
 		if code := Run(args, strings.NewReader(""), &stdout, &stderr, func(string) string { return "" }, "1.78.0"); code != 0 || stdout.Len() == 0 || stderr.Len() != 0 {
 			t.Fatalf("%q: code=%d stdout=%s stderr=%s", args, code, &stdout, &stderr)
@@ -230,6 +240,12 @@ func TestStdinAndOutputFailures(t *testing.T) {
 	}
 	if _, err := Parse([]string{"memory", "set", "--body", "explicit"}, failingIO{}); err != nil {
 		t.Fatalf("--body must not read stdin: %v", err)
+	}
+	if _, err := Parse([]string{"traits", "edit", "id"}, failingIO{}); err == nil {
+		t.Fatal("trait edit discarded stdin error")
+	}
+	if _, err := Parse([]string{"traits", "get", "id"}, failingIO{}); err != nil {
+		t.Fatalf("trait get must not read stdin: %v", err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `{"success":true}`)

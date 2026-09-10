@@ -11,7 +11,7 @@ import (
 type gadgetCapabilityFlags map[string]bool
 
 func (g *gadgetCapabilityFlags) register(fs *flag.FlagSet) {
-	for _, name := range []string{"memory", "subagents", "agents", "scheduling"} {
+	for _, name := range []string{"memory", "subagents", "agents", "traits", "scheduling"} {
 		name := name
 		fs.Func("gadget-"+name, "allow gadget "+name+" (true/false)", func(value string) error {
 			if value != "true" && value != "false" {
@@ -42,6 +42,8 @@ func (g gadgetCapabilityFlags) apply(base *envelope.GadgetCapabilities) *envelop
 			result.Subagents = value
 		case "agents":
 			result.Agents = value
+		case "traits":
+			result.Traits = value
 		case "scheduling":
 			result.Scheduling = value
 		}

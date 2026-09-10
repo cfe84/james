@@ -255,16 +255,16 @@ func jsonNumber(value int64) string {
 
 func TestCapabilityProtocolPatchesPreserveOtherPermissions(t *testing.T) {
 	h, _ := gadgetTestHandler(t)
-	setGadgetCaps(t, h, envelope.GadgetCapabilities{Scheduling: true})
+	setGadgetCaps(t, h, envelope.GadgetCapabilities{Scheduling: true, Traits: true})
 	raw := json.RawMessage(`{"session_id":"` + gadgetSession + `","gadget_capabilities":{"agents":true}}`)
 	if resp := h.Handle(context.Background(), &envelope.Command{Method: "update_session", Data: raw}); resp.Status != envelope.StatusSuccess {
 		t.Fatalf("partial permission update failed: %+v", resp)
 	}
 	caps, err := h.gadgetCapabilities(gadgetSession)
-	if err != nil || caps != (envelope.GadgetCapabilities{Agents: true, Scheduling: true}) {
+	if err != nil || caps != (envelope.GadgetCapabilities{Agents: true, Traits: true, Scheduling: true}) {
 		t.Fatalf("partial update changed omitted fields: %+v, %v", caps, err)
 	}
-	for _, object := range []string{`{"typo":true}`, `{"memory":null}`, `{"memory":"false"}`} {
+	for _, object := range []string{`{"typo":true}`, `{"memory":null}`, `{"memory":"false"}`, `{"traits":null}`, `{"traits":"true"}`} {
 		raw := json.RawMessage(`{"session_id":"` + gadgetSession + `","gadget_capabilities":` + object + `}`)
 		if resp := h.Handle(context.Background(), &envelope.Command{Method: "update_session", Data: raw}); resp.Status != envelope.StatusError {
 			t.Fatalf("invalid permission object accepted: %s", object)
@@ -279,6 +279,9 @@ func TestCapabilityProtocolPatchesPreserveOtherPermissions(t *testing.T) {
 	if !defaults.Memory || !defaults.Subagents || !defaults.Agents || !defaults.Scheduling {
 		t.Fatal("create permission patch lost defaults")
 	}
+	if defaults.Traits {
+		t.Fatal("create enabled traits without an explicit grant")
+	}
 }
 
 func TestExistingSessionRouteRefreshFromOperatorOnly(t *testing.T) {
@@ -290,8 +293,10 @@ func TestExistingSessionRouteRefreshFromOperatorOnly(t *testing.T) {
 	}
 	session, _ := h.store.GetSession(gadgetSession)
 	env, _ := sessionEnvironment(session)
-	if env["KEEP"] != "configured" || env["JAMES_HEM_ADDRESS"] != "relay/control" || env["JAMES_HEM_SOCKET"] != "" {
-		t.Fatal("route refresh lost unrelated environment or kept stale socket")
+	storedRoute, _ := gadgetRoute(session.GadgetRoute)
+	if env["KEEP"] != "configured" || env["JAMES_HEM_ADDRESS"] != "" || env["JAMES_HEM_SOCKET"] != "" ||
+		storedRoute["JAMES_HEM_ADDRESS"] != "relay/control" || storedRoute["JAMES_HEM_SOCKET"] != "" {
+		t.Fatal("route refresh did not separate internal route from agent environment")
 	}
 	requireGadgetError(t, gadgetCall(t, params, "memory.get", map[string]any{"gadget_route": route}), "invalid_request")
 	if err := h.prepareRunInstructions(gadgetSession, &params); err != nil {

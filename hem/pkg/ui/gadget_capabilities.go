@@ -42,6 +42,7 @@ func gadgetCapabilityFields(capabilities *envelope.GadgetCapabilities) []formFie
 		{label: "Gadget: memory", flag: "--gadget-memory", isBool: true, explicitBool: true, value: strconv.FormatBool(c.Memory)},
 		{label: "Gadget: own subagents / replies", flag: "--gadget-subagents", isBool: true, explicitBool: true, value: strconv.FormatBool(c.Subagents)},
 		{label: "Gadget: discover / message agents", flag: "--gadget-agents", isBool: true, explicitBool: true, value: strconv.FormatBool(c.Agents)},
+		{label: "Gadget: shared traits (future use)", flag: "--gadget-traits", isBool: true, explicitBool: true, value: strconv.FormatBool(c.Traits)},
 		{label: "Gadget: scheduling", flag: "--gadget-scheduling", isBool: true, explicitBool: true, value: strconv.FormatBool(c.Scheduling)},
 	}
 }

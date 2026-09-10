@@ -3,10 +3,30 @@
 package service
 
 import (
+	"encoding/binary"
 	"os"
 	"strings"
 	"testing"
+	"unicode/utf16"
 )
+
+func TestTaskDefinitionUsesUTF16LEWithBOM(t *testing.T) {
+	data := utf16LEWithBOM(`<?xml version="1.0" encoding="UTF-16"?><Task/>`)
+	if len(data) < 2 || binary.LittleEndian.Uint16(data[:2]) != 0xFEFF {
+		t.Fatalf("task XML missing UTF-16LE BOM")
+	}
+	if got := string(utf16.Decode(bytesToUTF16(data[2:]))); got != `<?xml version="1.0" encoding="UTF-16"?><Task/>` {
+		t.Fatalf("task XML encoding round trip = %q", got)
+	}
+}
+
+func bytesToUTF16(data []byte) []uint16 {
+	out := make([]uint16, len(data)/2)
+	for i := range out {
+		out[i] = binary.LittleEndian.Uint16(data[i*2:])
+	}
+	return out
+}
 
 func TestWindowsTaskWrapperSavesCrashLogAndExitCode(t *testing.T) {
 	dir := t.TempDir()

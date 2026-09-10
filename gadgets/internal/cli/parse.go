@@ -23,6 +23,7 @@ func command(args []string) (string, []string, error) {
 	switch method {
 	case "memory.get", "memory.list", "memory.search", "memory.set", "memory.batch", "memory.delete", "memory.revisions",
 		"agents.list", "agents.message", "subagents.list", "subagents.create", "subagents.message",
+		"traits.list", "traits.get", "traits.edit",
 		"schedule.list", "schedule.create", "schedule.delete":
 		return method, args[2:], nil
 	}
@@ -129,8 +130,19 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 				data["entries"] = entries
 			}
 		}
-	case "agents.list", "subagents.list", "schedule.list":
+	case "agents.list", "subagents.list", "schedule.list", "traits.list":
 		err = arity(0, 0)
+	case "traits.get", "traits.edit":
+		if err = arity(1, 1); err == nil {
+			if strings.TrimSpace(pos[0]) == "" {
+				err = errors.New("trait ID or name is required")
+				break
+			}
+			data["id"] = pos[0]
+			if method == "traits.edit" {
+				err = body("body", false)
+			}
+		}
 	case "agents.message", "subagents.message":
 		if err = arity(1, 1); err == nil {
 			data["id"] = pos[0]

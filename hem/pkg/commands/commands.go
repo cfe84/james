@@ -716,13 +716,13 @@ func (e *Executor) sendCommand(ctx context.Context, mp *store.Moneypenny, method
 		return nil, fmt.Errorf("unsupported transport type %q for moneypenny %q", mp.TransportType, mp.Name)
 	}
 	switch method {
-	case "get_session", "continue_session", "queue_prompt", "compact_session", "distill_session":
+	case "create_session", "get_session", "continue_session", "queue_prompt", "compact_session", "distill_session", "update_session":
 		if fields, ok := data.(map[string]interface{}); ok {
 			copy := make(map[string]interface{}, len(fields)+1)
 			for key, value := range fields {
 				copy[key] = value
 			}
-			copy["gadget_route"] = e.addGadgetEnvironment(nil)
+			copy["gadget_route"] = e.gadgetRoute()
 			data = copy
 		}
 	}
@@ -5235,6 +5235,7 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	var sourceSessionID, projectNameOrID string
 	params := &sessionParams{}
 	var capabilityFlags gadgetCapabilityFlags
+	environmentExplicit := false
 
 	// Bool flags have no "unset" state once parsed, but we still need to know
 	// whether the caller explicitly touched --yolo so that `--yolo=false`
@@ -5265,9 +5266,16 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 		fs.BoolVar(&params.Async, "async", false, "return immediately without waiting for response")
 		fs.StringVar(&projectNameOrID, "project", "", "project name or ID")
 		fs.StringVar(&params.TraitsSpec, "traits", "", "comma-separated trait IDs/names (defaults to source session's traits)")
+		fs.Var(&params.Environment, "env", "replace agent environment with NAME=VALUE entries (repeatable)")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
+	}
+	for _, arg := range args {
+		if arg == "--env" || arg == "-env" || strings.HasPrefix(arg, "--env=") || strings.HasPrefix(arg, "-env=") {
+			environmentExplicit = true
+			break
+		}
 	}
 
 	// Detect an explicit --traits (even empty) so a caller can clear traits on
@@ -5316,15 +5324,16 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	}
 
 	var src struct {
-		Name           string `json:"name"`
-		Agent          string `json:"agent"`
-		SystemPrompt   string `json:"system_prompt"`
-		Model          string `json:"model"`
-		Effort         string `json:"effort"`
-		ContextTier    string `json:"context_tier"`
-		Yolo           bool   `json:"yolo"`
-		Path           string `json:"path"`
-		CompactionMode string `json:"compaction_mode"`
+		Name           string            `json:"name"`
+		Agent          string            `json:"agent"`
+		SystemPrompt   string            `json:"system_prompt"`
+		Model          string            `json:"model"`
+		Effort         string            `json:"effort"`
+		ContextTier    string            `json:"context_tier"`
+		Yolo           bool              `json:"yolo"`
+		Path           string            `json:"path"`
+		CompactionMode string            `json:"compaction_mode"`
+		Environment    map[string]string `json:"environment"`
 	}
 	if err := json.Unmarshal(getResp.Data, &src); err != nil {
 		return protocol.ErrResponse(fmt.Sprintf("parsing source session: %v", err))
@@ -5386,6 +5395,13 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	}
 	if params.SessionName == "" {
 		params.SessionName = "Copy of " + src.Name
+	}
+	if !environmentExplicit {
+		for name, value := range src.Environment {
+			if !strings.HasPrefix(name, "JAMES_HEM_") && !strings.HasPrefix(name, "JAMES_GADGETS_") {
+				params.Environment = append(params.Environment, name+"="+value)
+			}
+		}
 	}
 	// --yolo: only inherit the source's value when the caller didn't
 	// explicitly mention the flag (so `--yolo=false` actually overrides a
