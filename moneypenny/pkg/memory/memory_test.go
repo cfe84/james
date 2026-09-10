@@ -526,6 +526,32 @@ func TestMigrationImportsLegacyDirectoryWithLongName(t *testing.T) {
 	}
 }
 
+func TestMigrationImportsLegacyFallbackWithInvalidPath(t *testing.T) {
+	root := memoryRoot(t)
+	long := "legacy-memory-row-with-a-prose-path-component-that-exceeds-the-current-sixty-four-character-limit"
+	body := "preserved database note"
+	if err := Migrate(root, []*Node{{Path: long + `\child`, Description: "old summary", Body: body}}); err != nil {
+		t.Fatalf("migration rejected legacy database path: %v", err)
+	}
+	nodes, err := List(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var imported *Node
+	for _, node := range nodes {
+		if node.Body == body {
+			imported = node
+			break
+		}
+	}
+	if imported == nil || !strings.HasPrefix(imported.Path, "legacy-") || !strings.HasSuffix(imported.Path, "/child") {
+		t.Fatalf("legacy database path was not mapped safely: %+v", imported)
+	}
+	if !strings.Contains(imported.Description, "old summary") || !strings.Contains(imported.Description, "legacy database path") {
+		t.Fatalf("legacy metadata was not retained: %+v", imported)
+	}
+}
+
 func TestMigrationSymlinksFailWithoutFollowing(t *testing.T) {
 	for _, linkKind := range []string{"root", "directory", "readme"} {
 		t.Run(linkKind, func(t *testing.T) {

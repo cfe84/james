@@ -1020,7 +1020,9 @@ README bodies—including oversized roots and descendants—are preserved intact
 directories without a README remain navigable nodes. Legacy directory components
 that no longer meet the current 64-character slug rule are deterministically
 mapped to `legacy-<hash>` SQLite paths and flagged as such; their original files
-remain untouched backups. Unreadable sources, symlinks, and non-directory roots
+remain untouched backups. The same mapping applies to invalid paths in legacy
+database rows, preserving historical content while keeping new gadget writes
+strictly validated. Unreadable sources, symlinks, and non-directory roots
 still fail rather than silently lose knowledge.
 
 Legacy files remain untouched **backups**, not writable authority; old operational

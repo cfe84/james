@@ -56,10 +56,11 @@ func Migrate(root string, fallback []*Node) (err error) {
 			break
 		}
 	}
-	nodes, err := normalizeNodes(fallback, false)
+	nodes, err := normalizeMigrationNodes(fallback)
 	if err != nil {
 		return err
 	}
+
 	merged := make(map[string]*Node, len(nodes))
 	for _, node := range nodes {
 		merged[node.Path] = node
@@ -81,6 +82,36 @@ func Migrate(root string, fallback []*Node) (err error) {
 		return err
 	}
 	return tx.Commit()
+}
+
+func normalizeMigrationNodes(nodes []*Node) ([]*Node, error) {
+	out := make([]*Node, 0, len(nodes))
+	seen := make(map[string]string, len(nodes))
+	for _, node := range nodes {
+		if node == nil {
+			return nil, fmt.Errorf("memory migration contains a nil fallback node")
+		}
+		n := *node
+		path, transformed, err := migrationPath(n.Path)
+		if err != nil {
+			return nil, err
+		}
+		if original, exists := seen[path]; exists {
+			return nil, fmt.Errorf("legacy paths %q and %q map to the same migration path %q", original, n.Path, path)
+		}
+		seen[path] = n.Path
+		n.Path = path
+		if transformed {
+			const notice = "Migrated from a legacy database path that no longer meets current path rules."
+			if n.Description == "" {
+				n.Description = notice
+			} else {
+				n.Description += " " + notice
+			}
+		}
+		out = append(out, &n)
+	}
+	return out, nil
 }
 
 type migrationNode struct {
@@ -159,10 +190,14 @@ func migrationPath(path string) (string, bool, error) {
 	if path == "" {
 		return "", false, nil
 	}
-	parts := strings.Split(path, "/")
+	parts := strings.Split(strings.ReplaceAll(path, "\\", "/"), "/")
 	safe := make([]string, 0, len(parts))
 	transformed := false
 	for _, part := range parts {
+		if strings.TrimSpace(part) == "" {
+			transformed = true
+			continue
+		}
 		normalized, err := NormalizePath(part)
 		if err == nil && normalized == part {
 			safe = append(safe, normalized)

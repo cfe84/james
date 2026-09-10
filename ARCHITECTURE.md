@@ -260,7 +260,9 @@ retry path.
 folder components that do not meet current memory slug rules (including the
 64-character maximum) map deterministically to `legacy-<hash>` node paths and
 are flagged in their metadata; the untouched source tree remains the record of
-the original name. **Any
+the original name. The importer applies that mapping to legacy database-row
+paths as well, so historical rows cannot prevent startup; ordinary gadget writes
+continue to reject invalid paths. **Any
 README.md anywhere in the tree makes the entire file tree authoritative over
 all stale operational-database rows**, including rows whose paths are missing
 from the files. An empty README also counts. This is deliberately not a per-path
