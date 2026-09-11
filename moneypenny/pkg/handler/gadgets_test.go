@@ -318,12 +318,12 @@ func TestGadgetPromptShowsOnlyGrantedCommands(t *testing.T) {
 	if err := h.prepareRunInstructions(gadgetSession, &params); err != nil {
 		t.Fatal(err)
 	}
-	for _, text := range []string{"gadgets memory get", "gadgets subagents", "gadgets schedule", "hem delete", "<root-memory>"} {
+	for _, text := range []string{"gadgets memory get", "Own subagents:", "gadgets schedule", "hem delete", "<root-memory>"} {
 		if strings.Contains(params.SystemPrompt, text) {
 			t.Fatalf("revoked/stale instructions remain: %s", text)
 		}
 	}
-	for _, text := range []string{"Base instructions.", "gadgets agents list", "gadgets notify"} {
+	for _, text := range []string{"Base instructions.", "gadgets agents list", "gadgets subagents message PARENT_ID", "gadgets notify"} {
 		if !strings.Contains(params.SystemPrompt, text) {
 			t.Fatalf("missing allowed instruction: %s", text)
 		}

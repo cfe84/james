@@ -56,7 +56,7 @@ func TestCreateFormsSendExplicitGadgetPermissions(t *testing.T) {
 			t.Fatalf("unexpected request: %#v", sender.request)
 		}
 		got := permissionArgs(sender.request.Args)
-		if len(got) != 8 {
+		if len(got) != 9 {
 			t.Fatalf("wizard=%v omitted permissions: %v", wizard, sender.request.Args)
 		}
 		for flag, value := range got {

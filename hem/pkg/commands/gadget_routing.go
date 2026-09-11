@@ -63,10 +63,51 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 		if err != nil || target == nil {
 			return protocol.ErrResponse("gadget target session is not tracked by this Hem")
 		}
-		if route.Method == "subagents.message" && !gadgetRelated(source, target) {
-			return protocol.ErrResponse("subagents may message only direct children or their parent")
+		if route.Method == "subagents.message" {
+			if source.ParentSessionID == target.SessionID {
+				// Replying to the parent is an unconditional capability.
+			} else if target.ParentSessionID != source.SessionID {
+				return protocol.ErrResponse("subagents may message only direct children or their parent")
+			} else {
+				caps, err := e.currentGadgetCapabilities(source)
+				if err != nil {
+					return protocol.ErrResponse(err.Error())
+				}
+				if !caps.Subagents {
+					return protocol.ErrResponse("subagents may message only direct children or their parent")
+				}
+			}
 		}
 		return e.messageGadgetAgent(source, target, message.Body)
+	case "subagents.edit", "subagents.complete", "subagents.stop", "subagents.delete":
+		var request struct {
+			ID string `json:"session_id"`
+		}
+		if err := decodeGadgetData(route.Data, &request); err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		target, err := e.store.GetSession(request.ID)
+		if err != nil || target == nil {
+			return protocol.ErrResponse("gadget target session is not tracked by this Hem")
+		}
+		if target.ParentSessionID != source.SessionID {
+			return protocol.ErrResponse("subagent management is restricted to direct children")
+		}
+		if route.Method == "subagents.edit" {
+			return e.editGadgetSession(source, route.Data)
+		}
+		switch route.Method {
+		case "subagents.complete":
+			if err := e.store.SetSessionHemStatus(target.SessionID, "completed"); err != nil {
+				return protocol.ErrResponse(err.Error())
+			}
+			return protocol.OKResponse(TextResult{Message: fmt.Sprintf("Subagent %s marked as completed.", target.SessionID)})
+		case "subagents.stop":
+			return e.StopSession([]string{target.SessionID})
+		case "subagents.delete":
+			return e.DeleteSession([]string{target.SessionID})
+		}
+		return protocol.ErrResponse("unsupported subagent management method")
 	case "sessions.edit":
 		return e.editGadgetSession(source, route.Data)
 	case "subagents.create", "agents.create":
@@ -115,6 +156,7 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 			fmt.Sprintf("--gadget-create-agents=%t", capabilities.CreateAgents),
 			fmt.Sprintf("--gadget-edit-sessions=%t", capabilities.EditSessions),
 			fmt.Sprintf("--gadget-edit-own-session=%t", capabilities.EditOwnSession),
+			fmt.Sprintf("--gadget-edit-own-subagents=%t", capabilities.EditOwnSubagents),
 			fmt.Sprintf("--gadget-traits=%t", capabilities.Traits),
 			fmt.Sprintf("--gadget-scheduling=%t", capabilities.Scheduling),
 		}
@@ -165,12 +207,16 @@ func (e *Executor) editGadgetSession(source *store.Session, raw json.RawMessage)
 	if targetID == "" {
 		targetID = source.SessionID
 	}
+	target, err := e.store.GetSession(targetID)
+	if err != nil || target == nil {
+		return protocol.ErrResponse("gadget target session is not tracked by this Hem")
+	}
 	if targetID != source.SessionID {
 		caps, err := e.currentGadgetCapabilities(source)
 		if err != nil {
 			return protocol.ErrResponse(err.Error())
 		}
-		if !caps.EditSessions {
+		if !caps.EditSessions && !(caps.EditOwnSubagents && target.ParentSessionID == source.SessionID) {
 			return protocol.ErrResponse("edit sessions capability is disabled")
 		}
 	} else {
@@ -178,16 +224,13 @@ func (e *Executor) editGadgetSession(source *store.Session, raw json.RawMessage)
 		if err != nil {
 			return protocol.ErrResponse(err.Error())
 		}
+
 		if !caps.EditOwnSession && !caps.EditSessions {
 			return protocol.ErrResponse("edit own session capability is disabled")
 		}
 	}
 	if update.GadgetCapabilities != nil || update.GadgetRoute != nil {
 		return protocol.ErrResponse("session editing cannot change gadget permissions or routing")
-	}
-	target, err := e.store.GetSession(targetID)
-	if err != nil || target == nil {
-		return protocol.ErrResponse("gadget target session is not tracked by this Hem")
 	}
 	args := []string{targetID}
 	appendString := func(flag string, value *string) {

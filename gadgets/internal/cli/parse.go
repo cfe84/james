@@ -23,6 +23,7 @@ func command(args []string) (string, []string, error) {
 	switch method {
 	case "memory.get", "memory.list", "memory.search", "memory.set", "memory.batch", "memory.delete", "memory.revisions",
 		"agents.list", "agents.message", "agents.create", "subagents.list", "subagents.create", "subagents.message",
+		"subagents.edit", "subagents.complete", "subagents.stop", "subagents.delete",
 		"traits.list", "traits.get", "traits.edit", "sessions.edit",
 		"schedule.list", "schedule.create", "schedule.delete":
 		return method, args[2:], nil
@@ -48,6 +49,10 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 			allowed[key] = true
 		}
 	case "sessions.edit":
+		for _, key := range []string{"name", "system-prompt", "model", "effort", "context", "path", "yolo", "compaction", "env"} {
+			allowed[key] = true
+		}
+	case "subagents.edit":
 		for _, key := range []string{"name", "system-prompt", "model", "effort", "context", "path", "yolo", "compaction", "env"} {
 			allowed[key] = true
 		}
@@ -154,6 +159,34 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 		if err = arity(1, 1); err == nil {
 			data["id"] = pos[0]
 			err = body("body", true)
+		}
+	case "subagents.edit":
+		if err = arity(1, 1); err == nil {
+			data["session_id"] = pos[0]
+			delete(data, "env")
+			for _, key := range []string{"name", "system-prompt", "model", "effort", "context", "path", "compaction"} {
+				if value, ok := flags[key]; ok {
+					data[strings.ReplaceAll(key, "-", "_")] = value
+				}
+			}
+			if value, ok := flags["yolo"]; ok {
+				data["yolo"] = value == "true"
+			}
+			if value, ok := flags["env"]; ok {
+				parts := strings.SplitN(value, "=", 2)
+				if len(parts) != 2 || parts[0] == "" {
+					err = errors.New("--env must be NAME=VALUE")
+				} else {
+					data["environment"] = map[string]string{parts[0]: parts[1]}
+				}
+			}
+			if len(data) == 1 {
+				err = errors.New("subagents edit requires editable flags")
+			}
+		}
+	case "subagents.complete", "subagents.stop", "subagents.delete":
+		if err = arity(1, 1); err == nil {
+			data["session_id"] = pos[0]
 		}
 	case "subagents.create", "agents.create":
 		if err = arity(0, 0); err == nil {

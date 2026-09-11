@@ -4,7 +4,9 @@ package service
 
 import (
 	"encoding/binary"
+	"encoding/csv"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -187,15 +189,42 @@ func writeTaskLauncher(cfg *Config) (string, error) {
 }
 
 func writeTaskDefinition(cfg *Config, launcherPath string) (string, error) {
-	definition, err := windowsTaskDefinition(cfg, launcherPath, os.Getenv("USERNAME"))
+	userID := os.Getenv("USERNAME")
+	var err error
+	if cfg.UserLevel {
+		userID, err = currentWindowsUserSID()
+		if err != nil {
+			return "", err
+		}
+	}
+	definition, err := windowsTaskDefinition(cfg, launcherPath, userID)
 	if err != nil {
 		return "", err
 	}
+
 	path := filepath.Join(cfg.DataDir, taskDefinitionName)
 	if err := os.WriteFile(path, utf16LEWithBOM(definition), 0600); err != nil {
 		return "", fmt.Errorf("write task definition: %w", err)
 	}
 	return path, nil
+}
+
+// currentWindowsUserSID returns the SID expected by Task Scheduler when an
+// interactive-token task is imported from XML. USERNAME is not sufficient:
+// it omits the domain and can be rejected with ERROR_ACCESS_DENIED.
+func currentWindowsUserSID() (string, error) {
+	output, err := exec.Command("whoami", "/user", "/fo", "csv", "/nh").Output()
+	if err != nil {
+		return "", fmt.Errorf("resolve Windows user SID: %w", err)
+	}
+	record, err := csv.NewReader(strings.NewReader(string(output))).Read()
+	if err != nil && err != io.EOF {
+		return "", fmt.Errorf("parse Windows user SID: %w", err)
+	}
+	if len(record) < 2 || !strings.HasPrefix(record[1], "S-1-") {
+		return "", fmt.Errorf("resolve Windows user SID: whoami returned an invalid SID")
+	}
+	return record[1], nil
 }
 
 // schtasks is inconsistent about UTF-8 task-definition files. UTF-16LE with a

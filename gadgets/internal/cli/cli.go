@@ -40,6 +40,10 @@ Usage:
   gadgets subagents create [--name name] [--agent agent] [--model model] [--path path] [--moneypenny name] [--traits names-or-IDs] [--yolo]
                                              (prompt on stdin)
   gadgets subagents message id [--body text]   (otherwise reads stdin)
+  gadgets subagents edit id [--name name] [--system-prompt text] [--model model] [--effort value] [--context tier] [--path path] [--compaction mode] [--yolo=true|false] [--env NAME=VALUE]
+  gadgets subagents complete id
+  gadgets subagents stop id
+  gadgets subagents delete id
   gadgets sessions edit [session-id] [--name name] [--system-prompt text] [--model model] [--effort value] [--context tier] [--path path] [--compaction mode] [--yolo=true|false] [--env NAME=VALUE]
   gadgets schedule list
   gadgets schedule create (--cron expr | --at timestamp) --prompt text
@@ -53,7 +57,7 @@ Omitted memory paths refer to the root. Batch updates are atomic on the daemon.
 Creating top-level agents requires separate opt-in permission (default: false).
 Creation uses your moneypenny unless --moneypenny names another registered host, inherits your current gadget permissions, and
 automatically attributes the initial prompt to you. No --from override is accepted.
-Discovery/messaging requires the separate Agents permission.
+Discovery and managing your own subagents require separate permissions. Replying to your parent is always available.
 Creation --traits accepts comma-separated names or IDs; --traits="" selects none.
 Omitting it applies default traits for top-level agents and none for subagents.
 Selecting traits during creation does not require permission to edit shared traits.

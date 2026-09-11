@@ -6,7 +6,7 @@ func init() {
 	CommandHelp["create subsession"] += "\n  --traits           Comma-separated trait IDs/names (omitted or empty selects none)"
 	for _, command := range []string{"create session", "create subsession", "copy session", "update session"} {
 		CommandHelp[command] += permissionsHelp
-		CommandHelp[command] += "\n  --gadget-edit-sessions   Edit any tracked session, except gadget permissions (default: false)\n  --gadget-edit-own-session Edit only this session, except gadget permissions (default: false)"
+		CommandHelp[command] += "\n  --gadget-edit-sessions   Edit any tracked session, except gadget permissions (default: false)\n  --gadget-edit-own-session Edit only this session, except gadget permissions (default: false)\n  --gadget-edit-own-subagents Edit direct-child sessions and lifecycle, except gadget permissions (default: false)"
 	}
 }
 

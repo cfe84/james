@@ -65,6 +65,8 @@ func patchedGadgetCapabilities(raw json.RawMessage, base envelope.GadgetCapabili
 			base.EditSessions = *value
 		case "edit_own_session":
 			base.EditOwnSession = *value
+		case "edit_own_subagents":
+			base.EditOwnSubagents = *value
 		case "traits":
 			base.Traits = *value
 		case "scheduling":
@@ -198,12 +200,13 @@ func (h *Handler) prepareGadgets(sessionID string, params *agent.RunParams) erro
 	params.Environment = env
 	params.SystemPrompt = stripManagedGadgetInstructions(params.SystemPrompt)
 	params.SystemPrompt += "\n\n<gadgets>\nUse the gadgets executable for session tools. Identity is bound by the daemon; never supply another session ID or alter credentials. Commands return structured JSON and writes accept stdin. Permissions are checked for every request and may be revoked. Do not bypass tools with direct Hem commands, files, or database access.\n"
+	params.SystemPrompt += "Reply to your parent: gadgets subagents message PARENT_ID (body on stdin); replying to your parent is always available.\n"
 	if caps.Subagents {
 		params.SystemPrompt += "Own subagents: gadgets subagents list; gadgets subagents create [--name name] [--agent agent] [--model model] [--path path] [--traits names-or-IDs]"
 		if session.Yolo {
 			params.SystemPrompt += " [--yolo]"
 		}
-		params.SystemPrompt += " (prompt on stdin); gadgets subagents message ID (body on stdin). Message only your direct children or reply to your parent; creation inherits your permissions. Traits are comma-separated names or IDs; omitted or empty selects none."
+		params.SystemPrompt += " (prompt on stdin); gadgets subagents message ID (body on stdin). Message only your direct children; creation inherits your permissions. Traits are comma-separated names or IDs; omitted or empty selects none."
 		if session.Yolo {
 			params.SystemPrompt += " You may request --yolo because this agent already has License to Kill."
 		}
@@ -220,6 +223,9 @@ func (h *Handler) prepareGadgets(sessionID string, params *agent.RunParams) erro
 			params.SystemPrompt += "You may edit only your authenticated session."
 		}
 		params.SystemPrompt += " Gadget permissions and trusted routing cannot be changed.\n"
+	}
+	if caps.EditOwnSubagents {
+		params.SystemPrompt += "Own subagent management: gadgets subagents edit ID [session fields], gadgets subagents complete ID, gadgets subagents stop ID, and gadgets subagents delete ID. These operations are restricted to your direct children.\n"
 	}
 	if caps.CreateAgents {
 		params.SystemPrompt += "Create independent top-level agents: gadgets agents create [--name name] [--agent agent] [--model model] [--path path] [--traits names-or-IDs]"
@@ -348,8 +354,12 @@ func (h *Handler) executeGadget(ctx context.Context, sessionID string, request g
 		allowed = caps.EditSessions || caps.EditOwnSession
 	case "traits.list", "traits.get", "traits.edit":
 		allowed = caps.Traits
-	case "subagents.list", "subagents.message", "subagents.create":
+	case "subagents.list", "subagents.create":
 		allowed = caps.Subagents
+	case "subagents.message":
+		allowed = true
+	case "subagents.edit", "subagents.complete", "subagents.stop", "subagents.delete":
+		allowed = caps.EditOwnSubagents
 	case "schedule.list", "schedule.create", "schedule.delete":
 		allowed = caps.Scheduling
 	case "notify":

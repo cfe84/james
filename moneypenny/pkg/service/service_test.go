@@ -13,6 +13,7 @@ func TestWindowsTaskDefinitionRestartsUnexpectedFailures(t *testing.T) {
 	for _, want := range []string{
 		`<?xml version="1.0" encoding="UTF-16"?>`,
 		`<LogonType>InteractiveToken</LogonType>`,
+		`<UserId>CONTOSO\Jane &amp; John</UserId>`,
 		`<LogonTrigger><Enabled>true</Enabled></LogonTrigger>`,
 		`<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>`,
 		`<Interval>PT1M</Interval>`,
