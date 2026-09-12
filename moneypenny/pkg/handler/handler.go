@@ -535,9 +535,14 @@ func (h *Handler) continueSession(ctx context.Context, cmd *envelope.Command) *e
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotIdle, fmt.Sprintf("session is not idle: %s", sess.Status))
 	}
 
-	// Update status to working.
-	if err := h.store.UpdateSessionStatus(data.SessionID, store.StateWorking); err != nil {
+	// Compete with the scheduler for the idle session rather than overwriting
+	// a claim made after the status read above.
+	claimed, err := h.store.ClaimIdleSession(ctx, data.SessionID)
+	if err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to update status: %v", err))
+	}
+	if !claimed {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotIdle, "session is no longer idle")
 	}
 
 	// Notify that session is now working.
@@ -955,6 +960,10 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 		}
 	}
 
+	h.continueQueuedPrompts(sessionID)
+}
+
+func (h *Handler) continueQueuedPrompts(sessionID string) {
 	// Check for queued prompts before going idle. Drain one override-group at a
 	// time: prompts sharing the same per-prompt model/effort override are
 	// processed together, and the next group (if any) is handled by the
@@ -963,6 +972,10 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 	group, err := h.store.DrainQueueGroup(sessionID)
 	if err != nil {
 		h.vlog("failed to drain queue for session %s: %v", sessionID, err)
+		if err := h.store.UpdateSessionStatus(sessionID, store.StateIdle); err != nil {
+			h.vlog("failed to release session %s after queue failure: %v", sessionID, err)
+		}
+		return
 	}
 
 	if len(group) > 0 {
@@ -1020,7 +1033,7 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 			return
 		}
 
-		h.runAgent(sessionID, agent.RunParams{
+		go h.runAgent(sessionID, agent.RunParams{
 			SessionID:      sessionID,
 			Agent:          sess.Agent,
 			Prompt:         combinedPrompt,
@@ -1035,10 +1048,6 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 			MarkReady:      first.MarkReady,
 		})
 		return
-	}
-
-	if err := h.store.UpdateSessionStatus(sessionID, store.StateIdle); err != nil {
-		h.vlog("failed to update status for session %s: %v", sessionID, err)
 	}
 
 	// Notify hem that session became idle after completion.
@@ -2594,38 +2603,76 @@ func parseRelativeDuration(s string) (time.Duration, error) {
 // It runs an immediate check, then ticks every 30 seconds.
 // Cancel the context to stop the scheduler.
 func (h *Handler) StartScheduler(ctx context.Context) {
-	h.processDueSchedules()
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		for {
+			if ctx.Err() != nil {
+				return
+			}
+			h.processDueSchedules(ctx)
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				h.processDueSchedules()
 			}
 		}
 	}()
 }
 
-func (h *Handler) processDueSchedules() {
-	schedules, err := h.store.DueSchedules()
+func (h *Handler) processDueSchedules(ctx context.Context) {
+	ids, err := h.store.IdleQueuedSessions(ctx)
+	if err != nil {
+		h.vlog("scheduler: failed to find idle queues: %v", err)
+		return
+	}
+	for _, id := range ids {
+		claimed, err := h.store.ClaimIdleSession(ctx, id)
+		if err != nil {
+			h.vlog("scheduler: failed to claim idle session %s: %v", id, err)
+		} else if claimed {
+			go h.continueQueuedPrompts(id)
+		}
+	}
+	schedules, err := h.store.DueSchedules(ctx)
 	if err != nil {
 		h.vlog("scheduler: failed to query due schedules: %v", err)
 		return
 	}
 
+	delivered, coalesced, deferred := 0, 0, 0
 	for _, sch := range schedules {
-		h.vlog("scheduler: processing schedule %d for session %s", sch.ID, sch.SessionID)
-
-		// Mark as running.
-		if err := h.store.UpdateScheduleStatus(sch.ID, store.ScheduleRunning); err != nil {
-			h.vlog("scheduler: failed to update schedule %d status: %v", sch.ID, err)
+		if ctx.Err() != nil {
+			return
+		}
+		sess, err := h.store.GetSession(sch.SessionID)
+		if err != nil || sess == nil {
+			h.vlog("scheduler: cannot load session %s for schedule %d: %v", sch.SessionID, sch.ID, err)
 			continue
 		}
-
-		// Notify about schedule execution.
+		var next time.Time
+		if sch.CronExpr != "" {
+			next, err = nextCronTime(sch.CronExpr, time.Now())
+			if err != nil {
+				h.vlog("scheduler: invalid recurrence for schedule %d: %v", sch.ID, err)
+				continue
+			}
+		}
+		result, err := h.store.DispatchSchedule(ctx, sch, next)
+		if err != nil {
+			h.vlog("scheduler: failed to dispatch schedule %d: %v", sch.ID, err)
+			continue
+		}
+		if result.Deferred {
+			deferred++
+		}
+		if result.Coalesced {
+			coalesced++
+		}
+		if !result.Delivered {
+			continue
+		}
+		delivered++
 		if h.notifyWriter != nil {
 			_ = h.notifyWriter.Send(envelope.EventChatSchedule, sch.SessionID, map[string]interface{}{
 				"schedule_id": sch.ID,
@@ -2634,39 +2681,7 @@ func (h *Handler) processDueSchedules() {
 				"action":      "executed",
 			})
 		}
-
-		sess, err := h.store.GetSession(sch.SessionID)
-		if err != nil || sess == nil {
-			h.vlog("scheduler: session %s not found for schedule %d", sch.SessionID, sch.ID)
-			_ = h.store.UpdateScheduleStatus(sch.ID, store.ScheduleDone)
-			continue
-		}
-
-		// Add a system notification turn so the user sees the scheduled prompt in chat.
-		label := "Scheduled task"
-		if sch.CronExpr != "" {
-			label = fmt.Sprintf("Recurring task (%s)", sch.CronExpr)
-		}
-		schedNotice := fmt.Sprintf("[%s triggered at %s]", label, time.Now().Local().Format("Jan 2, 3:04 PM"))
-		_ = h.store.AddConversationTurn(sch.SessionID, "system", schedNotice)
-
-		if sess.Status == store.StateIdle {
-			// Session is idle — continue it directly.
-			if err := h.store.UpdateSessionStatus(sch.SessionID, store.StateWorking); err != nil {
-				h.vlog("scheduler: failed to set session %s to working: %v", sch.SessionID, err)
-				_ = h.store.UpdateScheduleStatus(sch.ID, store.SchedulePending)
-				continue
-			}
-			if err := h.store.AddConversationTurn(sch.SessionID, "scheduled", sch.Prompt); err != nil {
-				h.vlog("scheduler: failed to add conversation turn for session %s: %v", sch.SessionID, err)
-			}
-			_ = h.store.UpdateScheduleStatus(sch.ID, store.ScheduleDone)
-
-			// If this is a recurring schedule, create the next occurrence.
-			if sch.CronExpr != "" {
-				h.scheduleNextCron(sch)
-			}
-
+		if result.Start {
 			go h.runAgent(sch.SessionID, agent.RunParams{
 				SessionID:      sch.SessionID,
 				Agent:          sess.Agent,
@@ -2681,38 +2696,14 @@ func (h *Handler) processDueSchedules() {
 				ReplyChannelID: sch.ReplyChannelID,
 				MarkReady:      sch.MarkReady,
 			})
-		} else {
-			// Session is busy — queue the prompt, it'll run after current task finishes.
-			if err := h.store.QueuePromptChannel(sch.SessionID, sch.Prompt, "", "", "", "scheduled", sch.ReplyChannelID, sch.MarkReady); err != nil {
-				h.vlog("scheduler: failed to queue prompt for session %s: %v", sch.SessionID, err)
-				_ = h.store.UpdateScheduleStatus(sch.ID, store.SchedulePending)
-				continue
-			}
-			_ = h.store.UpdateScheduleStatus(sch.ID, store.ScheduleDone)
-
-			// If this is a recurring schedule, create the next occurrence.
-			if sch.CronExpr != "" {
-				h.scheduleNextCron(sch)
-			}
-
-			h.vlog("scheduler: session %s busy, queued scheduled prompt (schedule %d)", sch.SessionID, sch.ID)
 		}
 	}
-}
-
-// scheduleNextCron creates the next occurrence of a recurring schedule.
-func (h *Handler) scheduleNextCron(sch *store.Schedule) {
-	next, err := nextCronTime(sch.CronExpr, time.Now())
-	if err != nil {
-		h.vlog("scheduler: invalid cron expression %q for schedule %d: %v", sch.CronExpr, sch.ID, err)
-		return
+	if len(schedules) > 0 {
+		h.vlog("scheduler: batch=%d delivered=%d coalesced=%d deferred_queue_full=%d", len(schedules), delivered, coalesced, deferred)
 	}
-	id, err := h.store.CreateScheduleFull(sch.SessionID, sch.Prompt, next, sch.CronExpr, sch.ReplyChannelID, sch.MarkReady)
-	if err != nil {
-		h.vlog("scheduler: failed to create next cron occurrence for schedule %d: %v", sch.ID, err)
-		return
+	if err := h.store.PruneScheduleHistory(ctx); err != nil {
+		h.vlog("scheduler: failed to prune schedule history: %v", err)
 	}
-	h.vlog("scheduler: created next cron occurrence %d for session %s at %s", id, sch.SessionID, next.Format(time.RFC3339))
 }
 
 // nextCronTime computes the next occurrence after `after` for a cron expression.
@@ -2733,6 +2724,9 @@ func nextCronTime(expr string, after time.Time) (time.Time, error) {
 		d, err := time.ParseDuration(durStr)
 		if err != nil {
 			return time.Time{}, fmt.Errorf("invalid interval: %w", err)
+		}
+		if d < 30*time.Second {
+			return time.Time{}, fmt.Errorf("recurring interval must be at least 30s")
 		}
 		return after.Add(d), nil
 	}

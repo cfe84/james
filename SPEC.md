@@ -218,7 +218,7 @@ Method: **stop_session**: stops the agent subprocess for a working session. Sess
 
 Method: **update_session**: updates session parameters. Data: `{ "session_id": "id", "name": "new name", "system_prompt": "new prompt", "yolo": true, "path": "/new/path" }`. Only non-nil fields are updated.
 
-Method: **queue_prompt**: queues a prompt for a session that is currently working. Data: `{ "session_id": "id", "prompt": "the prompt to queue" }`. When the agent finishes, moneypenny drains the queue and continues with all queued prompts. Each queued prompt is stored as its own conversation turn, but they are joined and sent to the agent as a single combined prompt.
+Method: **queue_prompt**: queues a prompt for a session that is currently working. Data: `{ "session_id": "id", "prompt": "the prompt to queue" }`. When the agent finishes, moneypenny drains a bounded leading group with matching model/effort/context tier, reply channel, and Ready setting. Each queued prompt is stored as its own conversation turn, but the group is joined and sent as one combined prompt. A group contains at most 32 prompts and 1 MiB of prompt text; a single larger prompt is allowed through intact rather than truncated. Remaining prompts stay queued for subsequent runs.
 
 Method: **import_session**: creates a session with pre-existing conversation history without running an agent. Data: `{ "session_id": "id", "name": "name", "agent": "claude", "path": "/path", "conversation": [{"role": "user", "content": "..."}, ...] }`. Used by `hem import session`.
 
@@ -672,14 +672,14 @@ Sessions can have scheduled continuations — prompts that are automatically sen
 - `--cron` creates a recurring schedule using a cron expression:
   - Standard 5-field format: `minute hour dom month dow`. Each field supports `*`, single values, comma-separated lists (`9,13,17`), ranges (`1-5`), and steps (`*/2`, `0-30/10`). Day-of-week is `0-7` where both `0` and `7` mean Sunday.
   - Shorthands: `@hourly`, `@daily`, `@every 2h`
-  - When a recurring schedule fires, a new occurrence is automatically created for the next matching time.
+  - When a recurring schedule fires, its existing ID is advanced to the next matching time after now. Missed intervals are not replayed.
   - The `cron_expr` is stored in the schedules table.
 - `--channel CHANNEL_ID` routes the agent's response for this scheduled prompt to a bound channel (see **Channels**), in addition to the normal session transcript.
 - Sends `schedule` to the moneypenny that owns the session.
 
 `hem list schedules --session-id ID` — lists pending schedules for a session. Sends `list_schedules` to the moneypenny.
 
-`hem cancel schedule SCHEDULE_ID --session-id ID` — cancels a pending schedule. Sends `cancel_schedule` to the moneypenny.
+`hem cancel schedule SCHEDULE_ID --session-id ID` — cancels a pending schedule and any not-yet-drained recurring delivery associated with its ID. It does not stop an already running task. Sends `cancel_schedule` to the moneypenny. Edits affect future occurrences, not prompts already queued.
 
 `hem edit schedule SCHEDULE_ID --session-id ID [--at TIME] [--prompt PROMPT] [--cron EXPR] [--channel ID] [--mark-ready=BOOL]` — edits a **pending** schedule **in place** (preserving its ID) via `update_schedule`. Any flag that is omitted retains the schedule's current value (the command first fetches the schedule via `list_schedules` and merges), so a single field can be changed without re-supplying the rest; `--cron ""` clears recurrence, `--channel 0` clears channel routing, and `--mark-ready=false` prevents the result from surfacing as Ready. The moneypenny rejects the edit if the schedule is missing or not pending, and validates the cron expression. `list_schedules` returns, alongside the display table, an exact `schedules` array (full untruncated prompt, `cron_expr`, `reply_channel_id`, `mark_ready`) so UIs can prefill an edit form accurately.
 
@@ -688,13 +688,62 @@ Sessions can have scheduled continuations — prompts that are automatically sen
 Moneypenny runs a scheduler goroutine that starts on boot and checks for due schedules every 30 seconds.
 
 - On daemon startup, before the scheduler starts, all sessions still marked `working` are reset to `idle`. Agent processes are tracked in memory and do not survive a restart, so a session left `working` (e.g. the daemon was killed or crashed mid-run) would otherwise be stale forever — and a due schedule for it would be queued behind a session that never drains its queue, so the scheduled task would never run. Resetting stale sessions on startup ensures overdue schedules fire directly when the daemon comes back online.
-- On startup, the scheduler immediately checks for overdue schedules (then every 30 seconds), so one-shot schedules whose time passed while the daemon was offline fire as soon as it restarts.
+- On startup, the scheduler checks asynchronously for overdue schedules (then every 30 seconds), without blocking transport or updater startup. Each cancellable tick handles at most 32 schedules, at most one per session, so a single session's backlog cannot occupy the entire batch. Additional due tasks wait for subsequent ticks.
 - When a schedule is due and the session is idle: continues the session directly with the scheduled prompt.
-- When a schedule is due and the session is busy: queues the prompt via `queue_prompt` (tagged with source `scheduled` so it is classified correctly when drained).
+- When a schedule is due and the session is busy (or already has queued work): queues the prompt with source `scheduled`. A recurring schedule has at most one queued delivery, in addition to any currently running invocation. Later ticks coalesce into that queued delivery and advance the next due time without adding chat notifications or queue entries.
 - When a schedule fires (one-shot or recurring), a "system" conversation turn is added to the session, visible in chat, showing when the task was triggered.
 - The scheduled prompt itself is stored as a **`scheduled`** conversation turn (not a `user` turn), so it renders as a train-of-thought entry (⏰, gated by the show-thoughts toggle) rather than appearing as a message the user typed. It is still included verbatim in compaction/distillation transcripts.
-- For recurring schedules, after firing, a new schedule is automatically created for the next cron-matching time.
+- Recurring schedules retain their row and ID; claiming, delivery persistence, and advancing the due time happen in one write transaction. Stale, edited, cancelled, or already-dispatched snapshots cannot dispatch again.
+- A session can create at most 100 active schedules. Scheduled deliveries are capped at 32 queued prompts per session; a full queue leaves the occurrence pending and reports `deferred_queue_full` in the scheduler batch log. Existing oversized queues are not silently dropped. `@every` intervals must be at least 30 seconds.
+- Queue drains use bounded batches and write reservations before reading, avoiding read-to-write WAL snapshot upgrades. Idle queued sessions are recovered on scheduler ticks, including after a restart or failed drain.
+- Completed schedule history older than 30 days is pruned in batches of at most 32 per tick. Recurring executions remain in conversation history rather than generating new schedule-history rows.
 - Executed one-shot schedules are removed from the pending list.
+
+### Recovering an existing scheduler backlog and WAL
+
+The scheduler fix prevents new amplification; it does not guess which legacy
+schedule duplicates or queued prompts are safe to delete. Before restarting an
+affected daemon, stop its service/task and agent processes, prevent automatic
+restart, and close SQLite viewers. With all writers stopped, preserve
+`moneypenny.db` and `moneypenny.db-wal` together in a backup (also preserve
+`moneypenny.db-shm` if present). Never delete the live WAL: it can contain
+committed data that is not yet in the database file. Keep sufficient free disk
+space for recovery and backup.
+
+Using the SQLite CLI against the original database, the following optional
+cleanup deliberately cancels **all schedules and all queued scheduled prompts
+for the selected session**. Record the intended schedules first and recreate
+only those after recovery. It preserves conversations, memory, other sessions,
+and queued human/channel/callback messages. Substitute the verified session ID,
+not an agent display name:
+
+```sql
+.bail on
+.timeout 5000
+.parameter init
+.parameter set @session 'REPLACE_WITH_SESSION_UUID'
+SELECT status, count(*) FROM schedules WHERE session_id = @session GROUP BY status;
+SELECT source, count(*) FROM prompt_queue WHERE session_id = @session GROUP BY source;
+BEGIN IMMEDIATE;
+DELETE FROM prompt_queue WHERE session_id = @session AND source = 'scheduled';
+DELETE FROM schedules WHERE session_id = @session;
+COMMIT;
+PRAGMA wal_checkpoint(TRUNCATE);
+PRAGMA quick_check;
+```
+
+`wal_checkpoint(TRUNCATE)` must report `0|0|0` (no busy reader/writer, WAL
+truncated) and `quick_check` must report `ok`. If checkpoint reports busy, close
+the remaining database users and retry; do not remove the WAL manually. A
+checkpoint alone is safe without the optional deletes, but does not cancel a
+backlog. Deletions free pages for reuse but do not shrink the main `.db`;
+optional `VACUUM;` followed by another `PRAGMA wal_checkpoint(TRUNCATE);` can
+reclaim that space while still offline, with up to twice the database size in
+additional free space. Do not restart after a failed integrity check.
+
+Archive an oversized daemon log while its writers are stopped; the existing
+log rotator reads the file into memory and is not repaired by the scheduler
+change. Start only one updated daemon, then recreate the intended schedules.
 
 ### Agent Self-Scheduling
 

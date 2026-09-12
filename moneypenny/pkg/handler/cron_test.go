@@ -1,9 +1,60 @@
 package handler
 
 import (
+	"context"
 	"testing"
 	"time"
+
+	"james/moneypenny/pkg/store"
 )
+
+func TestRecurringIntervalMinimum(t *testing.T) {
+	for _, interval := range []string{"-1h", "0s", "1ns", "29s", "30s", "1h"} {
+		t.Run(interval, func(t *testing.T) {
+			now := time.Now()
+			d, err := time.ParseDuration(interval)
+			if err != nil {
+				t.Fatal(err)
+			}
+			next, err := nextCronTime("@every "+interval, now)
+			if d < 30*time.Second {
+				if err == nil {
+					t.Fatal("unsafe interval accepted")
+				}
+			} else if err != nil || !next.Equal(now.Add(d)) {
+				t.Fatalf("next=%v err=%v", next, err)
+			}
+		})
+	}
+}
+
+func TestSchedulerBusyAndCancelled(t *testing.T) {
+	h, _ := gadgetTestHandler(t)
+	if err := h.store.UpdateSessionStatus(gadgetSession, store.StateWorking); err != nil {
+		t.Fatal(err)
+	}
+	id, err := h.store.CreateScheduleFull(gadgetSession, "check", time.Now().Add(-time.Hour), "*/10 * * * *", 42, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	h.processDueSchedules(ctx)
+	n, err := h.store.QueueLength(gadgetSession)
+	if err != nil || n != 0 {
+		t.Fatalf("cancelled tick queue=%d err=%v", n, err)
+	}
+	h.processDueSchedules(context.Background())
+	h.processDueSchedules(context.Background())
+	n, err = h.store.QueueLength(gadgetSession)
+	if err != nil || n != 1 {
+		t.Fatalf("queue=%d err=%v", n, err)
+	}
+	schedules, err := h.store.ListSchedules(gadgetSession, "")
+	if err != nil || len(schedules) != 1 || schedules[0].ID != id || !schedules[0].ScheduledAt.After(time.Now()) {
+		t.Fatalf("schedules=%v err=%v", schedules, err)
+	}
+}
 
 func TestParseCronField(t *testing.T) {
 	cases := []struct {

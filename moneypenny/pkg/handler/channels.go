@@ -389,7 +389,12 @@ func (h *Handler) forwardInbound(ch *store.Channel, msgs []channel.Message) bool
 		return true
 	}
 
-	if sess.Status != store.StateIdle {
+	claimed, err := h.store.ClaimIdleSession(context.Background(), ch.SessionID)
+	if err != nil {
+		h.vlog("channel %d: claim idle session failed: %v", ch.ID, err)
+		return false
+	}
+	if !claimed {
 		if err := h.store.QueuePromptChannel(ch.SessionID, prompt, "", "", "", "channel", ch.ID, false); err != nil {
 			h.vlog("channel %d: queue failed: %v", ch.ID, err)
 			return false
@@ -397,10 +402,6 @@ func (h *Handler) forwardInbound(ch *store.Channel, msgs []channel.Message) bool
 		return true
 	}
 
-	if err := h.store.UpdateSessionStatus(ch.SessionID, store.StateWorking); err != nil {
-		h.vlog("channel %d: set working failed: %v", ch.ID, err)
-		return false
-	}
 	_ = h.store.AddConversationTurn(ch.SessionID, "user", prompt)
 	if h.notifyWriter != nil {
 		_ = h.notifyWriter.Send(envelope.EventChatStatus, ch.SessionID, map[string]string{

@@ -1,8 +1,11 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"net/url"
+	"path/filepath"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -104,9 +107,30 @@ type Store struct {
 
 // New opens (or creates) the SQLite database at the given path and runs migrations.
 func New(dbPath string) (*Store, error) {
-	db, err := sql.Open("sqlite3", dbPath)
+	dsn := "file::memory:?mode=memory"
+	if dbPath != ":memory:" {
+		path, err := filepath.Abs(dbPath)
+		if err != nil {
+			return nil, fmt.Errorf("resolve database path: %w", err)
+		}
+		path = filepath.ToSlash(path)
+		if filepath.VolumeName(path) != "" {
+			path = "/" + path
+		}
+		u := url.URL{Scheme: "file", Path: path}
+		dsn = u.String() + "?"
+	} else {
+		dsn += "&"
+	}
+	// Apply connection-local settings to every connection, including write
+	// reservation before read/modify/write transactions (avoids WAL snapshot upgrades).
+	db, err := sql.Open("sqlite3", dsn+"_busy_timeout=5000&_foreign_keys=on&_txlock=immediate")
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
+	}
+	db.SetMaxOpenConns(4)
+	if dbPath == ":memory:" {
+		db.SetMaxOpenConns(1)
 	}
 
 	// Enable WAL mode and foreign keys.
@@ -304,7 +328,21 @@ CREATE INDEX IF NOT EXISTS idx_channel_outbox_pending ON channel_outbox(status);
 	db.Exec(`ALTER TABLE channels ADD COLUMN mention TEXT NOT NULL DEFAULT ''`)
 	db.Exec(`ALTER TABLE channels ADD COLUMN allow_anyone INTEGER NOT NULL DEFAULT 0`)
 
-	return nil
+	var hasScheduleID int
+	if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info('prompt_queue') WHERE name = 'schedule_id'`).Scan(&hasScheduleID); err != nil {
+		return err
+	}
+	if hasScheduleID == 0 {
+		if _, err := db.Exec(`ALTER TABLE prompt_queue ADD COLUMN schedule_id INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	_, err = db.Exec(`
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_queue_recurring_schedule ON prompt_queue(schedule_id) WHERE schedule_id != 0;
+		CREATE INDEX IF NOT EXISTS idx_queue_session_order ON prompt_queue(session_id, created_at, id);
+		CREATE INDEX IF NOT EXISTS idx_queue_scheduled ON prompt_queue(session_id, source);
+		CREATE INDEX IF NOT EXISTS idx_schedules_session_status ON schedules(session_id, status, scheduled_at, id);`)
+	return err
 }
 
 // Close closes the database.
@@ -666,9 +704,16 @@ func (s *Store) AddConversationTurnFrom(sessionID, role, content, sourceSessionI
 		return fmt.Errorf("add conversation turn: %w", err)
 	}
 
-	// Send notification about new message
+	turnIndex, err := result.LastInsertId()
+	if err != nil {
+		return fmt.Errorf("get conversation turn id: %w", err)
+	}
+	s.notifyConversationTurn(sessionID, role, content, sourceSessionID, sourceName, turnIndex)
+	return nil
+}
+
+func (s *Store) notifyConversationTurn(sessionID, role, content, sourceSessionID, sourceName string, turnIndex int64) {
 	if s.notifyWriter != nil {
-		turnIndex, _ := result.LastInsertId()
 		_ = s.notifyWriter.Send(envelope.EventChatMessage, sessionID, map[string]interface{}{
 			"role":              role,
 			"content":           content,
@@ -678,8 +723,6 @@ func (s *Store) AddConversationTurnFrom(sessionID, role, content, sourceSessionI
 			"turn_index":        int(turnIndex),
 		})
 	}
-
-	return nil
 }
 
 // SessionTimestamps holds the first and last conversation turn timestamps.
@@ -816,13 +859,14 @@ func (s *Store) QueuePromptChannelFrom(sessionID, prompt, model, effort, context
 	return nil
 }
 
-// DrainQueueGroup removes and returns the leading contiguous run of queued
-// prompts that share the same model/effort override (ordered by creation time),
-// leaving the remainder untouched. Processing one override-group per call (and
-// re-invoking after each agent run) lets distinct overrides be honored without
-// ever re-inserting prompts — so ordering is preserved and a later-arriving
-// prompt can never jump ahead of the remainder. Returns an empty slice when the
-// queue is empty.
+const (
+	MaxQueueBatch      = 32
+	MaxQueueBatchBytes = 1 << 20
+)
+
+// DrainQueueGroup removes a bounded leading group with matching overrides,
+// reply channel and Ready setting, leaving the remainder in order. An empty
+// queue releases the working session to idle in the same transaction.
 func (s *Store) DrainQueueGroup(sessionID string) ([]QueuedPrompt, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -831,7 +875,7 @@ func (s *Store) DrainQueueGroup(sessionID string) ([]QueuedPrompt, error) {
 	defer tx.Rollback()
 
 	rows, err := tx.Query(
-		`SELECT id, prompt, model, effort, context_tier, source, source_session_id, source_name, reply_channel_id, mark_ready FROM prompt_queue WHERE session_id = ? ORDER BY created_at, id`, sessionID,
+		`SELECT id, prompt, model, effort, context_tier, source, source_session_id, source_name, reply_channel_id, mark_ready FROM prompt_queue WHERE session_id = ? ORDER BY created_at, id LIMIT ?`, sessionID, MaxQueueBatch,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("drain queue group: %w", err)
@@ -842,6 +886,7 @@ func (s *Store) DrainQueueGroup(sessionID string) ([]QueuedPrompt, error) {
 	var haveFirst bool
 	var firstModel, firstEffort, firstTier string
 	var firstChannel int64
+	totalBytes := 0
 	for rows.Next() {
 		var id int64
 		var qp QueuedPrompt
@@ -851,11 +896,14 @@ func (s *Store) DrainQueueGroup(sessionID string) ([]QueuedPrompt, error) {
 			return nil, fmt.Errorf("scan queued prompt: %w", err)
 		}
 		qp.MarkReady = markReady != 0
+		if len(prompts) > 0 && totalBytes+len(qp.Prompt) > MaxQueueBatchBytes {
+			break
+		}
 		if !haveFirst {
 			haveFirst = true
 			firstModel, firstEffort, firstTier = qp.Model, qp.Effort, qp.ContextTier
 			firstChannel = qp.ReplyChannelID
-		} else if qp.Model != firstModel || qp.Effort != firstEffort || qp.ContextTier != firstTier || qp.ReplyChannelID != firstChannel {
+		} else if qp.Model != firstModel || qp.Effort != firstEffort || qp.ContextTier != firstTier || qp.ReplyChannelID != firstChannel || qp.MarkReady != prompts[0].MarkReady {
 			// Different override or reply channel: end of the leading group. Keeping
 			// reply channel in the grouping key ensures a group's response is routed
 			// to exactly one channel (or none).
@@ -863,6 +911,7 @@ func (s *Store) DrainQueueGroup(sessionID string) ([]QueuedPrompt, error) {
 		}
 		ids = append(ids, id)
 		prompts = append(prompts, qp)
+		totalBytes += len(qp.Prompt)
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -872,6 +921,11 @@ func (s *Store) DrainQueueGroup(sessionID string) ([]QueuedPrompt, error) {
 	for _, id := range ids {
 		if _, err := tx.Exec(`DELETE FROM prompt_queue WHERE id = ?`, id); err != nil {
 			return nil, fmt.Errorf("delete queued prompt: %w", err)
+		}
+	}
+	if len(prompts) == 0 {
+		if _, err := tx.Exec(`UPDATE sessions SET status = ?, updated_at = ? WHERE session_id = ?`, StateIdle, time.Now().UTC(), sessionID); err != nil {
+			return nil, fmt.Errorf("mark drained session idle: %w", err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -949,14 +1003,32 @@ func (s *Store) MarkScheduleResultReady(sessionID string) error {
 // CreateScheduleFull adds a scheduled prompt with optional cron recurrence and an
 // optional reply channel id (0 = none) whose output is delivered to that channel.
 func (s *Store) CreateScheduleFull(sessionID, prompt string, scheduledAt time.Time, cronExpr string, replyChannelID int64, markReady bool) (int64, error) {
-	res, err := s.db.Exec(
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	var count int
+	if err := tx.QueryRow(`SELECT count(*) FROM
+		(SELECT 1 FROM schedules WHERE session_id = ? AND status IN (?, ?) LIMIT ?)`,
+		sessionID, SchedulePending, ScheduleRunning, MaxActiveSchedules).Scan(&count); err != nil {
+		return 0, err
+	}
+	if count >= MaxActiveSchedules {
+		return 0, fmt.Errorf("session has reached the limit of %d active schedules; cancel unwanted schedules first", MaxActiveSchedules)
+	}
+	res, err := tx.Exec(
 		`INSERT INTO schedules (session_id, prompt, scheduled_at, status, cron_expr, reply_channel_id, mark_ready) VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		sessionID, prompt, scheduledAt.UTC(), SchedulePending, cronExpr, replyChannelID, boolToInt(markReady),
 	)
 	if err != nil {
 		return 0, fmt.Errorf("create schedule: %w", err)
 	}
-	return res.LastInsertId()
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	return id, tx.Commit()
 }
 
 // GetSchedule retrieves a schedule by ID.
@@ -1010,13 +1082,17 @@ func (s *Store) ListSchedules(sessionID string, statusFilter string) ([]*Schedul
 	return schedules, rows.Err()
 }
 
-// DueSchedules returns all pending schedules that are due (scheduled_at <= now).
-func (s *Store) DueSchedules() ([]*Schedule, error) {
+// DueSchedules returns at most one due occurrence per session per tick, so a
+// single session's backlog cannot crowd every other session out of the batch.
+func (s *Store) DueSchedules(ctx context.Context) ([]*Schedule, error) {
 	now := time.Now().UTC()
-	rows, err := s.db.Query(
-		`SELECT id, session_id, prompt, scheduled_at, status, cron_expr, reply_channel_id, mark_ready, created_at
-		 FROM schedules WHERE status = ? AND scheduled_at <= ? ORDER BY scheduled_at`,
-		SchedulePending, now,
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT sch.id, sch.session_id, sch.prompt, sch.scheduled_at, sch.status, sch.cron_expr, sch.reply_channel_id, sch.mark_ready, sch.created_at
+		 FROM sessions sess JOIN schedules sch ON sch.id = (
+			SELECT id FROM schedules WHERE session_id = sess.session_id AND status = ? AND scheduled_at <= ?
+			ORDER BY scheduled_at, id LIMIT 1)
+		 ORDER BY sch.scheduled_at, sch.id LIMIT ?`,
+		SchedulePending, now, MaxScheduleBatch,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("due schedules: %w", err)
@@ -1051,7 +1127,12 @@ func (s *Store) UpdateScheduleStatus(id int64, status string) error {
 
 // CancelSchedule cancels a pending schedule. Returns error if not pending.
 func (s *Store) CancelSchedule(id int64) error {
-	res, err := s.db.Exec(`DELETE FROM schedules WHERE id = ? AND status = ?`, id, SchedulePending)
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`DELETE FROM schedules WHERE id = ? AND status = ?`, id, SchedulePending)
 	if err != nil {
 		return fmt.Errorf("cancel schedule: %w", err)
 	}
@@ -1059,7 +1140,10 @@ func (s *Store) CancelSchedule(id int64) error {
 	if n == 0 {
 		return fmt.Errorf("schedule %d not found or not pending", id)
 	}
-	return nil
+	if _, err := tx.Exec(`DELETE FROM prompt_queue WHERE schedule_id = ? AND schedule_id != 0`, id); err != nil {
+		return fmt.Errorf("cancel queued occurrence: %w", err)
+	}
+	return tx.Commit()
 }
 
 // UpdateSchedule edits the prompt, next-run time, cron expression, and reply
