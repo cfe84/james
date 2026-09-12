@@ -360,6 +360,8 @@ connecting through FIFO/MI6. It returns after the update is installed (or
 reports that the current version is already current); it does not wait for
 agent sessions because no daemon is opened by this command. On Windows the
 release helper performs the replacement after the command exits.
+Windows update plans from older daemons still restart by default; only an
+explicit standalone-update plan suppresses restarting.
 
 ### How it works
 

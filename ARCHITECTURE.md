@@ -1024,6 +1024,8 @@ Moneypenny can self-update from GitHub releases (`--auto-update` flag).
    binaries are atomically replaced and the command exits; Windows delegates
    replacement to the staged update helper after the command releases its
    executable lock.
+   The helper defaults omitted `restart` fields to true for plans written by
+   older daemons, preserving automatic restarts during upgrade to this release.
 
 ## OpenCode Agent Integration
 

@@ -43,7 +43,8 @@ func apply(planPath string) error {
 	if err != nil {
 		return fmt.Errorf("read update plan: %w", err)
 	}
-	var plan updatePlan
+	// Older daemons omit restart and expect the helper to launch the replacement.
+	plan := updatePlan{Restart: true}
 	if err := json.Unmarshal(data, &plan); err != nil {
 		return fmt.Errorf("decode update plan: %w", err)
 	}
