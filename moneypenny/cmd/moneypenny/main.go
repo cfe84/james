@@ -38,6 +38,12 @@ func main() {
 	// Handle subcommands before flag parsing.
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "force-update":
+			if err := runForceUpdate(os.Args[2:]); err != nil {
+				log.Printf("force-update failed: %v", err)
+				os.Exit(1)
+			}
+			return
 		case "install":
 			runInstall(os.Args[2:])
 			return
@@ -217,6 +223,35 @@ func main() {
 		runStdio(ctx, h, dispatcher, vlog, os.Stdin, os.Stdout, true)
 	}
 }
+
+func runForceUpdate(args []string) error {
+	fs := flag.NewFlagSet("force-update", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	dataDir := fs.String("data-dir", defaultDataDir(), "directory for moneypenny data")
+	verbose := fs.Bool("v", false, "verbose logging")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	logger := log.New(io.Discard, "[updater] ", log.LstdFlags)
+	if *verbose {
+		logger = log.New(os.Stderr, "[updater] ", log.LstdFlags)
+	}
+	u := updater.New(Version, "cfe84/james", *dataDir, alwaysIdleChecker{}, updater.WithLogger(logger))
+	tag, err := u.ForceUpdate(context.Background())
+	if err != nil {
+		return err
+	}
+	if tag == strings.TrimPrefix(Version, "v") {
+		log.Printf("moneypenny is already up to date (v%s)", Version)
+		return nil
+	}
+	log.Printf("moneypenny updated to v%s", tag)
+	return nil
+}
+
+type alwaysIdleChecker struct{}
+
+func (alwaysIdleChecker) AllSessionsIdle() bool { return true }
 
 func runInstall(args []string) {
 	for _, arg := range args {

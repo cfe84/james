@@ -146,6 +146,47 @@ func (u *Updater) TriggerCheck() bool {
 	}
 }
 
+// ForceUpdate checks GitHub and installs the latest release immediately,
+// without checking session state or starting the updater loop. It is intended
+// for the standalone force-update command when the daemon transport is down.
+func (u *Updater) ForceUpdate(ctx context.Context) (string, error) {
+	release, err := u.checkLatest(ctx)
+	if err != nil {
+		return "", err
+	}
+	tag := strings.TrimPrefix(release.TagName, "v")
+	if !isNewer(tag, u.currentVersion) {
+		return tag, nil
+	}
+	stagedDir, err := u.downloadAndStage(ctx, release)
+	if err != nil {
+		return "", err
+	}
+	if err := u.installWithoutRestart(stagedDir); err != nil {
+		return "", err
+	}
+	return tag, nil
+}
+
+func (u *Updater) installWithoutRestart(stagedDir string) error {
+	currentExe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("get current executable: %w", err)
+	}
+	currentExe, err = filepath.EvalSymlinks(currentExe)
+	if err != nil {
+		return fmt.Errorf("resolve symlinks: %w", err)
+	}
+	suffix := exeSuffix()
+	currentDir := filepath.Dir(currentExe)
+	if err := installGadgets(stagedDir, currentDir, suffix); err != nil {
+		return err
+	}
+	return installStagedBinaries(stagedDir, currentExe,
+		filepath.Join(currentDir, "mi6-client"+suffix),
+		filepath.Join(currentDir, "hem"+suffix), u.vlog)
+}
+
 // Status returns the current update info.
 func (u *Updater) Status() Info {
 	u.mu.RLock()

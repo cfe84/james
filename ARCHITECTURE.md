@@ -1018,6 +1018,12 @@ Moneypenny can self-update from GitHub releases (`--auto-update` flag).
 5. **MI6 resilience**: After re-exec, moneypenny's MI6 reconnect loop naturally re-establishes the connection. FIFO mode recreates pipes on startup. Sessions survive in SQLite.
 6. **Companion binaries (v1.78.0)**: The coordinated release set includes `mi6-client`, `hem`, and `gadgets` alongside Moneypenny (plus the Windows update helper where applicable). `gadgets` is installed even on upgrade from a version that did not ship it, not merely replaced if already present. The daemon uses `mi6-client` for remote routing; agents use `gadgets` for scoped tools.
 7. **Observability**: `update_status` protocol method exposes current state (checking/downloading/staged/waiting_idle/etc.) to hem and TUI.
+8. **Standalone force update**: `moneypenny force-update` constructs the
+   updater without the daemon handler, store, or transport, then performs the
+   signed GitHub check, download, and binary installation directly. Unix
+   binaries are atomically replaced and the command exits; Windows delegates
+   replacement to the staged update helper after the command releases its
+   executable lock.
 
 ## OpenCode Agent Integration
 

@@ -47,3 +47,28 @@ func installStagedUpdate(stagedDir, currentExe, currentMI6, currentHem string, a
 	vlog.Printf("re-execing with args: %v", args)
 	return reExec(currentExe, args)
 }
+
+func installStagedBinaries(stagedDir, currentExe, currentMI6, currentHem string, vlog *log.Logger) error {
+	suffix := exeSuffix()
+	for _, pair := range []struct {
+		name   string
+		target string
+	}{
+		{"mi6-client" + suffix, currentMI6},
+		{"hem" + suffix, currentHem},
+		{"moneypenny" + suffix, currentExe},
+	} {
+		source := filepath.Join(stagedDir, pair.name)
+		if _, err := os.Stat(source); err != nil {
+			continue
+		}
+		if _, err := os.Stat(pair.target); err != nil {
+			continue
+		}
+		vlog.Printf("swapping %s: %s -> %s", pair.name, source, pair.target)
+		if err := atomicSwap(source, pair.target); err != nil {
+			return fmt.Errorf("swap %s: %w", pair.name, err)
+		}
+	}
+	return os.RemoveAll(stagedDir)
+}

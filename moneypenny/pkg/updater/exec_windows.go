@@ -18,9 +18,14 @@ type windowsUpdatePlan struct {
 	CurrentHem string   `json:"current_hem"`
 	StagedDir  string   `json:"staged_dir"`
 	Args       []string `json:"args"`
+	Restart    bool     `json:"restart"`
 }
 
 func installStagedUpdate(stagedDir, currentExe, currentMI6, currentHem string, args []string, beforeRestart func(), vlog *log.Logger) error {
+	return installStagedUpdateWithRestart(stagedDir, currentExe, currentMI6, currentHem, args, beforeRestart, vlog, true)
+}
+
+func installStagedUpdateWithRestart(stagedDir, currentExe, currentMI6, currentHem string, args []string, beforeRestart func(), vlog *log.Logger, restart bool) error {
 	helper := filepath.Join(stagedDir, "moneypenny-update-helper.exe")
 	if _, err := os.Stat(helper); err != nil {
 		return fmt.Errorf("staged update helper not found: %w", err)
@@ -33,6 +38,7 @@ func installStagedUpdate(stagedDir, currentExe, currentMI6, currentHem string, a
 		CurrentHem: currentHem,
 		StagedDir:  stagedDir,
 		Args:       args[1:],
+		Restart:    restart,
 	})
 	if err != nil {
 		return fmt.Errorf("encode update plan: %w", err)
@@ -52,4 +58,8 @@ func installStagedUpdate(stagedDir, currentExe, currentMI6, currentHem string, a
 	}
 	os.Exit(0)
 	return nil
+}
+
+func installStagedBinaries(stagedDir, currentExe, currentMI6, currentHem string, vlog *log.Logger) error {
+	return installStagedUpdateWithRestart(stagedDir, currentExe, currentMI6, currentHem, []string{currentExe}, nil, vlog, false)
 }

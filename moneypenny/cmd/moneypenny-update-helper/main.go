@@ -24,6 +24,7 @@ type updatePlan struct {
 	CurrentHem string   `json:"current_hem"`
 	StagedDir  string   `json:"staged_dir"`
 	Args       []string `json:"args"`
+	Restart    bool     `json:"restart"`
 }
 
 func main() {
@@ -74,13 +75,15 @@ func apply(planPath string) error {
 		}
 	}
 
-	cmd := exec.Command(plan.CurrentExe, plan.Args...)
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start updated moneypenny: %w", err)
+	if plan.Restart {
+		cmd := exec.Command(plan.CurrentExe, plan.Args...)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("start updated moneypenny: %w", err)
+		}
+		log.Printf("started updated moneypenny")
 	}
-	log.Printf("started updated moneypenny")
 	_ = os.RemoveAll(plan.StagedDir)
 	return nil
 }

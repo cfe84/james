@@ -354,6 +354,12 @@ Example: `hem add moneypenny -n local --fifo-folder ~/moneypenny-fifo`
 ## Auto-Update
 
 Moneypenny can self-update from GitHub releases when started with `--auto-update`.
+`moneypenny force-update [--data-dir DIR]` performs the same signed GitHub
+release check and binary installation directly, without starting the daemon or
+connecting through FIFO/MI6. It returns after the update is installed (or
+reports that the current version is already current); it does not wait for
+agent sessions because no daemon is opened by this command. On Windows the
+release helper performs the replacement after the command exits.
 
 ### How it works
 
@@ -386,6 +392,8 @@ private key or long-lived Azure credential is stored in the repository.
 
 - `moneypenny --auto-update` — enable automatic updates (default: off)
 - `moneypenny --update-interval 1h` — check frequency (default: 1h)
+- `moneypenny force-update` — bypass daemon connections and install the latest
+  signed release immediately
 
 ### Release signing key generation
 
