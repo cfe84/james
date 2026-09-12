@@ -9,6 +9,7 @@
     { name: 'edit_sessions', label: 'Edit any tracked session (except gadget permissions)', defaultValue: false },
     { name: 'edit_own_session', label: 'Edit this session (except gadget permissions)', defaultValue: false },
     { name: 'edit_own_subagents', label: 'Edit own subagents, including lifecycle (except gadget permissions)', defaultValue: false },
+    { name: 'moneypenny_logs', label: 'Read daemon logs on any registered Moneypenny (may include other sessions)', defaultValue: false },
     { name: 'traits', label: 'List, view and edit shared trait bodies (affects future use by all agents)', defaultValue: false },
     { name: 'scheduling', label: 'Schedule prompts for this session', defaultValue: true },
   ];

@@ -24,7 +24,7 @@ func command(args []string) (string, []string, error) {
 	case "memory.get", "memory.list", "memory.search", "memory.set", "memory.batch", "memory.delete", "memory.revisions",
 		"agents.list", "agents.message", "agents.create", "subagents.list", "subagents.create", "subagents.message",
 		"subagents.edit", "subagents.complete", "subagents.stop", "subagents.delete",
-		"traits.list", "traits.get", "traits.edit", "sessions.edit",
+		"traits.list", "traits.get", "traits.edit", "sessions.edit", "moneypenny.logs",
 		"schedule.list", "schedule.create", "schedule.delete":
 		return method, args[2:], nil
 	}
@@ -38,6 +38,8 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 	}
 	allowed := map[string]bool{}
 	switch method {
+	case "moneypenny.logs":
+		allowed["name"], allowed["lines"] = true, true
 	case "memory.get":
 		allowed["offset"], allowed["limit"] = true, true
 	case "memory.set", "agents.message", "subagents.message":
@@ -70,6 +72,13 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 		data[key] = value
 		if key == "yolo" {
 			data[key] = value == "true"
+		}
+		if key == "lines" {
+			n, err := strconv.Atoi(value)
+			if err != nil || n < 1 {
+				return Request{}, fmt.Errorf("--lines must be a positive integer")
+			}
+			data[key] = n
 		}
 		if key == "offset" || key == "limit" {
 			n, err := strconv.Atoi(value)
@@ -142,7 +151,7 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 				data["entries"] = entries
 			}
 		}
-	case "agents.list", "subagents.list", "schedule.list", "traits.list":
+	case "agents.list", "subagents.list", "schedule.list", "traits.list", "moneypenny.logs":
 		err = arity(0, 0)
 	case "traits.get", "traits.edit":
 		if err = arity(1, 1); err == nil {

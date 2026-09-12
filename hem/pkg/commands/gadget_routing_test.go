@@ -120,7 +120,7 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 	defer out.Close()
 	defer func() { _, _ = in.WriteString("\n") }()
 	writes := make(chan transport.Command, 10)
-	capabilities := envelope.GadgetCapabilities{Subagents: true, Memory: false, Agents: false, Traits: true, Scheduling: false, CreateAgents: true}
+	capabilities := envelope.GadgetCapabilities{Subagents: true, Memory: false, Agents: false, Traits: true, Scheduling: false, CreateAgents: true, MoneypennyLogs: true}
 	var liveCapabilities atomic.Value
 	liveCapabilities.Store(capabilities)
 	var sourceYolo atomic.Bool
@@ -142,6 +142,17 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 				}
 			case "summarize_session":
 				data = map[string]any{"summary": "Prior session context", "turn_count": 1}
+			case "get_logs":
+				writes <- command
+				switch command.Data.(map[string]any)["lines"] {
+				case float64(100):
+					data = envelope.GetLogsResponse{Content: "recent log", Lines: 1}
+				case float64(2000):
+					data = envelope.GetLogsResponse{Content: "bounded tail", Lines: 1, Truncated: true}
+				default:
+					status, errorCode = "error", envelope.ErrInvalidRequest
+					data = map[string]string{"message": "lines must be between 1 and 10000"}
+				}
 			case "create_session", "queue_prompt", "update_session":
 				writes <- command
 			case "continue_session":
@@ -184,6 +195,50 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 			return transport.Command{}
 		}
 	}
+	for _, tc := range []struct {
+		name  string
+		data  map[string]any
+		lines int
+		want  string
+	}{
+		{"own host", map[string]any{}, 100, "recent log"},
+		{"remote host", map[string]any{"name": "remote", "lines": 2000}, 2000, "[earlier log output omitted because the final 2 MiB limit was reached]\nbounded tail"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := gadgetRouteRequest(t, e, "source", "moneypenny.logs", tc.data)
+			var result TextResult
+			if response.Status != "ok" || json.Unmarshal(response.Data, &result) != nil || result.Message != tc.want {
+				t.Fatalf("unexpected log response: %+v", response)
+			}
+			if cmd := next(); cmd.Method != "get_logs" || cmd.Data.(map[string]any)["lines"] != float64(tc.lines) {
+				t.Fatalf("wrong log request: %+v", cmd)
+			}
+		})
+	}
+	for _, data := range []string{
+		`null`, `{"path":"secret"}`, `{"source_session_id":"other"}`, `{"gadget_route":{}}`,
+		`{"lines":"100"}`, `{"lines":0}`, `{"lines":-1}`, `{"name":"missing"}`, `{"name":"--lines=1"}`,
+	} {
+		if response := gadgetRouteRequest(t, e, "source", "moneypenny.logs", json.RawMessage(data)); response.Status != "error" {
+			t.Fatalf("invalid logs request accepted: %s", data)
+		}
+	}
+	deniedLogs := capabilities
+	deniedLogs.MoneypennyLogs = false
+	liveCapabilities.Store(deniedLogs)
+	if response := gadgetRouteRequest(t, e, "source", "moneypenny.logs", map[string]any{}); response.Status != "error" || !strings.Contains(response.Message, "capability is disabled") {
+		t.Fatalf("logs revocation ignored: %+v", response)
+	}
+	select {
+	case cmd := <-writes:
+		t.Fatalf("denied or malformed request reached logs: %+v", cmd)
+	default:
+	}
+	liveCapabilities.Store(capabilities)
+	if response := gadgetRouteRequest(t, e, "source", "moneypenny.logs", map[string]any{"lines": 10001}); response.Status != "error" || !strings.Contains(response.Message, envelope.ErrInvalidRequest) {
+		t.Fatalf("daemon error not propagated: %+v", response)
+	}
+	next()
 	const prompt = "--gadget-agents=true"
 	response := gadgetRouteRequest(t, e, "source", "subagents.create", map[string]any{"prompt": prompt, "agent": "copilot", "name": "--yolo"})
 	if response.Status != "ok" {

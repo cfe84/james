@@ -67,6 +67,8 @@ func patchedGadgetCapabilities(raw json.RawMessage, base envelope.GadgetCapabili
 			base.EditOwnSession = *value
 		case "edit_own_subagents":
 			base.EditOwnSubagents = *value
+		case "moneypenny_logs":
+			base.MoneypennyLogs = *value
 		case "traits":
 			base.Traits = *value
 		case "scheduling":
@@ -244,6 +246,9 @@ func (h *Handler) prepareGadgets(sessionID string, params *agent.RunParams) erro
 	if caps.Scheduling {
 		params.SystemPrompt += "Your scheduled prompts: gadgets schedule list; gadgets schedule create (--at RFC3339 | --cron 'five fields') --prompt 'task'; gadgets schedule delete ID. These commands act only on your session.\n"
 	}
+	if caps.MoneypennyLogs {
+		params.SystemPrompt += "Daemon diagnostics: gadgets moneypenny logs [--name registered-host] [--lines N]. Defaults to your host and 100 lines; accepts 1-10000 lines, reads at most the final 2 MiB. Read-only, but logs can contain other sessions' data; retrieve only what is needed.\n"
+	}
 	params.SystemPrompt += "Operator notifications are always available: gadgets notify 'action needed' (or supply text on stdin). Use for actionable updates, not routine progress.\n</gadgets>"
 	params.SystemPrompt += notifyUserSystemPromptSuffix
 	return nil
@@ -362,6 +367,8 @@ func (h *Handler) executeGadget(ctx context.Context, sessionID string, request g
 		allowed = caps.EditOwnSubagents
 	case "schedule.list", "schedule.create", "schedule.delete":
 		allowed = caps.Scheduling
+	case "moneypenny.logs":
+		allowed = caps.MoneypennyLogs
 	case "notify":
 		allowed = true
 	default:
@@ -383,7 +390,7 @@ func (h *Handler) executeGadget(ctx context.Context, sessionID string, request g
 			return nil, &gadgetError{"invalid_request", err.Error()}
 		}
 	}
-	if strings.HasPrefix(request.Method, "agents.") || strings.HasPrefix(request.Method, "subagents.") || strings.HasPrefix(request.Method, "traits.") {
+	if request.Method == "moneypenny.logs" || strings.HasPrefix(request.Method, "agents.") || strings.HasPrefix(request.Method, "subagents.") || strings.HasPrefix(request.Method, "traits.") {
 		return h.routeGadget(ctx, sessionID, request.Method, request.Data)
 	}
 	if strings.HasPrefix(request.Method, "schedule.") {

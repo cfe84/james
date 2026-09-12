@@ -26,6 +26,7 @@ gadgets subagents message id [--body text]
 gadgets schedule list
 gadgets schedule create (--cron expr | --at timestamp) --prompt text
 gadgets schedule delete id
+gadgets moneypenny logs [--name registered-host] [--lines N]
 gadgets notify [text]
 gadgets help
 gadgets version
@@ -64,6 +65,20 @@ Kill; Hem verifies that from a fresh source-session lookup before forwarding it.
 ```sh
 printf 'Maintain the project documentation' | gadgets agents create --name docs
 ```
+
+### Moneypenny logs (opt-in)
+
+`gadgets moneypenny logs --name chfeval-dev --lines 2000` reads the daemon's
+configured log through Hem's existing FIFO/MI6 transport. Omit `--name` to use
+the caller's host. See [the log gadget specification](../SPEC.md#capabilities-and-operator-controls)
+for limits and rollout requirements. Results contain `data.message` with the
+log tail and an explicit notice when the byte bound omitted earlier output.
+
+Operators grant `--gadget-moneypenny-logs=true` through Hem or the existing
+TUI/Qew permission controls. It defaults off, allows read-only logs on any
+registered host, and may expose other sessions' data. Current permissions are
+checked by both the source daemon and Hem; agents cannot enable it themselves,
+choose arbitrary paths, or override transport configuration.
 
 ### Shared traits (opt-in)
 
@@ -154,6 +169,7 @@ and `Authorization: Bearer <token>`. Body:
 | schedule list | `schedule.list` | `{}` |
 | schedule create | `schedule.create` | `{"cron":"...", "prompt":"..."}` or `{"at":"...", "prompt":"..."}` |
 | schedule delete | `schedule.delete` | `{"id":"..."}` |
+| moneypenny logs | `moneypenny.logs` | `{"name":"registered-host","lines":100}`; both fields optional |
 | notify | `notify` | `{"text":"..."}` |
 
 Responses must be a single JSON envelope:

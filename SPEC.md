@@ -894,6 +894,7 @@ operator's administrative CLI/server, with TUI and Qew as operator interfaces.
 | Agents | Off, explicit combined grant | Discover and message all Hem-tracked agents |
 | Create agents | Off, separate explicit grant | Create independent top-level agents on the caller's Moneypenny |
 | Traits | Off, explicit grant | List/view existing shared traits and replace their prompt bodies |
+| Moneypenny logs | Off, explicit grant | Read bounded daemon logs from any registered Moneypenny |
 | Scheduling | On, revocable | List/create/delete schedules belonging to this session |
 | Notifications | Always available | Send actionable operator notifications |
 
@@ -934,10 +935,24 @@ subagents, preserving existing behavior. Neither inherits the creator's selected
 traits. Selection during creation requires only the corresponding creation
 permission, not the opt-in permission for listing/viewing/editing shared traits.
 
+`gadgets moneypenny logs [--name registered-host] [--lines N]` (v1.85.0)
+uses Hem's existing `logs moneypenny` transport and bounded reader. The default
+host is the caller's Moneypenny, not Hem's default host. It returns a JSON
+success envelope with `data.message` containing the log tail (or an empty-log
+notice); byte truncation is explicitly indicated in the message. The default
+is 100 lines, with 1-10,000 accepted and at most the final 2 MiB read.
+Enable `--gadget-moneypenny-logs=true` on the session, or use the matching
+TUI/Qew permission control. This grant defaults off for new and existing
+sessions because daemon logs may contain other sessions' data. It allows
+read-only access to any host registered on the owning Hem, not arbitrary
+file paths or relay addresses. Both the source daemon and Hem check current
+permissions; revocation applies to subsequent calls. Upgrade Hem and the
+source daemon/gadgets client to v1.85.0; target hosts need `get_logs` support.
+
 Capability defaults apply when an older session has no stored capability object.
-Hem's create/copy/edit and subsession commands expose the six explicit
+Hem's create/copy/edit and subsession commands expose explicit
 `--gadget-memory`, `--gadget-subagents`, `--gadget-agents`, `--gadget-create-agents`, `--gadget-traits`, and
-`--gadget-scheduling` booleans. The existing TUI wizard/edit forms and Qew
+`--gadget-scheduling` and `--gadget-moneypenny-logs` booleans. The existing TUI wizard/edit forms and Qew
 create/copy/edit dialogs expose matching permission controls and an
 always-available-notifications hint. Copy inherits permissions unless overridden;
 updates preserve unspecified values. `--gadgets` controls only the legacy stored

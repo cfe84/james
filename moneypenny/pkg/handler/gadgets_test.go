@@ -105,16 +105,18 @@ func TestGadgetCredentialsAndLiveRevocation(t *testing.T) {
 		t.Fatalf("default memory denied: %+v", response)
 	}
 	requireGadgetError(t, gadgetCall(t, params, "agents.list", map[string]any{}), "permission_denied")
+	requireGadgetError(t, gadgetCall(t, params, "moneypenny.logs", map[string]any{}), "permission_denied")
 	requireGadgetError(t, gadgetCall(t, params, "memory.get", map[string]string{"session_id": gadgetOtherSession}), "invalid_request")
 
 	setGadgetCaps(t, h, envelope.GadgetCapabilities{})
-	for _, method := range []string{"memory.get", "subagents.list", "schedule.list", "agents.message"} {
+	for _, method := range []string{"memory.get", "subagents.list", "schedule.list", "agents.message", "moneypenny.logs"} {
 		requireGadgetError(t, gadgetCall(t, params, method, map[string]any{}), "permission_denied")
 	}
 	if response := gadgetCall(t, params, "notify", map[string]string{"text": "Please approve access."}); !response.Success {
 		t.Fatalf("revoked capabilities blocked notification: %+v", response)
 	}
 	setGadgetCaps(t, h, envelope.GadgetCapabilities{Agents: true})
+	requireGadgetError(t, gadgetCall(t, params, "moneypenny.logs", map[string]any{}), "permission_denied")
 	requireGadgetError(t, gadgetCall(t, params, "delete_session", map[string]string{"session_id": gadgetOtherSession}), "unknown_method")
 	requireGadgetError(t, gadgetCall(t, params, "subagents.create", map[string]string{"prompt": "no"}), "permission_denied")
 	requireGadgetError(t, gadgetCall(t, params, "schedule.list", map[string]any{}), "permission_denied")

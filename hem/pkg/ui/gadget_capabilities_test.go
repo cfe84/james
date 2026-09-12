@@ -56,7 +56,7 @@ func TestCreateFormsSendExplicitGadgetPermissions(t *testing.T) {
 			t.Fatalf("unexpected request: %#v", sender.request)
 		}
 		got := permissionArgs(sender.request.Args)
-		if len(got) != 9 {
+		if len(got) != 10 {
 			t.Fatalf("wizard=%v omitted permissions: %v", wizard, sender.request.Args)
 		}
 		for flag, value := range got {
@@ -71,7 +71,7 @@ func TestWizardCopiesGadgetPermissions(t *testing.T) {
 	sender := &permissionTestSender{}
 	m := newWizardModel(&client{sender: sender})
 	m.sourceSessionID = "source"
-	caps := envelope.GadgetCapabilities{Agents: true, Traits: true, CreateAgents: true}
+	caps := envelope.GadgetCapabilities{Agents: true, Traits: true, CreateAgents: true, MoneypennyLogs: true}
 	m, _ = m.Update(wizardSourceLoadedMsg{source: &sessionDetail{
 		SessionID: "source", Agent: "copilot", GadgetCapabilities: &caps,
 	}})
@@ -83,13 +83,13 @@ func TestWizardCopiesGadgetPermissions(t *testing.T) {
 	}
 	args := permissionArgs(sender.request.Args)
 	if args["--gadget-agents"] != "true" || args["--gadget-traits"] != "true" || args["--gadget-memory"] != "false" ||
-		args["--gadget-subagents"] != "false" || args["--gadget-scheduling"] != "false" || args["--gadget-create-agents"] != "true" {
+		args["--gadget-subagents"] != "false" || args["--gadget-scheduling"] != "false" || args["--gadget-create-agents"] != "true" || args["--gadget-moneypenny-logs"] != "true" {
 		t.Fatalf("copy lost permissions: %v", args)
 	}
 }
 
 func TestEditFormLoadsAndUpdatesGadgetPermissions(t *testing.T) {
-	for _, caps := range []*envelope.GadgetCapabilities{nil, {}, {Traits: true, CreateAgents: true}} {
+	for _, caps := range []*envelope.GadgetCapabilities{nil, {}, {Traits: true, CreateAgents: true, MoneypennyLogs: true}} {
 		sender := &permissionTestSender{}
 		m := newEditModel(&client{sender: sender}, "session")
 		m, _ = m.Update(sessionDetailLoadedMsg{detail: &sessionDetail{GadgetCapabilities: caps}})
@@ -108,7 +108,7 @@ func TestEditFormLoadsAndUpdatesGadgetPermissions(t *testing.T) {
 			t.Fatal("unchanged form sent an update")
 		}
 		for i := range m.fields {
-			if m.fields[i].flag == "--gadget-traits" {
+			if m.fields[i].flag == "--gadget-moneypenny-logs" {
 				m.cursor = i
 			}
 		}
@@ -121,10 +121,10 @@ func TestEditFormLoadsAndUpdatesGadgetPermissions(t *testing.T) {
 		}
 		args := permissionArgs(sender.request.Args)
 		wantValue := "true"
-		if caps != nil && caps.Traits {
+		if caps != nil && caps.MoneypennyLogs {
 			wantValue = "false"
 		}
-		if len(args) != 1 || args["--gadget-traits"] != wantValue {
+		if len(args) != 1 || args["--gadget-moneypenny-logs"] != wantValue {
 			t.Fatalf("edit did not preserve omitted settings: %v", args)
 		}
 	}

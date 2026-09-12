@@ -160,9 +160,9 @@ deadline, and never retries writes. Client-side restrictions are defense in
 depth, not the source of session authorization.
 
 `sessions.gadget_capabilities` in the **operational** database persists
-`memory`, `subagents`, `agents`, `create_agents`, `edit_sessions`, `edit_own_session`, `edit_own_subagents`, `traits`, and `scheduling`; typed envelope fields carry
+`memory`, `subagents`, `agents`, `create_agents`, `edit_sessions`, `edit_own_session`, `edit_own_subagents`, `moneypenny_logs`, `traits`, and `scheduling`; typed envelope fields carry
 these through create/update/detail. Missing legacy values use defaults:
-Memory, Subagents, and Scheduling true; Agents, CreateAgents, and Traits false. Every gadget request reads
+Memory, Subagents, and Scheduling true; all others false. Every gadget request reads
 current capabilities, so revocation does not wait for a new agent invocation.
 `notify` is always allowed for a valid session. Agents is a single list/message
 grant across Hem-tracked agents, **never** session edit/delete authority.
@@ -173,10 +173,23 @@ recursive revocation of already-created children.
 
 Hem's shared capability flag helper and the existing TUI/Qew form components
 expose explicit `--gadget-memory`, `--gadget-subagents`, `--gadget-agents`,
-`--gadget-create-agents`, `--gadget-traits`, and `--gadget-scheduling` true/false controls. Copy inherits the source values
+`--gadget-create-agents`, `--gadget-traits`, `--gadget-scheduling`, and `--gadget-moneypenny-logs` true/false controls. Copy inherits the source values
 unless overridden; updates apply only specified settings. Notifications have an
 always-available hint rather than a toggle. The legacy `--gadgets` setting
 persists only an instruction notice; it does not turn tools on or off.
+
+`moneypenny.logs` (v1.85.0) is an allowlisted daemon-to-Hem gadget route,
+gated by the separate default-off `MoneypennyLogs` capability. Hem re-reads
+the source session's current capabilities, strictly decodes only `name` and
+`lines`, defaults the name to the tracked source host, and reuses
+`GetMoneypennyLogs` with equals-form arguments. Target routing comes exclusively
+from Hem's registry (FIFO/MI6); no agent-supplied file path, source identity,
+or transport configuration is accepted. Existing `get_logs` line/byte limits,
+error propagation, and truncation notices remain unchanged. The gadget response
+uses the existing `TextResult` (`data.message`), subject to the gadget transport's
+4 MiB encoded-response cap. The opt-in grant covers daemon-wide logs on any
+registered host, potentially including other sessions' content; it is inherited
+by gadget-created agents and copies like other capabilities, never self-granted.
 
 `agents.create` has a separate opt-in `CreateAgents` capability; neither the
 global discovery/message grant nor Subagents authorizes it. It shares the

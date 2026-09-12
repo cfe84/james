@@ -48,6 +48,7 @@ Usage:
   gadgets schedule list
   gadgets schedule create (--cron expr | --at timestamp) --prompt text
   gadgets schedule delete id
+  gadgets moneypenny logs [--name registered-host] [--lines N]
   gadgets notify [text]                      (otherwise reads stdin)
   gadgets help
   gadgets version
@@ -70,6 +71,10 @@ Traits require opt-in permission (default: false). Edits replace shared trait
 bodies for future use by all agents, not already-injected session prompts. Agents
 may edit only traits assigned to their own session.
 No trait create/delete, assignment, rename, or default-setting commands exist.
+Moneypenny logs require separate opt-in permission (default: false), allowing
+read-only log access on any registered host. Host defaults to your Moneypenny;
+lines defaults to 100 (1-10000), with at most the final 2 MiB read per request.
+Logs may include other sessions' data. No file path or relay override is accepted.
 JAMES_GADGETS_URL and JAMES_GADGETS_TOKEN are supplied by the daemon.
 Success envelopes are written as JSON to stdout, error envelopes to stderr.
 `
@@ -108,7 +113,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(s
 		return 0
 	}
 	if (len(args) == 2 || len(args) == 3) && (args[len(args)-1] == "--help" || args[len(args)-1] == "-h") {
-		groupHelp := len(args) == 2 && (args[0] == "memory" || args[0] == "agents" || args[0] == "traits" || args[0] == "subagents" || args[0] == "schedule" || args[0] == "notify")
+		groupHelp := len(args) == 2 && (args[0] == "memory" || args[0] == "agents" || args[0] == "traits" || args[0] == "subagents" || args[0] == "schedule" || args[0] == "moneypenny" || args[0] == "notify")
 		_, rest, err := command(args)
 		if groupHelp || (len(args) == 3 && err == nil && len(rest) == 1) {
 			_, _ = io.WriteString(stdout, Help)

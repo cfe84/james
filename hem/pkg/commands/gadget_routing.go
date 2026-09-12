@@ -44,6 +44,32 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 		return protocol.ErrResponse("gadget source session is not tracked by this Hem")
 	}
 	switch route.Method {
+	case "moneypenny.logs":
+		var request struct {
+			Name  string `json:"name"`
+			Lines *int   `json:"lines"`
+		}
+		if err := decodeGadgetData(route.Data, &request); err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		caps, err := e.currentGadgetCapabilities(source)
+		if err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		if !caps.MoneypennyLogs {
+			return protocol.ErrResponse("moneypenny logs capability is disabled")
+		}
+		if request.Name == "" {
+			request.Name = source.MoneypennyName
+		}
+		args := []string{"--name=" + request.Name}
+		if request.Lines != nil {
+			if *request.Lines < 1 {
+				return protocol.ErrResponse("lines must be positive")
+			}
+			args = append(args, fmt.Sprintf("--lines=%d", *request.Lines))
+		}
+		return e.GetMoneypennyLogs(args)
 	case "traits.list", "traits.get", "traits.edit":
 		return e.traitsGadget(source, route.Method, route.Data)
 	case "agents.list", "subagents.list":
@@ -157,6 +183,7 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 			fmt.Sprintf("--gadget-edit-sessions=%t", capabilities.EditSessions),
 			fmt.Sprintf("--gadget-edit-own-session=%t", capabilities.EditOwnSession),
 			fmt.Sprintf("--gadget-edit-own-subagents=%t", capabilities.EditOwnSubagents),
+			fmt.Sprintf("--gadget-moneypenny-logs=%t", capabilities.MoneypennyLogs),
 			fmt.Sprintf("--gadget-traits=%t", capabilities.Traits),
 			fmt.Sprintf("--gadget-scheduling=%t", capabilities.Scheduling),
 		}

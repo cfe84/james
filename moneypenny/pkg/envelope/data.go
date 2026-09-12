@@ -23,6 +23,7 @@ type GadgetCapabilities struct {
 	EditSessions     bool `json:"edit_sessions"`
 	EditOwnSession   bool `json:"edit_own_session"`
 	EditOwnSubagents bool `json:"edit_own_subagents"`
+	MoneypennyLogs   bool `json:"moneypenny_logs"`
 	Traits           bool `json:"traits"`
 	Scheduling       bool `json:"scheduling"`
 }

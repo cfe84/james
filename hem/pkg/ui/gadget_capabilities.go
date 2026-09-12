@@ -46,6 +46,7 @@ func gadgetCapabilityFields(capabilities *envelope.GadgetCapabilities) []formFie
 		{label: "Gadget: edit any session", flag: "--gadget-edit-sessions", isBool: true, explicitBool: true, value: strconv.FormatBool(c.EditSessions)},
 		{label: "Gadget: edit own session", flag: "--gadget-edit-own-session", isBool: true, explicitBool: true, value: strconv.FormatBool(c.EditOwnSession)},
 		{label: "Gadget: edit own subagents / lifecycle", flag: "--gadget-edit-own-subagents", isBool: true, explicitBool: true, value: strconv.FormatBool(c.EditOwnSubagents)},
+		{label: "Gadget: read logs on any moneypenny", flag: "--gadget-moneypenny-logs", isBool: true, explicitBool: true, value: strconv.FormatBool(c.MoneypennyLogs)},
 		{label: "Gadget: shared traits (future use)", flag: "--gadget-traits", isBool: true, explicitBool: true, value: strconv.FormatBool(c.Traits)},
 		{label: "Gadget: scheduling", flag: "--gadget-scheduling", isBool: true, explicitBool: true, value: strconv.FormatBool(c.Scheduling)},
 	}
