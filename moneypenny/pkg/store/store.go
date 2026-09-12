@@ -158,6 +158,7 @@ CREATE TABLE IF NOT EXISTS conversation_turns (
 );
 
 CREATE INDEX IF NOT EXISTS idx_conversation_session ON conversation_turns(session_id);
+CREATE INDEX IF NOT EXISTS idx_conversation_session_created ON conversation_turns(session_id, created_at, id);
 
 CREATE TABLE IF NOT EXISTS prompt_queue (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

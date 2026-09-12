@@ -27,6 +27,7 @@ func TestStdioListsSessionsWhileCommandBlocked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	defer st.Close()
 	if err := st.CreateSession(&store.Session{SessionID: "session", Name: "Busy agent", Agent: "copilot"}); err != nil {
 		t.Fatal(err)
@@ -72,6 +73,7 @@ func TestStdioListsSessionsWhileCommandBlocked(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+
 	replies := make(chan envelope.Response, 2)
 	go func() {
 		scanner := bufio.NewScanner(output)
@@ -115,6 +117,30 @@ func TestStdioListsSessionsWhileCommandBlocked(t *testing.T) {
 	case <-stopped:
 	case <-time.After(time.Second):
 		t.Fatal("disconnected stream waited for a command")
+	}
+}
+
+func TestStdioProtocolLoggingOmitsBodies(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.New(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	h := handler.New(st, agent.New(log.New(io.Discard, "", 0)), "test", t.TempDir())
+	dispatcher := newRequestDispatcher(ctx, h.Handle, log.New(io.Discard, "", 0))
+	var logs bytes.Buffer
+	logger := log.New(&logs, "", 0)
+	var output bytes.Buffer
+	runStdio(ctx, h, dispatcher, logger,
+		strings.NewReader(`{"type":"request","method":"get_version","request_id":"version","data":{"secret":"must-not-be-logged"}}`+"\n"),
+		&output, true)
+
+	if strings.Contains(logs.String(), "secret") || strings.Contains(logs.String(), "must-not-be-logged") {
+		t.Fatalf("protocol body leaked into logs: %s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "method=get_version") || !strings.Contains(logs.String(), "status=success") {
+		t.Fatalf("protocol metadata missing from logs: %s", logs.String())
 	}
 }
 

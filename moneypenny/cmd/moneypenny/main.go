@@ -324,19 +324,6 @@ func defaultDataDir() string {
 	return filepath.Join(home, ".config", "james", "moneypenny")
 }
 
-// truncateLog truncates a byte slice for logging, showing the first and last portions.
-func truncateLog(b []byte, maxLen int) string {
-	if len(b) <= maxLen {
-		return string(b)
-	}
-	tail := 50
-	head := maxLen - tail - 3 // 3 for "..."
-	if head < 10 {
-		head = 10
-	}
-	return string(b[:head]) + "..." + string(b[len(b)-tail:])
-}
-
 // runStdio reads JSON commands from r (one per line), processes them, and writes responses to w.
 func runStdio(ctx context.Context, h *handler.Handler, dispatcher *requestDispatcher, vlog *log.Logger, r io.Reader, w io.Writer, drainResponses bool) {
 	ctx, cancel := context.WithCancel(ctx)
@@ -355,7 +342,10 @@ func runStdio(ctx context.Context, h *handler.Handler, dispatcher *requestDispat
 			vlog.Printf("write response request_id=%s: bytes=%d/%d error=%v", resp.RequestID, n, len(b), err)
 			return
 		}
-		vlog.Printf("send: %s", truncateLog(b, 200))
+		// Do not log response bodies. Responses can contain conversation text,
+		// attachments, or this daemon log itself (get_logs); logging them makes
+		// diagnostics recursively amplify and can expose customer content.
+		vlog.Printf("send response request_id=%s status=%s bytes=%d", resp.RequestID, resp.Status, len(b))
 	}
 
 	scanner := bufio.NewScanner(r)
@@ -370,12 +360,13 @@ func runStdio(ctx context.Context, h *handler.Handler, dispatcher *requestDispat
 		if len(line) == 0 {
 			continue
 		}
-		vlog.Printf("recv: %s", truncateLog(line, 200))
 		cmd, err := envelope.ParseCommand(line)
 		if err != nil {
+			vlog.Printf("recv invalid command bytes=%d", len(line))
 			respond(envelope.ErrorResponse("", envelope.ErrInvalidRequest, err.Error()))
 			continue
 		}
+		vlog.Printf("recv request_id=%s method=%s bytes=%d", cmd.RequestID, cmd.Method, len(line))
 		pending.Add(1)
 		dispatcher.submit(ctx, cmd, respond, pending.Done)
 	}

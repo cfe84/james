@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -37,6 +38,31 @@ func newTestRunner(persist PersistentActivityFunc) *Runner {
 	r := New(log.New(io.Discard, "", 0))
 	r.onPersistentActivity = persist
 	return r
+}
+
+func TestBoundedBufferRetainsOnlyDiagnosticTail(t *testing.T) {
+	b := newBoundedBuffer(8)
+	if _, err := b.Write([]byte("0123456789")); err != nil {
+		t.Fatal(err)
+	}
+	if got := b.String(); got != "23456789" {
+		t.Fatalf("bounded buffer = %q, want diagnostic tail", got)
+	}
+	if got := b.Len(); got != 8 {
+		t.Fatalf("bounded buffer length = %d, want 8", got)
+	}
+}
+
+func TestActivityBufferBoundsSummarySize(t *testing.T) {
+	b := newActivityBuffer(1)
+	b.add(ActivityEvent{Type: "text", Summary: strings.Repeat("x", maxActivitySummaryBytes+100)})
+	events := b.snapshot()
+	if len(events) != 1 || len(events[0].Summary) != maxActivitySummaryBytes {
+		t.Fatalf("activity summary length = %d, want %d", len(events[0].Summary), maxActivitySummaryBytes)
+	}
+	if !strings.HasSuffix(events[0].Summary, "...") {
+		t.Fatal("bounded activity summary should indicate truncation")
+	}
 }
 
 // TestCopilotStreamingPhaseClassifiesReply verifies that when Copilot tags
