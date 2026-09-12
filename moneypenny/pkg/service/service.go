@@ -83,7 +83,7 @@ func windowsTaskDefinition(cfg *Config, launcherPath, userID string) (string, er
 	}
 	logonType := "InteractiveToken"
 	runLevel := "LeastPrivilege"
-	trigger := "<LogonTrigger><Enabled>true</Enabled></LogonTrigger>"
+	trigger := `<LogonTrigger><Enabled>true</Enabled><UserId>%s</UserId></LogonTrigger>`
 	if !cfg.UserLevel {
 		userID = "S-1-5-18"
 		logonType = "ServiceAccount"
@@ -105,6 +105,7 @@ func windowsTaskDefinition(cfg *Config, launcherPath, userID string) (string, er
   </Principals>
   <Settings>
     <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <StartWhenAvailable>true</StartWhenAvailable>
     <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
     <RestartOnFailure>
       <Interval>PT1M</Interval>
@@ -118,5 +119,5 @@ func windowsTaskDefinition(cfg *Config, launcherPath, userID string) (string, er
     </Exec>
   </Actions>
 </Task>
-`, trigger, escape(userID), logonType, runLevel, escape(launcherPath)), nil
+`, fmt.Sprintf(trigger, escape(userID)), escape(userID), logonType, runLevel, escape(launcherPath)), nil
 }
