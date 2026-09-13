@@ -6253,10 +6253,13 @@ func (e *Executor) ScheduleSession(args []string) *protocol.Response {
 
 // ListSchedules lists scheduled prompts for a session.
 func (e *Executor) ListSchedules(args []string) *protocol.Response {
-	var sessionID string
+	var sessionID, status string
+	var limit int
 
 	remaining, err := parseFlagsFromArgs("list-schedules", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&sessionID, "session-id", "", "session ID")
+		fs.StringVar(&status, "status", "", "schedule status")
+		fs.IntVar(&limit, "limit", 50, "maximum schedules")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -6277,6 +6280,9 @@ func (e *Executor) ListSchedules(args []string) *protocol.Response {
 	ctx := context.Background()
 	resp, err := e.sendCommand(ctx, mp, "list_schedules", map[string]interface{}{
 		"session_id": sessionID,
+		"status":     status,
+		"limit":      limit,
+		"offset":     0,
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -6418,24 +6424,17 @@ func (e *Executor) EditSchedule(args []string) *protocol.Response {
 
 	// Fetch the current schedule so unspecified fields are retained.
 	ctx := context.Background()
-	listResp, err := e.sendCommand(ctx, mp, "list_schedules", map[string]interface{}{
-		"session_id": sessionID,
+	detailResp, err := e.sendCommand(ctx, mp, "get_schedule", map[string]interface{}{
+		"schedule_id": scheduleID,
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
-	var listResult ScheduleListResult
-	if err := json.Unmarshal(listResp.Data, &listResult); err != nil {
-		return protocol.ErrResponse(fmt.Sprintf("parsing schedules: %v", err))
+	var current ScheduleInfoResult
+	if err := json.Unmarshal(detailResp.Data, &current); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("parsing schedule: %v", err))
 	}
-	var current *ScheduleInfoResult
-	for i := range listResult.Schedules {
-		if listResult.Schedules[i].ID == scheduleID {
-			current = &listResult.Schedules[i]
-			break
-		}
-	}
-	if current == nil {
+	if current.SessionID != sessionID {
 		return protocol.ErrResponse(fmt.Sprintf("schedule #%d not found for session %s", scheduleID, sessionID))
 	}
 	if current.Status != "pending" {

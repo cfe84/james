@@ -331,6 +331,8 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.schedule(ctx, cmd)
 	case "list_schedules":
 		return h.listSchedules(ctx, cmd)
+	case "get_schedule":
+		return h.getSchedule(ctx, cmd)
 	case "cancel_schedule":
 		return h.cancelSchedule(ctx, cmd)
 	case "update_schedule":
@@ -1144,7 +1146,7 @@ func (h *Handler) getSession(_ context.Context, cmd *envelope.Command) *envelope
 	return envelope.SuccessResponse(cmd.RequestID, detail)
 }
 
-func (h *Handler) getSessionConversation(_ context.Context, cmd *envelope.Command) *envelope.Response {
+func (h *Handler) getSessionConversation(ctx context.Context, cmd *envelope.Command) *envelope.Response {
 	var data envelope.GetConversationData
 	if err := json.Unmarshal(cmd.Data, &data); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
@@ -1165,7 +1167,9 @@ func (h *Handler) getSessionConversation(_ context.Context, cmd *envelope.Comman
 
 	var turns []*store.ConversationTurn
 	if data.All {
-		turns, err = h.store.GetConversation(data.SessionID)
+		// Never materialize an unbounded transcript for a wire read. Full
+		// transcript consumers use the same paginated path repeatedly.
+		turns, err = h.store.GetConversationPaginated(data.SessionID, 100, data.From)
 	} else {
 		count := data.Count
 		if count <= 0 {
@@ -1177,8 +1181,16 @@ func (h *Handler) getSessionConversation(_ context.Context, cmd *envelope.Comman
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to get conversation: %v", err))
 	}
 
+	maxBytes := data.MaxBytes
+	if maxBytes <= 0 || maxBytes > 4*1024*1024 {
+		maxBytes = 1024 * 1024
+	}
 	conversation := make([]envelope.ConversationTurn, 0, len(turns))
+	bytes := 0
 	for _, t := range turns {
+		if len(conversation) > 0 && bytes+len(t.Content) > maxBytes {
+			break
+		}
 		conversation = append(conversation, envelope.ConversationTurn{
 			Role:            t.Role,
 			Content:         t.Content,
@@ -1186,6 +1198,7 @@ func (h *Handler) getSessionConversation(_ context.Context, cmd *envelope.Comman
 			SourceName:      t.SourceName,
 			CreatedAt:       t.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		})
+		bytes += len(t.Content)
 	}
 
 	return envelope.SuccessResponse(cmd.RequestID, envelope.SessionConversation{
@@ -2421,7 +2434,7 @@ func (h *Handler) schedule(_ context.Context, cmd *envelope.Command) *envelope.R
 	})
 }
 
-func (h *Handler) listSchedules(_ context.Context, cmd *envelope.Command) *envelope.Response {
+func (h *Handler) listSchedules(ctx context.Context, cmd *envelope.Command) *envelope.Response {
 	var data envelope.ListSchedulesData
 	if err := json.Unmarshal(cmd.Data, &data); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
@@ -2431,7 +2444,11 @@ func (h *Handler) listSchedules(_ context.Context, cmd *envelope.Command) *envel
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id is required")
 	}
 
-	schedules, err := h.store.ListSchedules(data.SessionID, "")
+	status := data.Status
+	if status == "" {
+		status = store.SchedulePending
+	}
+	schedules, total, err := h.store.ListSchedulesPage(ctx, data.SessionID, status, data.Limit, data.Offset)
 	if err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to list schedules: %v", err))
 	}
@@ -2451,7 +2468,27 @@ func (h *Handler) listSchedules(_ context.Context, cmd *envelope.Command) *envel
 		})
 	}
 
-	return envelope.SuccessResponse(cmd.RequestID, envelope.ListSchedulesResponse{Schedules: infos})
+	return envelope.SuccessResponse(cmd.RequestID, envelope.ListSchedulesResponse{Schedules: infos, Total: total, HasMore: data.Offset+len(infos) < total})
+}
+
+func (h *Handler) getSchedule(_ context.Context, cmd *envelope.Command) *envelope.Response {
+	var data envelope.CancelScheduleData
+	if err := json.Unmarshal(cmd.Data, &data); err != nil || data.ScheduleID == 0 {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "schedule_id is required")
+	}
+	s, err := h.store.GetSchedule(data.ScheduleID)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to get schedule: %v", err))
+	}
+	if s == nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("schedule %d not found", data.ScheduleID))
+	}
+	return envelope.SuccessResponse(cmd.RequestID, envelope.ScheduleInfo{
+		ID: s.ID, SessionID: s.SessionID, Prompt: s.Prompt,
+		ScheduledAt: s.ScheduledAt.UTC().Format(time.RFC3339), Status: s.Status,
+		CronExpr: s.CronExpr, ReplyChannelID: s.ReplyChannelID, MarkReady: s.MarkReady,
+		CreatedAt: s.CreatedAt.UTC().Format(time.RFC3339),
+	})
 }
 
 func (h *Handler) cancelSchedule(_ context.Context, cmd *envelope.Command) *envelope.Response {

@@ -120,6 +120,7 @@ type GetConversationData struct {
 	Count     int    `json:"count,omitempty"` // number of turns to return (default 10, 0 = use default)
 	From      int    `json:"from,omitempty"`  // offset from the end (0 = most recent)
 	All       bool   `json:"all,omitempty"`   // return all turns
+	MaxBytes  int    `json:"max_bytes,omitempty"`
 }
 
 // GetLogsData requests the newest daemon log lines. Lines defaults to 100.
@@ -423,6 +424,9 @@ type ScheduleResponse struct {
 // ListSchedulesData is the data payload for list_schedules.
 type ListSchedulesData struct {
 	SessionID string `json:"session_id"`
+	Status    string `json:"status,omitempty"`
+	Limit     int    `json:"limit,omitempty"`
+	Offset    int    `json:"offset,omitempty"`
 }
 
 // ScheduleInfo represents a schedule in list responses.
@@ -441,6 +445,8 @@ type ScheduleInfo struct {
 // ListSchedulesResponse is returned by list_schedules.
 type ListSchedulesResponse struct {
 	Schedules []ScheduleInfo `json:"schedules"`
+	Total     int            `json:"total"`
+	HasMore   bool           `json:"has_more"`
 }
 
 // CancelScheduleData is the data payload for cancel_schedule.

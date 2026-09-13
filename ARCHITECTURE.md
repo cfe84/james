@@ -1115,6 +1115,14 @@ Each `step_finish.part.cost` is accumulated in Moneypenny's SQLite session row
 and returned as `opencode_cost` in session details for Qew's conversation
 header. The stored value is provider-reported USD, not an estimate.
 
+## Bounded operational reads
+
+Moneypenny schedule listing is a paginated, status-filtered query with a
+bounded default and hard maximum. Chat views request pending summaries, while
+schedule editing uses direct ID lookup. Conversation reads never honor an
+unbounded wire request: they use bounded turn pages and a response byte budget
+to prevent large sessions from materializing runaway response payloads.
+
 ## Versioning
 
 Single `VERSION` file at project root. Injected at compile time via `-ldflags "-X main.Version=..."`. All components (mi6, moneypenny, hem, qew, gadgets) share the same version. Semver format; the gadgets platform ships as the minor feature release v1.78.0.

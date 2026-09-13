@@ -1677,3 +1677,11 @@ Qew comparisons, not a claim that the memory amplification has been fixed.
 
 ### Moneypenny `check_agents` command:
 Cross-platform agent binary detection using Go's `exec.LookPath()` (works on Windows, macOS, Linux). Returns availability and resolved path for known agents (claude, copilot, opencode).
+
+### Bounded session reads
+Schedule list reads default to pending schedules and a maximum page of 50 (never
+more than 100), with a status filter and total count. Schedule editing uses
+direct schedule lookup by ID rather than scanning a session's schedule history.
+Conversation reads are capped to a 1 MiB response budget (4 MiB hard maximum)
+and a bounded turn page; clients must page rather than request an unbounded
+transcript.

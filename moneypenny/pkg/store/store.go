@@ -1064,6 +1064,7 @@ func (s *Store) ListSchedules(sessionID string, statusFilter string) ([]*Schedul
 			 FROM schedules WHERE session_id = ? ORDER BY scheduled_at`, sessionID,
 		)
 	}
+
 	if err != nil {
 		return nil, fmt.Errorf("list schedules: %w", err)
 	}
@@ -1080,6 +1081,42 @@ func (s *Store) ListSchedules(sessionID string, statusFilter string) ([]*Schedul
 		schedules = append(schedules, sch)
 	}
 	return schedules, rows.Err()
+}
+
+// ListSchedulesPage returns a bounded page of schedules.
+func (s *Store) ListSchedulesPage(ctx context.Context, sessionID, statusFilter string, limit, offset int) ([]*Schedule, int, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	var total int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM schedules WHERE session_id = ? AND (? = '' OR status = ?)`, sessionID, statusFilter, statusFilter).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count schedules: %w", err)
+	}
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, session_id, prompt, scheduled_at, status, cron_expr, reply_channel_id, mark_ready, created_at
+		 FROM schedules WHERE session_id = ? AND (? = '' OR status = ?)
+		 ORDER BY scheduled_at, id LIMIT ? OFFSET ?`, sessionID, statusFilter, statusFilter, limit, offset)
+	if err != nil {
+		return nil, 0, fmt.Errorf("list schedule page: %w", err)
+	}
+	defer rows.Close()
+	var schedules []*Schedule
+	for rows.Next() {
+		sch := &Schedule{}
+		var markReady int
+		if err := rows.Scan(&sch.ID, &sch.SessionID, &sch.Prompt, &sch.ScheduledAt, &sch.Status, &sch.CronExpr, &sch.ReplyChannelID, &markReady, &sch.CreatedAt); err != nil {
+			return nil, 0, fmt.Errorf("scan schedule page: %w", err)
+		}
+		sch.MarkReady = markReady != 0
+		schedules = append(schedules, sch)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return schedules, total, nil
 }
 
 // DueSchedules returns at most one due occurrence per session per tick, so a

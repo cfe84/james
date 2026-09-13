@@ -848,7 +848,7 @@
       const calls = [
         apiCall('history', 'session', [currentSession, '--count', String(CHAT_PAGE_SIZE), '--from', '0']),
         apiCall('show', 'session', [currentSession]).catch(() => null),
-        apiCall('list', 'schedule', ['--session-id', currentSession]).catch(() => null),
+        apiCall('list', 'schedule', ['--session-id', currentSession, '--status', 'pending', '--limit', '50']).catch(() => null),
         apiCall('list', 'subsession', [currentSession]).catch(() => null),
       ];
       // Always fetch activity — avoids race where status isn't yet "working" on current poll.
