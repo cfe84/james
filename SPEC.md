@@ -1692,3 +1692,23 @@ direct schedule lookup by ID rather than scanning a session's schedule history.
 Conversation reads are capped to a 1 MiB response budget (4 MiB hard maximum)
 and a bounded turn page; clients must page rather than request an unbounded
 transcript.
+
+### Recoverable push subscriptions (v1.89.0)
+
+Qew opens the authenticated `/ws` stream and treats Hem broadcasts as
+invalidation hints. While the stream is healthy, dashboard and chat polling is
+stopped; a disconnect immediately restores the bounded polling fallback and
+reconnects with a fresh socket. WebSocket requests include a lightweight
+heartbeat, and the server answers `ping` without dispatching a Hem command.
+Every successful reconnect performs an immediate bounded read because hints
+may have been lost while disconnected; stale socket callbacks are ignored.
+History turns carry their stable SQLite IDs so clients can deduplicate
+replayed hints and reconnect snapshots. Optional session panels use bounded
+timeouts and retain their last good data instead of delaying transcript
+rendering.
+The server assigns each WebSocket subscription its own identity and removes it
+on every connection exit. A 90-second read lease (renewed by the browser's
+20-second heartbeat) closes abandoned sockets; writes have a bounded deadline
+so a slow client cannot retain a writer or broadcast subscription indefinitely.
+The browser also performs an immediate authoritative HTTP resync when a socket
+closes, while retaining the polling fallback.

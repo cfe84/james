@@ -185,6 +185,7 @@ type SessionConversation struct {
 
 // ConversationTurn represents a single prompt/response pair.
 type ConversationTurn struct {
+	ID              int64  `json:"id"`
 	Role            string `json:"role"` // "user" or "assistant"
 	Content         string `json:"content"`
 	SourceSessionID string `json:"source_session_id,omitempty"`

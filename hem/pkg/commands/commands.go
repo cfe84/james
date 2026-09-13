@@ -1281,6 +1281,7 @@ func (e *Executor) resolveTraits(spec string) ([]*store.Trait, error) {
 }
 
 type ConversationTurn struct {
+	ID              int64  `json:"id"`
 	Role            string `json:"role"`
 	Content         string `json:"content"`
 	SourceSessionID string `json:"source_session_id,omitempty"`

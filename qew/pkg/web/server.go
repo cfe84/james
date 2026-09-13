@@ -37,6 +37,11 @@ const (
 	// clockSkewTolerance bounds how far in the future a token timestamp may be
 	// before it's rejected (guards against clock rollback extending validity).
 	clockSkewTolerance = 60 * time.Second
+	// websocketIdleTimeout bounds how long a connected browser may stop
+	// sending heartbeats or requests. It also guarantees that a client which
+	// disappears without a clean close eventually releases its subscription.
+	websocketIdleTimeout  = 90 * time.Second
+	websocketWriteTimeout = 10 * time.Second
 )
 
 // Server is the Qew web server.
@@ -217,6 +222,12 @@ func (s *Server) handleWS(ws *websocket.Conn, deadline time.Time) {
 		})
 		defer timer.Stop()
 	}
+	// A browser heartbeat is sent every 20 seconds. The read lease is
+	// deliberately longer to tolerate brief timer/throttling delays.
+	if err := ws.SetReadDeadline(time.Now().Add(websocketIdleTimeout)); err != nil {
+		s.vlog.Printf("WebSocket read deadline error: %v", err)
+		return
+	}
 
 	// Subscribe to broadcasts if using MI6.
 	var broadcastCh <-chan *Response
@@ -227,16 +238,33 @@ func (s *Server) handleWS(ws *websocket.Conn, deadline time.Time) {
 		s.vlog.Printf("WebSocket subscribed to broadcasts")
 	}
 
-	// Channel for messages to send to client.
-	sendCh := make(chan interface{}, 10)
-	defer close(sendCh)
+	// Producers must never close sendCh: the websocket writer owns its
+	// lifetime, and closing it here races with broadcast delivery.
+	sendCh := make(chan interface{}, 32)
+	done := make(chan struct{})
+	var doneOnce sync.Once
+	stop := func() { doneOnce.Do(func() { close(done) }) }
+	defer stop()
 
 	// Goroutine to send messages to WebSocket.
 	go func() {
-		for msg := range sendCh {
-			if err := websocket.JSON.Send(ws, msg); err != nil {
-				s.vlog.Printf("WebSocket send error: %v", err)
+		for {
+			select {
+			case <-done:
 				return
+			case msg := <-sendCh:
+				if err := ws.SetWriteDeadline(time.Now().Add(websocketWriteTimeout)); err != nil {
+					s.vlog.Printf("WebSocket write deadline error: %v", err)
+					stop()
+					_ = ws.Close()
+					return
+				}
+				if err := websocket.JSON.Send(ws, msg); err != nil {
+					s.vlog.Printf("WebSocket send error: %v", err)
+					stop()
+					_ = ws.Close()
+					return
+				}
 			}
 		}
 	}()
@@ -245,7 +273,11 @@ func (s *Server) handleWS(ws *websocket.Conn, deadline time.Time) {
 	if broadcastCh != nil {
 		go func() {
 			for resp := range broadcastCh {
-				sendCh <- resp
+				select {
+				case sendCh <- resp:
+				case <-done:
+					return
+				}
 			}
 		}()
 	}
@@ -257,12 +289,29 @@ func (s *Server) handleWS(ws *websocket.Conn, deadline time.Time) {
 			s.vlog.Printf("WebSocket read error: %v", err)
 			return
 		}
+		if err := ws.SetReadDeadline(time.Now().Add(websocketIdleTimeout)); err != nil {
+			s.vlog.Printf("WebSocket read deadline error: %v", err)
+			return
+		}
 
 		var req Request
 		if err := json.Unmarshal(raw, &req); err != nil {
-			sendCh <- map[string]string{
+			select {
+			case sendCh <- map[string]string{
 				"status":  "error",
 				"message": fmt.Sprintf("bad request: %v", err),
+			}:
+			case <-done:
+				return
+			}
+			continue
+		}
+
+		if req.Verb == "ping" {
+			select {
+			case sendCh <- &Response{Status: "ok", Verb: "pong"}:
+			case <-done:
+				return
 			}
 			continue
 		}
@@ -271,14 +320,22 @@ func (s *Server) handleWS(ws *websocket.Conn, deadline time.Time) {
 
 		resp, err := s.hem.Send(&req)
 		if err != nil {
-			sendCh <- map[string]string{
+			select {
+			case sendCh <- map[string]string{
 				"status":  "error",
 				"message": fmt.Sprintf("backend error: %v", err),
+			}:
+			case <-done:
+				return
 			}
 			continue
 		}
 
-		sendCh <- resp
+		select {
+		case sendCh <- resp:
+		case <-done:
+			return
+		}
 	}
 }
 

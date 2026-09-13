@@ -60,6 +60,10 @@
   const ATTACH_MAX_BYTES = 10 * 1024 * 1024; // 10MB per-file cap (mirrors moneypenny)
   let multilineCompose = false; // per-session preference; true means Enter inserts a newline
   let qewConnected = false;
+  let pushConnected = false;
+  let pushReconnectTimer = null;
+  let pushHeartbeatTimer = null;
+  let pushGeneration = 0;
   let sendInFlight = false;
 
   function setConnectionState(connected) {
@@ -76,11 +80,12 @@
 
   // --- API ---
 
-  async function apiCall(verb, noun, args) {
+  async function apiCall(verb, noun, args, signal) {
     const resp = await fetch('/api', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'QewClient' },
       body: JSON.stringify({ verb, noun, args: args || [] }),
+      signal,
     });
     if (resp.status === 401 || resp.status === 302) {
       window.location.href = '/login';
@@ -88,6 +93,18 @@
     }
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     return resp.json();
+  }
+
+  // Optional panels must not hold the transcript hostage when a daemon or
+  // provider is slow. The next push/poll can retry them without replacing the
+  // last good panel data.
+  function optionalCall(verb, noun, args, timeoutMs = 750) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    return Promise.race([
+      apiCall(verb, noun, args, controller.signal),
+      new Promise(resolve => setTimeout(() => resolve(null), timeoutMs)),
+    ]).catch(() => null).finally(() => clearTimeout(timer));
   }
 
   // --- Projects ---
@@ -847,12 +864,12 @@
     try {
       const calls = [
         apiCall('history', 'session', [currentSession, '--count', String(CHAT_PAGE_SIZE), '--from', '0']),
-        apiCall('show', 'session', [currentSession]).catch(() => null),
-        apiCall('list', 'schedule', ['--session-id', currentSession, '--status', 'pending', '--limit', '50']).catch(() => null),
-        apiCall('list', 'subsession', [currentSession]).catch(() => null),
+        optionalCall('show', 'session', [currentSession]),
+        optionalCall('list', 'schedule', ['--session-id', currentSession, '--status', 'pending', '--limit', '50']),
+        optionalCall('list', 'subsession', [currentSession]),
       ];
       // Always fetch activity — avoids race where status isn't yet "working" on current poll.
-      calls.push(apiCall('activity', 'session', [currentSession]).catch(() => null));
+      calls.push(optionalCall('activity', 'session', [currentSession]));
       const [histResp, showResp, schedResp, subsResp, actResp] = await Promise.all(calls);
       // Bail out if the user navigated to a different session while we awaited;
       // otherwise we'd overwrite the new session's state with stale data.
@@ -5306,8 +5323,66 @@
 
   // --- Polling ---
 
+  function connectPushStream() {
+    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+    const generation = ++pushGeneration;
+    const scheme = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+    const socket = new WebSocket(scheme + window.location.host + '/ws');
+    ws = socket;
+    socket.onopen = () => {
+      if (generation !== pushGeneration || ws !== socket) {
+        socket.close();
+        return;
+      }
+      pushConnected = true;
+      stopDashboardPoll();
+      stopChatPoll();
+      if (pushHeartbeatTimer) clearInterval(pushHeartbeatTimer);
+      pushHeartbeatTimer = setInterval(() => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          try { ws.send(JSON.stringify({verb: 'ping'})); } catch (_) { socket.close(); }
+        }
+      }, 20000);
+      // Events are invalidation hints and may have been lost while the socket
+      // was reconnecting. Re-read the active lane immediately.
+      if (currentSession) loadChat();
+      else loadDashboard();
+    };
+    socket.onmessage = event => {
+      if (generation !== pushGeneration || ws !== socket) return;
+      let msg;
+      try { msg = JSON.parse(event.data); } catch (_) { return; }
+      if (msg.verb === 'pong') return;
+      // Broadcasts are hints, not transcript payloads. Fetch only the active
+      // lane and let the normal generation/session guard reject stale results.
+      if (msg.noun === 'dashboard' || msg.verb === 'refresh') {
+        loadDashboard();
+      } else if (currentSession && msg.data && msg.data.session_id === currentSession) {
+        loadChat();
+      } else if (currentSession && msg.session_id === currentSession) {
+        loadChat();
+      }
+    };
+    socket.onclose = () => {
+      if (generation !== pushGeneration || ws !== socket) return;
+      pushConnected = false;
+      ws = null;
+      if (pushHeartbeatTimer) { clearInterval(pushHeartbeatTimer); pushHeartbeatTimer = null; }
+      if (currentSession) startChatPoll();
+      else startDashboardPoll();
+      // Do not wait for the first interval: the authoritative HTTP read also
+      // closes the gap between the last hint and this disconnect.
+      if (currentSession) loadChat();
+      else loadDashboard();
+      if (pushReconnectTimer) clearTimeout(pushReconnectTimer);
+      pushReconnectTimer = setTimeout(connectPushStream, 1000);
+    };
+    socket.onerror = () => { try { socket.close(); } catch (_) {} };
+  }
+
   function startDashboardPoll() {
     stopDashboardPoll();
+    if (pushConnected) return;
     pollTimer = setInterval(loadDashboard, POLL_INTERVAL);
   }
 
@@ -5317,6 +5392,7 @@
 
   function startChatPoll() {
     stopChatPoll();
+    if (pushConnected) return;
     chatPollTimer = setInterval(loadChat, 3000);
   }
 
@@ -6077,6 +6153,7 @@
   // Initial load.
   Promise.all([loadProjects(), loadTraitsCache(), loadDashboard()]).then(() => {
     setConnectionState(true);
+    connectPushStream();
     startDashboardPoll();
     // Check initial hash route after dashboard is loaded.
     handleRoute();

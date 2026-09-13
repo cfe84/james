@@ -1134,3 +1134,24 @@ to prevent large sessions from materializing runaway response payloads.
 ## Versioning
 
 Single `VERSION` file at project root. Injected at compile time via `-ldflags "-X main.Version=..."`. All components (mi6, moneypenny, hem, qew, gadgets) share the same version. Semver format; the gadgets platform ships as the minor feature release v1.78.0.
+
+## Recoverable Qew push stream
+
+The existing Hem broadcast path remains a hint channel rather than a second
+transcript. Qew's authenticated WebSocket consumes those hints and refreshes
+only the active dashboard or session lane; the HTTP API remains the authoritative
+read path and is used as a bounded fallback after socket loss. The WebSocket
+writer owns its outbound channel lifecycle, so a browser close cannot race a
+broadcast producer into a send-on-closed-channel panic. Browser heartbeats are
+handled locally by Qew and do not enter the Hem dispatcher. Conversation
+responses now expose the persisted turn ID, preserving identity across
+reconnect and re-read. WebSocket connection callbacks are generation-guarded
+so an older socket cannot stop polling or mutate state after a newer reconnect.
+The outbound writer exits on the connection's done signal rather than waiting
+on an unclosed channel, preventing one blocked goroutine per disconnected tab.
+Each MI6 WebSocket subscriber has a connection-scoped monotonic identity and an
+idempotent unsubscribe operation. Qew applies a 90-second read lease refreshed
+by browser heartbeats and a 10-second write deadline; this bounds abandoned
+connections and slow consumers without adding a transcript journal. Socket
+close triggers an immediate authoritative HTTP resync before bounded polling
+continues, and reconnect performs the same resync.

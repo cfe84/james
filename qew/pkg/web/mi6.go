@@ -100,8 +100,12 @@ type MI6Client struct {
 }
 
 type websocketSubscriber struct {
-	ch chan *Response
+	id     uint64
+	ch     chan *Response
+	closed sync.Once
 }
+
+var qewSubscriptionCounter uint64
 
 // NewMI6Client creates a client that talks to Hem over MI6.
 func NewMI6Client(addr, keyPath, serverFingerprint string, vlog *log.Logger) *MI6Client {
@@ -222,6 +226,7 @@ func (c *MI6Client) readResponses() {
 // Returns a channel that receives broadcasts and an unsubscribe function.
 func (c *MI6Client) Subscribe() (<-chan *Response, func()) {
 	sub := &websocketSubscriber{
+		id: atomic.AddUint64(&qewSubscriptionCounter, 1),
 		ch: make(chan *Response, 50),
 	}
 
@@ -230,10 +235,12 @@ func (c *MI6Client) Subscribe() (<-chan *Response, func()) {
 	c.broadcastMu.Unlock()
 
 	unsubscribe := func() {
-		c.broadcastMu.Lock()
-		delete(c.subscribers, sub)
-		close(sub.ch)
-		c.broadcastMu.Unlock()
+		sub.closed.Do(func() {
+			c.broadcastMu.Lock()
+			delete(c.subscribers, sub)
+			close(sub.ch)
+			c.broadcastMu.Unlock()
+		})
 	}
 
 	return sub.ch, unsubscribe

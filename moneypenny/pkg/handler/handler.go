@@ -1201,6 +1201,7 @@ func (h *Handler) getSessionConversation(ctx context.Context, cmd *envelope.Comm
 			break
 		}
 		conversation = append(conversation, envelope.ConversationTurn{
+			ID:              t.ID,
 			Role:            t.Role,
 			Content:         t.Content,
 			SourceSessionID: t.SourceSessionID,
