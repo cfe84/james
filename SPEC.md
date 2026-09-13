@@ -887,6 +887,23 @@ operator's administrative CLI/server, with TUI and Qew as operator interfaces.
 
 ### Capabilities and operator controls
 
+`gadgets hem VERB [NOUN] [ARGS...]` (v1.86.0) provides an explicitly privileged
+proxy to Hem server commands using its existing parser/dispatcher. The separate
+`hem` grant / `--gadget-hem=true` defaults **off**, including legacy sessions,
+and is exposed in the shared TUI/Qew create/copy/edit controls. Daemon and Hem
+check fresh permissions on every request, and scoped gadget-created agents
+inherit the grant. **It permits administrative mutations, cross-session access
+and permission changes regardless of other gadget grants.** This is not a
+read-only diagnostics permission.
+
+Arguments are preserved as an array (no shell), with ordinary Hem aliases and
+command semantics. Internal `gadget route` and interactive/local commands are
+rejected; no proxy transport or source-credential override is accepted. Proxy
+creation retains ordinary Hem behavior rather than automatically injecting scoped
+gadget inheritance/provenance. Output is always JSON; stdin is not forwarded.
+Existing gadget byte caps/timeouts apply. Timed-out mutations are not rolled
+back; use `--async` for agent operations and inspect state before retrying.
+
 | Capability | Default | Agent operations |
 | --- | --- | --- |
 | Memory | On, revocable | Get/list/search/set/batch/delete memory; inspect current revision |
@@ -895,14 +912,15 @@ operator's administrative CLI/server, with TUI and Qew as operator interfaces.
 | Create agents | Off, separate explicit grant | Create independent top-level agents on the caller's Moneypenny |
 | Traits | Off, explicit grant | List/view existing shared traits and replace their prompt bodies |
 | Moneypenny logs | Off, explicit grant | Read bounded daemon logs from any registered Moneypenny |
+| Hem administrative proxy | Off, explicit grant | Execute Hem server commands, including cross-session mutations and permission changes |
 | Scheduling | On, revocable | List/create/delete schedules belonging to this session |
 | Notifications | Always available | Send actionable operator notifications |
 
 The Agents grant combines discovery and messaging; it does **not** grant editing,
 deletion, or other management of sessions. Subagents scope does not cover siblings,
 arbitrary descendants, or unrelated sessions. Gadget-created subagents inherit
-the parent's current capabilities; agents cannot override permissions during
-creation. Operator changes to a parent are not a promise of recursively changing
+the parent's current capabilities; scoped creation gadgets cannot override
+permissions. Operator changes to a parent are not a promise of recursively changing
 already-created children's settings.
 
 The separate `create_agents` grant enables `gadgets agents create` with a
@@ -952,7 +970,7 @@ source daemon/gadgets client to v1.85.0; target hosts need `get_logs` support.
 Capability defaults apply when an older session has no stored capability object.
 Hem's create/copy/edit and subsession commands expose explicit
 `--gadget-memory`, `--gadget-subagents`, `--gadget-agents`, `--gadget-create-agents`, `--gadget-traits`, and
-`--gadget-scheduling` and `--gadget-moneypenny-logs` booleans. The existing TUI wizard/edit forms and Qew
+`--gadget-scheduling`, `--gadget-moneypenny-logs`, and `--gadget-hem` booleans. The existing TUI wizard/edit forms and Qew
 create/copy/edit dialogs expose matching permission controls and an
 always-available-notifications hint. Copy inherits permissions unless overridden;
 updates preserve unspecified values. `--gadgets` controls only the legacy stored
@@ -1590,6 +1608,51 @@ qew --development --listen 127.0.0.1:8077
 ## Diagnostics
 
 `hem diagnose [--hem ADDRESS | --local]` — runs connectivity and health diagnostics.
+
+`hem diagnose --name HOST [--session-id ID --scan]` (v1.86.0) targets one
+Moneypenny instead of running local checks or pinging all registered hosts.
+The same command is available as `gadgets hem diagnose …` with the administrative
+Hem gadget permission. `--session-id` is an exact daemon session ID, not a
+display name; it does not fetch session lists to resolve names.
+
+The default targeted sample contains PID; Go heap allocation, object count,
+released heap, cumulative allocation, GC cycles and goroutines; OS process memory;
+database/WAL/log file sizes; SQLite connection-pool counts/waits; and queued/active
+dispatcher work. Go values are process-wide, not per-request allocations, and
+collection does not force GC. Windows reports working set and private committed
+bytes; macOS/Linux report RSS. Unsupported/unavailable measurements have explicit
+error fields and omitted values, never misleading zeroes.
+
+Session ID and `--scan` must be supplied together. This opt-in scan counts the
+session's schedules (pending/running/done/other), conversation and prompt queue,
+including total/max UTF-8 payload bytes. It uses fixed indexed SQL with a
+two-second cancellation deadline, not arbitrary SQL or loading text into Go.
+The bounded result contains no prompt/conversation text. Missing sessions, query
+failures and deadline exhaustion leave `diagnostics.session` absent and populate
+`diagnostics.session_error`; the runtime sample remains available. Do not interpret
+failed scans as zero rows. Byte counts exclude SQLite overhead and JSON encoding.
+
+Wire method **get_diagnostics** accepts `{}` or
+`{"session_id":"exact-id","scan_session":true}`. Request data is limited to 1,024
+bytes and IDs to 256 bytes. Lightweight requests have their own worker/queue (4
+queued); opt-in scans use the two normal read workers. A blocked shared transport
+writer can still delay delivery. Gadget permission checks also need a fresh source
+`get_session` and may queue behind normal reads; direct operator `hem diagnose
+--name HOST` avoids that prerequisite.
+
+With verbose daemon logging enabled, bounded metadata-only samples capture
+receive/parse, queue wait, handler, encoding and writing durations; row counts
+(`-1` when unknown), response bytes and process-wide heap counters. Handle,
+encode and write phase starts are logged before work so interrupted requests can
+be identified. Receive wait includes idle input time; write time includes writer
+contention. Existing failure, queue-full and slow-handler warnings remain visible.
+Admission per one-second window is 10 ordinary requests, plus reserved budgets
+of 2 `list_schedules` and 2 `get_session_conversation` requests so metadata polling
+cannot starve payload tracing. No serialized request/response bodies are logged.
+Upgrade Hem and target daemons
+to v1.86.0; using the proxy also requires an upgraded source daemon/gadgets client
+and the explicit Hem administrative grant. These samples are for closed/open/closed
+Qew comparisons, not a claim that the memory amplification has been fixed.
 
 **Two-phase architecture**: Phase 1 runs client-side (no server needed), Phase 2 queries the server.
 

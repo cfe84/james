@@ -27,6 +27,7 @@ gadgets schedule list
 gadgets schedule create (--cron expr | --at timestamp) --prompt text
 gadgets schedule delete id
 gadgets moneypenny logs [--name registered-host] [--lines N]
+gadgets hem VERB [NOUN] [ARGS...]
 gadgets notify [text]
 gadgets help
 gadgets version
@@ -35,7 +36,9 @@ gadgets version
 Omitted memory paths mean root (`""`). Quote multiword arguments. Flags can precede
 or follow positional arguments; `--` ends flag parsing, and `--flag=value` is
 supported. `--recursive=false` explicitly disables recursion. No session,
-endpoint, credential, or permission override flags are accepted.
+endpoint or credential override flags are accepted. Scoped gadgets do not accept
+permission overrides; the separately granted Hem administrative proxy below is
+an explicit exception to scoped command permissions.
 
 ### Top-level agent creation (opt-in)
 
@@ -79,6 +82,34 @@ TUI/Qew permission controls. It defaults off, allows read-only logs on any
 registered host, and may expose other sessions' data. Current permissions are
 checked by both the source daemon and Hem; agents cannot enable it themselves,
 choose arbitrary paths, or override transport configuration.
+
+### Hem administrative proxy (opt-in)
+
+`gadgets hem …` forwards an argument array to the existing Hem server parser and
+dispatcher through the daemon's trusted route. It does not spawn Hem or a shell.
+Operators enable `--gadget-hem=true` (default **false**) in the existing session
+create/copy/edit controls, including TUI and Qew. Both daemon and Hem check the
+fresh grant. Scoped gadget-created agents inherit this grant like other grants.
+
+**This is administrative access**, not a diagnostic-only permission: it allows
+mutations, access to other sessions, and permission changes independently of all
+other gadget grants. Give it only to agents trusted to act as an operator.
+The caller's authenticated source remains daemon-bound; it cannot supply an
+internal `gadget route` or choose a different proxy transport. Interactive/local
+commands are unsupported. Server commands retain their ordinary Hem semantics,
+including explicit target/source flags; unlike scoped creation gadgets, proxy
+creation does not add inheritance or attribution flags automatically.
+
+```sh
+gadgets hem diagnose --name chfeval-dev
+gadgets hem diagnose --name chfeval-dev --session-id SESSION_ID --scan
+gadgets hem logs moneypenny --name chfeval-dev --lines 200
+```
+
+Output remains structured JSON, regardless of Hem output-format flags. Stdin is
+not forwarded. Existing request/response caps and the 30-second client timeout
+apply; no automatic retry is made. Use `--async` for long-running agent operations.
+A timed-out mutation may still complete: inspect state before retrying.
 
 ### Shared traits (opt-in)
 
@@ -170,6 +201,7 @@ and `Authorization: Bearer <token>`. Body:
 | schedule create | `schedule.create` | `{"cron":"...", "prompt":"..."}` or `{"at":"...", "prompt":"..."}` |
 | schedule delete | `schedule.delete` | `{"id":"..."}` |
 | moneypenny logs | `moneypenny.logs` | `{"name":"registered-host","lines":100}`; both fields optional |
+| hem | `hem.command` | `{"args":["diagnose","--name","registered-host"]}`; requires administrative `hem` permission |
 | notify | `notify` | `{"text":"..."}` |
 
 Responses must be a single JSON envelope:

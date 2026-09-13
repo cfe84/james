@@ -1,12 +1,14 @@
 package commands
 
 func init() {
+	CommandHelp["diagnose"] += "\n\nTargeted daemon instrumentation (no local checks or all-host fanout):\n  hem diagnose --name HOST [--session-id ID --scan]\n  --name / -n HOST  Registered Moneypenny name\n  --session-id ID   Exact daemon session ID (requires --scan)\n  --scan           Opt in to database row/byte aggregates (requires --session-id)\nReturns bounded JSON runtime/process, file, dispatcher and optional database metrics.\nScan errors appear in diagnostics.session_error; they are not zero row counts.\nRequires a diagnostics-capable Moneypenny. Also available via gadgets hem diagnose\nwith --gadget-hem=true (administrative access, including mutations)."
 	const permissionsHelp = "\n\nGadget permissions (operator settings, true/false):\n  --gadget-memory       Session memory (default: true)\n  --gadget-subagents    Own subagent creation, communication and replies (default: true)\n  --gadget-agents       Discover and message any agents, without management access (default: false)\n  --gadget-create-agents Create independent top-level agents with inherited gadget permissions (default: false)\n  --gadget-traits       List/view shared trait bodies; edit only traits assigned to this session (default: false)\n  --gadget-scheduling   This session's scheduled prompts (default: true)\n\nNotifications to the operator are always available. Copy inherits permissions;\nupdate preserves omitted permissions. Example: --gadget-memory=false."
 	CommandHelp["create session"] += "\n  --from             Originating agent session ID; attributes the initial prompt without creating a parent/child relationship"
 	CommandHelp["create subsession"] += "\n  --traits           Comma-separated trait IDs/names (omitted or empty selects none)"
 	for _, command := range []string{"create session", "create subsession", "copy session", "update session"} {
 		CommandHelp[command] += permissionsHelp
 		CommandHelp[command] += "\n  --gadget-moneypenny-logs Read daemon logs on any registered host, including other sessions' data (default: false)"
+		CommandHelp[command] += "\n  --gadget-hem Administrative proxy for all Hem server commands, including mutations and permission changes (default: false)"
 		CommandHelp[command] += "\n  --gadget-edit-sessions   Edit any tracked session, except gadget permissions (default: false)\n  --gadget-edit-own-session Edit only this session, except gadget permissions (default: false)\n  --gadget-edit-own-subagents Edit direct-child sessions and lifecycle, except gadget permissions (default: false)"
 	}
 }

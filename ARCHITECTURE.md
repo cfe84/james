@@ -160,7 +160,7 @@ deadline, and never retries writes. Client-side restrictions are defense in
 depth, not the source of session authorization.
 
 `sessions.gadget_capabilities` in the **operational** database persists
-`memory`, `subagents`, `agents`, `create_agents`, `edit_sessions`, `edit_own_session`, `edit_own_subagents`, `moneypenny_logs`, `traits`, and `scheduling`; typed envelope fields carry
+`memory`, `subagents`, `agents`, `create_agents`, `edit_sessions`, `edit_own_session`, `edit_own_subagents`, `moneypenny_logs`, `hem`, `traits`, and `scheduling`; typed envelope fields carry
 these through create/update/detail. Missing legacy values use defaults:
 Memory, Subagents, and Scheduling true; all others false. Every gadget request reads
 current capabilities, so revocation does not wait for a new agent invocation.
@@ -168,12 +168,12 @@ current capabilities, so revocation does not wait for a new agent invocation.
 grant across Hem-tracked agents, **never** session edit/delete authority.
 Subagents permits creation plus direct-child/parent list and messaging, not
 arbitrary siblings or descendants. Created children inherit the parent's current
-capabilities; there is no agent-controlled permission override or implied
+capabilities; scoped gadgets have no agent-controlled permission override or implied
 recursive revocation of already-created children.
 
 Hem's shared capability flag helper and the existing TUI/Qew form components
 expose explicit `--gadget-memory`, `--gadget-subagents`, `--gadget-agents`,
-`--gadget-create-agents`, `--gadget-traits`, `--gadget-scheduling`, and `--gadget-moneypenny-logs` true/false controls. Copy inherits the source values
+`--gadget-create-agents`, `--gadget-traits`, `--gadget-scheduling`, `--gadget-moneypenny-logs`, and `--gadget-hem` true/false controls. Copy inherits the source values
 unless overridden; updates apply only specified settings. Notifications have an
 always-available hint rather than a toggle. The legacy `--gadgets` setting
 persists only an instruction notice; it does not turn tools on or off.
@@ -189,7 +189,8 @@ error propagation, and truncation notices remain unchanged. The gadget response
 uses the existing `TextResult` (`data.message`), subject to the gadget transport's
 4 MiB encoded-response cap. The opt-in grant covers daemon-wide logs on any
 registered host, potentially including other sessions' content; it is inherited
-by gadget-created agents and copies like other capabilities, never self-granted.
+by gadget-created agents and copies like other capabilities. Scoped gadgets cannot
+self-grant it; the administrative Hem proxy is the explicit broader exception.
 
 `agents.create` has a separate opt-in `CreateAgents` capability; neither the
 global discovery/message grant nor Subagents authorizes it. It shares the
@@ -600,6 +601,58 @@ hem/
 31. **Session memory (hierarchical tree)**: The hierarchy remains a materialized path tree with an empty-path root and auto-created ancestors. Since v1.78.0 its authority is the session-local `memory.db`, not operational-database memory tables or Markdown folders. The runtime injects the bounded authored root only; full outlines remain operator browsing data. See [Authoritative session memory](#authoritative-session-memory-v1780).
 
 32. **Diagnostics**: `hem diagnose` uses a two-phase client-side architecture for streaming output. Phase 1 runs local checks (data directory, SSH keys, database) without a server connection, printing results immediately. Phase 2 sends a single `diagnose` command to the server, which pings all moneypennies in parallel, checks agent availability via `check_agents`, and collects cache/session stats. The CLI unpacks the structured `DiagnoseResult` and prints each section as it goes. JSON mode (`-o json`) buffers all checks and outputs a single JSON array at the end. Agent binary detection uses `exec.LookPath()` for cross-platform support (Windows, macOS, Linux). The `check_agents` moneypenny command is version-gated (≥1.0.0) for retrocompatibility with older moneypenny instances.
+
+32a. **Targeted daemon instrumentation and administrative proxy (v1.86.0)**:
+`diagnose --name HOST [--session-id ID --scan]` uses a single `get_diagnostics`
+request with a 15-second Hem deadline, without all-host fanout or local database
+checks. Session IDs are exact; no remote full-session enumeration is performed.
+`gadgets hem …` serializes the remaining argv as `hem.command` and uses the
+existing authenticated daemon-to-Hem route. Both ends check the default-off `Hem`
+capability. Hem strictly decodes `{args: [...]}`, reuses `cli.Parse` and `Dispatch`,
+and refuses internal route recursion and interactive/local commands. There is no
+shell invocation or stdin forwarding. Output remains the standard gadget JSON
+envelope; ordinary Hem server semantics are otherwise unchanged.
+
+This grant intentionally supersedes the narrower capability boundary: an agent
+with Hem administrative access can mutate other sessions and change permissions.
+UI/help explicitly warn about that authority. Narrower gadgets remain scoped;
+their newly created agents inherit current grants including `Hem`. Proxy commands
+instead use ordinary Hem defaults and explicit arguments. The existing gadget
+response cap and timeout still apply; a timeout does not cancel/undo server
+mutations and the client does not retry.
+
+The typed `GetDiagnosticsData` wire payload is `{}` or
+`{session_id, scan_session:true}`; both scan fields are required together.
+`GetDiagnosticsResponse` carries PID, runtime/OS memory, file sizes, SQLite pool
+stats and dispatcher counts. Runtime uses `runtime/metrics` without a forced GC.
+Windows uses `K32GetProcessMemoryInfo` for working-set/private bytes; Linux uses
+resident pages from `/proc/self/statm`; macOS queries `/bin/ps` for this PID only
+with a 500-ms deadline. Unavailable OS/file metrics have errors and omitted values.
+No dependency was added. Heap/total-allocation counters are process-wide.
+
+One independent lightweight diagnostic worker has queue capacity 4. Scans run on
+the existing two read workers (queue 64), never the diagnostic worker. Lightweight
+collection acquires no SQL connection and works even if the database is closed.
+Scans use fixed indexed per-session count/status and UTF-8 byte aggregates with a
+two-second deadline honoring earlier cancellation. No arbitrary SQL, text
+materialization, or history-sized response arrays; status is capped at 64
+characters. Input data/ID limits are 1,024/256 bytes. Scan failure returns the
+runtime sample plus `session_error`, never zero-valued session metrics. Hem validates
+the typed response and requested session identity without fetching full sessions.
+
+Verbose protocol telemetry samples bounded complete request lifecycles: 10 ordinary
+requests per one-second window, plus independent reservations of 2 each for
+`list_schedules` and `get_session_conversation` (14 total maximum). Metadata polling
+cannot consume the payload-read reservations. Admitted requests log
+`handle_start`, `encode_start`, and `write_start` before work, then row/byte counts,
+durations and process heap counters at completion. Admission persists across
+transport reconnects; unrecognized response row counts are -1. Failure, queue-full
+and >=1-second handler warnings remain outside sampling. Transport delivery still
+shares the serialized writer, so that bottleneck can delay diagnostic responses.
+Gadget routing additionally performs a fresh `get_session` permission lookup that
+can queue behind saturated readers; direct operator diagnostics avoids that
+dependency. This does not introduce unsafe capability caches, pagination, polling
+changes, queue cleanup, log-rotation changes, or a claim of fixing the live RAM spike.
 
 33. **Session summarization and copying**: `hem summarize session` exposes the existing `CompactSession` helper to users so they can produce a standalone summary of a session's history on demand (originally written for the agent-side recovery path when an upstream agent's session is lost). `hem copy session SOURCE_ID` builds on top: it fetches the source session detail via `get_session`, asks the source moneypenny for a summary via `summarize_session`, then runs the regular `create_session` path on the target moneypenny (which can differ from the source). Parameters default to the source's values and are overridden by any explicit flag, including `-m` for cross-host copies. The summary is wrapped in `<prior-session-summary>` tags inside a preamble that explains the new session is a continuation; trailing args (if any) are appended as the actual user follow-up, otherwise a stub "acknowledge and await further instructions" is inserted. Source session is preserved. The TUI surfaces this via `y` (open the create wizard prefilled from the selected session; submit triggers `copySession` instead of `createSession`) and `S` (open the summary view, which renders the summary and offers a save-to-file modal prefilled with `<cwd>/<session-name>-summary.md`). Qew mirrors the TUI's copy flow with a **Duplicate Session** action in the chat Actions menu: it reuses the create wizard in copy mode, prefilling from `show session` and submitting via `copy session`. Because copy inherits source values per-field, Qew omits `--system-prompt` unless the user edits the prefilled prompt (so the backend's marker stripping still runs), emits an explicit `--yolo=true|false` (the only way to override a yolo source given the backend's `yoloExplicit` prescan), and forwards any source trait IDs that have no checkbox (e.g. since-deleted definitions) so they aren't silently dropped. `summarize_session` returns a `turn_count` (`CompactSession` now returns `(summary, turnCount, error)`) so callers never conflate "no history yet" with "the summarizer agent returned an empty string despite stored turns": when `turn_count > 0` and the summary is empty, `hem copy session` aborts and `hem summarize session` errors out (instead of fabricating a `(no history)` preamble/result), since an empty summary over a non-empty transcript indicates a transient summarizer failure (e.g. the session's stored model was later retired by the agent CLI). The literal `(the source session had no conversation history yet)` fallback is reserved for genuinely empty sources (`turn_count == 0`).
 

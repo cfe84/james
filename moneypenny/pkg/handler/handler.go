@@ -95,6 +95,9 @@ var notifyUserTagRe = regexp.MustCompile(`(?s)<NOTIFY_USER>\s*(.{1,1000}?)\s*</N
 
 // Handler processes commands and returns responses.
 type Handler struct {
+	diagnosticsDatabasePath string
+	diagnosticsDispatcher   func() envelope.DispatcherDiagnostics
+
 	store                *store.Store
 	runner               *agent.Runner
 	version              string
@@ -276,6 +279,8 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
 	}
 	switch cmd.Method {
+	case "get_diagnostics":
+		return h.getDiagnostics(ctx, cmd)
 	case "create_session":
 		return h.createSession(ctx, cmd)
 	case "continue_session":

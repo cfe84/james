@@ -69,6 +69,8 @@ func patchedGadgetCapabilities(raw json.RawMessage, base envelope.GadgetCapabili
 			base.EditOwnSubagents = *value
 		case "moneypenny_logs":
 			base.MoneypennyLogs = *value
+		case "hem":
+			base.Hem = *value
 		case "traits":
 			base.Traits = *value
 		case "scheduling":
@@ -224,7 +226,7 @@ func (h *Handler) prepareGadgets(sessionID string, params *agent.RunParams) erro
 		} else {
 			params.SystemPrompt += "You may edit only your authenticated session."
 		}
-		params.SystemPrompt += " Gadget permissions and trusted routing cannot be changed.\n"
+		params.SystemPrompt += " Scoped session-edit gadgets cannot change gadget permissions or trusted routing.\n"
 	}
 	if caps.EditOwnSubagents {
 		params.SystemPrompt += "Own subagent management: gadgets subagents edit ID [session fields], gadgets subagents complete ID, gadgets subagents stop ID, and gadgets subagents delete ID. These operations are restricted to your direct children.\n"
@@ -248,6 +250,9 @@ func (h *Handler) prepareGadgets(sessionID string, params *agent.RunParams) erro
 	}
 	if caps.MoneypennyLogs {
 		params.SystemPrompt += "Daemon diagnostics: gadgets moneypenny logs [--name registered-host] [--lines N]. Defaults to your host and 100 lines; accepts 1-10000 lines, reads at most the final 2 MiB. Read-only, but logs can contain other sessions' data; retrieve only what is needed.\n"
+	}
+	if caps.Hem {
+		params.SystemPrompt += "Hem administrative proxy: gadgets hem VERB [NOUN] [ARGS...]. This explicit grant allows server-side administrative commands, including mutations and permission changes, independently of other gadget grants. Use only for the user's task. No shell execution, stdin forwarding, interactive/local commands, or transport overrides. Results are JSON; use --async for long-running agent operations. Timeouts do not roll back mutations; inspect state before retrying. Diagnostics: gadgets hem diagnose --name HOST [--session-id ID --scan].\n"
 	}
 	params.SystemPrompt += "Operator notifications are always available: gadgets notify 'action needed' (or supply text on stdin). Use for actionable updates, not routine progress.\n</gadgets>"
 	params.SystemPrompt += notifyUserSystemPromptSuffix
@@ -369,6 +374,8 @@ func (h *Handler) executeGadget(ctx context.Context, sessionID string, request g
 		allowed = caps.Scheduling
 	case "moneypenny.logs":
 		allowed = caps.MoneypennyLogs
+	case "hem.command":
+		allowed = caps.Hem
 	case "notify":
 		allowed = true
 	default:
@@ -390,7 +397,7 @@ func (h *Handler) executeGadget(ctx context.Context, sessionID string, request g
 			return nil, &gadgetError{"invalid_request", err.Error()}
 		}
 	}
-	if request.Method == "moneypenny.logs" || strings.HasPrefix(request.Method, "agents.") || strings.HasPrefix(request.Method, "subagents.") || strings.HasPrefix(request.Method, "traits.") {
+	if request.Method == "hem.command" || request.Method == "moneypenny.logs" || strings.HasPrefix(request.Method, "agents.") || strings.HasPrefix(request.Method, "subagents.") || strings.HasPrefix(request.Method, "traits.") {
 		return h.routeGadget(ctx, sessionID, request.Method, request.Data)
 	}
 	if strings.HasPrefix(request.Method, "schedule.") {

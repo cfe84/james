@@ -50,6 +50,9 @@ type AgentInfo struct {
 // Diagnose runs server-side diagnostics: pings all moneypennies, checks agents,
 // reports cache state and session counts.
 func (e *Executor) Diagnose(args []string) *protocol.Response {
+	if len(args) > 0 {
+		return e.diagnoseMoneypenny(args)
+	}
 	mps, err := e.store.ListMoneypennies()
 	if err != nil {
 		return protocol.ErrResponse(fmt.Sprintf("failed to list moneypennies: %v", err))

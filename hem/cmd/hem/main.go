@@ -199,8 +199,10 @@ func main() {
 				return
 			}
 		}
-		runDiagnose(mi6Addr, mi6ServerFingerprint, cmd.OutputType)
-		return
+		if len(cmd.Args) == 0 {
+			runDiagnose(mi6Addr, mi6ServerFingerprint, cmd.OutputType)
+			return
+		}
 	case "dashboard":
 		req := &protocol.Request{Verb: "dashboard", Noun: "", Args: cmd.Args}
 		resp, err := sender.Send(req)
@@ -655,6 +657,7 @@ func printResponse(data json.RawMessage, outputFmt string) {
 					{"gadget_edit_own_session", fmt.Sprintf("%v", result.GadgetCapabilities.EditOwnSession)},
 					{"gadget_edit_own_subagents", fmt.Sprintf("%v", result.GadgetCapabilities.EditOwnSubagents)},
 					{"gadget_moneypenny_logs", fmt.Sprintf("%v", result.GadgetCapabilities.MoneypennyLogs)},
+					{"gadget_hem", fmt.Sprintf("%v", result.GadgetCapabilities.Hem)},
 					{"gadget_scheduling", fmt.Sprintf("%v", result.GadgetCapabilities.Scheduling)},
 					{"path", result.Path},
 					{"traits", strings.Join(result.Traits, ", ")},

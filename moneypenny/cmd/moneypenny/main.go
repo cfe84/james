@@ -212,6 +212,7 @@ func main() {
 	}()
 
 	dispatcher := newRequestDispatcher(ctx, h.Handle, vlog)
+	h.SetDiagnostics(dbPath, dispatcher.snapshot)
 	if *mi6Addr != "" {
 		if *mi6ServerFingerprint == "" {
 			log.Fatal("--mi6-server-fingerprint is required with --mi6")
@@ -367,27 +368,46 @@ func runStdio(ctx context.Context, h *handler.Handler, dispatcher *requestDispat
 	writer := envelope.NewNotificationWriter(w)
 	h.SetNotificationWriter(writer)
 	var pending sync.WaitGroup
-	respond := func(resp *envelope.Response) {
+	respond := func(resp *envelope.Response, traced bool) {
+		encodeStart := time.Now()
+		if traced {
+			vlog.Printf("response: phase=encode_start request_id=%s response_rows=%d", resp.RequestID, diagnosticResponseRows(resp))
+		}
 		b, err := resp.Marshal()
 		if err != nil {
 			vlog.Printf("marshal response request_id=%s: %v", resp.RequestID, err)
-			b, _ = envelope.ErrorResponse(resp.RequestID, envelope.ErrInternalError, "failed to encode response").Marshal()
+			resp = envelope.ErrorResponse(resp.RequestID, envelope.ErrInternalError, "failed to encode response")
+			b, _ = resp.Marshal()
+		}
+		encodeDuration := time.Since(encodeStart)
+		writeStart := time.Now()
+		if traced {
+			vlog.Printf("response: phase=write_start request_id=%s bytes=%d encode_duration=%s", resp.RequestID, len(b), encodeDuration)
 		}
 		if n, err := writer.Write(b); err != nil || n != len(b) {
-			vlog.Printf("write response request_id=%s: bytes=%d/%d error=%v", resp.RequestID, n, len(b), err)
+			vlog.Printf("write response request_id=%s: bytes=%d/%d encode_duration=%s write_duration=%s error=%v", resp.RequestID, n, len(b), encodeDuration, time.Since(writeStart), err)
 			return
 		}
 		// Do not log response bodies. Responses can contain conversation text,
 		// attachments, or this daemon log itself (get_logs); logging them makes
 		// diagnostics recursively amplify and can expose customer content.
-		vlog.Printf("send response request_id=%s status=%s bytes=%d", resp.RequestID, resp.Status, len(b))
+		writeDuration := time.Since(writeStart)
+		if traced {
+			heap, total := diagnosticHeapCounters()
+			vlog.Printf("send response request_id=%s status=%s bytes=%d response_rows=%d encode_duration=%s write_duration=%s process_heap_bytes=%d process_total_alloc_bytes=%d", resp.RequestID, resp.Status, len(b), diagnosticResponseRows(resp), encodeDuration, writeDuration, heap, total)
+		}
 	}
 
 	scanner := bufio.NewScanner(r)
 	// Up to 16MB commands: base64-encoded attachments can be large (10MB raw
 	// ≈ 13.3MB base64 plus envelope overhead). Must stay >= mi6 MaxMessageSize.
 	scanner.Buffer(make([]byte, 0, 1024*1024), 16*1024*1024)
-	for scanner.Scan() {
+	for {
+		readStart := time.Now()
+		if !scanner.Scan() {
+			break
+		}
+		readDuration := time.Since(readStart)
 		if ctx.Err() != nil {
 			return
 		}
@@ -395,15 +415,20 @@ func runStdio(ctx context.Context, h *handler.Handler, dispatcher *requestDispat
 		if len(line) == 0 {
 			continue
 		}
+		parseStart := time.Now()
 		cmd, err := envelope.ParseCommand(line)
 		if err != nil {
 			vlog.Printf("recv invalid command bytes=%d", len(line))
-			respond(envelope.ErrorResponse("", envelope.ErrInvalidRequest, err.Error()))
+			respond(envelope.ErrorResponse("", envelope.ErrInvalidRequest, err.Error()), false)
 			continue
 		}
-		vlog.Printf("recv request_id=%s method=%s bytes=%d", cmd.RequestID, cmd.Method, len(line))
+		requestCtx := dispatcher.telemetry.context(ctx, cmd.Method)
+		traced := diagnosticTracing(requestCtx)
+		if traced {
+			vlog.Printf("recv request_id=%s method=%s bytes=%d read_wait_duration=%s parse_duration=%s", cmd.RequestID, cmd.Method, len(line), readDuration, time.Since(parseStart))
+		}
 		pending.Add(1)
-		dispatcher.submit(ctx, cmd, respond, pending.Done)
+		dispatcher.submit(requestCtx, cmd, func(resp *envelope.Response) { respond(resp, traced) }, pending.Done)
 	}
 	if err := scanner.Err(); err != nil {
 		vlog.Printf("read commands: %v", err)

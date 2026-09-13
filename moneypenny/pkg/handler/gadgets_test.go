@@ -109,13 +109,14 @@ func TestGadgetCredentialsAndLiveRevocation(t *testing.T) {
 	requireGadgetError(t, gadgetCall(t, params, "memory.get", map[string]string{"session_id": gadgetOtherSession}), "invalid_request")
 
 	setGadgetCaps(t, h, envelope.GadgetCapabilities{})
-	for _, method := range []string{"memory.get", "subagents.list", "schedule.list", "agents.message", "moneypenny.logs"} {
+	for _, method := range []string{"memory.get", "subagents.list", "schedule.list", "agents.message", "moneypenny.logs", "hem.command"} {
 		requireGadgetError(t, gadgetCall(t, params, method, map[string]any{}), "permission_denied")
 	}
 	if response := gadgetCall(t, params, "notify", map[string]string{"text": "Please approve access."}); !response.Success {
 		t.Fatalf("revoked capabilities blocked notification: %+v", response)
 	}
 	setGadgetCaps(t, h, envelope.GadgetCapabilities{Agents: true})
+	requireGadgetError(t, gadgetCall(t, params, "hem.command", map[string]any{"args": []string{"list", "sessions"}}), "permission_denied")
 	requireGadgetError(t, gadgetCall(t, params, "moneypenny.logs", map[string]any{}), "permission_denied")
 	requireGadgetError(t, gadgetCall(t, params, "delete_session", map[string]string{"session_id": gadgetOtherSession}), "unknown_method")
 	requireGadgetError(t, gadgetCall(t, params, "subagents.create", map[string]string{"prompt": "no"}), "permission_denied")
@@ -258,12 +259,12 @@ func jsonNumber(value int64) string {
 func TestCapabilityProtocolPatchesPreserveOtherPermissions(t *testing.T) {
 	h, _ := gadgetTestHandler(t)
 	setGadgetCaps(t, h, envelope.GadgetCapabilities{Scheduling: true, Traits: true})
-	raw := json.RawMessage(`{"session_id":"` + gadgetSession + `","gadget_capabilities":{"agents":true}}`)
+	raw := json.RawMessage(`{"session_id":"` + gadgetSession + `","gadget_capabilities":{"agents":true,"hem":true}}`)
 	if resp := h.Handle(context.Background(), &envelope.Command{Method: "update_session", Data: raw}); resp.Status != envelope.StatusSuccess {
 		t.Fatalf("partial permission update failed: %+v", resp)
 	}
 	caps, err := h.gadgetCapabilities(gadgetSession)
-	if err != nil || caps != (envelope.GadgetCapabilities{Agents: true, Traits: true, Scheduling: true}) {
+	if err != nil || caps != (envelope.GadgetCapabilities{Agents: true, Traits: true, Scheduling: true, Hem: true}) {
 		t.Fatalf("partial update changed omitted fields: %+v, %v", caps, err)
 	}
 	for _, object := range []string{`{"typo":true}`, `{"memory":null}`, `{"memory":"false"}`, `{"traits":null}`, `{"traits":"true"}`} {
@@ -281,8 +282,8 @@ func TestCapabilityProtocolPatchesPreserveOtherPermissions(t *testing.T) {
 	if !defaults.Memory || !defaults.Subagents || !defaults.Agents || !defaults.Scheduling {
 		t.Fatal("create permission patch lost defaults")
 	}
-	if defaults.Traits {
-		t.Fatal("create enabled traits without an explicit grant")
+	if defaults.Traits || defaults.Hem {
+		t.Fatal("create enabled opt-in permissions without an explicit grant")
 	}
 }
 

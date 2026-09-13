@@ -120,7 +120,7 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 	defer out.Close()
 	defer func() { _, _ = in.WriteString("\n") }()
 	writes := make(chan transport.Command, 10)
-	capabilities := envelope.GadgetCapabilities{Subagents: true, Memory: false, Agents: false, Traits: true, Scheduling: false, CreateAgents: true, MoneypennyLogs: true}
+	capabilities := envelope.GadgetCapabilities{Subagents: true, Memory: false, Agents: false, Traits: true, Scheduling: false, CreateAgents: true, MoneypennyLogs: true, Hem: true}
 	var liveCapabilities atomic.Value
 	liveCapabilities.Store(capabilities)
 	var sourceYolo atomic.Bool
@@ -142,6 +142,27 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 				}
 			case "summarize_session":
 				data = map[string]any{"summary": "Prior session context", "turn_count": 1}
+			case "get_diagnostics":
+				writes <- command
+				sessionID, _ := command.Data.(map[string]any)["session_id"].(string)
+				if sessionID == "missing" {
+					status, errorCode = "error", envelope.ErrSessionNotFound
+				}
+				result := envelope.GetDiagnosticsResponse{
+					PID: 123, Runtime: envelope.RuntimeDiagnostics{Goroutines: 1},
+					Process: envelope.ProcessDiagnostics{OS: "test"}, Dispatcher: &envelope.DispatcherDiagnostics{},
+				}
+				if sessionID != "" {
+					result.Session = &envelope.SessionDiagnostics{SessionID: sessionID}
+				}
+				if sessionID == "unavailable" {
+					result.Session = nil
+					result.SessionError = "database unavailable"
+				}
+				data = result
+				if sessionID == "invalid" {
+					data = map[string]any{}
+				}
 			case "get_logs":
 				writes <- command
 				switch command.Data.(map[string]any)["lines"] {
@@ -239,6 +260,91 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 		t.Fatalf("daemon error not propagated: %+v", response)
 	}
 	next()
+	t.Run("targeted diagnostics through Hem and proxy", func(t *testing.T) {
+		for _, proxy := range []bool{false, true} {
+			args := []string{"--name", "remote", "--session-id", "source", "--scan"}
+			var response *protocol.Response
+			if proxy {
+				response = gadgetRouteRequest(t, e, "source", "hem.command", map[string]any{"args": append([]string{"diagnose"}, args...)})
+			} else {
+				response = e.Dispatch("diagnose", "", args)
+			}
+			var result struct {
+				Moneypenny  string `json:"moneypenny"`
+				Diagnostics struct {
+					PID int `json:"pid"`
+				} `json:"diagnostics"`
+			}
+			if response.Status != "ok" || json.Unmarshal(response.Data, &result) != nil || result.Moneypenny != "remote" || result.Diagnostics.PID != 123 {
+				t.Fatalf("diagnostics proxy=%v: %+v", proxy, response)
+			}
+			cmd := next()
+			if cmd.Method != "get_diagnostics" || !reflect.DeepEqual(cmd.Data, map[string]any{"session_id": "source", "scan_session": true}) {
+				t.Fatalf("diagnostics payload changed: %+v", cmd)
+			}
+		}
+		if resp := e.Diagnose([]string{"--name", "mp"}); resp.Status != "ok" {
+			t.Fatal(resp.Message)
+		}
+		if cmd := next(); !reflect.DeepEqual(cmd.Data, map[string]any{}) {
+			t.Fatalf("lightweight request triggers scan: %+v", cmd)
+		}
+		for _, args := range [][]string{
+			{"--session-id", "source"}, {"--name", "mp", "--session-id", "source"}, {"--name", "mp", "--scan"}, {"--name", "missing"},
+			{"--name", "mp", "extra"}, {"--name", "mp", "--unknown"},
+		} {
+			if resp := e.Diagnose(args); resp.Status != "error" {
+				t.Fatalf("invalid diagnose accepted: %v", args)
+			}
+		}
+		if resp := e.Diagnose([]string{"--name", "mp", "--session-id", "missing", "--scan"}); resp.Status != "error" || !strings.Contains(resp.Message, envelope.ErrSessionNotFound) {
+			t.Fatalf("daemon diagnostic error hidden: %+v", resp)
+		}
+		next()
+		resp := e.Diagnose([]string{"--name", "mp", "--session-id", "unavailable", "--scan"})
+		var partial MoneypennyDiagnosticsResult
+		if resp.Status != "ok" || json.Unmarshal(resp.Data, &partial) != nil || partial.Diagnostics.SessionError != "database unavailable" || partial.Diagnostics.Session != nil {
+			t.Fatalf("partial scan failure hidden: %+v", resp)
+		}
+		next()
+		if resp := e.Diagnose([]string{"--name", "mp", "--session-id", "invalid", "--scan"}); resp.Status != "error" {
+			t.Fatalf("invalid diagnostic response accepted: %+v", resp)
+		}
+		next()
+		if resp := e.Dispatch("diagnose", "", []string{"--help"}); resp.Status != "ok" || !strings.Contains(string(resp.Data), "--scan") {
+			t.Fatalf("missing proxy diagnostics help: %+v", resp)
+		}
+	})
+	t.Run("Hem administrative proxy", func(t *testing.T) {
+		for _, args := range [][]string{
+			{"list", "projects"},
+			{"create", "project", "--name=Proxy project"},
+		} {
+			resp := gadgetRouteRequest(t, e, "source", "hem.command", map[string]any{"args": args})
+			if resp.Status != "ok" {
+				t.Fatalf("proxy %v: %s", args, resp.Message)
+			}
+		}
+		for _, data := range []string{
+			`{}`, `{"args":[]}`, `{"args":["gadget","route","{}"]}`,
+			`{"args":["ui"]}`, `{"args":["chat","source"]}`,
+			`{"args":["--hem","attacker/control","list","sessions"]}`,
+			`{"args":["list","projects"],"source_session_id":"other"}`,
+			`{"args":"list projects"}`, `{"args":["not-a-command"]}`,
+		} {
+			if resp := gadgetRouteRequest(t, e, "source", "hem.command", json.RawMessage(data)); resp.Status != "error" {
+				t.Fatalf("invalid proxy accepted: %s", data)
+			}
+		}
+		denied := capabilities
+		denied.Hem = false
+		liveCapabilities.Store(denied)
+		resp := gadgetRouteRequest(t, e, "source", "hem.command", map[string]any{"args": []string{"list", "projects"}})
+		if resp.Status != "error" || !strings.Contains(resp.Message, "proxy capability is disabled") {
+			t.Fatalf("proxy revocation ignored: %+v", resp)
+		}
+		liveCapabilities.Store(capabilities)
+	})
 	const prompt = "--gadget-agents=true"
 	response := gadgetRouteRequest(t, e, "source", "subagents.create", map[string]any{"prompt": prompt, "agent": "copilot", "name": "--yolo"})
 	if response.Status != "ok" {

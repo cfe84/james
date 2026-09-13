@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"james/hem/pkg/cli"
 	"james/hem/pkg/protocol"
 	"james/hem/pkg/store"
 	"james/moneypenny/pkg/envelope"
@@ -44,6 +45,32 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 		return protocol.ErrResponse("gadget source session is not tracked by this Hem")
 	}
 	switch route.Method {
+	case "hem.command":
+		var request struct {
+			Args []string `json:"args"`
+		}
+		if err := decodeGadgetData(route.Data, &request); err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		caps, err := e.currentGadgetCapabilities(source)
+		if err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		if !caps.Hem {
+			return protocol.ErrResponse("Hem administrative proxy capability is disabled")
+		}
+		command, err := cli.Parse(request.Args)
+		if err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		switch command.Verb {
+		case "gadget", "ui", "chat", "show-public-key":
+			return protocol.ErrResponse("Hem proxy accepts server commands, not internal or interactive/local commands")
+		}
+		if strings.HasPrefix(command.Verb, "-") {
+			return protocol.ErrResponse("Hem proxy does not accept global transport or process flags")
+		}
+		return e.Dispatch(command.Verb, command.Noun, command.Args)
 	case "moneypenny.logs":
 		var request struct {
 			Name  string `json:"name"`
@@ -184,6 +211,7 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 			fmt.Sprintf("--gadget-edit-own-session=%t", capabilities.EditOwnSession),
 			fmt.Sprintf("--gadget-edit-own-subagents=%t", capabilities.EditOwnSubagents),
 			fmt.Sprintf("--gadget-moneypenny-logs=%t", capabilities.MoneypennyLogs),
+			fmt.Sprintf("--gadget-hem=%t", capabilities.Hem),
 			fmt.Sprintf("--gadget-traits=%t", capabilities.Traits),
 			fmt.Sprintf("--gadget-scheduling=%t", capabilities.Scheduling),
 		}

@@ -445,7 +445,7 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 	// Check for help flag in args.
 	for _, a := range args {
 		if a == "-h" || a == "--help" {
-			key := verb + " " + noun
+			key := strings.TrimSpace(verb + " " + noun)
 			if help, ok := CommandHelp[key]; ok {
 				return protocol.OKResponse(TextResult{Message: help})
 			}

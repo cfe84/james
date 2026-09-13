@@ -15,77 +15,87 @@ import (
 	"james/moneypenny/pkg/store"
 )
 
-func TestMoneypennyLogsGateway(t *testing.T) {
-	h, params := gadgetTestHandler(t)
-	if strings.Contains(params.SystemPrompt, "gadgets moneypenny logs") {
-		t.Fatal("daemon logs advertised without permission")
-	}
-	socket := fmt.Sprintf(".logs-%d.sock", time.Now().UnixNano())
-	listener, err := net.Listen("unix", socket)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer listener.Close()
-	requests := make(chan gadgetHemRequest, 1)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		conn, err := listener.Accept()
-		if err != nil {
-			return
-		}
-		defer conn.Close()
-		var request gadgetHemRequest
-		if json.NewDecoder(conn).Decode(&request) != nil {
-			return
-		}
-		requests <- request
-		_ = json.NewEncoder(conn).Encode(gadgetHemResponse{
-			Status: "ok", RequestID: request.RequestID,
-			Data: json.RawMessage(`{"message":"recent log\nsecond line"}`),
+func TestAdministrativeGateways(t *testing.T) {
+	for _, tc := range []struct {
+		method, help string
+		caps         envelope.GadgetCapabilities
+		data         map[string]any
+	}{
+		{"moneypenny.logs", "gadgets moneypenny logs", envelope.GadgetCapabilities{MoneypennyLogs: true}, map[string]any{"name": "remote", "lines": 2000}},
+		{"hem.command", "gadgets hem", envelope.GadgetCapabilities{Hem: true}, map[string]any{"args": []string{"diagnose", "--name", "remote"}}},
+	} {
+		t.Run(tc.method, func(t *testing.T) {
+			h, params := gadgetTestHandler(t)
+			if strings.Contains(params.SystemPrompt, tc.help) {
+				t.Fatal("administrative command advertised without permission")
+			}
+			requireGadgetError(t, gadgetCall(t, params, tc.method, tc.data), "permission_denied")
+			socket := fmt.Sprintf(".logs-%d.sock", time.Now().UnixNano())
+			listener, err := net.Listen("unix", socket)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+			requests := make(chan gadgetHemRequest, 1)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				conn, err := listener.Accept()
+				if err != nil {
+					return
+				}
+				defer conn.Close()
+				var request gadgetHemRequest
+				if json.NewDecoder(conn).Decode(&request) != nil {
+					return
+				}
+				requests <- request
+				_ = json.NewEncoder(conn).Encode(gadgetHemResponse{
+					Status: "ok", RequestID: request.RequestID,
+					Data: json.RawMessage(`{"message":"recent log\nsecond line"}`),
+				})
+			}()
+			defer func() { _ = listener.Close(); <-done }()
+			raw, _ := json.Marshal(envelope.SessionIDData{SessionID: gadgetSession, GadgetRoute: map[string]string{"JAMES_HEM_SOCKET": socket}})
+			if response := h.Handle(context.Background(), &envelope.Command{Method: "get_session", Data: raw}); response.Status != envelope.StatusSuccess {
+				t.Fatal(response)
+			}
+			setGadgetCaps(t, h, tc.caps)
+			if err := h.prepareRunInstructions(gadgetSession, &params); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(params.SystemPrompt, tc.help) {
+				t.Fatal("granted gadget not advertised")
+			}
+			response := gadgetCall(t, params, tc.method, tc.data)
+			if !response.Success {
+				t.Fatalf("allowed log request failed: %+v", response)
+			}
+			body, _ := json.Marshal(response.Data)
+			if string(body) != `{"message":"recent log\nsecond line"}` {
+				t.Fatalf("log response changed: %s", body)
+			}
+			request := <-requests
+			var route struct {
+				Source string          `json:"source_session_id"`
+				Method string          `json:"method"`
+				Data   json.RawMessage `json:"data"`
+			}
+			wantData, _ := json.Marshal(tc.data)
+			if request.Verb != "gadget" || request.Noun != "route" || len(request.Args) != 1 ||
+				json.Unmarshal([]byte(request.Args[0]), &route) != nil || route.Source != gadgetSession ||
+				route.Method != tc.method || string(route.Data) != string(wantData) {
+				t.Fatalf("log route lost identity or arguments: %+v", request)
+			}
+			setGadgetCaps(t, h, envelope.GadgetCapabilities{})
+			requireGadgetError(t, gadgetCall(t, params, tc.method, tc.data), "permission_denied")
+			if err := h.prepareRunInstructions(gadgetSession, &params); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(params.SystemPrompt, tc.help) {
+				t.Fatal("revoked gadget still advertised")
+			}
 		})
-	}()
-	defer func() { _ = listener.Close(); <-done }()
-	raw, _ := json.Marshal(envelope.SessionIDData{SessionID: gadgetSession, GadgetRoute: map[string]string{"JAMES_HEM_SOCKET": socket}})
-	if response := h.Handle(context.Background(), &envelope.Command{Method: "get_session", Data: raw}); response.Status != envelope.StatusSuccess {
-		t.Fatal(response)
-	}
-	setGadgetCaps(t, h, envelope.GadgetCapabilities{MoneypennyLogs: true})
-	if err := h.prepareRunInstructions(gadgetSession, &params); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(params.SystemPrompt, "gadgets moneypenny logs") {
-		t.Fatal("granted log gadget not advertised")
-	}
-	response := gadgetCall(t, params, "moneypenny.logs", map[string]any{"name": "remote", "lines": 2000})
-	if !response.Success {
-		t.Fatalf("allowed log request failed: %+v", response)
-	}
-	body, _ := json.Marshal(response.Data)
-	if string(body) != `{"message":"recent log\nsecond line"}` {
-		t.Fatalf("log response changed: %s", body)
-	}
-	request := <-requests
-	var route struct {
-		Source string `json:"source_session_id"`
-		Method string `json:"method"`
-		Data   struct {
-			Name  string `json:"name"`
-			Lines int    `json:"lines"`
-		} `json:"data"`
-	}
-	if request.Verb != "gadget" || request.Noun != "route" || len(request.Args) != 1 ||
-		json.Unmarshal([]byte(request.Args[0]), &route) != nil || route.Source != gadgetSession ||
-		route.Method != "moneypenny.logs" || route.Data.Name != "remote" || route.Data.Lines != 2000 {
-		t.Fatalf("log route lost identity or arguments: %+v", request)
-	}
-	setGadgetCaps(t, h, envelope.GadgetCapabilities{})
-	requireGadgetError(t, gadgetCall(t, params, "moneypenny.logs", map[string]any{}), "permission_denied")
-	if err := h.prepareRunInstructions(gadgetSession, &params); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(params.SystemPrompt, "gadgets moneypenny logs") {
-		t.Fatal("revoked log gadget still advertised")
 	}
 }
 

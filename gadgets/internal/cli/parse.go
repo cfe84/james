@@ -16,6 +16,9 @@ func command(args []string) (string, []string, error) {
 	if args[0] == "notify" {
 		return "notify", args[1:], nil
 	}
+	if args[0] == "hem" {
+		return "hem.command", args[1:], nil
+	}
 	if len(args) < 2 {
 		return "", nil, errors.New("expected a subcommand; run gadgets help")
 	}
@@ -35,6 +38,12 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 	method, rest, err := command(args)
 	if err != nil {
 		return Request{}, err
+	}
+	if method == "hem.command" {
+		if len(rest) == 0 {
+			return Request{}, errors.New("hem requires a server command; run gadgets help")
+		}
+		return Request{Method: method, Data: map[string]any{"args": rest}}, nil
 	}
 	allowed := map[string]bool{}
 	switch method {

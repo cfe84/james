@@ -22,15 +22,15 @@ import (
 
 func TestGadgetCapabilityFlags(t *testing.T) {
 	for _, args := range [][]string{
-		{"--gadget-memory=false", "prompt", "--gadget-agents=true", "--gadget-traits=true", "--gadget-create-agents=true", "--gadget-moneypenny-logs=true"},
-		{"prompt", "--gadget-memory", "false", "--gadget-agents", "true", "--gadget-traits", "true", "--gadget-create-agents", "true", "--gadget-moneypenny-logs", "true"},
+		{"--gadget-memory=false", "prompt", "--gadget-agents=true", "--gadget-traits=true", "--gadget-create-agents=true", "--gadget-moneypenny-logs=true", "--gadget-hem=true"},
+		{"prompt", "--gadget-memory", "false", "--gadget-agents", "true", "--gadget-traits", "true", "--gadget-create-agents", "true", "--gadget-moneypenny-logs", "true", "--gadget-hem", "true"},
 	} {
 		var flags gadgetCapabilityFlags
 		remaining, err := parseFlagsFromArgs("test", args, flags.register)
 		if err != nil || !reflect.DeepEqual(remaining, []string{"prompt"}) {
 			t.Fatalf("parse %v: remaining=%v err=%v", args, remaining, err)
 		}
-		want := envelope.GadgetCapabilities{Memory: false, Subagents: true, Agents: true, Traits: true, Scheduling: true, CreateAgents: true, MoneypennyLogs: true}
+		want := envelope.GadgetCapabilities{Memory: false, Subagents: true, Agents: true, Traits: true, Scheduling: true, CreateAgents: true, MoneypennyLogs: true, Hem: true}
 		if got := flags.apply(nil); got == nil || *got != want {
 			t.Fatalf("capabilities = %#v, want %#v", got, want)
 		}

@@ -33,6 +33,9 @@ func TestParseCommands(t *testing.T) {
 		{"recursive", []string{"memory", "delete", "project", "--recursive"}, "", "memory.delete", `{"path":"project","recursive":true}`},
 		{"nonrecursive", []string{"memory", "delete", "--recursive=false", "project"}, "", "memory.delete", `{"path":"project","recursive":false}`},
 		{"agents list", []string{"agents", "list"}, "", "agents.list", `{}`},
+		{"hem diagnostics", []string{"hem", "diagnose", "--name", "chfeval-dev", "--session-id", "id", "--scan"}, "", "hem.command", `{"args":["diagnose","--name","chfeval-dev","--session-id","id","--scan"]}`},
+		{"hem literal arguments", []string{"hem", "create", "session", "--async", "--", "text ; $(echo literal)"}, "not forwarded", "hem.command", `{"args":["create","session","--async","--","text ; $(echo literal)"]}`},
+		{"hem command help", []string{"hem", "list", "sessions", "--help"}, "", "hem.command", `{"args":["list","sessions","--help"]}`},
 		{"own daemon logs", []string{"moneypenny", "logs"}, "", "moneypenny.logs", `{}`},
 		{"remote daemon logs", []string{"moneypenny", "logs", "--name", "chfeval-dev", "--lines", "2000"}, "", "moneypenny.logs", `{"name":"chfeval-dev","lines":2000}`},
 		{"literal daemon name", []string{"moneypenny", "logs", "--name=--lines=1", "--lines=1"}, "", "moneypenny.logs", `{"name":"--lines=1","lines":1}`},
@@ -119,7 +122,7 @@ func TestCreateTraitsFlag(t *testing.T) {
 
 func TestParseErrors(t *testing.T) {
 	for _, args := range [][]string{
-		{}, {"unknown"}, {"memory"}, {"memory", "unknown"}, {"agents", "list", "extra"},
+		{}, {"hem"}, {"unknown"}, {"memory"}, {"memory", "unknown"}, {"agents", "list", "extra"},
 		{"memory", "search"}, {"memory", "get", "a", "b"}, {"memory", "set", "--session", "other"},
 		{"memory", "set", "--body"}, {"memory", "set", "--body=x", "--body=y"},
 		{"memory", "delete"}, {"memory", "delete", "a", "--recursive=maybe"},

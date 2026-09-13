@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const controls = require('../pkg/web/static/gadget-capabilities.js');
 
-const defaults = { memory: true, subagents: true, agents: false, create_agents: false, edit_sessions: false, edit_own_session: false, edit_own_subagents: false, moneypenny_logs: false, traits: false, scheduling: true };
+const defaults = { memory: true, subagents: true, agents: false, create_agents: false, edit_sessions: false, edit_own_session: false, edit_own_subagents: false, moneypenny_logs: false, hem: false, traits: false, scheduling: true };
 const allOff = Object.fromEntries(Object.keys(defaults).map(name => [name, false]));
 const documentFor = (values) => ({
   getElementById(id) {
@@ -23,7 +23,7 @@ test('create and copy emit all explicit permissions, including false', () => {
   assert.deepEqual(controls.args('wiz', undefined, documentFor(allOff)), [
     '--gadget-memory=false', '--gadget-subagents=false',
     '--gadget-agents=false', '--gadget-create-agents=false', '--gadget-edit-sessions=false', '--gadget-edit-own-session=false', '--gadget-edit-own-subagents=false',
-    '--gadget-moneypenny-logs=false', '--gadget-traits=false', '--gadget-scheduling=false',
+    '--gadget-moneypenny-logs=false', '--gadget-hem=false', '--gadget-traits=false', '--gadget-scheduling=false',
   ]);
 });
 
@@ -70,6 +70,14 @@ test('reusable controls render accessible toggles and permanent notifications', 
   assert.match(rendered, /Notifications to you are always available/);
   assert.match(rendered, /no management access/);
   assert.match(rendered, /shared trait bodies.*future use by all agents/);
+  assert.match(rendered, /Hem administrative proxy.*mutations and permission changes/);
+});
+
+test('Hem administrative proxy can be granted and revoked independently', () => {
+  const granted = { ...allOff, hem: true };
+  assert.ok(controls.args('wiz', undefined, documentFor(granted)).includes('--gadget-hem=true'));
+  assert.deepEqual(controls.args('es', allOff, documentFor(granted)), ['--gadget-hem=true']);
+  assert.deepEqual(controls.args('es', granted, documentFor(allOff)), ['--gadget-hem=false']);
 });
 
 test('create, copy and edit surfaces load and use the reusable controls', () => {
