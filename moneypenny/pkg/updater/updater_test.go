@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -14,7 +15,33 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestForceCheckEscalatesActiveCycle(t *testing.T) {
+	for _, phase := range []string{StatusDownloading, StatusWaitingIdle} {
+		t.Run(phase, func(t *testing.T) {
+			u := New("1.87.0", "unused", t.TempDir(), &mockChecker{idle: false})
+			u.cycleRunning = true
+			u.status = phase
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if !u.ForceCheck(ctx) || u.ForceCheck(ctx) {
+				t.Fatal("force request must escalate the active cycle once, not start another")
+			}
+			if !u.waitForIdle(ctx) {
+				t.Fatal("force request did not bypass busy sessions")
+			}
+			u.finishCycle()
+			// A failed/finished forced cycle must not force the next normal one.
+			ctx, cancelWait := context.WithTimeout(context.Background(), 10*time.Millisecond)
+			defer cancelWait()
+			if u.waitForIdle(ctx) {
+				t.Fatal("force request leaked into the next cycle")
+			}
+		})
+	}
+}
 
 func releaseArchive(t *testing.T, goos, missing string) []byte {
 	t.Helper()

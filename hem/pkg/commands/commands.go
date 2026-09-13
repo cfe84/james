@@ -520,6 +520,8 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.GetMoneypennyLogs(args)
 	case "check update":
 		return e.CheckUpdate(args)
+	case "force update":
+		return e.ForceUpdate(args)
 	case "delete moneypenny":
 		return e.DeleteMoneypenny(args)
 	case "enable moneypenny":
@@ -1586,6 +1588,7 @@ func (e *Executor) CheckUpdate(args []string) *protocol.Response {
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
+
 	if name == "" {
 		name, _ = e.store.GetDefault("moneypenny")
 	}
@@ -1619,6 +1622,50 @@ func (e *Executor) CheckUpdate(args []string) *protocol.Response {
 		msg = fmt.Sprintf("Update check already pending on moneypenny %q.", name)
 	}
 	return protocol.OKResponse(TextResult{Message: msg})
+}
+
+// ForceUpdate queues a remote update that bypasses the moneypenny idle gate.
+// The moneypenny restarts after it has downloaded and verified the release.
+func (e *Executor) ForceUpdate(args []string) *protocol.Response {
+	var name string
+	_, err := parseFlagsFromArgs("force-update", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&name, "n", "", "moneypenny name (defaults to default moneypenny)")
+		fs.StringVar(&name, "name", "", "moneypenny name")
+		fs.StringVar(&name, "m", "", "moneypenny name")
+		fs.StringVar(&name, "moneypenny", "", "moneypenny name")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if name == "" {
+		name, _ = e.store.GetDefault("moneypenny")
+	}
+	if name == "" {
+		return protocol.ErrResponse("--name / -n is required (or set a default with 'hem set-default moneypenny')")
+	}
+	mp, err := e.store.GetMoneypenny(name)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if mp == nil {
+		return protocol.ErrResponse(fmt.Sprintf("moneypenny %q not found", name))
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := e.sendCommand(ctx, mp, "force_update", nil)
+	if err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("force_update failed: %v", err))
+	}
+	var result struct {
+		Queued bool `json:"queued"`
+	}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("decode force_update response: %v", err))
+	}
+	if !result.Queued {
+		return protocol.OKResponse(TextResult{Message: fmt.Sprintf("Force update already pending or running on moneypenny %q.", name)})
+	}
+	return protocol.OKResponse(TextResult{Message: fmt.Sprintf("Force update requested on moneypenny %q; a newer verified release will restart the daemon and may interrupt active sessions.", name)})
 }
 
 func (e *Executor) DeleteMoneypenny(args []string) *protocol.Response {

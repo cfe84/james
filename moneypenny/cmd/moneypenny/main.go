@@ -166,35 +166,43 @@ func main() {
 	// mirror session replies back through them.
 	h.StartChannelManager(ctx)
 
+	ulog := log.New(io.Discard, "[updater] ", log.LstdFlags)
+	if *verbose {
+		ulog = log.New(os.Stderr, "[updater] ", log.LstdFlags)
+	}
+	u := updater.New(Version, "cfe84/james", *dataDir, h,
+		updater.WithCheckInterval(*updateInterval),
+		updater.WithLogger(ulog),
+		updater.WithBeforeRestart(func() {
+			// Windows starts a second process for re-exec. Close SQLite before
+			// that process starts so it cannot race this process's WAL mapping.
+			cancel()
+			if err := st.Close(); err != nil {
+				log.Printf("updater: close store before restart: %v", err)
+			}
+		}),
+	)
+	// Remote force-update is available even when periodic auto-update is off.
+	h.SetForceUpdateFunc(func() bool {
+		return u.ForceCheck(ctx)
+	})
+
+	h.SetUpdateStatusFunc(func() envelope.UpdateStatusResponse {
+		info := u.Status()
+		if !*autoUpdate && info.LastChecked == "" && info.Status == updater.StatusUpToDate {
+			info.Status = "disabled"
+		}
+		return envelope.UpdateStatusResponse{
+			CurrentVersion:  info.CurrentVersion,
+			LatestVersion:   info.LatestVersion,
+			UpdateAvailable: info.UpdateAvailable,
+			Status:          info.Status,
+			LastChecked:     info.LastChecked,
+			Error:           info.Error,
+		}
+	})
 	// Start auto-updater if enabled.
 	if *autoUpdate {
-		ulog := log.New(io.Discard, "[updater] ", log.LstdFlags)
-		if *verbose {
-			ulog = log.New(os.Stderr, "[updater] ", log.LstdFlags)
-		}
-		u := updater.New(Version, "cfe84/james", *dataDir, h,
-			updater.WithCheckInterval(*updateInterval),
-			updater.WithLogger(ulog),
-			updater.WithBeforeRestart(func() {
-				// Windows starts a second process for re-exec. Close SQLite before
-				// that process starts so it cannot race this process's WAL mapping.
-				cancel()
-				if err := st.Close(); err != nil {
-					log.Printf("updater: close store before restart: %v", err)
-				}
-			}),
-		)
-		h.SetUpdateStatusFunc(func() envelope.UpdateStatusResponse {
-			info := u.Status()
-			return envelope.UpdateStatusResponse{
-				CurrentVersion:  info.CurrentVersion,
-				LatestVersion:   info.LatestVersion,
-				UpdateAvailable: info.UpdateAvailable,
-				Status:          info.Status,
-				LastChecked:     info.LastChecked,
-				Error:           info.Error,
-			}
-		})
 		h.SetTriggerUpdateFunc(u.TriggerCheck)
 		go u.Run(ctx)
 		log.Printf("auto-update enabled (check interval: %v)", *updateInterval)

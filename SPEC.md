@@ -393,6 +393,13 @@ private key or long-lived Azure credential is stored in the repository.
 ### Flags
 
 - `moneypenny --auto-update` — enable automatic updates (default: off)
+- `hem force update --name HOST` remotely queues a verified update on a
+  running Moneypenny and bypasses the idle-session gate; the daemon restarts
+  after installation.
+  This works with periodic auto-update disabled and releases an update
+  already waiting for idle. Active agent runs may be interrupted. The target
+  daemon must already support `force_update`; older or unreachable daemons
+  still require a local upgrade. If no newer release exists, no restart occurs.
 - `moneypenny --update-interval 1h` — check frequency (default: 1h)
 - `moneypenny force-update` — bypass daemon connections and install the latest
   signed release immediately

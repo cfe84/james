@@ -568,6 +568,11 @@ type UpdateStatusResponse struct {
 
 // CheckUpdateResponse is returned by check_update.
 type CheckUpdateResponse struct {
+	Queued bool `json:"queued"`
+}
+
+// ForceUpdateResponse is returned when a remote force-update was queued.
+type ForceUpdateResponse struct {
 	Queued bool `json:"queued"` // true if a check was queued, false if already pending
 }
 

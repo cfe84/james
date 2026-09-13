@@ -70,6 +70,11 @@ func (d *requestDispatcher) submit(ctx context.Context, cmd *envelope.Command, r
 	if localSnapshot(cmd.Method) {
 		queue = d.reads
 	}
+	// The trigger only signals the serialized updater; it must not queue
+	// behind the blocked command or session reads it is intended to recover.
+	if cmd.Method == "force_update" {
+		queue = d.diagnostics
+	}
 	if cmd.Method == "get_diagnostics" {
 		queue = d.diagnostics
 		var data envelope.GetDiagnosticsData

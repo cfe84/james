@@ -106,6 +106,7 @@ type Handler struct {
 	vlog                 func(string, ...interface{})
 	updateStatusFunc     func() envelope.UpdateStatusResponse
 	triggerUpdateFunc    func() bool                  // returns true if check was queued
+	forceUpdateFunc      func() bool                  // returns true if force-update was queued
 	notifyWriter         *envelope.NotificationWriter // for sending async notifications to hem
 	channels             *channel.Registry            // external communication channel providers
 	channelCmd           string                       // base command for provider MCP servers (default "agency")
@@ -247,6 +248,12 @@ func (h *Handler) SetTriggerUpdateFunc(f func() bool) {
 	h.triggerUpdateFunc = f
 }
 
+// SetForceUpdateFunc sets the function called to queue an update that bypasses
+// the all-sessions-idle gate and restarts the daemon after installation.
+func (h *Handler) SetForceUpdateFunc(f func() bool) {
+	h.forceUpdateFunc = f
+}
+
 // SetNotificationWriter sets the writer for sending async notifications.
 func (h *Handler) SetNotificationWriter(nw *envelope.NotificationWriter) {
 	if nw == nil {
@@ -359,6 +366,8 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.updateStatus(cmd)
 	case "check_update":
 		return h.checkUpdate(cmd)
+	case "force_update":
+		return h.forceUpdate(cmd)
 	case "summarize_session":
 		return h.summarizeSession(ctx, cmd)
 	case "compact_session":
@@ -1692,6 +1701,13 @@ func (h *Handler) checkUpdate(cmd *envelope.Command) *envelope.Response {
 	return envelope.SuccessResponse(cmd.RequestID, envelope.CheckUpdateResponse{
 		Queued: queued,
 	})
+}
+
+func (h *Handler) forceUpdate(cmd *envelope.Command) *envelope.Response {
+	if h.forceUpdateFunc == nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "remote force-update is disabled on this moneypenny")
+	}
+	return envelope.SuccessResponse(cmd.RequestID, envelope.ForceUpdateResponse{Queued: h.forceUpdateFunc()})
 }
 
 func (h *Handler) listModels(_ context.Context, cmd *envelope.Command) *envelope.Response {

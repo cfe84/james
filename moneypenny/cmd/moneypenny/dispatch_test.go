@@ -36,6 +36,7 @@ func TestStdioListsSessionsWhileCommandBlocked(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := handler.New(st, agent.New(logger), "test", t.TempDir())
+	h.SetForceUpdateFunc(func() bool { return true })
 	started, release := make(chan struct{}), make(chan struct{})
 	defer close(release)
 	dispatcher := newRequestDispatcher(ctx, func(ctx context.Context, cmd *envelope.Command) *envelope.Response {
@@ -68,13 +69,13 @@ func TestStdioListsSessionsWhileCommandBlocked(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("slow command did not start")
 	}
-	for _, method := range []string{"list_sessions", "get_version"} {
+	for _, method := range []string{"list_sessions", "get_version", "force_update"} {
 		if _, err := fmt.Fprintf(send, "{\"type\":\"request\",\"method\":%q,\"request_id\":%q,\"data\":{}}\n", method, method); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	replies := make(chan envelope.Response, 2)
+	replies := make(chan envelope.Response, 3)
 	go func() {
 		scanner := bufio.NewScanner(output)
 		for scanner.Scan() {
@@ -85,7 +86,7 @@ func TestStdioListsSessionsWhileCommandBlocked(t *testing.T) {
 		}
 	}()
 	seen := map[string]bool{}
-	for range 2 {
+	for range 3 {
 		select {
 		case resp := <-replies:
 			if resp.Status != envelope.StatusSuccess {
@@ -109,7 +110,7 @@ func TestStdioListsSessionsWhileCommandBlocked(t *testing.T) {
 			t.Fatal("snapshot waited for the slow command")
 		}
 	}
-	if !seen["list_sessions"] || !seen["get_version"] {
+	if !seen["list_sessions"] || !seen["get_version"] || !seen["force_update"] {
 		t.Fatalf("missing snapshots: %v", seen)
 	}
 	send.Close()

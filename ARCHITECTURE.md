@@ -1076,6 +1076,14 @@ A combined `Dockerfile` at the project root builds both Hem and Qew into a singl
 ## Moneypenny Auto-Update
 
 Moneypenny can self-update from GitHub releases (`--auto-update` flag).
+Hem also exposes a remote `force update` command. It uses the same signed
+release verification and restart path but deliberately bypasses the
+all-sessions-idle gate for operator recovery of a stuck daemon.
+The trigger uses the independent diagnostics worker and is available with
+periodic auto-update disabled. A force request escalates an existing update
+cycle (including one already waiting for idle), rather than competing with
+its download/install. Duplicate force requests coalesce until that cycle ends.
+Update status remains available for manual cycles when the timer is disabled.
 
 1. **Architecture**: Self-contained in `moneypenny/pkg/updater/` — no dependency on hem. The updater implements `SessionChecker` interface against the handler, which queries the store for session statuses.
 2. **Version comparison**: Simple semver (major.minor.patch) string comparison. The `v` prefix from tags is stripped.

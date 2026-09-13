@@ -63,7 +63,10 @@ type Info struct {
 
 // Updater checks for new GitHub releases and performs binary self-updates.
 type Updater struct {
-	mu sync.RWMutex
+	mu             sync.RWMutex
+	cycleRunning   bool
+	forceRequested bool
+	forceCh        chan struct{}
 
 	currentVersion string
 	repo           string // "owner/repo" e.g. "cfe84/james"
@@ -127,6 +130,7 @@ func New(currentVersion, repo, dataDir string, checker SessionChecker, opts ...O
 		slog:           log.New(os.Stderr, "", log.LstdFlags),
 		execArgs:       os.Args,
 		triggerCh:      make(chan struct{}, 1),
+		forceCh:        make(chan struct{}, 1),
 	}
 	for _, o := range opts {
 		o(u)
@@ -144,6 +148,39 @@ func (u *Updater) TriggerCheck() bool {
 	default:
 		return false
 	}
+}
+
+// ForceCheck runs one verified update cycle without waiting for sessions to
+// become idle. It is intended for an operator explicitly recovering a stuck
+// daemon; the process is restarted after the replacement is installed.
+func (u *Updater) ForceCheck(ctx context.Context) bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if ctx.Err() != nil || u.forceRequested {
+		return false
+	}
+	u.forceRequested = true
+	u.forceCh <- struct{}{}
+	if u.cycleRunning {
+		return true
+	}
+	u.cycleRunning = true
+	go func() {
+		defer u.finishCycle()
+		u.cycleLocked(ctx, true)
+	}()
+	return true
+}
+
+func (u *Updater) finishCycle() {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	select {
+	case <-u.forceCh:
+	default:
+	}
+	u.forceRequested = false
+	u.cycleRunning = false
 }
 
 // ForceUpdate checks GitHub and installs the latest release immediately,
@@ -247,6 +284,18 @@ func (u *Updater) Run(ctx context.Context) {
 
 // cycle runs one check → download → wait-for-idle → swap cycle.
 func (u *Updater) cycle(ctx context.Context) {
+	u.mu.Lock()
+	if u.cycleRunning {
+		u.mu.Unlock()
+		return
+	}
+	u.cycleRunning = true
+	u.mu.Unlock()
+	defer u.finishCycle()
+	u.cycleLocked(ctx, false)
+}
+
+func (u *Updater) cycleLocked(ctx context.Context, force bool) {
 	if ctx.Err() != nil {
 		return
 	}
@@ -290,19 +339,23 @@ func (u *Updater) cycle(ctx context.Context) {
 	u.stagedDir = stagedDir
 	u.mu.Unlock()
 
-	// 3. Wait for idle.
-	u.setStatus(StatusWaitingIdle)
-	u.slog.Printf("v%s downloaded, waiting for all sessions to be idle before restarting", tag)
-	u.vlog.Printf("update staged at %s", stagedDir)
+	if !force {
+		// 3. Wait for idle.
+		u.setStatus(StatusWaitingIdle)
+		u.slog.Printf("v%s downloaded, waiting for all sessions to be idle before restarting", tag)
+		u.vlog.Printf("update staged at %s", stagedDir)
 
-	if !u.waitForIdle(ctx) {
-		u.vlog.Printf("context cancelled while waiting for idle")
-		return
+		if !u.waitForIdle(ctx) {
+			u.vlog.Printf("context cancelled while waiting for idle")
+			return
+		}
+	} else {
+		u.slog.Printf("v%s downloaded, force-update bypassing session idle gate", tag)
 	}
 
 	// 4. Swap and restart.
 	u.setStatus(StatusRestarting)
-	u.slog.Printf("all sessions idle, updating to v%s and restarting", tag)
+	u.slog.Printf("updating to v%s and restarting", tag)
 
 	if err := u.swapAndRestart(stagedDir); err != nil {
 		u.slog.Printf("swap failed: %v", err)
@@ -644,6 +697,15 @@ func (u *Updater) extractZip(r io.Reader, stageDir string, wantBinaries map[stri
 
 // waitForIdle polls until all sessions are idle or context is cancelled.
 func (u *Updater) waitForIdle(ctx context.Context) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	select {
+	case <-u.forceCh:
+		u.slog.Printf("force-update bypassing session idle gate")
+		return true
+	default:
+	}
 	// Check immediately first.
 	if u.checker.AllSessionsIdle() {
 		return true
@@ -654,6 +716,9 @@ func (u *Updater) waitForIdle(ctx context.Context) bool {
 
 	for {
 		select {
+		case <-u.forceCh:
+			u.slog.Printf("force-update bypassing session idle gate")
+			return ctx.Err() == nil
 		case <-ticker.C:
 			if u.checker.AllSessionsIdle() {
 				return true
