@@ -74,15 +74,36 @@ type Executor struct {
 	MI6ServerFingerprint string                        // expected MI6 server fingerprint for gadget commands
 	HemSocket            string                        // local daemon-to-Hem routing endpoint
 	BroadcastFunc        func(resp *protocol.Response) // optional: push broadcasts to connected MI6 clients
+	eventBroker          *EventBroker
 }
 
 func New(s *store.Store, mi6KeyPath string) *Executor {
-	return &Executor{
+	e := &Executor{
 		store:         s,
 		clientManager: NewClientManager(mi6KeyPath),
 		cacheManager:  NewCacheManager(),
 		watchManager:  NewWatchManager(),
+		eventBroker:   NewEventBroker(),
 	}
+	e.clientManager.SetEventHandler(e.handleMoneypennyEvent)
+	return e
+}
+
+// Subscribe exposes bounded invalidation hints to local Hem clients.
+func (e *Executor) Subscribe() (<-chan *protocol.Response, func()) {
+	return e.eventBroker.Subscribe()
+}
+
+func (e *Executor) handleMoneypennyEvent(_ string, event *transport.Response) {
+	if event == nil || event.Type != "notification" {
+		return
+	}
+	e.publishEvent(&protocol.Response{
+		Status:    protocol.StatusOK,
+		Event:     event.Event,
+		SessionID: event.SessionID,
+		Data:      event.Data,
+	})
 }
 
 // getMPData returns a snapshot of cached moneypenny session data.
@@ -127,12 +148,16 @@ func (e *Executor) processScheduleReady(sessions map[string]mpSessionInfo) {
 // emitDashboardRefresh sends a broadcast to connected clients indicating that
 // cached MP data has been updated and the dashboard should be refreshed.
 func (e *Executor) emitDashboardRefresh() {
+	resp := &protocol.Response{Status: "ok", Verb: "refresh", Noun: "dashboard"}
+	e.publishEvent(resp)
+}
+
+func (e *Executor) publishEvent(resp *protocol.Response) {
+	if e.eventBroker != nil {
+		e.eventBroker.Publish(resp)
+	}
 	if e.BroadcastFunc != nil {
-		e.BroadcastFunc(&protocol.Response{
-			Status: "ok",
-			Verb:   "refresh",
-			Noun:   "dashboard",
-		})
+		e.BroadcastFunc(resp)
 	}
 }
 

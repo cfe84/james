@@ -416,7 +416,7 @@ func (h *Handler) executeGadget(ctx context.Context, sessionID string, request g
 	if err := h.store.AddConversationTurn(sessionID, "notification", text); err != nil {
 		return nil, err
 	}
-	_ = h.notifyWriter.Send(envelope.EventChatUserNotification, sessionID, map[string]string{"message": text})
+	_ = h.notifyWriter.SendAsync(envelope.EventChatUserNotification, sessionID, map[string]string{"message": text})
 	return map[string]bool{"notified": true}, nil
 }
 

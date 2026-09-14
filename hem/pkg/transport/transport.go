@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -38,6 +39,15 @@ type Response struct {
 	RequestID string          `json:"request_id"`
 	ErrorCode string          `json:"error_code,omitempty"`
 	Data      json.RawMessage `json:"data"`
+	Event     string          `json:"event,omitempty"`
+	SessionID string          `json:"session_id,omitempty"`
+}
+
+// EventSubscriber receives unsolicited Moneypenny notifications from a
+// persistent MI6 connection. Events are hints; callers must re-read state.
+type EventSubscriber struct {
+	ch     chan *Response
+	closed sync.Once
 }
 
 // Client communicates with a moneypenny instance.
@@ -49,6 +59,22 @@ type Client struct {
 	mi6Addr              string     // for mi6 transport
 	mi6KeyPath           string     // SSH key for mi6
 	mi6ServerFingerprint string     // expected MI6 server fingerprint
+	mi6Mu                sync.Mutex
+	mi6Conn              *mi6Connection
+	mi6StartOnce         sync.Once
+	mi6Started           atomic.Bool
+	eventMu              sync.RWMutex
+	eventSubs            map[*EventSubscriber]struct{}
+}
+
+type mi6Connection struct {
+	cmd      *exec.Cmd
+	stdin    io.WriteCloser
+	scanner  *bufio.Scanner
+	pending  map[string]chan *Response
+	eventsMu sync.RWMutex
+	events   map[*EventSubscriber]struct{}
+	done     chan struct{}
 }
 
 // NewFIFOClient creates a client that communicates via named pipes.
@@ -69,6 +95,48 @@ func NewMI6Client(mi6Addr, keyPath, serverFingerprint string) *Client {
 		mi6Addr:              mi6Addr,
 		mi6KeyPath:           keyPath,
 		mi6ServerFingerprint: serverFingerprint,
+		eventSubs:            make(map[*EventSubscriber]struct{}),
+	}
+}
+
+// Start begins the reconnecting MI6 reader. It is safe to call more than once.
+func (c *Client) Start(ctx context.Context) {
+	if c.transportType != "mi6" {
+		return
+	}
+	c.mi6Started.Store(true)
+	c.mi6StartOnce.Do(func() {
+		go c.mi6Run(ctx)
+	})
+}
+
+// Subscribe registers a bounded notification consumer. Unsubscribe is
+// idempotent and closes only this consumer's channel.
+func (c *Client) Subscribe() (<-chan *Response, func()) {
+	sub := &EventSubscriber{ch: make(chan *Response, 32)}
+	c.eventMu.Lock()
+	c.eventSubs[sub] = struct{}{}
+	c.eventMu.Unlock()
+	c.mi6Mu.Lock()
+	conn := c.mi6Conn
+	c.mi6Mu.Unlock()
+	if conn != nil {
+		conn.eventsMu.Lock()
+		conn.events[sub] = struct{}{}
+		conn.eventsMu.Unlock()
+	}
+	return sub.ch, func() {
+		sub.closed.Do(func() {
+			c.eventMu.Lock()
+			delete(c.eventSubs, sub)
+			c.eventMu.Unlock()
+			if conn != nil {
+				conn.eventsMu.Lock()
+				delete(conn.events, sub)
+				conn.eventsMu.Unlock()
+			}
+			close(sub.ch)
+		})
 	}
 }
 
@@ -200,21 +268,62 @@ func (c *Client) sendMI6(ctx context.Context, cmd *Command) (*Response, error) {
 	if cmd.RequestID == "" {
 		return nil, fmt.Errorf("MI6 command requires a request ID")
 	}
+	if !c.mi6Started.Load() {
+		return c.sendMI6Once(ctx, cmd)
+	}
 	data, err := json.Marshal(cmd)
 	if err != nil {
 		return nil, err
 	}
 	data = append(data, '\n')
+	for {
+		c.mi6Mu.Lock()
+		conn := c.mi6Conn
+		if conn != nil && conn.stdin != nil {
+			ch := make(chan *Response, 1)
+			conn.pending[cmd.RequestID] = ch
+			_, writeErr := conn.stdin.Write(data)
+			c.mi6Mu.Unlock()
+			if writeErr != nil {
+				c.failMI6(conn, writeErr)
+			} else {
+				select {
+				case resp := <-ch:
+					return resp, nil
+				case <-ctx.Done():
+					c.mi6Mu.Lock()
+					delete(conn.pending, cmd.RequestID)
+					c.mi6Mu.Unlock()
+					return nil, ctx.Err()
+				case <-conn.done:
+					return nil, fmt.Errorf("MI6 connection lost")
+				}
+			}
 
+		} else {
+			c.mi6Mu.Unlock()
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+func (c *Client) sendMI6Once(ctx context.Context, cmd *Command) (*Response, error) {
+	data, err := json.Marshal(cmd)
+	if err != nil {
+		return nil, err
+	}
+	data = append(data, '\n')
 	mi6Client, err := findMI6Client()
 	if err != nil {
 		return nil, err
 	}
-
 	proc := exec.CommandContext(ctx, mi6Client, "--line-mode", "--key", c.mi6KeyPath, "--server-fingerprint", c.mi6ServerFingerprint, c.mi6Addr)
 	var stderrBuf bytes.Buffer
 	proc.Stderr = &stderrBuf
-
 	stdin, err := proc.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("creating stdin pipe: %w", err)
@@ -223,56 +332,152 @@ func (c *Client) sendMI6(ctx context.Context, cmd *Command) (*Response, error) {
 	if err != nil {
 		return nil, fmt.Errorf("creating stdout pipe: %w", err)
 	}
-
 	if err := proc.Start(); err != nil {
 		return nil, fmt.Errorf("starting mi6-client: %w", err)
 	}
-
 	if _, err := stdin.Write(data); err != nil {
-		stdin.Close()
-		proc.Process.Kill()
-		proc.Wait()
+		_ = stdin.Close()
+		_ = proc.Process.Kill()
+		_ = proc.Wait()
 		return nil, fmt.Errorf("writing MI6 command: %w", err)
 	}
-
-	// Don't close stdin yet — closing it triggers mi6-client shutdown
-	// (stdin EOF → cancel → exit) before the response can arrive back
-	// through the MI6 relay.
-
 	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024) // up to 16MB responses
+	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	for scanner.Scan() {
 		var resp Response
 		if err := json.Unmarshal(scanner.Bytes(), &resp); err != nil {
-			stdin.Close()
-			proc.Process.Kill()
-			proc.Wait()
+			_ = stdin.Close()
+			_ = proc.Process.Kill()
+			_ = proc.Wait()
 			return nil, fmt.Errorf("parsing response: %w", err)
 		}
-
-		// MI6 broadcasts to every participant. Correlate envelopes rather than
-		// serializing calls, so slow commands cannot block dashboard reads.
-		if resp.Type != "response" || resp.RequestID != cmd.RequestID {
-			continue
+		if resp.Type == "response" && resp.RequestID == cmd.RequestID {
+			_ = stdin.Close()
+			_ = proc.Wait()
+			return &resp, nil
 		}
-		stdin.Close()
-		proc.Wait()
-		return &resp, nil
 	}
-
-	stdin.Close()
+	_ = stdin.Close()
 	waitErr := proc.Wait()
-	errParts := []string{"no matching response from moneypenny via MI6"}
+	detail := "no matching response from moneypenny via MI6"
 	if se := scanner.Err(); se != nil {
-		errParts = append(errParts, fmt.Sprintf("scan: %v", se))
+		detail += fmt.Sprintf("; scan: %v", se)
 	}
 	if waitErr != nil {
-		errParts = append(errParts, fmt.Sprintf("exit: %v", waitErr))
+		detail += fmt.Sprintf("; exit: %v", waitErr)
 	}
 	if stderr := strings.TrimSpace(stderrBuf.String()); stderr != "" {
-		errParts = append(errParts, fmt.Sprintf("stderr: %s", stderr))
+		detail += fmt.Sprintf("; stderr: %s", stderr)
 	}
-	return nil, fmt.Errorf("%s", strings.Join(errParts, "; "))
+	return nil, fmt.Errorf("%s", detail)
+}
+
+func (c *Client) mi6Run(ctx context.Context) {
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		conn, err := c.connectMI6()
+		if err != nil {
+			select {
+			case <-time.After(time.Second):
+			case <-ctx.Done():
+				return
+			}
+			continue
+		}
+		c.readMI6(conn)
+		c.failMI6(conn, fmt.Errorf("MI6 connection closed"))
+	}
+}
+
+func (c *Client) connectMI6() (*mi6Connection, error) {
+	mi6Client, err := findMI6Client()
+	if err != nil {
+		return nil, err
+	}
+	proc := exec.Command(mi6Client, "--line-mode", "--key", c.mi6KeyPath, "--server-fingerprint", c.mi6ServerFingerprint, c.mi6Addr)
+	stdin, err := proc.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	stdout, err := proc.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	proc.Stderr = os.Stderr
+	if err := proc.Start(); err != nil {
+		return nil, err
+	}
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	conn := &mi6Connection{cmd: proc, stdin: stdin, scanner: scanner, pending: make(map[string]chan *Response), events: make(map[*EventSubscriber]struct{}), done: make(chan struct{})}
+	c.eventMu.RLock()
+	for sub := range c.eventSubs {
+		conn.events[sub] = struct{}{}
+	}
+	c.eventMu.RUnlock()
+	c.mi6Mu.Lock()
+	c.mi6Conn = conn
+	c.mi6Mu.Unlock()
+	return conn, nil
+}
+
+func (c *Client) readMI6(conn *mi6Connection) {
+	for conn.scanner.Scan() {
+		var resp Response
+		if err := json.Unmarshal(conn.scanner.Bytes(), &resp); err != nil {
+			continue
+		}
+		if resp.Type == "response" && resp.RequestID != "" {
+			c.mi6Mu.Lock()
+			ch := conn.pending[resp.RequestID]
+			if ch != nil {
+				delete(conn.pending, resp.RequestID)
+			}
+			c.mi6Mu.Unlock()
+			if ch != nil {
+				select {
+				case ch <- &resp:
+				default:
+				}
+			}
+			continue
+		}
+		if resp.Type != "notification" {
+			continue
+		}
+		conn.eventsMu.RLock()
+		for sub := range conn.events {
+			select {
+			case sub.ch <- &resp:
+			default:
+				// Overflow is a recoverable hint loss; the consumer's
+				// polling/resync path remains authoritative.
+			}
+		}
+		conn.eventsMu.RUnlock()
+	}
+}
+
+func (c *Client) failMI6(conn *mi6Connection, cause error) {
+	c.mi6Mu.Lock()
+	if c.mi6Conn != conn {
+		c.mi6Mu.Unlock()
+		return
+	}
+	conn.stdin = nil
+	close(conn.done)
+	for id := range conn.pending {
+		delete(conn.pending, id)
+	}
+	c.mi6Conn = nil
+	c.mi6Mu.Unlock()
+	_ = cause
+	if conn.cmd != nil && conn.cmd.Process != nil {
+		_ = conn.cmd.Process.Kill()
+		_ = conn.cmd.Wait()
+	}
 }
 
 // TestMI6 tests connectivity to an MI6 server by spawning mi6-client and

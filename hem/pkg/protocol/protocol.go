@@ -27,6 +27,8 @@ type Response struct {
 	RequestID string          `json:"request_id,omitempty"` // echoed from request
 	Verb      string          `json:"verb,omitempty"`       // originating request verb (for broadcast identification)
 	Noun      string          `json:"noun,omitempty"`       // originating request noun (for broadcast identification)
+	Event     string          `json:"event,omitempty"`      // asynchronous Moneypenny event
+	SessionID string          `json:"session_id,omitempty"`
 }
 
 const (
@@ -37,9 +39,9 @@ const (
 // Notification is sent from hem server to clients for asynchronous events.
 // Unlike Response, it has no RequestID since it's not triggered by a specific request.
 type Notification struct {
-	Event     string          `json:"event"`            // event type (e.g. "session_state_changed")
-	SessionID string          `json:"session_id"`       // affected session
-	Data      json.RawMessage `json:"data,omitempty"`   // event-specific data
+	Event     string          `json:"event"`          // event type (e.g. "session_state_changed")
+	SessionID string          `json:"session_id"`     // affected session
+	Data      json.RawMessage `json:"data,omitempty"` // event-specific data
 }
 
 const (

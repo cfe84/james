@@ -129,11 +129,20 @@ func (n *Notification) Marshal() ([]byte, error) {
 type NotificationWriter struct {
 	mu     sync.Mutex
 	writer interface{ Write([]byte) (int, error) }
+	queue  chan []byte
 }
 
 // NewNotificationWriter creates a notification writer that writes to the given writer.
 func NewNotificationWriter(w interface{ Write([]byte) (int, error) }) *NotificationWriter {
-	return &NotificationWriter{writer: w}
+	nw := &NotificationWriter{writer: w, queue: make(chan []byte, 128)}
+	go nw.drain()
+	return nw
+}
+
+func (nw *NotificationWriter) drain() {
+	for b := range nw.queue {
+		_, _ = nw.Write(b)
+	}
 }
 
 // SetWriter switches transports without replacing the writer used by running agents.
@@ -165,4 +174,23 @@ func (nw *NotificationWriter) Send(event, sessionID string, data interface{}) er
 	}
 	_, err = nw.Write(b)
 	return err
+}
+
+// SendAsync queues a bounded post-commit hint without making the caller wait
+// for a transport write. Queue overflow is reported so the next read can
+// resynchronize from SQLite.
+func (nw *NotificationWriter) SendAsync(event, sessionID string, data interface{}) error {
+	if nw == nil {
+		return nil
+	}
+	b, err := NewNotification(event, sessionID, data).Marshal()
+	if err != nil {
+		return err
+	}
+	select {
+	case nw.queue <- b:
+		return nil
+	default:
+		return fmt.Errorf("notification queue full; resync required")
+	}
 }

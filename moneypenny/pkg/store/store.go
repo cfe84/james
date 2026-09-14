@@ -714,7 +714,7 @@ func (s *Store) AddConversationTurnFrom(sessionID, role, content, sourceSessionI
 
 func (s *Store) notifyConversationTurn(sessionID, role, content, sourceSessionID, sourceName string, turnIndex int64) {
 	if s.notifyWriter != nil {
-		_ = s.notifyWriter.Send(envelope.EventChatMessage, sessionID, map[string]interface{}{
+		_ = s.notifyWriter.SendAsync(envelope.EventChatMessage, sessionID, map[string]interface{}{
 			"id":                turnIndex,
 			"role":              role,
 			"content":           content,

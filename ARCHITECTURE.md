@@ -1168,3 +1168,32 @@ dashboard polling at 5s, with push hints as additional triggers.
 Each browser refresh lane shares one in-flight promise across ticks and hints.
 A chat navigation generation rejects stale results and triggers a follow-up
 read of the newly selected chat. Optional-panel failures retain cached data.
+
+## Bounded event forwarding foundation (v1.90.0)
+
+The Hem client manager owns a single reconnecting MI6 connection for each
+registered Moneypenny. Its reader is the sole classifier for that connection:
+matching `response` envelopes complete pending requests, while only
+`notification` envelopes reach bounded subscribers. Unknown responses and
+foreign request envelopes are never broadcast. A compatibility path retains
+the legacy one-shot MI6 request behavior for callers that do not opt into the
+manager-owned persistent client, preserving FIFO and existing CLI/TUI paths.
+
+Hem's event broker fans out small invalidation hints with bounded per-subscriber
+queues. The Unix server exposes an acknowledgement followed by a hint stream;
+the MI6 control path carries the same hints. Qew uses a dedicated subscription
+connection and keeps its existing polling lanes as the authoritative resync
+after reconnect or queue overflow. Subscribers are removed idempotently and
+their channels are closed exactly once.
+
+Moneypenny notification writers retain synchronous `Send` compatibility, while
+agent, scheduler, handler, and store post-commit paths use bounded asynchronous
+delivery. Queue overflow is observable to the caller and intentionally drops
+ephemeral hints rather than transcript data. Network delivery is not performed
+inside SQLite transactions and accepted agent/scheduler execution does not
+depend on relay or browser lifetime.
+
+This phase does not claim replay, durable event journals, session-scoped
+watch/refcount leases, watermarks, durable revisions/cursors, read-through
+acknowledgements, or operation IDs. Those are required before polling can be
+removed.

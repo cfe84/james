@@ -1728,3 +1728,19 @@ Each refresh lane permits only one in-flight refresh; overlapping timer ticks
 and hints share that request. Navigation rejects stale chat results, including
 A-to-B-to-A navigation, and refreshes the newly selected chat after the old
 request finishes. Only the active dashboard/chat polling timer runs.
+
+### Bounded event forwarding foundation (v1.90.0)
+
+Hem keeps one reconnecting, multiplexed MI6 client per registered Moneypenny
+and correlates responses by request ID. Only envelopes explicitly marked as
+notifications are forwarded; foreign requests and unmatched responses are
+discarded. Moneypenny activity and persistence hints are delivered
+asynchronously through a bounded queue after the database operation, so relay
+failure cannot block an agent or scheduler.
+
+Hem exposes bounded event hints to both MI6 control clients and Unix-socket
+clients. Qew can subscribe over either path, and its WebSocket layer uses the
+hints as additional refresh triggers. Overflow and reconnect are treated as
+resync conditions: authoritative HTTP polling remains enabled and is required
+for correctness. Session-scoped leases/refcounts, replay, durable revisions,
+watermarks, and operation IDs remain deferred.

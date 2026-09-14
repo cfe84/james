@@ -404,11 +404,11 @@ func (h *Handler) forwardInbound(ch *store.Channel, msgs []channel.Message) bool
 
 	_ = h.store.AddConversationTurn(ch.SessionID, "user", prompt)
 	if h.notifyWriter != nil {
-		_ = h.notifyWriter.Send(envelope.EventChatStatus, ch.SessionID, map[string]string{
+		_ = h.notifyWriter.SendAsync(envelope.EventChatStatus, ch.SessionID, map[string]string{
 			"status": store.StateWorking,
 			"reason": "channel_message",
 		})
-		_ = h.notifyWriter.Send(envelope.EventSessionStateChanged, ch.SessionID, map[string]string{
+		_ = h.notifyWriter.SendAsync(envelope.EventSessionStateChanged, ch.SessionID, map[string]string{
 			"status": store.StateWorking,
 			"reason": "channel_message",
 		})

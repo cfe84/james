@@ -30,8 +30,8 @@ type Response struct {
 	Message   string          `json:"message,omitempty"`
 	Data      json.RawMessage `json:"data,omitempty"`
 	RequestID string          `json:"request_id,omitempty"`
-	Verb      string          `json:"verb,omitempty"` // for broadcast identification
-	Noun      string          `json:"noun,omitempty"` // for broadcast identification
+	Verb      string          `json:"verb,omitempty"`  // for broadcast identification
+	Noun      string          `json:"noun,omitempty"`  // for broadcast identification
 	Event     string          `json:"event,omitempty"` // moneypenny notification type
 	SessionID string          `json:"session_id,omitempty"`
 }
@@ -50,6 +50,48 @@ type BroadcastHemClient interface {
 // SocketClient connects to a Hem server via Unix domain socket (one connection per request).
 type SocketClient struct {
 	SockPath string
+}
+
+// Subscribe opens a dedicated Hem Unix-socket event stream. The stream is
+// connection-scoped and closes with the Qew websocket or socket failure.
+func (c *SocketClient) Subscribe() (<-chan *Response, func()) {
+	out := make(chan *Response, 64)
+	conn, err := net.Dial("unix", c.SockPath)
+	if err != nil {
+		close(out)
+		return out, func() {}
+	}
+	req := Request{Verb: "subscribe", Noun: "events", RequestID: fmt.Sprintf("qew-sub-%d", atomic.AddUint64(&qewReqCounter, 1))}
+	b, _ := json.Marshal(req)
+	if _, err := conn.Write(append(b, '\n')); err != nil {
+		conn.Close()
+		close(out)
+		return out, func() {}
+	}
+	go func() {
+		defer close(out)
+		defer conn.Close()
+		scanner := bufio.NewScanner(conn)
+		scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+		first := true
+		for scanner.Scan() {
+			var resp Response
+			if json.Unmarshal(scanner.Bytes(), &resp) != nil {
+				continue
+			}
+			if first {
+				first = false
+				continue // subscription acknowledgement
+			}
+			select {
+			case out <- &resp:
+			default:
+				// Polling is the authoritative overflow resync path.
+			}
+		}
+	}()
+	var once sync.Once
+	return out, func() { once.Do(func() { _ = conn.Close() }) }
 }
 
 func (c *SocketClient) Send(req *Request) (*Response, error) {
@@ -206,11 +248,17 @@ func (c *MI6Client) readResponses() {
 			c.mu.Unlock()
 			if ok {
 				ch <- &resp
-				continue
 			}
+			// Any request-scoped envelope belongs to the request path,
+			// including responses that no longer have a waiting caller.
+			continue
 		}
 
-		// No pending request or no RequestID → treat as broadcast.
+		// Only unsolicited notifications are broadcasts. Unknown responses
+		// belong to another request owner and must never reach viewers.
+		if resp.Event == "" {
+			continue
+		}
 		// Forward to all WebSocket subscribers.
 		c.broadcastMu.RLock()
 		for sub := range c.subscribers {

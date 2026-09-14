@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"os"
 	"sync"
 	"time"
@@ -14,10 +15,11 @@ const mpCooldownDuration = 30 * time.Second
 
 // ClientManager manages transport client lifecycle and circuit breaking.
 type ClientManager struct {
-	clients    map[string]*transport.Client // cached per moneypenny name
-	cooldowns  map[string]time.Time         // mpName → earliest time to retry after failure
-	mu         sync.Mutex
-	mi6KeyPath string
+	clients      map[string]*transport.Client // cached per moneypenny name
+	cooldowns    map[string]time.Time         // mpName → earliest time to retry after failure
+	mu           sync.Mutex
+	mi6KeyPath   string
+	eventHandler func(string, *transport.Response)
 }
 
 // NewClientManager creates a new ClientManager.
@@ -53,7 +55,25 @@ func (cm *ClientManager) GetClient(mp *store.Moneypenny) *transport.Client {
 		return nil
 	}
 	cm.clients[mp.Name] = c
+	if mp.TransportType == store.TransportMI6 {
+		c.Start(context.Background())
+		if cm.eventHandler != nil {
+			events, _ := c.Subscribe()
+			go func(name string, ch <-chan *transport.Response) {
+				for event := range ch {
+					cm.eventHandler(name, event)
+				}
+			}(mp.Name, events)
+		}
+	}
 	return c
+}
+
+// SetEventHandler installs the consumer for unsolicited Moneypenny events.
+func (cm *ClientManager) SetEventHandler(handler func(string, *transport.Response)) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	cm.eventHandler = handler
 }
 
 // SetCooldown marks a moneypenny as failed and sets a cooldown period.

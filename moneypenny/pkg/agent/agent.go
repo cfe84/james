@@ -556,7 +556,7 @@ func (r *Runner) runOpenCodeStreaming(cmd *exec.Cmd, buf *activityBuffer, sessio
 				resultText += text
 				buf.add(ActivityEvent{Type: "text", Summary: text, Timestamp: now})
 				if r.notifyWriter != nil {
-					_ = r.notifyWriter.Send(envelope.EventChatActivity, sessionID, map[string]interface{}{"events": buf.snapshot()})
+					_ = r.notifyWriter.SendAsync(envelope.EventChatActivity, sessionID, map[string]interface{}{"events": buf.snapshot()})
 				}
 			}
 		case "reasoning":
@@ -567,7 +567,7 @@ func (r *Runner) runOpenCodeStreaming(cmd *exec.Cmd, buf *activityBuffer, sessio
 					r.emitPersistent(sessionID, "thinking", text)
 				}
 				if r.notifyWriter != nil {
-					_ = r.notifyWriter.Send(envelope.EventChatActivity, sessionID, map[string]interface{}{"events": buf.snapshot()})
+					_ = r.notifyWriter.SendAsync(envelope.EventChatActivity, sessionID, map[string]interface{}{"events": buf.snapshot()})
 				}
 			}
 		case "tool", "tool_use":
@@ -575,7 +575,7 @@ func (r *Runner) runOpenCodeStreaming(cmd *exec.Cmd, buf *activityBuffer, sessio
 			if name != "" {
 				buf.add(ActivityEvent{Type: "tool_use", Summary: name, Timestamp: now})
 				if r.notifyWriter != nil {
-					_ = r.notifyWriter.Send(envelope.EventChatActivity, sessionID, map[string]interface{}{"events": buf.snapshot()})
+					_ = r.notifyWriter.SendAsync(envelope.EventChatActivity, sessionID, map[string]interface{}{"events": buf.snapshot()})
 				}
 			}
 		case "step_finish":
@@ -693,7 +693,7 @@ func (r *Runner) runStreaming(cmd *exec.Cmd, buf *activityBuffer, sessionID stri
 			// Send activity notification after processing assistant event
 			if r.notifyWriter != nil && len(contentBlocks) > 0 {
 				snapshot := buf.snapshot()
-				_ = r.notifyWriter.Send(envelope.EventChatActivity, sessionID, map[string]interface{}{
+				_ = r.notifyWriter.SendAsync(envelope.EventChatActivity, sessionID, map[string]interface{}{
 					"events": snapshot,
 				})
 			}
@@ -836,7 +836,7 @@ func (r *Runner) runCopilotStreaming(cmd *exec.Cmd, buf *activityBuffer, session
 		case "assistant.turn_start":
 			buf.add(ActivityEvent{Type: "thinking", Summary: "thinking...", Timestamp: now})
 			if r.notifyWriter != nil {
-				_ = r.notifyWriter.Send(envelope.EventChatActivity, sessionID, map[string]interface{}{
+				_ = r.notifyWriter.SendAsync(envelope.EventChatActivity, sessionID, map[string]interface{}{
 					"events": buf.snapshot(),
 				})
 			}
@@ -878,7 +878,7 @@ func (r *Runner) runCopilotStreaming(cmd *exec.Cmd, buf *activityBuffer, session
 					}
 				}
 				if r.notifyWriter != nil {
-					_ = r.notifyWriter.Send(envelope.EventChatActivity, sessionID, map[string]interface{}{
+					_ = r.notifyWriter.SendAsync(envelope.EventChatActivity, sessionID, map[string]interface{}{
 						"events": buf.snapshot(),
 					})
 				}
@@ -894,7 +894,7 @@ func (r *Runner) runCopilotStreaming(cmd *exec.Cmd, buf *activityBuffer, session
 					}
 					buf.add(ActivityEvent{Type: "tool_use", Summary: summary, Timestamp: now})
 					if r.notifyWriter != nil {
-						_ = r.notifyWriter.Send(envelope.EventChatActivity, sessionID, map[string]interface{}{
+						_ = r.notifyWriter.SendAsync(envelope.EventChatActivity, sessionID, map[string]interface{}{
 							"events": buf.snapshot(),
 						})
 					}
@@ -910,7 +910,7 @@ func (r *Runner) runCopilotStreaming(cmd *exec.Cmd, buf *activityBuffer, session
 					lastLine := lines[len(lines)-1]
 					buf.add(ActivityEvent{Type: "tool_use", Summary: truncStr(lastLine, 150), Timestamp: now})
 					if r.notifyWriter != nil {
-						_ = r.notifyWriter.Send(envelope.EventChatActivity, sessionID, map[string]interface{}{
+						_ = r.notifyWriter.SendAsync(envelope.EventChatActivity, sessionID, map[string]interface{}{
 							"events": buf.snapshot(),
 						})
 					}
@@ -931,7 +931,7 @@ func (r *Runner) runCopilotStreaming(cmd *exec.Cmd, buf *activityBuffer, session
 					appendPot(potItem{kind: "thinking", content: content})
 					buf.add(ActivityEvent{Type: "thinking", Summary: content, Timestamp: now})
 					if r.notifyWriter != nil {
-						_ = r.notifyWriter.Send(envelope.EventChatActivity, sessionID, map[string]interface{}{
+						_ = r.notifyWriter.SendAsync(envelope.EventChatActivity, sessionID, map[string]interface{}{
 							"events": buf.snapshot(),
 						})
 					}

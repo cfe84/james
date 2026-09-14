@@ -80,7 +80,7 @@ func (h *Handler) distillSessionCmd(_ context.Context, cmd *envelope.Command) *e
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to update status: %v", err))
 	}
 	if h.notifyWriter != nil {
-		_ = h.notifyWriter.Send(envelope.EventChatStatus, data.SessionID, map[string]string{
+		_ = h.notifyWriter.SendAsync(envelope.EventChatStatus, data.SessionID, map[string]string{
 			"status": store.StateWorking,
 			"reason": "distilling",
 		})
@@ -105,7 +105,7 @@ func (h *Handler) runDistillation(sessionID string) {
 		}
 		if h.notifyWriter != nil {
 			for _, event := range []string{envelope.EventSessionStateChanged, envelope.EventChatStatus} {
-				if err := h.notifyWriter.Send(event, sessionID, map[string]string{"status": store.StateIdle, "reason": reason}); err != nil {
+				if err := h.notifyWriter.SendAsync(event, sessionID, map[string]string{"status": store.StateIdle, "reason": reason}); err != nil {
 					h.vlog("distillation: cannot notify idle state for session %s: %v", sessionID, err)
 				}
 			}

@@ -166,7 +166,7 @@ func (h *Handler) compactSessionCmd(_ context.Context, cmd *envelope.Command) *e
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to update status: %v", err))
 	}
 	if h.notifyWriter != nil {
-		_ = h.notifyWriter.Send(envelope.EventChatStatus, data.SessionID, map[string]string{
+		_ = h.notifyWriter.SendAsync(envelope.EventChatStatus, data.SessionID, map[string]string{
 			"status": store.StateWorking,
 			"reason": "compacting",
 		})
@@ -201,7 +201,7 @@ func (h *Handler) runCompaction(sessionID, nextPrompt, effModel, effEffort strin
 		}
 		if h.notifyWriter != nil {
 			for _, event := range []string{envelope.EventSessionStateChanged, envelope.EventChatStatus} {
-				if err := h.notifyWriter.Send(event, sessionID, map[string]string{"status": store.StateIdle, "reason": "compaction_failed"}); err != nil {
+				if err := h.notifyWriter.SendAsync(event, sessionID, map[string]string{"status": store.StateIdle, "reason": "compaction_failed"}); err != nil {
 					h.vlog("compaction: cannot notify idle state for session %s: %v", sessionID, err)
 				}
 			}

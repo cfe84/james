@@ -19,6 +19,10 @@ type Dispatcher interface {
 	Dispatch(verb, noun string, args []string) *protocol.Response
 }
 
+type EventSubscriber interface {
+	Subscribe() (<-chan *protocol.Response, func())
+}
+
 // Server listens on a Unix domain socket and dispatches commands.
 type Server struct {
 	sockPath   string
@@ -100,6 +104,21 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 
 	s.vlog.Printf("request: %s %s %v", req.Verb, req.Noun, req.Args)
+
+	if req.Verb == "subscribe" && req.Noun == "events" {
+		subscriber, ok := s.dispatcher.(EventSubscriber)
+		if !ok {
+			writeResponse(conn, protocol.ErrResponse("event subscriptions unavailable"))
+			return
+		}
+		writeResponse(conn, &protocol.Response{Status: protocol.StatusOK, RequestID: req.RequestID, Verb: req.Verb, Noun: req.Noun})
+		events, unsubscribe := subscriber.Subscribe()
+		defer unsubscribe()
+		for event := range events {
+			writeResponse(conn, event)
+		}
+		return
+	}
 
 	resp := s.dispatcher.Dispatch(req.Verb, req.Noun, req.Args)
 	resp.RequestID = req.RequestID

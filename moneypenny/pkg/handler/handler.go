@@ -160,7 +160,7 @@ func New(s *store.Store, runner *agent.Runner, version, dataDir string) *Handler
 				continue
 			}
 			if h.notifyWriter != nil {
-				_ = h.notifyWriter.Send(envelope.EventChatUserNotification, sessionID, map[string]string{"message": message})
+				_ = h.notifyWriter.SendAsync(envelope.EventChatUserNotification, sessionID, map[string]string{"message": message})
 			}
 		}
 	})
@@ -493,7 +493,7 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 
 	// Notify that session is now working.
 	if h.notifyWriter != nil {
-		_ = h.notifyWriter.Send(envelope.EventChatStatus, data.SessionID, map[string]string{
+		_ = h.notifyWriter.SendAsync(envelope.EventChatStatus, data.SessionID, map[string]string{
 			"status": store.StateWorking,
 			"reason": "agent_started",
 		})
@@ -563,7 +563,7 @@ func (h *Handler) continueSession(ctx context.Context, cmd *envelope.Command) *e
 
 	// Notify that session is now working.
 	if h.notifyWriter != nil {
-		_ = h.notifyWriter.Send(envelope.EventChatStatus, data.SessionID, map[string]string{
+		_ = h.notifyWriter.SendAsync(envelope.EventChatStatus, data.SessionID, map[string]string{
 			"status": store.StateWorking,
 			"reason": "agent_started",
 		})
@@ -911,11 +911,11 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 
 		// Notify hem that session became idle after error.
 		if h.notifyWriter != nil {
-			_ = h.notifyWriter.Send(envelope.EventSessionStateChanged, sessionID, map[string]string{
+			_ = h.notifyWriter.SendAsync(envelope.EventSessionStateChanged, sessionID, map[string]string{
 				"status": store.StateIdle,
 				"reason": "agent_error",
 			})
-			_ = h.notifyWriter.Send(envelope.EventChatStatus, sessionID, map[string]string{
+			_ = h.notifyWriter.SendAsync(envelope.EventChatStatus, sessionID, map[string]string{
 				"status": store.StateIdle,
 				"reason": "agent_error",
 			})
@@ -1068,11 +1068,11 @@ func (h *Handler) continueQueuedPrompts(sessionID string) {
 
 	// Notify hem that session became idle after completion.
 	if h.notifyWriter != nil {
-		_ = h.notifyWriter.Send(envelope.EventSessionStateChanged, sessionID, map[string]string{
+		_ = h.notifyWriter.SendAsync(envelope.EventSessionStateChanged, sessionID, map[string]string{
 			"status": store.StateIdle,
 			"reason": "completed",
 		})
-		_ = h.notifyWriter.Send(envelope.EventChatStatus, sessionID, map[string]string{
+		_ = h.notifyWriter.SendAsync(envelope.EventChatStatus, sessionID, map[string]string{
 			"status": store.StateIdle,
 			"reason": "completed",
 		})
@@ -2436,7 +2436,7 @@ func (h *Handler) schedule(_ context.Context, cmd *envelope.Command) *envelope.R
 
 	// Notify about new schedule.
 	if h.notifyWriter != nil {
-		_ = h.notifyWriter.Send(envelope.EventChatSchedule, data.SessionID, map[string]interface{}{
+		_ = h.notifyWriter.SendAsync(envelope.EventChatSchedule, data.SessionID, map[string]interface{}{
 			"schedule_id": id,
 			"prompt":      data.Prompt,
 			"schedule_at": scheduledAt.UTC().Format(time.RFC3339),
@@ -2532,7 +2532,7 @@ func (h *Handler) cancelSchedule(_ context.Context, cmd *envelope.Command) *enve
 
 	// Notify about cancelled schedule.
 	if h.notifyWriter != nil && schedule != nil {
-		_ = h.notifyWriter.Send(envelope.EventChatSchedule, schedule.SessionID, map[string]interface{}{
+		_ = h.notifyWriter.SendAsync(envelope.EventChatSchedule, schedule.SessionID, map[string]interface{}{
 			"schedule_id": data.ScheduleID,
 			"action":      "deleted",
 		})
@@ -2583,7 +2583,7 @@ func (h *Handler) updateSchedule(_ context.Context, cmd *envelope.Command) *enve
 
 	// Notify about the updated schedule so live views refresh.
 	if h.notifyWriter != nil {
-		_ = h.notifyWriter.Send(envelope.EventChatSchedule, schedule.SessionID, map[string]interface{}{
+		_ = h.notifyWriter.SendAsync(envelope.EventChatSchedule, schedule.SessionID, map[string]interface{}{
 			"schedule_id": data.ScheduleID,
 			"prompt":      data.Prompt,
 			"schedule_at": scheduledAt.UTC().Format(time.RFC3339),
@@ -2733,7 +2733,7 @@ func (h *Handler) processDueSchedules(ctx context.Context) {
 		}
 		delivered++
 		if h.notifyWriter != nil {
-			_ = h.notifyWriter.Send(envelope.EventChatSchedule, sch.SessionID, map[string]interface{}{
+			_ = h.notifyWriter.SendAsync(envelope.EventChatSchedule, sch.SessionID, map[string]interface{}{
 				"schedule_id": sch.ID,
 				"prompt":      sch.Prompt,
 				"schedule_at": sch.ScheduledAt.Format(time.RFC3339),
