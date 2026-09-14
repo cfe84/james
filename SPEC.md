@@ -1744,3 +1744,9 @@ hints as additional refresh triggers. Overflow and reconnect are treated as
 resync conditions: authoritative HTTP polling remains enabled and is required
 for correctness. Session-scoped leases/refcounts, replay, durable revisions,
 watermarks, and operation IDs remain deferred.
+### Dashboard disconnect behavior
+
+When a dashboard refresh fails after a successful snapshot has been loaded, Qew
+keeps the current conversation list visible and reports the disconnected state
+through the header. The connection error is shown in the dashboard only when
+there is no prior successful snapshot.

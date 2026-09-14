@@ -1197,3 +1197,9 @@ This phase does not claim replay, durable event journals, session-scoped
 watch/refcount leases, watermarks, durable revisions/cursors, read-through
 acknowledgements, or operation IDs. Those are required before polling can be
 removed.
+### Qew dashboard failure handling
+
+The Qew dashboard treats its last successful response as the visible snapshot.
+Transient HTTP or transport failures do not replace that snapshot with an error
+view; the shared connection indicator communicates the degraded state. An error
+view is used only before the first successful dashboard response.

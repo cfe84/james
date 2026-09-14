@@ -282,8 +282,7 @@
       if (projectFilter) args.push('--project', projectFilter);
       const resp = await apiCall('dashboard', '', args);
       if (resp.status === 'error') {
-        document.getElementById('dash-content').innerHTML =
-          `<div class="empty-state">Error: ${escapeHtml(resp.message)}</div>`;
+        showDashboardError(resp.message);
         setConnectionState(false);
         return;
       }
@@ -305,14 +304,19 @@
       }
       renderDashboard(resp.data);
     } catch (e) {
-      document.getElementById('dash-content').innerHTML =
-        `<div class="empty-state">Connection error: ${escapeHtml(e.message)}</div>`;
+      showDashboardError(`Connection error: ${e.message}`);
       setConnectionState(false);
-      dashEntries = [];
-      dashSelectedId = '';
     } finally {
       document.getElementById('dash-loading').style.display = 'none';
     }
+  }
+
+  function showDashboardError(message) {
+    // Keep the last authoritative list visible while the header reports the
+    // disconnected state. Show an error only before the first successful load.
+    if (lastDashboardData && Array.isArray(lastDashboardData.rows)) return;
+    document.getElementById('dash-content').innerHTML =
+      `<div class="empty-state">${escapeHtml(message)}</div>`;
   }
 
   function renderDashboard(data) {

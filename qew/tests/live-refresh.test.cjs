@@ -77,6 +77,10 @@ function browser() {
         lastSchedules = [{ id: 1 }];
         allSubagents = [{ sessionId: 'child', status: 'working' }];
       },
+      seedDashboard() {
+        lastDashboardData = { rows: [['session', 'Agent', '', 'ready', 'mp']] };
+      },
+      dashboardHTML() { return document.getElementById('dash-content').innerHTML; },
       panels() { return { currentSessionStatus, lastActivity, lastSchedules, allSubagents }; }
     };`, context);
   return {
@@ -157,6 +161,15 @@ test('dashboard refreshes are single-flight and recover after a failed request',
   await page.loadDashboard();
   await page.loadDashboard();
   assert.equal(page.calls.length, 3);
+});
+
+test('dashboard keeps the last conversation list during connection loss', async () => {
+  const page = browser();
+  page.seedDashboard();
+  const content = page.dashboardHTML();
+  page.failNext();
+  await page.loadDashboard();
+  assert.equal(page.dashboardHTML(), content);
 });
 
 test('chat rejects A-to-B-to-A stale results and refreshes the selected generation', async () => {
