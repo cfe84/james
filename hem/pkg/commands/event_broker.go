@@ -43,8 +43,16 @@ func (b *EventBroker) Publish(resp *protocol.Response) {
 		select {
 		case ch <- resp:
 		default:
-			// The next polling cycle is the resync path. Never block an
-			// agent callback or a Unix/MI6 request on a slow viewer.
+			// Replace one queued hint with an explicit bounded resync marker.
+			// Never block an agent callback or a Unix/MI6 request.
+			select {
+			case <-ch:
+			default:
+			}
+			select {
+			case ch <- &protocol.Response{Status: protocol.StatusOK, Event: protocol.EventResyncRequired}:
+			default:
+			}
 		}
 	}
 }

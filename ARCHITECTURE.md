@@ -492,6 +492,28 @@ Hem is the top-level CLI that manages moneypenny instances and orchestrates sess
 
 ### Architecture: Client/Server
 
+## Durable session watermarks and push recovery
+
+The Moneypenny operational SQLite database is the sole authority for recoverable
+conversation state. Each session has a monotonic `revision` and a
+`generation`. Turn insertion/deletion and visible session-state mutations
+increment the revision atomically with their SQLite transaction. Notifications
+are emitted only after commit and contain the resulting watermark; notification
+queues and event brokers are bounded and nonblocking.
+
+The recovery path is intentionally not a second event journal. Hem forwards the
+`reconcile session` command over the existing local/FIFO and persistent MI6
+client seams; tests cover the store-to-handler-to-Hem broker path and the Qew
+response handling, not a full subprocess MI6/browser deployment.
+Moneypenny returns the current watermark plus at most 100 recent turns / 1 MiB.
+Generation changes request a reset; if a cursor gap cannot be replayed from a
+journal, clients apply the bounded recent snapshot and use existing history
+pagination for older turns. Qew maintains per-session watermarks, suppresses
+stale hints, and triggers reconciliation on reconnect or explicit overflow
+markers. Polling remains enabled and authoritative. Encoded-byte chunk cursors,
+lease/watch refcounting, speculative replay cursors, and full end-to-end
+MI6/browser acceptance remain deferred.
+
 Hem uses a client/server architecture over a Unix domain socket (`~/.config/james/hem/hem.sock`).
 
 - **Server** (`hem server`): Long-running daemon that owns SQLite, moneypenny transport connections, and all orchestration logic. Accepts line-delimited JSON requests on the Unix socket. Each connection handles one request/response.

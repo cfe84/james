@@ -116,11 +116,13 @@ type SessionIDData struct {
 
 // GetConversationData is the data payload for get_session_conversation.
 type GetConversationData struct {
-	SessionID string `json:"session_id"`
-	Count     int    `json:"count,omitempty"` // number of turns to return (default 10, 0 = use default)
-	From      int    `json:"from,omitempty"`  // offset from the end (0 = most recent)
-	All       bool   `json:"all,omitempty"`   // return all turns
-	MaxBytes  int    `json:"max_bytes,omitempty"`
+	SessionID  string `json:"session_id"`
+	Count      int    `json:"count,omitempty"` // number of turns to return (default 10, 0 = use default)
+	From       int    `json:"from,omitempty"`  // offset from the end (0 = most recent)
+	All        bool   `json:"all,omitempty"`   // return all turns
+	MaxBytes   int    `json:"max_bytes,omitempty"`
+	Revision   int64  `json:"revision,omitempty"`
+	Generation int64  `json:"generation,omitempty"`
 }
 
 // GetLogsData requests the newest daemon log lines. Lines defaults to 100.
@@ -147,6 +149,8 @@ type SessionInfo struct {
 	// ScheduleReadyAt is set when a schedule configured to mark its result
 	// ready has completed. Hem uses it as a monotonic attention marker.
 	ScheduleReadyAt string `json:"schedule_ready_at,omitempty"`
+	Revision        int64  `json:"revision"`
+	Generation      int64  `json:"generation"`
 }
 
 // SessionDetail is returned by get_session (metadata only, no conversation).
@@ -172,6 +176,8 @@ type SessionDetail struct {
 	ContextTokens      int                 `json:"context_tokens,omitempty"`
 	ContextWindow      int                 `json:"context_window,omitempty"`
 	OpenCodeCost       float64             `json:"opencode_cost,omitempty"`
+	Revision           int64               `json:"revision"`
+	Generation         int64               `json:"generation"`
 	Environment        map[string]string   `json:"environment,omitempty"`
 	GadgetCapabilities *GadgetCapabilities `json:"gadget_capabilities,omitempty"`
 }
@@ -181,6 +187,18 @@ type SessionConversation struct {
 	SessionID    string             `json:"session_id"`
 	Conversation []ConversationTurn `json:"conversation"`
 	Total        int                `json:"total"` // total number of turns in the session
+	Revision     int64              `json:"revision"`
+	Generation   int64              `json:"generation"`
+}
+
+type SessionReconcile struct {
+	SessionID     string             `json:"session_id"`
+	Conversation  []ConversationTurn `json:"conversation"`
+	Total         int                `json:"total"`
+	Revision      int64              `json:"revision"`
+	Generation    int64              `json:"generation"`
+	ResetRequired bool               `json:"reset_required"`
+	Truncated     bool               `json:"truncated"`
 }
 
 // ConversationTurn represents a single prompt/response pair.

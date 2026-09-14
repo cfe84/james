@@ -9,7 +9,7 @@ const app = fs.readFileSync(process.env.QEW_APP_SOURCE ||
 
 // Run the application's refresh and socket handlers, substituting only browser
 // services, API responses and rendering so timer behavior is deterministic.
-function browser() {
+function browser({ stableReconcile = false, reconcileRevision = 1 } = {}) {
   const intervals = new Map();
   const timeouts = new Map();
   const calls = [];
@@ -44,7 +44,10 @@ function browser() {
       calls.push({ verb, noun, args: Array.from(args) });
       if (rejectNext) { rejectNext = false; return Promise.reject(new Error('offline')); }
       const response = verb === 'history'
-        ? { status: 'ok', data: history } : { status: 'ok', data: { rows: [] } };
+        ? { status: 'ok', data: history }
+        : verb === 'reconcile' && stableReconcile
+          ? { status: 'ok', data: { session_id: 'session', total: 1, revision: reconcileRevision, generation: 1 } }
+          : { status: 'ok', data: { rows: [] } };
       if (pending) {
         const blocked = pending;
         pending = null;
@@ -85,7 +88,13 @@ function browser() {
     };`, context);
   return {
     ...context.controls, calls, rendered, sockets,
-    history(content) { history = { conversation: [{ role: 'assistant', content }], total: 1 }; },
+    history(content) {
+      history = {
+        conversation: [{ role: 'assistant', content }],
+        total: 1,
+        ...(stableReconcile ? { revision: 1, generation: 1 } : {}),
+      };
+    },
     blockNext() { let release; pending = new Promise(resolve => { release = resolve; }); return release; },
     failNext() { rejectNext = true; },
     async tick(ms) {
@@ -101,6 +110,70 @@ function browser() {
     },
   };
 }
+
+test('unchanged reconcile polls do not fetch history or change the transcript', async () => {
+  const page = browser({ stableReconcile: true });
+  page.navigate('session');
+  page.history('initial');
+  page.startChatPoll();
+  await page.loadChat();
+  const initialHistoryCalls = page.calls.filter(call => call.verb === 'history').length;
+  assert.equal(initialHistoryCalls, 1);
+  page.history('should not replace unchanged transcript');
+  await page.tick(3000);
+  await page.tick(3000);
+  assert.equal(page.calls.filter(call => call.verb === 'history').length, initialHistoryCalls);
+  assert.equal(page.calls.filter(call => call.verb === 'reconcile').length, 2);
+  assert.equal(page.rendered.at(-1).conversation[0].content, 'initial');
+});
+
+test('changed revision hint triggers immediate reconcile', async () => {
+  const page = browser({ stableReconcile: true, reconcileRevision: 2 });
+  page.navigate('session');
+  page.history('initial');
+  await page.loadChat();
+  const before = page.calls.length;
+  const socket = page.openSocket();
+  socket.onmessage({ data: JSON.stringify({
+    event: 'chat_message', session_id: 'session',
+    data: { revision: 2, generation: 1 },
+  }) });
+  await Promise.resolve();
+  assert.equal(page.calls.length, before + 1);
+  assert.equal(page.calls.at(-1).verb, 'reconcile');
+});
+
+test('stale and duplicate revision hints are suppressed', async () => {
+  const page = browser({ stableReconcile: true, reconcileRevision: 1 });
+  page.navigate('session');
+  page.history('initial');
+  await page.loadChat();
+  const socket = page.openSocket();
+  await page.loadChat();
+  const before = page.calls.length;
+  for (const revision of [1, 0]) {
+    socket.onmessage({ data: JSON.stringify({
+      event: 'chat_message', session_id: 'session',
+      data: { revision, generation: 1 },
+    }) });
+  }
+  await Promise.resolve();
+  assert.equal(page.calls.length, before);
+});
+
+test('explicit resync marker triggers immediate reconcile', async () => {
+  const page = browser({ stableReconcile: true, reconcileRevision: 1 });
+  page.navigate('session');
+  page.history('initial');
+  await page.loadChat();
+  const socket = page.openSocket();
+  await page.loadChat();
+  const before = page.calls.length;
+  socket.onmessage({ data: JSON.stringify({ event: 'resync_required' }) });
+  await Promise.resolve();
+  assert.equal(page.calls.length, before + 1);
+  assert.equal(page.calls.at(-1).verb, 'reconcile');
+});
 
 for (const withSocket of [false, true]) {
   test(`chat advances without hints (${withSocket ? 'healthy WebSocket' : 'no push backend'})`, async () => {

@@ -48,6 +48,7 @@ const (
 	EventSessionStateChanged = "session_state_changed"
 	EventSessionCompleted    = "session_completed"
 	EventSessionError        = "session_error"
+	EventResyncRequired      = "resync_required"
 )
 
 // OKResponse creates a success response with structured data.

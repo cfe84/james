@@ -58,6 +58,8 @@ type Session struct {
 	ScheduleReadyAt time.Time
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
+	Revision        int64
+	Generation      int64
 }
 
 // Compaction modes.
@@ -169,6 +171,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     status TEXT NOT NULL DEFAULT 'idle',
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    ,revision INTEGER NOT NULL DEFAULT 0
+    ,generation INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS conversation_turns (
@@ -313,6 +317,8 @@ CREATE INDEX IF NOT EXISTS idx_channel_outbox_pending ON channel_outbox(status);
 	db.Exec(`ALTER TABLE sessions ADD COLUMN environment TEXT NOT NULL DEFAULT '{}'`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN gadget_capabilities TEXT NOT NULL DEFAULT ''`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN gadget_route TEXT NOT NULL DEFAULT '{}'`)
+	db.Exec(`ALTER TABLE sessions ADD COLUMN revision INTEGER NOT NULL DEFAULT 0`)
+	db.Exec(`ALTER TABLE sessions ADD COLUMN generation INTEGER NOT NULL DEFAULT 1`)
 
 	// Migration: reply_channel_id routes a run's final response to an external
 	// communication channel (channels.id). 0 = no channel routing. Present on
@@ -370,8 +376,8 @@ func (s *Store) CreateSession(sess *Session) error {
 	}
 
 	_, err := s.db.Exec(
-		`INSERT INTO sessions (session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, gadget_route, gadget_capabilities, status, agent_session_id, compaction_mode, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO sessions (session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, gadget_route, gadget_capabilities, status, agent_session_id, compaction_mode, created_at, updated_at, revision, generation)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)`,
 		sess.SessionID, sess.Name, sess.Agent, sess.SystemPrompt, sess.Model, sess.Effort, sess.ContextTier, yolo, sess.Path, sess.Environment, sess.GadgetRoute, sess.GadgetCapabilities, sess.Status, sess.AgentSessionID, sess.CompactionMode, now, now,
 	)
 	if err != nil {
@@ -383,7 +389,7 @@ func (s *Store) CreateSession(sess *Session) error {
 // GetSession retrieves a session by ID. Returns nil, nil if not found.
 func (s *Store) GetSession(sessionID string) (*Session, error) {
 	row := s.db.QueryRow(
-		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, gadget_route, gadget_capabilities, status, memory, agent_session_id, compaction_mode, context_tokens, context_window, opencode_cost, schedule_ready_at, created_at, updated_at
+		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, gadget_route, gadget_capabilities, status, memory, agent_session_id, compaction_mode, context_tokens, context_window, opencode_cost, schedule_ready_at, created_at, updated_at, revision, generation
 		 FROM sessions WHERE session_id = ?`, sessionID,
 	)
 
@@ -393,7 +399,7 @@ func (s *Store) GetSession(sessionID string) (*Session, error) {
 	err := row.Scan(
 		&sess.SessionID, &sess.Name, &sess.Agent, &sess.SystemPrompt, &sess.Model, &sess.Effort, &sess.ContextTier,
 		&yolo, &sess.Path, &sess.Environment, &sess.GadgetRoute, &sess.GadgetCapabilities, &sess.Status, &sess.Memory, &sess.AgentSessionID, &sess.CompactionMode,
-		&sess.ContextTokens, &sess.ContextWindow, &sess.OpenCodeCost, &scheduleReadyAt, &sess.CreatedAt, &sess.UpdatedAt,
+		&sess.ContextTokens, &sess.ContextWindow, &sess.OpenCodeCost, &scheduleReadyAt, &sess.CreatedAt, &sess.UpdatedAt, &sess.Revision, &sess.Generation,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -414,7 +420,7 @@ func (s *Store) GetSession(sessionID string) (*Session, error) {
 // ListSessions returns all sessions.
 func (s *Store) ListSessions() ([]*Session, error) {
 	rows, err := s.db.Query(
-		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, gadget_route, gadget_capabilities, status, memory, agent_session_id, compaction_mode, context_tokens, context_window, opencode_cost, schedule_ready_at, created_at, updated_at
+		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, gadget_route, gadget_capabilities, status, memory, agent_session_id, compaction_mode, context_tokens, context_window, opencode_cost, schedule_ready_at, created_at, updated_at, revision, generation
 		 FROM sessions ORDER BY created_at`,
 	)
 	if err != nil {
@@ -430,7 +436,7 @@ func (s *Store) ListSessions() ([]*Session, error) {
 		if err := rows.Scan(
 			&sess.SessionID, &sess.Name, &sess.Agent, &sess.SystemPrompt, &sess.Model, &sess.Effort, &sess.ContextTier,
 			&yolo, &sess.Path, &sess.Environment, &sess.GadgetRoute, &sess.GadgetCapabilities, &sess.Status, &sess.Memory, &sess.AgentSessionID, &sess.CompactionMode,
-			&sess.ContextTokens, &sess.ContextWindow, &sess.OpenCodeCost, &scheduleReadyAt, &sess.CreatedAt, &sess.UpdatedAt,
+			&sess.ContextTokens, &sess.ContextWindow, &sess.OpenCodeCost, &scheduleReadyAt, &sess.CreatedAt, &sess.UpdatedAt, &sess.Revision, &sess.Generation,
 		); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
@@ -497,7 +503,7 @@ func (s *Store) UpdateSessionFields(sessionID string, name, systemPrompt, model,
 		yoloInt = 1
 	}
 	res, err := s.db.Exec(
-		`UPDATE sessions SET name = ?, system_prompt = ?, model = ?, effort = ?, context_tier = ?, yolo = ?, path = ?, compaction_mode = ?, environment = ?, gadget_route = ?, gadget_capabilities = COALESCE(?, gadget_capabilities), updated_at = ? WHERE session_id = ?`,
+		`UPDATE sessions SET name = ?, system_prompt = ?, model = ?, effort = ?, context_tier = ?, yolo = ?, path = ?, compaction_mode = ?, environment = ?, gadget_route = ?, gadget_capabilities = COALESCE(?, gadget_capabilities), revision = revision + 1, updated_at = ? WHERE session_id = ?`,
 		sess.Name, sess.SystemPrompt, sess.Model, sess.Effort, sess.ContextTier, yoloInt, sess.Path, sess.CompactionMode, sess.Environment, sess.GadgetRoute, capabilities, now, sessionID,
 	)
 	if err != nil {
@@ -519,7 +525,7 @@ func (s *Store) UpdateSessionFields(sessionID string, name, systemPrompt, model,
 func (s *Store) SetAgentSessionID(sessionID, agentSessionID string) error {
 	now := time.Now().UTC()
 	_, err := s.db.Exec(
-		`UPDATE sessions SET agent_session_id = ?, updated_at = ? WHERE session_id = ?`,
+		`UPDATE sessions SET agent_session_id = ?, revision = revision + 1, updated_at = ? WHERE session_id = ?`,
 		agentSessionID, now, sessionID,
 	)
 	if err != nil {
@@ -533,7 +539,7 @@ func (s *Store) SetAgentSessionID(sessionID, agentSessionID string) error {
 func (s *Store) SetContextUsage(sessionID string, tokens, window int) error {
 	now := time.Now().UTC()
 	_, err := s.db.Exec(
-		`UPDATE sessions SET context_tokens = ?, context_window = ?, updated_at = ? WHERE session_id = ?`,
+		`UPDATE sessions SET context_tokens = ?, context_window = ?, revision = revision + 1, updated_at = ? WHERE session_id = ?`,
 		tokens, window, now, sessionID,
 	)
 	if err != nil {
@@ -550,7 +556,7 @@ func (s *Store) AddOpenCodeCost(sessionID string, cost float64) error {
 	}
 	now := time.Now().UTC()
 	_, err := s.db.Exec(
-		`UPDATE sessions SET opencode_cost = opencode_cost + ?, updated_at = ? WHERE session_id = ?`,
+		`UPDATE sessions SET opencode_cost = opencode_cost + ?, revision = revision + 1, updated_at = ? WHERE session_id = ?`,
 		cost, now, sessionID,
 	)
 	if err != nil {
@@ -576,7 +582,7 @@ func (s *Store) GetMemory(sessionID string) (string, error) {
 func (s *Store) SetMemory(sessionID, content string) error {
 	now := time.Now().UTC()
 	res, err := s.db.Exec(
-		`UPDATE sessions SET memory = ?, updated_at = ? WHERE session_id = ?`,
+		`UPDATE sessions SET memory = ?, revision = revision + 1, updated_at = ? WHERE session_id = ?`,
 		content, now, sessionID,
 	)
 	if err != nil {
@@ -596,7 +602,7 @@ func (s *Store) SetMemory(sessionID, content string) error {
 func (s *Store) UpdateSessionStatus(sessionID string, status string) error {
 	now := time.Now().UTC()
 	res, err := s.db.Exec(
-		`UPDATE sessions SET status = ?, updated_at = ? WHERE session_id = ?`,
+		`UPDATE sessions SET status = ?, revision = revision + 1, updated_at = ? WHERE session_id = ?`,
 		status, now, sessionID,
 	)
 	if err != nil {
@@ -621,7 +627,7 @@ func (s *Store) UpdateSessionStatus(sessionID string, status string) error {
 func (s *Store) ResetWorkingSessions() (int64, error) {
 	now := time.Now().UTC()
 	res, err := s.db.Exec(
-		`UPDATE sessions SET status = ?, updated_at = ? WHERE status = ?`,
+		`UPDATE sessions SET status = ?, revision = revision + 1, updated_at = ? WHERE status = ?`,
 		StateIdle, now, StateWorking,
 	)
 	if err != nil {
@@ -683,8 +689,19 @@ func (s *Store) DeleteLastTurnIfMatches(sessionID, role, content string) (bool, 
 	if foundRole != role || foundContent != content {
 		return false, nil
 	}
-	if _, err := s.db.Exec(`DELETE FROM conversation_turns WHERE id = ?`, id); err != nil {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, fmt.Errorf("begin delete last turn tx: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM conversation_turns WHERE id = ? AND session_id = ?`, id, sessionID); err != nil {
 		return false, fmt.Errorf("delete last turn: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE sessions SET revision = revision + 1, updated_at = ? WHERE session_id = ?`, time.Now().UTC(), sessionID); err != nil {
+		return false, fmt.Errorf("advance delete revision: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit delete last turn: %w", err)
 	}
 	return true, nil
 }
@@ -696,7 +713,12 @@ func (s *Store) AddConversationTurn(sessionID string, role string, content strin
 // AddConversationTurnFrom records a turn and, when supplied, the James agent
 // session that originated it through a gadget command.
 func (s *Store) AddConversationTurnFrom(sessionID, role, content, sourceSessionID, sourceName string) error {
-	result, err := s.db.Exec(
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin conversation turn tx: %w", err)
+	}
+	defer tx.Rollback()
+	result, err := tx.Exec(
 		`INSERT INTO conversation_turns (session_id, role, content, source_session_id, source_name) VALUES (?, ?, ?, ?, ?)`,
 		sessionID, role, content, sourceSessionID, sourceName,
 	)
@@ -708,11 +730,21 @@ func (s *Store) AddConversationTurnFrom(sessionID, role, content, sourceSessionI
 	if err != nil {
 		return fmt.Errorf("get conversation turn id: %w", err)
 	}
-	s.notifyConversationTurn(sessionID, role, content, sourceSessionID, sourceName, turnIndex)
+	if _, err := tx.Exec(`UPDATE sessions SET revision = revision + 1, updated_at = ? WHERE session_id = ?`, time.Now().UTC(), sessionID); err != nil {
+		return fmt.Errorf("advance conversation revision: %w", err)
+	}
+	var revision, generation int64
+	if err := tx.QueryRow(`SELECT revision, generation FROM sessions WHERE session_id = ?`, sessionID).Scan(&revision, &generation); err != nil {
+		return fmt.Errorf("read conversation revision: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit conversation turn: %w", err)
+	}
+	s.notifyConversationTurn(sessionID, role, content, sourceSessionID, sourceName, turnIndex, revision, generation)
 	return nil
 }
 
-func (s *Store) notifyConversationTurn(sessionID, role, content, sourceSessionID, sourceName string, turnIndex int64) {
+func (s *Store) notifyConversationTurn(sessionID, role, content, sourceSessionID, sourceName string, turnIndex, revision, generation int64) {
 	if s.notifyWriter != nil {
 		_ = s.notifyWriter.SendAsync(envelope.EventChatMessage, sessionID, map[string]interface{}{
 			"id":                turnIndex,
@@ -722,8 +754,25 @@ func (s *Store) notifyConversationTurn(sessionID, role, content, sourceSessionID
 			"source_name":       sourceName,
 			"timestamp":         time.Now().Format(time.RFC3339),
 			"turn_index":        int(turnIndex),
+			"revision":          revision,
+			"generation":        generation,
 		})
 	}
+}
+
+// SessionWatermark is the authoritative conversation cursor for a session.
+type SessionWatermark struct {
+	Revision   int64
+	Generation int64
+}
+
+func (s *Store) GetSessionWatermark(sessionID string) (SessionWatermark, error) {
+	var w SessionWatermark
+	err := s.db.QueryRow(`SELECT revision, generation FROM sessions WHERE session_id = ?`, sessionID).Scan(&w.Revision, &w.Generation)
+	if err == sql.ErrNoRows {
+		return w, fmt.Errorf("session %q not found", sessionID)
+	}
+	return w, err
 }
 
 // SessionTimestamps holds the first and last conversation turn timestamps.
@@ -925,7 +974,7 @@ func (s *Store) DrainQueueGroup(sessionID string) ([]QueuedPrompt, error) {
 		}
 	}
 	if len(prompts) == 0 {
-		if _, err := tx.Exec(`UPDATE sessions SET status = ?, updated_at = ? WHERE session_id = ?`, StateIdle, time.Now().UTC(), sessionID); err != nil {
+		if _, err := tx.Exec(`UPDATE sessions SET status = ?, revision = revision + 1, updated_at = ? WHERE session_id = ?`, StateIdle, time.Now().UTC(), sessionID); err != nil {
 			return nil, fmt.Errorf("mark drained session idle: %w", err)
 		}
 	}
@@ -994,7 +1043,7 @@ func (s *Store) CreateScheduleWithCron(sessionID, prompt string, scheduledAt tim
 // MarkScheduleResultReady records that a scheduled run completed with an
 // explicitly requested ready notification.
 func (s *Store) MarkScheduleResultReady(sessionID string) error {
-	_, err := s.db.Exec(`UPDATE sessions SET schedule_ready_at = ? WHERE session_id = ?`, time.Now().UTC(), sessionID)
+	_, err := s.db.Exec(`UPDATE sessions SET schedule_ready_at = ?, revision = revision + 1 WHERE session_id = ?`, time.Now().UTC(), sessionID)
 	if err != nil {
 		return fmt.Errorf("mark scheduled result ready: %w", err)
 	}

@@ -67,6 +67,7 @@
   let pushHeartbeatTimer = null;
   let pushGeneration = 0;
   let sendInFlight = false;
+  const sessionWatermarks = {};
 
   function setConnectionState(connected) {
     qewConnected = connected;
@@ -894,20 +895,54 @@
     const sessAtStart = currentSession;
     const generation = chatGeneration;
     try {
+      const watermark = sessionWatermarks[currentSession] || { revision: 0, generation: 0 };
+      const historyArgs = [currentSession, '--count', String(CHAT_PAGE_SIZE), '--from', '0'];
+      const historyCall = watermark.revision > 0
+        ? apiCall('reconcile', 'session', [currentSession, '--revision', String(watermark.revision), '--generation', String(watermark.generation)])
+        : apiCall('history', 'session', historyArgs);
       const calls = [
-        apiCall('history', 'session', [currentSession, '--count', String(CHAT_PAGE_SIZE), '--from', '0']),
+        historyCall,
         optionalCall('show', 'session', [currentSession]),
         optionalCall('list', 'schedule', ['--session-id', currentSession, '--status', 'pending', '--limit', '50']),
         optionalCall('list', 'subsession', [currentSession]),
       ];
       // Always fetch activity — avoids race where status isn't yet "working" on current poll.
       calls.push(optionalCall('activity', 'session', [currentSession]));
-      const [histResp, showResp, schedResp, subsResp, actResp] = await Promise.all(calls);
+      let [histResp, showResp, schedResp, subsResp, actResp] = await Promise.all(calls);
       // Bail out if the user navigated to a different session while we awaited;
       // otherwise we'd overwrite the new session's state with stale data.
       if (currentSession !== sessAtStart || generation !== chatGeneration) return;
+      // Reconcile is bounded and authoritative. An unchanged reconcile is
+      // metadata-only by design; preserve the existing transcript in that
+      // case. Older Hems and malformed/legacy responses still fall back to
+      // the normal history read without disabling polling.
+      const reconcileMetadataOnly = watermark.revision > 0 &&
+        histResp.status === 'ok' && histResp.data &&
+        typeof histResp.data.revision === 'number' &&
+        typeof histResp.data.generation === 'number' &&
+        typeof histResp.data.total === 'number' &&
+        !Object.prototype.hasOwnProperty.call(histResp.data, 'conversation') &&
+        histResp.data.revision === watermark.revision &&
+        histResp.data.generation === watermark.generation;
+      if (histResp.status === 'error' || !histResp.data ||
+          (!Array.isArray(histResp.data.conversation) && !reconcileMetadataOnly)) {
+        if (watermark.revision > 0) {
+          const fallback = await apiCall('history', 'session', historyArgs);
+          if (currentSession !== sessAtStart || generation !== chatGeneration) return;
+          histResp = fallback;
+        }
+      }
       if (histResp.status === 'error') {
         throw new Error(histResp.message || 'Unable to load conversation');
+      }
+      if (histResp.data && typeof histResp.data.revision === 'number') {
+        const next = { revision: histResp.data.revision, generation: histResp.data.generation || 0 };
+        const changedGeneration = watermark.generation !== 0 && next.generation !== watermark.generation;
+        if (histResp.data.reset_required || changedGeneration) chatConversation = [];
+        sessionWatermarks[currentSession] = next;
+        if (!Array.isArray(histResp.data.conversation) && !histResp.data.reset_required) {
+          histResp = null;
+        }
       }
       // Extract session status and moneypenny.
       if (showResp && showResp.status === 'ok' && showResp.data) {
@@ -986,7 +1021,7 @@
       allSubagents = subagents;
       lastSubagents = subagents.filter(sub => !String(sub.status || '').toLowerCase().includes('completed'));
       lastActivity = activity;
-      mergeRecentHistory(histResp.data);
+      if (histResp) mergeRecentHistory(histResp.data);
       setConnectionState(true);
       renderChat(false);
     } catch (e) {
@@ -1002,10 +1037,12 @@
   function mergeRecentHistory(data) {
     const recent = (data && Array.isArray(data.conversation)) ? data.conversation : [];
     const total = (data && typeof data.total === 'number') ? data.total : recent.length;
+    const truncated = data && data.truncated === true;
 
     // Don't let an empty poll (a transient race during working state) wipe out a
     // conversation we already have — just refresh the known total.
     if (recent.length === 0 && chatConversation.length > 0) {
+      if (total < chatTotal) chatConversation = [];
       chatTotal = total;
       return;
     }
@@ -1020,6 +1057,32 @@
 
     const previousTotal = chatTotal;
     chatTotal = total;
+
+    // A truncated reconcile is a tail, not a complete transcript. Replace the
+    // overlapping tail when possible; if there is no overlap, retain older
+    // loaded turns rather than fabricating a contiguous transcript or dropping
+    // them because the cursor gap exceeded the bounded snapshot.
+    if (truncated) {
+      if (total < previousTotal) {
+        chatConversation = recent.slice();
+        chatRecentCount = recent.length;
+        return;
+      }
+      let overlap = -1;
+      for (let i = 0; i < recent.length && overlap < 0; i++) {
+        if (recent[i] && recent[i].id != null) {
+          overlap = chatConversation.findIndex(turn => turn && turn.id === recent[i].id);
+        }
+      }
+      if (overlap >= 0) {
+        chatConversation = chatConversation.slice(0, overlap).concat(recent);
+        chatRecentCount = recent.length;
+      } else if (chatConversation.length === 0) {
+        chatConversation = recent.slice();
+        chatRecentCount = recent.length;
+      }
+      return;
+    }
 
     // A shrinking total shouldn't happen, but if it does the incremental merge
     // could fabricate/duplicate turns — reset to the recent window instead.
@@ -5384,6 +5447,24 @@
       let msg;
       try { msg = JSON.parse(event.data); } catch (_) { return; }
       if (msg.verb === 'pong') return;
+      if (msg.event === 'resync_required') {
+        if (currentSession) loadChat(); else loadDashboard();
+        return;
+      }
+      if (currentSession && msg.session_id === currentSession && msg.data &&
+          msg.data.reset_required) {
+        chatConversation = [];
+        chatTotal = 0;
+        delete sessionWatermarks[currentSession];
+        renderChat(false);
+        return;
+      }
+      if (currentSession && msg.session_id === currentSession && msg.data &&
+          typeof msg.data.revision === 'number') {
+        const seen = sessionWatermarks[currentSession];
+        if (seen && seen.generation === (msg.data.generation || 0) &&
+            msg.data.revision <= seen.revision) return;
+      }
       // Broadcasts are hints, not transcript payloads. Fetch only the active
       // lane and let the normal generation/session guard reject stale results.
       if (msg.noun === 'dashboard' || msg.verb === 'refresh') {

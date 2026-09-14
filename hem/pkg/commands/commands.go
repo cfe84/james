@@ -589,6 +589,8 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.ShowSession(args)
 	case "history session", "log session":
 		return e.HistorySession(args)
+	case "reconcile session":
+		return e.ReconcileSession(args)
 	case "update session":
 		return e.UpdateSession(args)
 	case "list session":
@@ -1318,6 +1320,8 @@ type HistoryResult struct {
 	SessionID    string             `json:"session_id"`
 	Conversation []ConversationTurn `json:"conversation"`
 	Total        int                `json:"total"` // total turns in the session
+	Revision     int64              `json:"revision"`
+	Generation   int64              `json:"generation"`
 }
 
 type ProjectResult struct {
@@ -3433,6 +3437,8 @@ func (e *Executor) HistorySession(args []string) *protocol.Response {
 	var sessionData struct {
 		Conversation []ConversationTurn `json:"conversation"`
 		Total        int                `json:"total"`
+		Revision     int64              `json:"revision"`
+		Generation   int64              `json:"generation"`
 	}
 	// Handle both new format (object with conversation+total) and old format (bare array).
 	if len(resp.Data) > 0 && resp.Data[0] == '[' {
@@ -3465,7 +3471,43 @@ func (e *Executor) HistorySession(args []string) *protocol.Response {
 		SessionID:    sessionID,
 		Conversation: conv,
 		Total:        sessionData.Total,
+		Revision:     sessionData.Revision,
+		Generation:   sessionData.Generation,
 	})
+}
+
+func (e *Executor) ReconcileSession(args []string) *protocol.Response {
+	var sessionID string
+	var revision, generation int64
+	remaining, err := parseFlagsFromArgs("reconcile-session", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&sessionID, "session-id", "", "session ID")
+		fs.Int64Var(&revision, "revision", 0, "last authoritative revision")
+		fs.Int64Var(&generation, "generation", 0, "last authoritative generation")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if sessionID == "" {
+		if len(remaining) == 0 {
+			return protocol.ErrResponse("session_id is required")
+		}
+		sessionID = remaining[0]
+	}
+	mp, err := e.resolveSessionMoneypenny(sessionID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	resp, err := e.sendCommand(context.Background(), mp, "reconcile_session", map[string]interface{}{
+		"session_id": sessionID, "revision": revision, "generation": generation,
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	var result interface{}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("parsing reconcile response: %v", err))
+	}
+	return protocol.OKResponse(result)
 }
 
 func (e *Executor) ListSessions(args []string) *protocol.Response {

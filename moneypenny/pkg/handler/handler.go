@@ -298,6 +298,8 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.getSession(ctx, cmd)
 	case "get_session_conversation":
 		return h.getSessionConversation(ctx, cmd)
+	case "reconcile_session":
+		return h.reconcileSession(ctx, cmd)
 	case "get_logs":
 		return h.getLogs(cmd)
 	case "queue_prompt":
@@ -1093,6 +1095,7 @@ func (h *Handler) listSessions(_ context.Context, cmd *envelope.Command) *envelo
 			Status:    s.Status,
 			Agent:     s.Agent,
 			CreatedAt: s.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			Revision:  s.Revision, Generation: s.Generation,
 		}
 		// Use the last conversation turn as last_accessed, falling back to
 		// the session's updated_at (which tracks status changes like working→idle).
@@ -1141,6 +1144,8 @@ func (h *Handler) getSession(_ context.Context, cmd *envelope.Command) *envelope
 		ContextTokens:  sess.ContextTokens,
 		ContextWindow:  sess.ContextWindow,
 		OpenCodeCost:   sess.OpenCodeCost,
+		Revision:       sess.Revision,
+		Generation:     sess.Generation,
 	}
 	capabilities, err := h.gadgetCapabilities(data.SessionID)
 	if err != nil {
@@ -1215,6 +1220,54 @@ func (h *Handler) getSessionConversation(ctx context.Context, cmd *envelope.Comm
 		SessionID:    data.SessionID,
 		Conversation: conversation,
 		Total:        total,
+		Revision:     sess.Revision,
+		Generation:   sess.Generation,
+	})
+}
+
+func (h *Handler) reconcileSession(_ context.Context, cmd *envelope.Command) *envelope.Response {
+	var data envelope.GetConversationData
+	if err := json.Unmarshal(cmd.Data, &data); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
+	}
+	sess, err := h.store.GetSession(data.SessionID)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to get session: %v", err))
+	}
+	if sess == nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, fmt.Sprintf("session not found: %s", data.SessionID))
+	}
+	total, err := h.store.GetConversationCount(data.SessionID)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to count conversation: %v", err))
+	}
+	if data.Revision == sess.Revision && data.Generation == sess.Generation {
+		return envelope.SuccessResponse(cmd.RequestID, envelope.SessionReconcile{
+			SessionID: data.SessionID, Total: total, Revision: sess.Revision, Generation: sess.Generation,
+		})
+	}
+	turns, err := h.store.GetConversationPaginated(data.SessionID, 100, 0)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to reconcile conversation: %v", err))
+	}
+	conversation := make([]envelope.ConversationTurn, 0, len(turns))
+	bytes := 0
+	for _, t := range turns {
+		if len(conversation) > 0 && bytes+len(t.Content) > 1024*1024 {
+			break
+		}
+		conversation = append(conversation, envelope.ConversationTurn{
+			ID: t.ID, Role: t.Role, Content: t.Content,
+			SourceSessionID: t.SourceSessionID, SourceName: t.SourceName,
+			CreatedAt: t.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		})
+		bytes += len(t.Content)
+	}
+	return envelope.SuccessResponse(cmd.RequestID, envelope.SessionReconcile{
+		SessionID: data.SessionID, Conversation: conversation, Total: total,
+		Revision: sess.Revision, Generation: sess.Generation,
+		ResetRequired: data.Generation != 0 && data.Generation != sess.Generation,
+		Truncated:     len(conversation) < total,
 	})
 }
 
@@ -1265,6 +1318,12 @@ func (h *Handler) deleteSession(_ context.Context, cmd *envelope.Command) *envel
 
 	if err := h.store.DeleteSession(data.SessionID); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to delete session: %v", err))
+	}
+	if h.notifyWriter != nil {
+		_ = h.notifyWriter.SendAsync(envelope.EventChatStatus, data.SessionID, map[string]interface{}{
+			"status": "deleted", "reset_required": true,
+			"revision": sess.Revision + 1, "generation": sess.Generation + 1,
+		})
 	}
 	h.revokeGadgetToken(data.SessionID)
 

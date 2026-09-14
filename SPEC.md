@@ -114,6 +114,27 @@ erDiagram
 
 # MI6
 
+## Recoverable Qew push reconciliation
+
+Moneypenny sessions persist an authoritative monotonic `revision` and
+`generation` watermark in SQLite. Conversation turns and session-state changes
+advance the revision in the same transaction as the mutation; reads never do.
+Post-commit chat hints carry the watermark but remain bounded, asynchronous, and
+best-effort, so agent execution never depends on transport availability.
+
+Hem exposes `reconcile session SESSION_ID --revision N --generation N` through
+the existing FIFO and MI6 command paths. The response returns the current
+watermark and a bounded recent conversation snapshot. A generation change is
+marked `reset_required`; without a second transcript journal, larger gaps use
+the same bounded authoritative snapshot and clients continue with normal
+history pagination. Qew stores a watermark per session, ignores stale or
+duplicate hints, and reconciles after reconnect, overflow, generation changes,
+or dropped hints while retaining polling as the authoritative fallback.
+The tested integration boundary is the persisted store/handler response,
+revisioned notification, Hem broker, and Qew client seam; full subprocess
+MI6/browser acceptance remains deferred, as do encoded-byte chunk cursors and
+lease/watch refcounting.
+
 MI6 is a transport abstraction that allows, by creating a central place that all hosts can reach, to communicate between these hosts.
 
 - We'll have agents running remotely. They checking in to their boss through MI6.

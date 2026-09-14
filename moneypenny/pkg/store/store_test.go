@@ -141,6 +141,39 @@ func TestUpdateSessionStatus(t *testing.T) {
 	if got.Status != StateWorking {
 		t.Errorf("Status = %q, want %q", got.Status, StateWorking)
 	}
+	if got.Revision != 1 {
+		t.Errorf("Revision = %d, want 1 after status mutation", got.Revision)
+	}
+}
+
+func TestConversationRevisionIsAtomicAndMonotonic(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateSession(&Session{SessionID: "rev", Name: "n", Agent: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, turn := range []struct{ role, content string }{{"user", "one"}, {"assistant", "two"}} {
+		if err := s.AddConversationTurn("rev", turn.role, turn.content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.GetSession("rev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Revision != 2 || got.Generation != 1 {
+		t.Fatalf("watermark = (%d,%d), want (2,1)", got.Revision, got.Generation)
+	}
+	deleted, err := s.DeleteLastTurnIfMatches("rev", "assistant", "two")
+	if err != nil || !deleted {
+		t.Fatalf("DeleteLastTurnIfMatches = %v, %v", deleted, err)
+	}
+	got, err = s.GetSession("rev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Revision != 3 {
+		t.Errorf("Revision = %d, want 3 after delete", got.Revision)
+	}
 }
 
 func TestDeleteSessionAlsoDeletesConversation(t *testing.T) {

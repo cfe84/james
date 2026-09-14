@@ -121,12 +121,23 @@ func (s *Store) DispatchSchedule(ctx context.Context, sch *Schedule, next time.T
 			return result, err
 		}
 	}
+	increment := 1
+	if result.Start {
+		increment++
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE sessions SET revision = revision + ?, updated_at = ? WHERE session_id = ?`, increment, now, sch.SessionID); err != nil {
+		return result, fmt.Errorf("advance scheduled conversation revision: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return result, err
 	}
-	s.notifyConversationTurn(sch.SessionID, "system", notice, "", "", noticeID)
+	watermark, err := s.GetSessionWatermark(sch.SessionID)
+	if err != nil {
+		return result, err
+	}
+	s.notifyConversationTurn(sch.SessionID, "system", notice, "", "", noticeID, watermark.Revision-int64(increment)+1, watermark.Generation)
 	if result.Start {
-		s.notifyConversationTurn(sch.SessionID, "scheduled", sch.Prompt, "", "", promptID)
+		s.notifyConversationTurn(sch.SessionID, "scheduled", sch.Prompt, "", "", promptID, watermark.Revision, watermark.Generation)
 	}
 	result.Delivered = true
 	return result, nil
