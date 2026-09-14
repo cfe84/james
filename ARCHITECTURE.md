@@ -1155,3 +1155,8 @@ by browser heartbeats and a 10-second write deadline; this bounds abandoned
 connections and slow consumers without adding a transcript journal. Socket
 close triggers an immediate authoritative HTTP resync before bounded polling
 continues, and reconnect performs the same resync.
+Moneypenny notifications retain their top-level session ID and event type
+through Qew's MI6 response adapter. This is required for browser-side routing:
+the notification payload describes a turn, while its owning session is carried
+by the envelope. Dropping that envelope field leaves an active chat unable to
+react to persisted thought updates.

@@ -1,10 +1,30 @@
 package web
 
 import (
+	"encoding/json"
 	"io"
 	"log"
 	"testing"
 )
+
+func TestResponsePreservesNotificationSessionID(t *testing.T) {
+	var response Response
+	err := json.Unmarshal([]byte(`{
+		"type":"notification",
+		"event":"chat_message",
+		"session_id":"active-session",
+		"data":{"role":"thinking","content":"working"}
+	}`), &response)
+	if err != nil {
+		t.Fatalf("unmarshal notification: %v", err)
+	}
+	if response.SessionID != "active-session" {
+		t.Fatalf("session ID = %q, want %q", response.SessionID, "active-session")
+	}
+	if response.Event != "chat_message" {
+		t.Fatalf("event = %q, want %q", response.Event, "chat_message")
+	}
+}
 
 func TestSubscribeUsesConnectionScopedIdentityAndIdempotentUnsubscribe(t *testing.T) {
 	client := NewMI6Client("", "", "", log.New(io.Discard, "", 0))

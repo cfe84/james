@@ -1712,3 +1712,10 @@ on every connection exit. A 90-second read lease (renewed by the browser's
 so a slow client cannot retain a writer or broadcast subscription indefinitely.
 The browser also performs an immediate authoritative HTTP resync when a socket
 closes, while retaining the polling fallback.
+
+### Push notification session routing (v1.89.1)
+
+Qew preserves the top-level session ID and event type of Moneypenny
+notifications received through MI6. This lets an active chat identify
+train-of-thought and message notifications for its session and immediately
+reload its bounded authoritative history without requiring a browser refresh.

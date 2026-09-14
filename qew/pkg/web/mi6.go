@@ -32,6 +32,8 @@ type Response struct {
 	RequestID string          `json:"request_id,omitempty"`
 	Verb      string          `json:"verb,omitempty"` // for broadcast identification
 	Noun      string          `json:"noun,omitempty"` // for broadcast identification
+	Event     string          `json:"event,omitempty"` // moneypenny notification type
+	SessionID string          `json:"session_id,omitempty"`
 }
 
 // HemClient sends requests to a Hem server and returns responses.
