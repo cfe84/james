@@ -6,6 +6,9 @@
   let currentSession = null;
   let pollTimer = null;
   let chatPollTimer = null;
+  let dashboardRefresh = null;
+  let chatRefresh = null;
+  let chatGeneration = 0;
   let requestQueue = [];
   let requestId = 0;
   let lastChatHTML = '';
@@ -60,7 +63,6 @@
   const ATTACH_MAX_BYTES = 10 * 1024 * 1024; // 10MB per-file cap (mirrors moneypenny)
   let multilineCompose = false; // per-session preference; true means Enter inserts a newline
   let qewConnected = false;
-  let pushConnected = false;
   let pushReconnectTimer = null;
   let pushHeartbeatTimer = null;
   let pushGeneration = 0;
@@ -267,7 +269,14 @@
 
   // --- Dashboard ---
 
-  async function loadDashboard() {
+  function loadDashboard() {
+    if (!dashboardRefresh) {
+      dashboardRefresh = refreshDashboard().finally(() => { dashboardRefresh = null; });
+    }
+    return dashboardRefresh;
+  }
+
+  async function refreshDashboard() {
     try {
       const args = ['--all'];
       if (projectFilter) args.push('--project', projectFilter);
@@ -771,7 +780,11 @@
   }
 
   async function openChat(sessionId, name, mp) {
+    chatGeneration++;
+    stopDashboardPoll();
+    stopChatPoll();
     currentSession = sessionId;
+    currentSessionStatus = '';
     multilineCompose = localStorage.getItem(`qewMultilineCompose:${sessionId}`) === '1';
     syncComposeModeToggle();
     currentSessionName = name || sessionNameFromCache(sessionId) || sessionId.substring(0, 12);
@@ -818,7 +831,7 @@
       history.replaceState(null, '', newHash);
     }
     await loadChat();
-    startChatPoll();
+    if (currentSession) startChatPoll();
   }
 
   window._openSubagent = function(sessionId, name) {
@@ -840,6 +853,7 @@
       openChat(parent.id, parent.name, parent.mp);
       return;
     }
+    chatGeneration++;
     currentSession = null;
     currentSessionName = '';
     currentSessionMP = '';
@@ -858,9 +872,23 @@
     startDashboardPoll();
   }
 
-  async function loadChat() {
+  function loadChat() {
+    if (!currentSession) return Promise.resolve();
+    if (!chatRefresh) {
+      const generation = chatGeneration;
+      chatRefresh = refreshChat().finally(() => {
+        chatRefresh = null;
+        // Navigation during an in-flight read must not starve the newly opened chat.
+        if (currentSession && generation !== chatGeneration) return loadChat();
+      });
+    }
+    return chatRefresh;
+  }
+
+  async function refreshChat() {
     if (!currentSession) return;
     const sessAtStart = currentSession;
+    const generation = chatGeneration;
     try {
       const calls = [
         apiCall('history', 'session', [currentSession, '--count', String(CHAT_PAGE_SIZE), '--from', '0']),
@@ -873,12 +901,11 @@
       const [histResp, showResp, schedResp, subsResp, actResp] = await Promise.all(calls);
       // Bail out if the user navigated to a different session while we awaited;
       // otherwise we'd overwrite the new session's state with stale data.
-      if (currentSession !== sessAtStart) return;
+      if (currentSession !== sessAtStart || generation !== chatGeneration) return;
       if (histResp.status === 'error') {
         throw new Error(histResp.message || 'Unable to load conversation');
       }
       // Extract session status and moneypenny.
-      currentSessionStatus = '';
       if (showResp && showResp.status === 'ok' && showResp.data) {
         currentSessionStatus = showResp.data.status || '';
         // Backfill the session name/nick when we opened without one (e.g. via a
@@ -932,21 +959,21 @@
       }
       // Extract schedules. The `list schedule` table is
       // [ID, Status, Scheduled At, Prompt, Cron].
-      let schedules = [];
+      let schedules = lastSchedules;
       if (schedResp && schedResp.status === 'ok' && schedResp.data && schedResp.data.rows) {
         schedules = schedResp.data.rows.map(r => ({
           id: r[0], status: r[1], scheduledAt: r[2], prompt: r[3], cron: r[4] || '',
         })).filter(s => s.status === 'pending');
       }
       // Extract subagents.
-      let subagents = [];
+      let subagents = allSubagents;
       if (subsResp && subsResp.status === 'ok' && subsResp.data && subsResp.data.rows) {
         subagents = subsResp.data.rows.map(r => ({
           sessionId: r[0], name: r[1], status: r[2], yolo: r[3] === 'true',
         }));
       }
       // Extract activity.
-      let activity = [];
+      let activity = lastActivity;
       if (actResp && actResp.status === 'ok' && actResp.data && actResp.data.activity) {
         activity = actResp.data.activity;
       }
@@ -959,7 +986,7 @@
       setConnectionState(true);
       renderChat(false);
     } catch (e) {
-      if (currentSession !== sessAtStart) return;
+      if (currentSession !== sessAtStart || generation !== chatGeneration) return;
       setConnectionState(false);
     }
   }
@@ -5334,9 +5361,9 @@
         socket.close();
         return;
       }
-      pushConnected = true;
-      stopDashboardPoll();
-      stopChatPoll();
+      // Socket liveness does not imply end-to-end Moneypenny event delivery.
+      if (currentSession) startChatPoll();
+      else startDashboardPoll();
       if (pushHeartbeatTimer) clearInterval(pushHeartbeatTimer);
       pushHeartbeatTimer = setInterval(() => {
         if (ws && ws.readyState === WebSocket.OPEN) {
@@ -5356,7 +5383,8 @@
       // Broadcasts are hints, not transcript payloads. Fetch only the active
       // lane and let the normal generation/session guard reject stale results.
       if (msg.noun === 'dashboard' || msg.verb === 'refresh') {
-        loadDashboard();
+        if (currentSession) loadChat();
+        else loadDashboard();
       } else if (currentSession && msg.data && msg.data.session_id === currentSession) {
         loadChat();
       } else if (currentSession && msg.session_id === currentSession) {
@@ -5365,7 +5393,6 @@
     };
     socket.onclose = () => {
       if (generation !== pushGeneration || ws !== socket) return;
-      pushConnected = false;
       ws = null;
       if (pushHeartbeatTimer) { clearInterval(pushHeartbeatTimer); pushHeartbeatTimer = null; }
       if (currentSession) startChatPoll();
@@ -5381,8 +5408,8 @@
   }
 
   function startDashboardPoll() {
+    stopChatPoll();
     stopDashboardPoll();
-    if (pushConnected) return;
     pollTimer = setInterval(loadDashboard, POLL_INTERVAL);
   }
 
@@ -5391,8 +5418,8 @@
   }
 
   function startChatPoll() {
+    stopDashboardPoll();
     stopChatPoll();
-    if (pushConnected) return;
     chatPollTimer = setInterval(loadChat, 3000);
   }
 

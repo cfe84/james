@@ -1140,7 +1140,7 @@ Single `VERSION` file at project root. Injected at compile time via `-ldflags "-
 The existing Hem broadcast path remains a hint channel rather than a second
 transcript. Qew's authenticated WebSocket consumes those hints and refreshes
 only the active dashboard or session lane; the HTTP API remains the authoritative
-read path and is used as a bounded fallback after socket loss. The WebSocket
+read path and is polled even while the socket is healthy. The WebSocket
 writer owns its outbound channel lifecycle, so a browser close cannot race a
 broadcast producer into a send-on-closed-channel panic. Browser heartbeats are
 handled locally by Qew and do not enter the Hem dispatcher. Conversation
@@ -1158,5 +1158,13 @@ continues, and reconnect performs the same resync.
 Moneypenny notifications retain their top-level session ID and event type
 through Qew's MI6 response adapter. This is required for browser-side routing:
 the notification payload describes a turn, while its owning session is carried
-by the envelope. Dropping that envelope field leaves an active chat unable to
-react to persisted thought updates.
+by the envelope. Preserving those fields is necessary but not sufficient:
+Hem's current per-request Moneypenny MI6 transport skips notifications and exits
+after its correlated response. It does not forward daemon events to Hem's
+control channel. Unix-socket Qew also has no upstream broadcast subscription.
+Until end-to-end notification forwarding and loss recovery exist, browser
+socket health must never disable polling. Active-chat polling remains at 3s,
+dashboard polling at 5s, with push hints as additional triggers.
+Each browser refresh lane shares one in-flight promise across ticks and hints.
+A chat navigation generation rejects stale results and triggers a follow-up
+read of the newly selected chat. Optional-panel failures retain cached data.

@@ -1696,16 +1696,15 @@ transcript.
 ### Recoverable push subscriptions (v1.89.0)
 
 Qew opens the authenticated `/ws` stream and treats Hem broadcasts as
-invalidation hints. While the stream is healthy, dashboard and chat polling is
-stopped; a disconnect immediately restores the bounded polling fallback and
-reconnects with a fresh socket. WebSocket requests include a lightweight
+invalidation hints. Dashboard and chat polling continue even while the stream
+is healthy; a disconnect reconnects with a fresh socket. WebSocket requests include a lightweight
 heartbeat, and the server answers `ping` without dispatching a Hem command.
 Every successful reconnect performs an immediate bounded read because hints
 may have been lost while disconnected; stale socket callbacks are ignored.
 History turns carry their stable SQLite IDs so clients can deduplicate
 replayed hints and reconnect snapshots. Optional session panels use bounded
-timeouts and retain their last good data instead of delaying transcript
-rendering.
+timeouts and retain their last good data on failure. These panels can delay a
+transcript refresh by at most 750 ms.
 The server assigns each WebSocket subscription its own identity and removes it
 on every connection exit. A 90-second read lease (renewed by the browser's
 20-second heartbeat) closes abandoned sockets; writes have a bounded deadline
@@ -1716,6 +1715,16 @@ closes, while retaining the polling fallback.
 ### Push notification session routing (v1.89.1)
 
 Qew preserves the top-level session ID and event type of Moneypenny
-notifications received through MI6. This lets an active chat identify
-train-of-thought and message notifications for its session and immediately
-reload its bounded authoritative history without requiring a browser refresh.
+notifications received through MI6. This allows routing notifications that
+reach Qew, but does not provide the missing Moneypenny-to-Hem forwarding path.
+
+### Automatic chat refresh (v1.89.2)
+
+An open WebSocket does not guarantee Moneypenny event delivery. Qew keeps
+polling the active chat every 3 seconds or the dashboard every 5 seconds,
+including when the socket is healthy or Qew uses a Unix-socket backend.
+Push hints provide additional refresh triggers, not a replacement for polling.
+Each refresh lane permits only one in-flight refresh; overlapping timer ticks
+and hints share that request. Navigation rejects stale chat results, including
+A-to-B-to-A navigation, and refreshes the newly selected chat after the old
+request finishes. Only the active dashboard/chat polling timer runs.
