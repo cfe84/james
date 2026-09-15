@@ -61,10 +61,11 @@
   let chatInputCache = {}; // sessionId → draft text
   let pendingAttachments = []; // files staged for the next send: [{name,size,type,b64,url}]
   const ATTACH_MAX_BYTES = 10 * 1024 * 1024; // 10MB per-file cap (mirrors moneypenny)
-  const COMPACTION_THRESHOLD_DEFAULT = 150000;
-  const COMPACTION_THRESHOLD_LONG_CONTEXT = 800000;
-  const COMPACTION_THRESHOLD_MIN = 10000;
-  const COMPACTION_THRESHOLD_MAX = 900000;
+  const compactionThreshold = window.jamesCompactionThreshold;
+  const COMPACTION_THRESHOLD_DEFAULT = compactionThreshold.DEFAULT;
+  const COMPACTION_THRESHOLD_LONG_CONTEXT = compactionThreshold.LONG_CONTEXT;
+  const COMPACTION_THRESHOLD_MIN = compactionThreshold.MIN;
+  const COMPACTION_THRESHOLD_MAX = compactionThreshold.MAX;
   let multilineCompose = false; // per-session preference; true means Enter inserts a newline
   let qewConnected = false;
   let pushReconnectTimer = null;
@@ -74,26 +75,15 @@
   const sessionWatermarks = {};
 
   function defaultCompactionThreshold(contextTier) {
-    return contextTier === 'long_context'
-      ? COMPACTION_THRESHOLD_LONG_CONTEXT
-      : COMPACTION_THRESHOLD_DEFAULT;
+    return compactionThreshold.defaultForContext(contextTier);
   }
 
   function effectiveCompactionThreshold(value, contextTier) {
-    return value === undefined || value === null || value === 0
-      ? defaultCompactionThreshold(contextTier)
-      : value;
+    return compactionThreshold.effective(value, contextTier);
   }
 
   function validateCompactionThreshold(value) {
-    if (!/^\d+$/.test(value)) return `Compaction threshold must be an integer from ${COMPACTION_THRESHOLD_MIN} to ${COMPACTION_THRESHOLD_MAX} tokens`;
-    const parsed = Number(value);
-    if (!Number.isSafeInteger(parsed) ||
-        parsed < COMPACTION_THRESHOLD_MIN ||
-        parsed > COMPACTION_THRESHOLD_MAX) {
-      return `Compaction threshold must be between ${COMPACTION_THRESHOLD_MIN} and ${COMPACTION_THRESHOLD_MAX} tokens`;
-    }
-    return '';
+    return compactionThreshold.validate(value);
   }
 
   function syncCompactionThreshold(modeId, inputId, labelId) {

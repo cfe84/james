@@ -60,11 +60,11 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 			allowed[key] = true
 		}
 	case "sessions.edit":
-		for _, key := range []string{"name", "system-prompt", "model", "effort", "context", "path", "yolo", "compaction", "env"} {
+		for _, key := range []string{"name", "system-prompt", "model", "effort", "context", "path", "yolo", "compaction", "compaction-threshold-tokens", "env"} {
 			allowed[key] = true
 		}
 	case "subagents.edit":
-		for _, key := range []string{"name", "system-prompt", "model", "effort", "context", "path", "yolo", "compaction", "env"} {
+		for _, key := range []string{"name", "system-prompt", "model", "effort", "context", "path", "yolo", "compaction", "compaction-threshold-tokens", "env"} {
 			allowed[key] = true
 		}
 	case "schedule.create":
@@ -182,9 +182,22 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 		if err = arity(1, 1); err == nil {
 			data["session_id"] = pos[0]
 			delete(data, "env")
-			for _, key := range []string{"name", "system-prompt", "model", "effort", "context", "path", "compaction"} {
+			for _, key := range []string{"name", "system-prompt", "model", "effort", "context", "path", "compaction", "compaction-threshold-tokens"} {
 				if value, ok := flags[key]; ok {
-					data[strings.ReplaceAll(key, "-", "_")] = value
+					mapped := strings.ReplaceAll(key, "-", "_")
+					if key == "compaction-threshold-tokens" {
+						n, parseErr := strconv.Atoi(value)
+						if parseErr != nil {
+							err = fmt.Errorf("--%s must be an integer", key)
+							break
+						}
+						data[mapped] = n
+					} else {
+						data[mapped] = value
+					}
+					if key == "compaction-threshold-tokens" {
+						delete(data, key)
+					}
 				}
 			}
 			if value, ok := flags["yolo"]; ok {
@@ -216,9 +229,22 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 				data["session_id"] = pos[0]
 			}
 			delete(data, "env")
-			for _, key := range []string{"name", "system-prompt", "model", "effort", "context", "path", "compaction"} {
+			for _, key := range []string{"name", "system-prompt", "model", "effort", "context", "path", "compaction", "compaction-threshold-tokens"} {
 				if value, ok := flags[key]; ok {
-					data[strings.ReplaceAll(key, "-", "_")] = value
+					mapped := strings.ReplaceAll(key, "-", "_")
+					if key == "compaction-threshold-tokens" {
+						n, parseErr := strconv.Atoi(value)
+						if parseErr != nil {
+							err = fmt.Errorf("--%s must be an integer", key)
+							break
+						}
+						data[mapped] = n
+					} else {
+						data[mapped] = value
+					}
+					if key == "compaction-threshold-tokens" {
+						delete(data, key)
+					}
 				}
 			}
 			if value, ok := flags["yolo"]; ok {

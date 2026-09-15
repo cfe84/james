@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const controls = require('../pkg/web/static/gadget-capabilities.js');
+const thresholds = require('../pkg/web/static/compaction-threshold.js');
 
 const defaults = { memory: true, subagents: true, agents: false, create_agents: false, edit_sessions: false, edit_own_session: false, edit_own_subagents: false, moneypenny_logs: false, hem: false, traits: false, scheduling: true };
 const allOff = Object.fromEntries(Object.keys(defaults).map(name => [name, false]));
@@ -93,10 +94,11 @@ test('create, copy and edit surfaces load and use the reusable controls', () => 
 
 test('custom compaction threshold is bounded and hidden for agent mode', () => {
   const app = fs.readFileSync(path.join(__dirname, '../pkg/web/static/app.js'), 'utf8');
-  assert.match(app, /const COMPACTION_THRESHOLD_DEFAULT = 150000/);
-  assert.match(app, /const COMPACTION_THRESHOLD_LONG_CONTEXT = 800000/);
-  assert.match(app, /const COMPACTION_THRESHOLD_MIN = 10000/);
-  assert.match(app, /const COMPACTION_THRESHOLD_MAX = 900000/);
+  const helper = fs.readFileSync(path.join(__dirname, '../pkg/web/static/compaction-threshold.js'), 'utf8');
+  assert.deepEqual(
+    [thresholds.DEFAULT, thresholds.LONG_CONTEXT, thresholds.MIN, thresholds.MAX],
+    [150000, 800000, 10000, 900000],
+  );
   assert.match(app, /id="wiz-compaction-threshold" type="number" min="\$\{COMPACTION_THRESHOLD_MIN\}" max="\$\{COMPACTION_THRESHOLD_MAX\}"/);
   assert.match(app, /id="es-compaction-threshold" type="number" min="\$\{COMPACTION_THRESHOLD_MIN\}" max="\$\{COMPACTION_THRESHOLD_MAX\}"/);
   assert.match(app, /input\.disabled = !custom/);
@@ -104,7 +106,19 @@ test('custom compaction threshold is bounded and hidden for agent mode', () => {
   assert.match(app, /--compaction-threshold-tokens/);
   assert.match(app, /Custom compaction threshold \(tokens\)/);
   assert.match(app, /thresholdDefaultDerived/);
-  assert.match(app, /Compaction threshold must be between/);
+  assert.match(helper, /Compaction threshold must be between/);
+});
+
+test('Qew threshold helpers follow context defaults and inclusive validation', () => {
+  assert.equal(thresholds.defaultForContext(''), 150000);
+  assert.equal(thresholds.defaultForContext('default'), 150000);
+  assert.equal(thresholds.defaultForContext('long_context'), 800000);
+  assert.equal(thresholds.effective(0, 'long_context'), 800000);
+  assert.equal(thresholds.effective(150000, 'long_context'), 150000);
+  for (const value of ['10000', '900000']) assert.equal(thresholds.validate(value), '');
+  assert.notEqual(thresholds.validate('9999'), '');
+  assert.notEqual(thresholds.validate('900001'), '');
+  assert.notEqual(thresholds.validate('10000.5'), '');
 });
 
 test('all-subagents dialog supports keyboard navigation and Escape dismissal', () => {

@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const thresholds = require('../pkg/web/static/compaction-threshold.js');
 
 const app = fs.readFileSync(process.env.QEW_APP_SOURCE ||
   path.join(__dirname, '../pkg/web/static/app.js'), 'utf8');
@@ -22,7 +23,7 @@ function browser({ stableReconcile = false, reconcileRevision = 1 } = {}) {
   const elements = new Map();
   const context = vm.createContext({
     localStorage: { getItem: () => null },
-    window: { location: { protocol: 'https:', host: 'qew.test' } },
+    window: { location: { protocol: 'https:', host: 'qew.test' }, jamesCompactionThreshold: thresholds },
     document: {
       getElementById(id) {
         if (!elements.has(id)) elements.set(id, { style: {}, innerHTML: '' });

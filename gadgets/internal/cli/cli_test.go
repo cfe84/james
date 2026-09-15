@@ -47,7 +47,7 @@ func TestParseCommands(t *testing.T) {
 		{"traits edit", []string{"traits", "edit", "id"}, " \n--name=forged\n🕴\n", "traits.edit", `{"id":"id","body":" \n--name=forged\n🕴\n"}`},
 		{"traits clear", []string{"traits", "edit", "id"}, "", "traits.edit", `{"id":"id","body":""}`},
 		{"traits literal ID", []string{"traits", "get", "--", "--default"}, "", "traits.get", `{"id":"--default"}`},
-		{"sessions edit own", []string{"sessions", "edit", "--name", "new name", "--yolo=false"}, "", "sessions.edit", `{"name":"new name","yolo":false}`},
+		{"sessions edit own", []string{"sessions", "edit", "--name", "new name", "--compaction-threshold-tokens", "150000", "--yolo=false"}, "", "sessions.edit", `{"name":"new name","compaction_threshold_tokens":150000,"yolo":false}`},
 		{"sessions edit target", []string{"sessions", "edit", "target", "--model", "m"}, "", "sessions.edit", `{"session_id":"target","model":"m"}`},
 		{"sessions edit environment", []string{"sessions", "edit", "--env", "KEY=value"}, "", "sessions.edit", `{"environment":{"KEY":"value"}}`},
 		{"agents message", []string{"agents", "message", "id", "--body", "hello"}, "", "agents.message", `{"id":"id","body":"hello"}`},
