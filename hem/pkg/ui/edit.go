@@ -8,6 +8,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"james/moneypenny/pkg/envelope"
 )
 
 // editModel is a form for editing an existing session's parameters.
@@ -71,6 +73,7 @@ func newEditModel(c *client, sessionID string) editModel {
 			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
 			{label: "Gadgets (James tooling)", flag: "--gadgets", isBool: true, value: "false"},
 			{label: "Compaction", flag: "--compaction", value: "agent", options: []string{"agent", "custom"}},
+			{label: "Custom compaction threshold (tokens)", flag: compactionThresholdFlag, value: defaultCompactionThresholdValue(""), defaultDerived: true},
 		}, gadgetCapabilityFields(nil)...),
 	}
 }
@@ -217,34 +220,40 @@ func (m editModel) Update(msg tea.Msg) (editModel, tea.Cmd) {
 				break
 			}
 		}
-		m.fields[0].value = d.Name
-		m.fields[1].value = d.Nick
-		m.fields[2].value = d.Project
-		m.fields[3].value = d.Model
-		m.fields[4].value = d.Effort
-		m.fields[5].value = d.ContextTier
-		m.fields[6].value = d.SystemPrompt
+		values := map[string]string{
+			"--name":                d.Name,
+			"--nick":                d.Nick,
+			"--project":             d.Project,
+			"--model":               d.Model,
+			"--effort":              d.Effort,
+			"--context":             d.ContextTier,
+			"--system-prompt":       d.SystemPrompt,
+			compactionThresholdFlag: fmt.Sprintf("%d", d.CompactionThresholdTokens),
+		}
+		if d.CompactionThresholdTokens == 0 {
+			values[compactionThresholdFlag] = defaultCompactionThresholdValue(d.ContextTier)
+		}
 		var environment []string
 		for name, value := range d.Environment {
 			environment = append(environment, name+"="+value)
 		}
 		sort.Strings(environment)
-		m.fields[7].value = strings.Join(environment, "\n")
-		m.fields[8].value = d.Path
-		if d.Yolo {
-			m.fields[9].value = "true"
-		} else {
-			m.fields[9].value = "false"
+		values["--env"] = strings.Join(environment, "\n")
+		values["--path"] = d.Path
+		values["--yolo"] = fmt.Sprintf("%t", d.Yolo)
+		values["--gadgets"] = fmt.Sprintf("%t", d.Gadgets)
+		values["--compaction"] = d.CompactionMode
+		if values["--compaction"] == "" {
+			values["--compaction"] = "agent"
 		}
-		if d.Gadgets {
-			m.fields[10].value = "true"
-		} else {
-			m.fields[10].value = "false"
-		}
-		if d.CompactionMode != "" {
-			m.fields[11].value = d.CompactionMode
-		} else {
-			m.fields[11].value = "agent"
+		for i := range m.fields {
+			if value, ok := values[m.fields[i].flag]; ok {
+				m.fields[i].value = value
+			}
+			if m.fields[i].flag == compactionThresholdFlag {
+				m.fields[i].defaultDerived = d.CompactionThresholdTokens == 0 ||
+					d.CompactionThresholdTokens == envelope.DefaultCompactionThresholdTokensForContext(d.ContextTier)
+			}
 		}
 		// Place cursors at end of values and sync textInput fields.
 		for i := range m.fields {
@@ -321,21 +330,18 @@ func (m editModel) Update(msg tea.Msg) (editModel, tea.Cmd) {
 			return m, nil
 		}
 		field := &m.fields[m.cursor]
+		markCompactionThresholdEdited(field, msg)
 
 		// Navigation keys handled before delegating to textInput.
 		switch msg.String() {
 		case "up":
-			if m.cursor > 0 {
-				m.cursor--
-			}
+			m.cursor = moveFormCursor(m.fields, m.cursor, -1)
 			return m, nil
 		case "down":
-			if m.cursor < len(m.fields)-1 {
-				m.cursor++
-			}
+			m.cursor = moveFormCursor(m.fields, m.cursor, 1)
 			return m, nil
 		case "tab":
-			m.cursor = (m.cursor + 1) % len(m.fields)
+			m.cursor = moveFormCursor(m.fields, m.cursor, 1)
 			return m, nil
 		}
 
@@ -389,6 +395,9 @@ func (m editModel) Update(msg tea.Msg) (editModel, tea.Cmd) {
 		case "left":
 			if field.options != nil {
 				cycleFieldOptionsBack(field)
+				if field.flag == "--context" {
+					syncDefaultCompactionThreshold(m.fields)
+				}
 			} else if !field.isBool && field.cursorPos > 0 {
 				_, size := utf8.DecodeLastRuneInString(field.value[:field.cursorPos])
 				field.cursorPos -= size
@@ -396,6 +405,9 @@ func (m editModel) Update(msg tea.Msg) (editModel, tea.Cmd) {
 		case "right":
 			if field.options != nil {
 				cycleFieldOptions(field)
+				if field.flag == "--context" {
+					syncDefaultCompactionThreshold(m.fields)
+				}
 			} else if !field.isBool && field.cursorPos < len(field.value) {
 				_, size := utf8.DecodeRuneInString(field.value[field.cursorPos:])
 				field.cursorPos += size
@@ -419,6 +431,9 @@ func (m editModel) Update(msg tea.Msg) (editModel, tea.Cmd) {
 		case " ":
 			if field.options != nil {
 				cycleFieldOptions(field)
+				if field.flag == "--context" {
+					syncDefaultCompactionThreshold(m.fields)
+				}
 			} else if field.isBool {
 				if field.value == "true" {
 					field.value = "false"
@@ -468,7 +483,12 @@ func (m editModel) View() string {
 	}
 
 	var rows []string
+	visibleCursor := visibleFormCursor(m.fields, m.cursor)
+	rowIndex := 0
 	for i, f := range m.fields {
+		if !isFormFieldVisible(m.fields, i) {
+			continue
+		}
 		label := lStyle.Render(truncateDisplay(f.label+":", labelW))
 
 		// Show change indicator.
@@ -478,7 +498,7 @@ func (m editModel) View() string {
 		}
 
 		var value string
-		if i == m.cursor {
+		if rowIndex == visibleCursor {
 			if f.options != nil {
 				display := f.value
 				if display == "" {
@@ -543,12 +563,13 @@ func (m editModel) View() string {
 			}
 		}
 		rows = append(rows, "  "+label+" "+value+changed+"\n")
+		rowIndex++
 	}
 	height := m.height - 10
 	if m.height == 0 {
 		height = len(rows)
 	}
-	b.WriteString(formViewport(rows, m.cursor, height))
+	b.WriteString(formViewport(rows, visibleCursor, height))
 	b.WriteString(fieldInactiveStyle.Render(gadgetNotificationHint))
 
 	b.WriteString("\n")

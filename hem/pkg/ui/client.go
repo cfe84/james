@@ -59,28 +59,29 @@ type sessionInfo struct {
 
 // sessionDetail is a parsed session detail.
 type sessionDetail struct {
-	GadgetCapabilities *envelope.GadgetCapabilities `json:"gadget_capabilities"`
-	SessionID          string                       `json:"session_id"`
-	Moneypenny         string                       `json:"moneypenny"`
-	Name               string                       `json:"name"`
-	Agent              string                       `json:"agent"`
-	SystemPrompt       string                       `json:"system_prompt"`
-	Model              string                       `json:"model"`
-	Effort             string                       `json:"effort"`
-	ContextTier        string                       `json:"context_tier"`
-	Yolo               bool                         `json:"yolo"`
-	Gadgets            bool                         `json:"gadgets"`
-	Path               string                       `json:"path"`
-	Status             string                       `json:"status"`
-	Project            string                       `json:"project"`
-	Traits             []string                     `json:"traits"`
-	Nick               string                       `json:"nick"`
-	CompactionMode     string                       `json:"compaction_mode"`
-	ContextTokens      int                          `json:"context_tokens"`
-	ContextWindow      int                          `json:"context_window"`
-	OpenCodeCost       float64                      `json:"opencode_cost"`
-	Environment        map[string]string            `json:"environment"`
-	Conversation       []conversationTurn           `json:"conversation"`
+	GadgetCapabilities        *envelope.GadgetCapabilities `json:"gadget_capabilities"`
+	SessionID                 string                       `json:"session_id"`
+	Moneypenny                string                       `json:"moneypenny"`
+	Name                      string                       `json:"name"`
+	Agent                     string                       `json:"agent"`
+	SystemPrompt              string                       `json:"system_prompt"`
+	Model                     string                       `json:"model"`
+	Effort                    string                       `json:"effort"`
+	ContextTier               string                       `json:"context_tier"`
+	Yolo                      bool                         `json:"yolo"`
+	Gadgets                   bool                         `json:"gadgets"`
+	Path                      string                       `json:"path"`
+	Status                    string                       `json:"status"`
+	Project                   string                       `json:"project"`
+	Traits                    []string                     `json:"traits"`
+	Nick                      string                       `json:"nick"`
+	CompactionMode            string                       `json:"compaction_mode"`
+	CompactionThresholdTokens int                          `json:"compaction_threshold_tokens"`
+	ContextTokens             int                          `json:"context_tokens"`
+	ContextWindow             int                          `json:"context_window"`
+	OpenCodeCost              float64                      `json:"opencode_cost"`
+	Environment               map[string]string            `json:"environment"`
+	Conversation              []conversationTurn           `json:"conversation"`
 }
 
 type conversationTurn struct {

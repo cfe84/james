@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"james/moneypenny/pkg/agent"
 	"james/moneypenny/pkg/envelope"
@@ -23,17 +24,152 @@ When done, briefly report what you wrote or updated as your final message.
 Transcript:
 %s`
 
+// maxDistillationChunkBytes is the cap for the complete formatted prompt,
+// including distillPrompt's wrapper, not just the transcript payload.
+const maxDistillationChunkBytes = 64 * 1024
+
+func distillableTurn(t *store.ConversationTurn) bool {
+	switch t.Role {
+	case "user", "assistant", "scheduled", "callback":
+		return true
+	default:
+		return false
+	}
+}
+
+func distillationPromptOverhead() int {
+	return len(fmt.Sprintf(distillPrompt, ""))
+}
+
+func distillationSnapshotMaxID(turns []*store.ConversationTurn) int64 {
+	var maxID int64
+	for _, turn := range turns {
+		if distillableTurn(turn) && turn.ID > maxID {
+			maxID = turn.ID
+		}
+	}
+	return maxID
+}
+
+func turnsThroughSnapshot(turns []*store.ConversationTurn, maxID int64) []*store.ConversationTurn {
+	filtered := make([]*store.ConversationTurn, 0, len(turns))
+	for _, turn := range turns {
+		if turn.ID <= maxID {
+			filtered = append(filtered, turn)
+		}
+	}
+	return filtered
+}
+
+// distillationChunks treats maxPromptBytes as the cap for the complete
+// formatted prompt, including the distillPrompt wrapper.
+func distillationChunks(turns []*store.ConversationTurn, maxPromptBytes int) []string {
+	if maxPromptBytes <= 0 {
+		return nil
+	}
+	payloadBudget := maxPromptBytes - distillationPromptOverhead()
+	if payloadBudget <= 0 {
+		return nil
+	}
+	return distillationPayloadChunks(turns, payloadBudget)
+}
+
+func distillationPayloadChunks(turns []*store.ConversationTurn, payloadBudget int) []string {
+	if payloadBudget <= 0 {
+		return nil
+	}
+	var chunks []string
+	var current strings.Builder
+	for _, turn := range turns {
+		if !distillableTurn(turn) {
+			continue
+		}
+		line := cleanTranscript([]*store.ConversationTurn{turn})
+		if line == "" {
+			continue
+		}
+		if len(line) > payloadBudget {
+			// Split only the content of an oversized turn at UTF-8 rune
+			// boundaries. Labels make continuation chunks unambiguous.
+			label := strings.TrimSpace(strings.SplitN(line, ":", 2)[0]) + ": "
+			body := strings.TrimSpace(strings.TrimPrefix(line, label))
+			prefix := label + "[continued] "
+			suffix := "\n\n"
+			if len(prefix)+len(suffix) < payloadBudget {
+				for _, part := range splitUTF8WithinByteBudget(body, payloadBudget-len(prefix)-len(suffix)) {
+					if current.Len() > 0 {
+						chunks = append(chunks, current.String())
+						current.Reset()
+					}
+					chunks = append(chunks, prefix+part+suffix)
+				}
+			} else {
+				for _, part := range splitUTF8WithinByteBudget(line, payloadBudget) {
+					if current.Len() > 0 {
+						chunks = append(chunks, current.String())
+						current.Reset()
+					}
+					chunks = append(chunks, part)
+				}
+			}
+			continue
+		}
+		if current.Len() > 0 && current.Len()+len(line) > payloadBudget {
+			chunks = append(chunks, current.String())
+			current.Reset()
+		}
+		current.WriteString(line)
+	}
+	if current.Len() > 0 {
+		chunks = append(chunks, current.String())
+	}
+	return chunks
+}
+
+func splitUTF8WithinByteBudget(value string, budget int) []string {
+	if budget <= 0 {
+		return nil
+	}
+	var chunks []string
+	for len(value) > 0 {
+		n := 0
+		for n < len(value) {
+			_, size := utf8.DecodeRuneInString(value[n:])
+			if n+size > budget {
+				break
+			}
+			n += size
+		}
+		if n == 0 {
+			break
+		}
+		chunks = append(chunks, value[:n])
+		value = value[n:]
+	}
+	return chunks
+}
+
 // cleanTranscript renders a conversation as a plain USER/ASSISTANT/SYSTEM
 // transcript, skipping ephemeral thinking/agent_text/tool noise.
 func cleanTranscript(turns []*store.ConversationTurn) string {
 	var b strings.Builder
 	for _, t := range turns {
 		switch t.Role {
-		case "user", "scheduled":
+		case "user":
 			b.WriteString("USER: ")
+		case "scheduled":
+			b.WriteString("SCHEDULED: ")
+		case "callback":
+			b.WriteString("CALLBACK")
+			if t.SourceName != "" {
+				b.WriteString(" (")
+				b.WriteString(t.SourceName)
+				b.WriteString(")")
+			}
+			b.WriteString(": ")
 		case "assistant":
 			b.WriteString("ASSISTANT: ")
-		case "system":
+		case "system", "compaction", "compaction_summary", "distillation", "distillation_partial":
 			b.WriteString("SYSTEM: ")
 		default:
 			continue
@@ -49,7 +185,7 @@ func cleanTranscript(turns []*store.ConversationTurn) string {
 // session, but a throwaway underlying agent session so the live one is left
 // untouched) that reads the full transcript and writes everything important
 // into the session's hierarchical memory. Requires the session to be idle.
-func (h *Handler) distillSessionCmd(_ context.Context, cmd *envelope.Command) *envelope.Response {
+func (h *Handler) distillSessionCmd(ctx context.Context, cmd *envelope.Command) *envelope.Response {
 	var data envelope.DistillSessionData
 	if err := json.Unmarshal(cmd.Data, &data); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
@@ -76,8 +212,12 @@ func (h *Handler) distillSessionCmd(_ context.Context, cmd *envelope.Command) *e
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotIdle, fmt.Sprintf("session is not idle: %s", sess.Status))
 	}
 
-	if err := h.store.UpdateSessionStatus(data.SessionID, store.StateWorking); err != nil {
+	claimed, err := h.store.ClaimIdleSession(ctx, data.SessionID)
+	if err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to update status: %v", err))
+	}
+	if !claimed {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotIdle, "session is no longer idle")
 	}
 	if h.notifyWriter != nil {
 		_ = h.notifyWriter.SendAsync(envelope.EventChatStatus, data.SessionID, map[string]string{
@@ -99,7 +239,11 @@ func (h *Handler) distillSessionCmd(_ context.Context, cmd *envelope.Command) *e
 // session status to working; this resets it to idle when finished.
 func (h *Handler) runDistillation(sessionID string) {
 	reason := "distillation_failed"
+	outcome := "distillation_failed"
 	defer func() {
+		if err := h.store.AddConversationTurn(sessionID, "system", outcome); err != nil {
+			h.vlog("distillation: cannot record outcome for session %s: %v", sessionID, err)
+		}
 		if err := h.store.UpdateSessionStatus(sessionID, store.StateIdle); err != nil {
 			h.vlog("distillation: cannot restore idle state for session %s: %v", sessionID, err)
 		}
@@ -132,40 +276,85 @@ func (h *Handler) runDistillation(sessionID string) {
 		h.vlog("distillation: cannot load conversation for session %s: %v", sessionID, err)
 		return
 	}
-	transcript := cleanTranscript(turns)
-	if strings.TrimSpace(transcript) == "" {
+	// Capture a stable transcript watermark before chunking. Turns appended
+	// while auxiliary agents run belong to a later operation, never this
+	// snapshot.
+	snapshotMaxID := distillationSnapshotMaxID(turns)
+	chunks := distillationChunks(turnsThroughSnapshot(turns, snapshotMaxID), maxDistillationChunkBytes)
+	if len(chunks) == 0 {
 		h.vlog("distillation: nothing to distill for session %s (empty transcript)", sessionID)
 		reason = "distilled"
+		outcome = "distillation_completed"
+		return
+	}
+	configKey := fmt.Sprintf("%s|%s|%s|%s|%t", sess.Agent, sess.Model, sess.Effort, sess.ContextTier, sess.Yolo)
+	progress, err := h.store.GetDistillationProgress(sessionID, snapshotMaxID, configKey)
+	if err != nil {
+		h.vlog("distillation: cannot load progress for session %s", sessionID)
+		return
+	}
+	start := 0
+	if progress != nil {
+		start = progress.NextChunk
+		if progress.ChunkCount != len(chunks) {
+			start = 0
+		}
+	}
+	if err := h.store.PutDistillationProgress(store.DistillationProgress{
+		SessionID: sessionID, SnapshotMaxTurnID: snapshotMaxID, ConfigKey: configKey,
+		NextChunk: start, ChunkCount: len(chunks),
+	}); err != nil {
+		h.vlog("distillation: cannot persist progress for session %s", sessionID)
 		return
 	}
 
 	// Run the agent with the session's system prompt and shared gadget memory
 	// contract. Use a throwaway underlying agent session id
 	// (NOT persisted) so the live agent session is untouched.
-	params := agent.RunParams{
-		SessionID:      sessionID,
-		Agent:          sess.Agent,
-		Prompt:         fmt.Sprintf(distillPrompt, transcript),
-		SystemPrompt:   sess.SystemPrompt,
-		Model:          sess.Model,
-		Effort:         sess.Effort,
-		ContextTier:    sess.ContextTier,
-		Yolo:           sess.Yolo,
-		Path:           sess.Path,
-		Resume:         false,
-		AgentSessionID: newAgentSessionID(),
-		SessionDir:     h.sessionDir(sessionID),
-		NoPersistTurns: true,
+	for i := start; i < len(chunks); i++ {
+		chunk := chunks[i]
+		environment, envErr := sessionEnvironment(sess)
+		if envErr != nil {
+			h.vlog("distillation: invalid session environment for %s", sessionID)
+			return
+		}
+		params := agent.RunParams{
+			SessionID: sessionID, Agent: sess.Agent,
+			Prompt:       fmt.Sprintf(distillPrompt, chunk),
+			SystemPrompt: sess.SystemPrompt, Model: sess.Model, Effort: sess.Effort,
+			ContextTier: sess.ContextTier, Yolo: sess.Yolo, Path: sess.Path,
+			Resume: false, AgentSessionID: newAgentSessionID(),
+			SessionDir: h.sessionDir(sessionID), NoPersistTurns: true, Environment: environment,
+		}
+		if len(params.Prompt) > maxDistillationChunkBytes {
+			h.vlog("distillation: prompt exceeds configured cap for session %s", sessionID)
+			outcome = "distillation_partial_failed"
+			return
+		}
+		if err := h.prepareRunInstructions(sessionID, &params); err != nil {
+			h.vlog("distillation: cannot prepare memory for session %s: %v", sessionID, err)
+			outcome = "distillation_partial_failed"
+			return
+		}
+		if _, runErr := h.runAuxiliary(context.Background(), params); runErr != nil {
+			h.vlog("distillation agent failed for session %s: %v", sessionID, runErr)
+			outcome = "distillation_partial_failed"
+			return
+		}
+		if err := h.store.PutDistillationProgress(store.DistillationProgress{
+			SessionID: sessionID, SnapshotMaxTurnID: snapshotMaxID, ConfigKey: configKey,
+			NextChunk: i + 1, ChunkCount: len(chunks),
+		}); err != nil {
+			h.vlog("distillation: cannot persist progress for session %s: %v", sessionID, err)
+			outcome = "distillation_partial_failed"
+			return
+		}
 	}
-	if err := h.prepareRunInstructions(sessionID, &params); err != nil {
-		h.vlog("distillation: cannot prepare memory for session %s: %v", sessionID, err)
+	if err := h.store.ClearDistillationProgress(sessionID, snapshotMaxID, configKey); err != nil {
+		h.vlog("distillation: cannot clear progress for session %s: %v", sessionID, err)
 		return
 	}
-
-	if _, runErr := h.runner.Run(context.Background(), params); runErr != nil {
-		h.vlog("distillation agent failed for session %s: %v", sessionID, runErr)
-	} else {
-		reason = "distilled"
-		h.vlog("distillation completed for session %s", sessionID)
-	}
+	reason = "distilled"
+	outcome = "distillation_completed"
+	h.vlog("distillation completed for session %s", sessionID)
 }

@@ -1108,28 +1108,29 @@ type SessionLastResult struct {
 }
 
 type SessionShowResult struct {
-	GadgetCapabilities envelope.GadgetCapabilities `json:"gadget_capabilities"`
-	SessionID          string                      `json:"session_id"`
-	Moneypenny         string                      `json:"moneypenny"`
-	Name               string                      `json:"name"`
-	Agent              string                      `json:"agent"`
-	SystemPrompt       string                      `json:"system_prompt"`
-	Model              string                      `json:"model,omitempty"`
-	Effort             string                      `json:"effort,omitempty"`
-	ContextTier        string                      `json:"context_tier,omitempty"`
-	Yolo               bool                        `json:"yolo"`
-	Gadgets            bool                        `json:"gadgets"`
-	Memory             bool                        `json:"memory"`
-	Path               string                      `json:"path"`
-	Status             string                      `json:"status"`
-	Project            string                      `json:"project,omitempty"`
-	Traits             []string                    `json:"traits"`
-	Nick               string                      `json:"nick,omitempty"`
-	CompactionMode     string                      `json:"compaction_mode,omitempty"`
-	ContextTokens      int                         `json:"context_tokens,omitempty"`
-	ContextWindow      int                         `json:"context_window,omitempty"`
-	OpenCodeCost       float64                     `json:"opencode_cost,omitempty"`
-	Environment        map[string]string           `json:"environment,omitempty"`
+	GadgetCapabilities        envelope.GadgetCapabilities `json:"gadget_capabilities"`
+	SessionID                 string                      `json:"session_id"`
+	Moneypenny                string                      `json:"moneypenny"`
+	Name                      string                      `json:"name"`
+	Agent                     string                      `json:"agent"`
+	SystemPrompt              string                      `json:"system_prompt"`
+	Model                     string                      `json:"model,omitempty"`
+	Effort                    string                      `json:"effort,omitempty"`
+	ContextTier               string                      `json:"context_tier,omitempty"`
+	Yolo                      bool                        `json:"yolo"`
+	Gadgets                   bool                        `json:"gadgets"`
+	Memory                    bool                        `json:"memory"`
+	Path                      string                      `json:"path"`
+	Status                    string                      `json:"status"`
+	Project                   string                      `json:"project,omitempty"`
+	Traits                    []string                    `json:"traits"`
+	Nick                      string                      `json:"nick,omitempty"`
+	CompactionMode            string                      `json:"compaction_mode,omitempty"`
+	CompactionThresholdTokens int                         `json:"compaction_threshold_tokens"`
+	ContextTokens             int                         `json:"context_tokens,omitempty"`
+	ContextWindow             int                         `json:"context_window,omitempty"`
+	OpenCodeCost              float64                     `json:"opencode_cost,omitempty"`
+	Environment               map[string]string           `json:"environment,omitempty"`
 }
 
 const gadgetsMarker = "\nYou have access to agent orchestration using the"
@@ -1885,6 +1886,7 @@ func (e *Executor) DisableSetting(name string) *protocol.Response {
 
 func (e *Executor) CreateSession(args []string) *protocol.Response {
 	var projectNameOrID, fromID string
+	var compactionThresholdTokens int
 	params := &sessionParams{}
 	var capabilityFlags gadgetCapabilityFlags
 
@@ -1913,6 +1915,7 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 		fs.BoolVar(&params.Gadgets, "gadgets", false, "include James tooling in system prompt")
 		fs.StringVar(&params.Path, "path", "", "working directory path")
 		fs.StringVar(&params.CompactionMode, "compaction", "", "compaction mode: agent or custom")
+		fs.IntVar(&compactionThresholdTokens, "compaction-threshold-tokens", 0, "custom compaction threshold in tokens (10000-900000)")
 		fs.BoolVar(&params.Async, "async", false, "return immediately without waiting for response")
 		fs.StringVar(&projectNameOrID, "project", "", "project name or ID")
 		fs.StringVar(&params.TraitsSpec, "traits", "", "comma-separated trait IDs/names to apply")
@@ -1921,6 +1924,12 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
+	}
+	if flagSeenIn(args, "compaction-threshold-tokens") {
+		if err := envelope.ValidateCompactionThresholdTokens(compactionThresholdTokens); err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		params.CompactionThresholdTokens = &compactionThresholdTokens
 	}
 
 	params.GadgetCapabilities = capabilityFlags.apply(nil)
@@ -2589,6 +2598,15 @@ func (e *Executor) ShowSession(args []string) *protocol.Response {
 	if v, ok := raw["compaction_mode"].(string); ok {
 		result.CompactionMode = v
 	}
+	if value, present := raw["compaction_threshold_tokens"]; present {
+		threshold, err := parseCompactionThresholdTokensResponse(value)
+		if err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		result.CompactionThresholdTokens = threshold
+	} else {
+		result.CompactionThresholdTokens = envelope.DefaultCompactionThresholdTokensForContext(result.ContextTier)
+	}
 	if v, ok := raw["context_tokens"].(float64); ok {
 		result.ContextTokens = int(v)
 	}
@@ -2627,9 +2645,25 @@ func (e *Executor) ShowSession(args []string) *protocol.Response {
 	return protocol.OKResponse(result)
 }
 
+func parseCompactionThresholdTokensResponse(value interface{}) (int, error) {
+	number, ok := value.(float64)
+	if !ok || number != number ||
+		number < envelope.MinCompactionThresholdTokens ||
+		number > envelope.MaxCompactionThresholdTokens ||
+		number != float64(int(number)) {
+		return 0, fmt.Errorf("invalid compaction threshold tokens in session details")
+	}
+	threshold := int(number)
+	if err := envelope.ValidateCompactionThresholdTokens(threshold); err != nil {
+		return 0, fmt.Errorf("invalid compaction threshold tokens in session details: %w", err)
+	}
+	return threshold, nil
+}
+
 func (e *Executor) UpdateSession(args []string) *protocol.Response {
 	var sessionID, name, systemPrompt, pathArg, modelStr, effortStr, contextStr string
 	var yoloStr, projectNameOrID, gadgetsStr, traitsStr, compactionStr, nickStr string
+	var compactionThresholdTokens int
 	var environment environmentValues
 	var capabilityFlags gadgetCapabilityFlags
 
@@ -2664,11 +2698,18 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 		fs.StringVar(&gadgetsStr, "gadgets", "", "enable/disable gadgets (true/false)")
 		fs.StringVar(&traitsStr, "traits", "", "comma-separated trait IDs/names (empty clears all)")
 		fs.StringVar(&compactionStr, "compaction", "", "compaction mode: agent or custom")
+		fs.IntVar(&compactionThresholdTokens, "compaction-threshold-tokens", 0, "custom compaction threshold in tokens (10000-900000)")
 		fs.StringVar(&nickStr, "nick", "", "short nickname/alias (empty clears)")
 		fs.Var(&environment, "env", "replace agent environment with NAME=VALUE entries (repeatable)")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
+	}
+	compactionThresholdExplicit := flagSeenIn(args, "compaction-threshold-tokens")
+	if compactionThresholdExplicit {
+		if err := envelope.ValidateCompactionThresholdTokens(compactionThresholdTokens); err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
 	}
 
 	if sessionID == "" {
@@ -2741,6 +2782,10 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 	}
 	if compactionStr != "" {
 		cmdData["compaction_mode"] = compactionStr
+		hasUpdate = true
+	}
+	if compactionThresholdExplicit {
+		cmdData["compaction_threshold_tokens"] = compactionThresholdTokens
 		hasUpdate = true
 	}
 	if environmentExplicit {
@@ -5353,6 +5398,7 @@ func (e *Executor) DistillateSession(args []string) *protocol.Response {
 // that is appended to the summary block. The source session is preserved.
 func (e *Executor) CopySession(args []string) *protocol.Response {
 	var sourceSessionID, projectNameOrID string
+	var compactionThresholdTokens int
 	params := &sessionParams{}
 	var capabilityFlags gadgetCapabilityFlags
 	environmentExplicit := false
@@ -5383,6 +5429,7 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 		fs.BoolVar(&params.Gadgets, "gadgets", false, "include James tooling in system prompt")
 		fs.StringVar(&params.Path, "path", "", "working directory path")
 		fs.StringVar(&params.CompactionMode, "compaction", "", "compaction mode: agent or custom (defaults to source's)")
+		fs.IntVar(&compactionThresholdTokens, "compaction-threshold-tokens", 0, "custom compaction threshold in tokens (defaults to source's; 10000-900000)")
 		fs.BoolVar(&params.Async, "async", false, "return immediately without waiting for response")
 		fs.StringVar(&projectNameOrID, "project", "", "project name or ID")
 		fs.StringVar(&params.TraitsSpec, "traits", "", "comma-separated trait IDs/names (defaults to source session's traits)")
@@ -5390,6 +5437,13 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
+	}
+	compactionThresholdExplicit := flagSeenIn(args, "compaction-threshold-tokens")
+	if compactionThresholdExplicit {
+		if err := envelope.ValidateCompactionThresholdTokens(compactionThresholdTokens); err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		params.CompactionThresholdTokens = &compactionThresholdTokens
 	}
 	for _, arg := range args {
 		if arg == "--env" || arg == "-env" || strings.HasPrefix(arg, "--env=") || strings.HasPrefix(arg, "-env=") {
@@ -5444,16 +5498,17 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	}
 
 	var src struct {
-		Name           string            `json:"name"`
-		Agent          string            `json:"agent"`
-		SystemPrompt   string            `json:"system_prompt"`
-		Model          string            `json:"model"`
-		Effort         string            `json:"effort"`
-		ContextTier    string            `json:"context_tier"`
-		Yolo           bool              `json:"yolo"`
-		Path           string            `json:"path"`
-		CompactionMode string            `json:"compaction_mode"`
-		Environment    map[string]string `json:"environment"`
+		Name                      string            `json:"name"`
+		Agent                     string            `json:"agent"`
+		SystemPrompt              string            `json:"system_prompt"`
+		Model                     string            `json:"model"`
+		Effort                    string            `json:"effort"`
+		ContextTier               string            `json:"context_tier"`
+		Yolo                      bool              `json:"yolo"`
+		Path                      string            `json:"path"`
+		CompactionMode            string            `json:"compaction_mode"`
+		CompactionThresholdTokens int               `json:"compaction_threshold_tokens"`
+		Environment               map[string]string `json:"environment"`
 	}
 	if err := json.Unmarshal(getResp.Data, &src); err != nil {
 		return protocol.ErrResponse(fmt.Sprintf("parsing source session: %v", err))
@@ -5512,6 +5567,13 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	}
 	if params.CompactionMode == "" {
 		params.CompactionMode = src.CompactionMode
+	}
+	if params.CompactionThresholdTokens == nil {
+		threshold := src.CompactionThresholdTokens
+		if threshold == 0 {
+			threshold = envelope.DefaultCompactionThresholdTokensForContext(src.ContextTier)
+		}
+		params.CompactionThresholdTokens = &threshold
 	}
 	if params.SessionName == "" {
 		params.SessionName = "Copy of " + src.Name

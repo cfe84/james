@@ -11,6 +11,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"james/moneypenny/pkg/envelope"
 )
 
 func defaultWizardPath() string {
@@ -142,6 +144,7 @@ func newWizardModel(c *client) wizardModel {
 			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
 			{label: "Gadgets (James tooling)", flag: "--gadgets", isBool: true, value: "false"},
 			{label: "Compaction", flag: "--compaction", value: "custom", options: []string{"custom", "agent"}},
+			{label: "Custom compaction threshold (tokens)", flag: compactionThresholdFlag, value: defaultCompactionThresholdValue(""), defaultDerived: true},
 		}, gadgetCapabilityFields(nil)...),
 	}
 }
@@ -486,6 +489,7 @@ func (m wizardModel) Update(msg tea.Msg) (wizardModel, tea.Cmd) {
 					m.fields[i].options = []string{""}
 					m.fields[i].value = ""
 				}
+				syncDefaultCompactionThreshold(m.fields)
 			case "--system-prompt":
 				if src.SystemPrompt != "" {
 					m.fields[i].value = src.SystemPrompt
@@ -506,6 +510,15 @@ func (m wizardModel) Update(msg tea.Msg) (wizardModel, tea.Cmd) {
 					m.fields[i].value = src.CompactionMode
 					m.fields[i].cursorPos = len(src.CompactionMode)
 				}
+			case compactionThresholdFlag:
+				threshold := src.CompactionThresholdTokens
+				if threshold == 0 {
+					threshold = envelope.DefaultCompactionThresholdTokensForContext(src.ContextTier)
+				}
+				m.fields[i].value = fmt.Sprintf("%d", threshold)
+				m.fields[i].cursorPos = len(m.fields[i].value)
+				m.fields[i].defaultDerived = src.CompactionThresholdTokens == 0 ||
+					src.CompactionThresholdTokens == envelope.DefaultCompactionThresholdTokensForContext(src.ContextTier)
 			}
 		}
 		// Pre-select the source's traits once trait fields load (or now).
@@ -801,21 +814,18 @@ func (m wizardModel) updateFormStep(msg tea.KeyMsg) (wizardModel, tea.Cmd) {
 		return m, nil
 	}
 	field := &m.fields[m.fCursor]
+	markCompactionThresholdEdited(field, msg)
 
 	// Navigation keys handled before delegating to textInput.
 	switch msg.String() {
 	case "up":
-		if m.fCursor > 0 {
-			m.fCursor--
-		}
+		m.fCursor = moveFormCursor(m.fields, m.fCursor, -1)
 		return m, nil
 	case "down":
-		if m.fCursor < len(m.fields)-1 {
-			m.fCursor++
-		}
+		m.fCursor = moveFormCursor(m.fields, m.fCursor, 1)
 		return m, nil
 	case "tab":
-		m.fCursor = (m.fCursor + 1) % len(m.fields)
+		m.fCursor = moveFormCursor(m.fields, m.fCursor, 1)
 		return m, nil
 	}
 
@@ -887,6 +897,9 @@ func (m wizardModel) updateFormStep(msg tea.KeyMsg) (wizardModel, tea.Cmd) {
 	case "left":
 		if field.options != nil {
 			cycleFieldOptionsBack(field)
+			if field.flag == "--context" {
+				syncDefaultCompactionThreshold(m.fields)
+			}
 		} else if !field.isBool && field.cursorPos > 0 {
 			_, size := utf8.DecodeLastRuneInString(field.value[:field.cursorPos])
 			field.cursorPos -= size
@@ -894,6 +907,9 @@ func (m wizardModel) updateFormStep(msg tea.KeyMsg) (wizardModel, tea.Cmd) {
 	case "right":
 		if field.options != nil {
 			cycleFieldOptions(field)
+			if field.flag == "--context" {
+				syncDefaultCompactionThreshold(m.fields)
+			}
 		} else if !field.isBool && field.cursorPos < len(field.value) {
 			_, size := utf8.DecodeRuneInString(field.value[field.cursorPos:])
 			field.cursorPos += size
@@ -917,6 +933,9 @@ func (m wizardModel) updateFormStep(msg tea.KeyMsg) (wizardModel, tea.Cmd) {
 	case " ":
 		if field.options != nil {
 			cycleFieldOptions(field)
+			if field.flag == "--context" {
+				syncDefaultCompactionThreshold(m.fields)
+			}
 		} else if field.isBool {
 			if field.value == "true" {
 				field.value = "false"
@@ -1014,6 +1033,7 @@ func (m *wizardModel) applyEffortOptions(agent string) {
 			break
 		}
 	}
+	syncDefaultCompactionThreshold(m.fields)
 }
 
 // applyContextTierOptions sets the Context field's options based on the current
@@ -1307,10 +1327,15 @@ func (m wizardModel) viewFormStep() string {
 		maxValueWidth = 20
 	}
 
+	visibleCursor := visibleFormCursor(m.fields, m.fCursor)
+	rowIndex := 0
 	for i, f := range m.fields {
+		if !isFormFieldVisible(m.fields, i) {
+			continue
+		}
 		label := lStyle.Render(truncateDisplay(f.label+":", labelW))
 		var value string
-		if i == m.fCursor {
+		if rowIndex == visibleCursor {
 			if f.options != nil {
 				display := f.value
 				if display == "" {
@@ -1392,12 +1417,13 @@ func (m wizardModel) viewFormStep() string {
 			}
 		}
 		rows = append(rows, "  "+label+" "+value+"\n")
+		rowIndex++
 	}
 	height := m.height - 8
 	if m.height == 0 {
 		height = len(rows)
 	}
-	b.WriteString(formViewport(rows, m.fCursor, height))
+	b.WriteString(formViewport(rows, visibleCursor, height))
 	if !m.forProject {
 		b.WriteString(fieldInactiveStyle.Render(gadgetNotificationHint))
 	}

@@ -17,11 +17,45 @@ func createDueSchedule(t *testing.T, s *Store, cron string) *Schedule {
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	sch, err := s.GetSchedule(id)
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	return sch
+}
+
+func TestClaimIdleSessionConcurrentSingleWinner(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateSession(&Session{SessionID: "claim", Name: "claim", Agent: "claude"}); err != nil {
+		t.Fatal(err)
+	}
+	const callers = 16
+	results := make(chan bool, callers)
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ok, err := s.ClaimIdleSession(context.Background(), "claim")
+			if err != nil {
+				t.Errorf("claim: %v", err)
+			}
+			results <- ok
+		}()
+	}
+	wg.Wait()
+	close(results)
+	winners := 0
+	for ok := range results {
+		if ok {
+			winners++
+		}
+	}
+	if winners != 1 {
+		t.Fatalf("claim winners = %d, want 1", winners)
+	}
 }
 
 func TestScheduleDispatchLifecycle(t *testing.T) {

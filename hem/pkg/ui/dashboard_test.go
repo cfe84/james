@@ -106,3 +106,46 @@ func TestUnifySubagentCategories(t *testing.T) {
 		})
 	}
 }
+
+func TestCompactionThresholdFieldVisibilityAndNavigation(t *testing.T) {
+	fields := []formField{
+		{flag: "--compaction", value: "agent"},
+		{flag: compactionThresholdFlag, value: "10000"},
+		{flag: "--model", value: ""},
+	}
+	if isFormFieldVisible(fields, 1) {
+		t.Fatal("threshold should be hidden in agent mode")
+	}
+	if got := moveFormCursor(fields, 0, 1); got != 2 {
+		t.Fatalf("moveFormCursor() = %d, want 2", got)
+	}
+	fields[0].value = "custom"
+	if !isFormFieldVisible(fields, 1) {
+		t.Fatal("threshold should be visible in custom mode")
+	}
+	if got := moveFormCursor(fields, 0, 1); got != 1 {
+		t.Fatalf("moveFormCursor() = %d, want 1", got)
+	}
+	if fields[1].value != "10000" {
+		t.Fatalf("threshold value = %q, want preserved value", fields[1].value)
+	}
+}
+
+func TestCompactionThresholdDefaultTracksContextUntilEdited(t *testing.T) {
+	fields := []formField{
+		{flag: "--context", value: ""},
+		{flag: compactionThresholdFlag, value: "150000", defaultDerived: true},
+	}
+	fields[0].value = "long_context"
+	syncDefaultCompactionThreshold(fields)
+	if fields[1].value != "800000" {
+		t.Fatalf("derived threshold = %q, want 800000", fields[1].value)
+	}
+	fields[1].defaultDerived = false
+	fields[1].value = "123456"
+	fields[0].value = ""
+	syncDefaultCompactionThreshold(fields)
+	if fields[1].value != "123456" {
+		t.Fatalf("edited threshold changed with context: %q", fields[1].value)
+	}
+}

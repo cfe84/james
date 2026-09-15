@@ -57,6 +57,9 @@ type CreateSessionData struct {
 	// distillation + summary + fresh-session substitution). Empty defaults to
 	// "custom" for new sessions.
 	CompactionMode string `json:"compaction_mode,omitempty"`
+	// CompactionThresholdTokens is the absolute context-token count at which
+	// custom compaction runs. Omitted values use the context-tier default.
+	CompactionThresholdTokens *int `json:"compaction_threshold_tokens,omitempty"`
 	// CopyMemoryFrom, when set, names a source session on this same moneypenny
 	// whose memory folder should be copied into the new session's memory folder
 	// (used when duplicating a session so the copy inherits accumulated memory).
@@ -82,30 +85,33 @@ type ContinueSessionData struct {
 // UpdateSessionData is the data payload for update_session.
 // Only non-nil pointer fields are updated.
 type UpdateSessionData struct {
-	SessionID          string              `json:"session_id"`
-	Name               *string             `json:"name,omitempty"`
-	SystemPrompt       *string             `json:"system_prompt,omitempty"`
-	Model              *string             `json:"model,omitempty"`
-	Effort             *string             `json:"effort,omitempty"`
-	ContextTier        *string             `json:"context_tier,omitempty"`
-	Yolo               *bool               `json:"yolo,omitempty"`
-	Path               *string             `json:"path,omitempty"`
-	CompactionMode     *string             `json:"compaction_mode,omitempty"`
-	Environment        *map[string]string  `json:"environment,omitempty"`
-	GadgetRoute        *map[string]string  `json:"gadget_route,omitempty"` // operator-only daemon routing metadata
-	GadgetCapabilities *GadgetCapabilities `json:"gadget_capabilities,omitempty"`
+	SessionID                 string              `json:"session_id"`
+	Name                      *string             `json:"name,omitempty"`
+	SystemPrompt              *string             `json:"system_prompt,omitempty"`
+	Model                     *string             `json:"model,omitempty"`
+	Effort                    *string             `json:"effort,omitempty"`
+	ContextTier               *string             `json:"context_tier,omitempty"`
+	Yolo                      *bool               `json:"yolo,omitempty"`
+	Path                      *string             `json:"path,omitempty"`
+	CompactionMode            *string             `json:"compaction_mode,omitempty"`
+	CompactionThresholdTokens *int                `json:"compaction_threshold_tokens,omitempty"`
+	Environment               *map[string]string  `json:"environment,omitempty"`
+	GadgetRoute               *map[string]string  `json:"gadget_route,omitempty"` // operator-only daemon routing metadata
+	GadgetCapabilities        *GadgetCapabilities `json:"gadget_capabilities,omitempty"`
 }
 
 // ImportSessionData is the data payload for import_session.
 // Creates a session with conversation history without running an agent.
 type ImportSessionData struct {
-	SessionID    string             `json:"session_id"`
-	Name         string             `json:"name"`
-	Agent        string             `json:"agent"`
-	SystemPrompt string             `json:"system_prompt,omitempty"`
-	Yolo         bool               `json:"yolo,omitempty"`
-	Path         string             `json:"path"`
-	Conversation []ConversationTurn `json:"conversation"`
+	SessionID                 string             `json:"session_id"`
+	Name                      string             `json:"name"`
+	Agent                     string             `json:"agent"`
+	SystemPrompt              string             `json:"system_prompt,omitempty"`
+	Yolo                      bool               `json:"yolo,omitempty"`
+	Path                      string             `json:"path"`
+	CompactionMode            string             `json:"compaction_mode,omitempty"`
+	CompactionThresholdTokens *int               `json:"compaction_threshold_tokens,omitempty"`
+	Conversation              []ConversationTurn `json:"conversation"`
 }
 
 // SessionIDData is used by methods that only need a session_id (get_session, delete_session, stop_session).
@@ -169,6 +175,8 @@ type SessionDetail struct {
 	LastAccessed string `json:"last_accessed,omitempty"`
 	// CompactionMode is "agent" or "custom".
 	CompactionMode string `json:"compaction_mode,omitempty"`
+	// CompactionThresholdTokens is always the effective persisted token count.
+	CompactionThresholdTokens int `json:"compaction_threshold_tokens"`
 	// ContextTokens is the last-measured (Claude) or estimated (Copilot) size
 	// of the underlying agent's context, and ContextWindow is the model's max.
 	// Both are 0 when never measured. Surfaced so clients can show usage and so

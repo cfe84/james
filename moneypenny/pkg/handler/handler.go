@@ -98,8 +98,11 @@ type Handler struct {
 	diagnosticsDatabasePath string
 	diagnosticsDispatcher   func() envelope.DispatcherDiagnostics
 
-	store                *store.Store
-	runner               *agent.Runner
+	store  *store.Store
+	runner *agent.Runner
+	// runAgentFunc is an injectable seam for compaction/distillation tests;
+	// normal handlers use Runner.Run.
+	runAgentFunc         func(context.Context, agent.RunParams) (*agent.Result, error)
 	version              string
 	dataDir              string // moneypenny data root; used for per-session storage
 	logFile              string
@@ -126,6 +129,7 @@ type resultCallback func(sessionID, response string, err error)
 // used to allocate per-session persistent directories (sessions/<sessionID>/).
 func New(s *store.Store, runner *agent.Runner, version, dataDir string) *Handler {
 	h := &Handler{store: s, runner: runner, version: version, dataDir: dataDir, vlog: func(string, ...interface{}) {}}
+	h.runAgentFunc = runner.Run
 	h.notifyWriter = envelope.NewNotificationWriter(nil)
 	s.SetNotificationWriter(h.notifyWriter)
 	runner.SetNotificationWriter(h.notifyWriter)
@@ -133,6 +137,7 @@ func New(s *store.Store, runner *agent.Runner, version, dataDir string) *Handler
 	if h.channelCmd == "" {
 		h.channelCmd = "agency"
 	}
+
 	if plugin := os.Getenv("MONEYPENNY_CHANNEL_PLUGIN"); plugin != "" {
 		h.channels = channel.NewPluginRegistry(plugin)
 	} else {
@@ -165,6 +170,16 @@ func New(s *store.Store, runner *agent.Runner, version, dataDir string) *Handler
 		}
 	})
 	return h
+}
+
+func (h *Handler) runAuxiliary(ctx context.Context, params agent.RunParams) (*agent.Result, error) {
+	if h.runAgentFunc != nil {
+		return h.runAgentFunc(ctx, params)
+	}
+	if h.runner == nil {
+		return nil, fmt.Errorf("agent runner unavailable")
+	}
+	return h.runner.Run(ctx, params)
 }
 
 // sessionDir returns the per-session persistent directory under the data dir,
@@ -425,6 +440,13 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 	if compactionMode == "" {
 		compactionMode = store.CompactionCustom
 	}
+	compactionThresholdTokens := envelope.DefaultCompactionThresholdTokensForContext(data.ContextTier)
+	if data.CompactionThresholdTokens != nil {
+		if err := envelope.ValidateCompactionThresholdTokens(*data.CompactionThresholdTokens); err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
+		}
+		compactionThresholdTokens = *data.CompactionThresholdTokens
+	}
 	environment, err := validateEnvironment(data.Environment)
 	if err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
@@ -436,19 +458,20 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 
 	// Create session in store.
 	sess := &store.Session{
-		SessionID:      data.SessionID,
-		Name:           data.Name,
-		Agent:          data.Agent,
-		SystemPrompt:   systemPrompt,
-		Model:          data.Model,
-		Effort:         data.Effort,
-		ContextTier:    data.ContextTier,
-		Yolo:           data.Yolo,
-		Path:           data.Path,
-		Environment:    environment,
-		GadgetRoute:    gadgetRoute,
-		AgentSessionID: initialAgentSessionID(data.Agent, data.SessionID),
-		CompactionMode: compactionMode,
+		SessionID:                 data.SessionID,
+		Name:                      data.Name,
+		Agent:                     data.Agent,
+		SystemPrompt:              systemPrompt,
+		Model:                     data.Model,
+		Effort:                    data.Effort,
+		ContextTier:               data.ContextTier,
+		Yolo:                      data.Yolo,
+		Path:                      data.Path,
+		Environment:               environment,
+		GadgetRoute:               gadgetRoute,
+		AgentSessionID:            initialAgentSessionID(data.Agent, data.SessionID),
+		CompactionMode:            compactionMode,
+		CompactionThresholdTokens: compactionThresholdTokens,
 	}
 	if data.GadgetCapabilities != nil {
 		encoded, err := patchedGadgetCapabilities(cmd.Data, envelope.DefaultGadgetCapabilities())
@@ -612,7 +635,9 @@ func (h *Handler) continueSession(ctx context.Context, cmd *envelope.Command) *e
 	// prompt (automatic compaction provides the next prompt).
 	if h.shouldCompact(sess) {
 		h.vlog("context threshold reached for session %s; auto-compacting before continue", data.SessionID)
-		go h.runCompaction(data.SessionID, prompt, effModel, effEffort)
+		go h.runCompactionWithParams(data.SessionID, prompt, effModel, effEffort, compactionContinue, agent.RunParams{
+			ContextTier: data.ContextTier, Attachments: data.Attachments,
+		})
 		return envelope.SuccessResponse(cmd.RequestID, envelope.ContinueSessionResponse{
 			SessionID: data.SessionID,
 		})
@@ -865,7 +890,7 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 	ctx := context.Background()
 	var result *agent.Result
 	if err == nil {
-		result, err = h.runner.Run(ctx, params)
+		result, err = h.runAuxiliary(ctx, params)
 	}
 	if result != nil && result.AgentSessionID != "" {
 		if persistErr := h.store.SetAgentSessionID(sessionID, result.AgentSessionID); persistErr != nil {
@@ -902,12 +927,16 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 		if summary != "" {
 			params.SystemPrompt += "\n\n<prior-session-summary>\n" + summary + "\n</prior-session-summary>"
 		}
-		result, err = h.runner.Run(ctx, params)
+		result, err = h.runAuxiliary(ctx, params)
 	}
 	if err != nil {
 		h.vlog("agent error for session %s: %v", sessionID, err)
 		// Surface the error as a conversation turn so the user can see it.
-		errMsg := fmt.Sprintf("Agent failed to execute: %v", err)
+		errMsg := "agent_run_failed"
+		if strings.Contains(strings.ToLower(err.Error()), "memory") ||
+			strings.Contains(strings.ToLower(err.Error()), "read") {
+			errMsg = "agent_run_failed_memory_preparation"
+		}
 		_ = h.store.AddConversationTurn(sessionID, "system", errMsg)
 		_ = h.store.UpdateSessionStatus(sessionID, store.StateIdle)
 
@@ -924,7 +953,6 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 		}
 		return
 	}
-
 	// Parse and create any <schedule> tags from agent output.
 	responseText := h.parseAndCreateSchedules(sessionID, result.Text)
 
@@ -1047,7 +1075,9 @@ func (h *Handler) continueQueuedPrompts(sessionID string) {
 		// the next prompt rather than "await instructions").
 		if h.shouldCompact(sess) {
 			h.vlog("context threshold reached for session %s; auto-compacting before queued group", sessionID)
-			h.runCompaction(sessionID, combinedPrompt, effModel, effEffort)
+			h.runCompactionWithParams(sessionID, combinedPrompt, effModel, effEffort, compactionContinue, agent.RunParams{
+				ContextTier: first.ContextTier, ReplyChannelID: first.ReplyChannelID, MarkReady: first.MarkReady,
+			})
 			return
 		}
 
@@ -1129,23 +1159,24 @@ func (h *Handler) getSession(_ context.Context, cmd *envelope.Command) *envelope
 	}
 
 	detail := envelope.SessionDetail{
-		SessionID:      sess.SessionID,
-		Name:           sess.Name,
-		Status:         sess.Status,
-		Agent:          sess.Agent,
-		SystemPrompt:   sess.SystemPrompt,
-		Model:          sess.Model,
-		Effort:         sess.Effort,
-		ContextTier:    sess.ContextTier,
-		Yolo:           sess.Yolo,
-		Path:           sess.Path,
-		CompactionMode: sess.CompactionMode,
-		Environment:    sessionEnvironmentForDetail(sess.Environment),
-		ContextTokens:  sess.ContextTokens,
-		ContextWindow:  sess.ContextWindow,
-		OpenCodeCost:   sess.OpenCodeCost,
-		Revision:       sess.Revision,
-		Generation:     sess.Generation,
+		SessionID:                 sess.SessionID,
+		Name:                      sess.Name,
+		Status:                    sess.Status,
+		Agent:                     sess.Agent,
+		SystemPrompt:              sess.SystemPrompt,
+		Model:                     sess.Model,
+		Effort:                    sess.Effort,
+		ContextTier:               sess.ContextTier,
+		Yolo:                      sess.Yolo,
+		Path:                      sess.Path,
+		CompactionMode:            sess.CompactionMode,
+		CompactionThresholdTokens: envelope.EffectiveCompactionThresholdTokens(sess.CompactionThresholdTokens, sess.ContextTier),
+		Environment:               sessionEnvironmentForDetail(sess.Environment),
+		ContextTokens:             sess.ContextTokens,
+		ContextWindow:             sess.ContextWindow,
+		OpenCodeCost:              sess.OpenCodeCost,
+		Revision:                  sess.Revision,
+		Generation:                sess.Generation,
 	}
 	capabilities, err := h.gadgetCapabilities(data.SessionID)
 	if err != nil {
@@ -1348,6 +1379,11 @@ func (h *Handler) updateSession(_ context.Context, cmd *envelope.Command) *envel
 	if data.SessionID == "" {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id is required")
 	}
+	if data.CompactionThresholdTokens != nil {
+		if err := envelope.ValidateCompactionThresholdTokens(*data.CompactionThresholdTokens); err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
+		}
+	}
 
 	// Validate path if provided.
 	if data.Path != nil && *data.Path != "" {
@@ -1383,7 +1419,7 @@ func (h *Handler) updateSession(_ context.Context, cmd *envelope.Command) *envel
 		}
 		capabilities = &value
 	}
-	if err := h.store.UpdateSessionFields(data.SessionID, data.Name, data.SystemPrompt, data.Model, data.Effort, data.ContextTier, data.Path, data.CompactionMode, environment, route, data.Yolo, capabilities); err != nil {
+	if err := h.store.UpdateSessionFieldsWithCompactionThresholdTokens(data.SessionID, data.Name, data.SystemPrompt, data.Model, data.Effort, data.ContextTier, data.Path, data.CompactionMode, data.CompactionThresholdTokens, environment, route, data.Yolo, capabilities); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to update session: %v", err))
 	}
 
@@ -2037,12 +2073,19 @@ func (h *Handler) importSession(_ context.Context, cmd *envelope.Command) *envel
 
 	// Create session in store.
 	sess := &store.Session{
-		SessionID:    data.SessionID,
-		Name:         data.Name,
-		Agent:        data.Agent,
-		SystemPrompt: data.SystemPrompt,
-		Yolo:         data.Yolo,
-		Path:         data.Path,
+		SessionID:      data.SessionID,
+		Name:           data.Name,
+		Agent:          data.Agent,
+		SystemPrompt:   data.SystemPrompt,
+		Yolo:           data.Yolo,
+		Path:           data.Path,
+		CompactionMode: data.CompactionMode,
+	}
+	if data.CompactionThresholdTokens != nil {
+		if err := envelope.ValidateCompactionThresholdTokens(*data.CompactionThresholdTokens); err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
+		}
+		sess.CompactionThresholdTokens = *data.CompactionThresholdTokens
 	}
 	if err := h.store.CreateSession(sess); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionAlreadyExists, fmt.Sprintf("session already exists: %s", data.SessionID))

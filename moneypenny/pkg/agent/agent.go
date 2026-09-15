@@ -494,16 +494,12 @@ func (r *Runner) Run(ctx context.Context, params RunParams) (*Result, error) {
 	}
 
 	buf := newActivityBuffer(30)
-	r.mu.Lock()
-	r.procs[params.SessionID] = cmd
-	r.activity[params.SessionID] = buf
-	r.mu.Unlock()
+	if !r.reserveProcess(params.SessionID, cmd, buf) {
+		return nil, fmt.Errorf("agent session %s already has a running agent", params.SessionID)
+	}
 
 	defer func() {
-		r.mu.Lock()
-		delete(r.procs, params.SessionID)
-		delete(r.activity, params.SessionID)
-		r.mu.Unlock()
+		r.releaseProcess(params.SessionID, cmd)
 	}()
 
 	// All supported agents use streaming JSON output, each with its own schema.
@@ -514,6 +510,26 @@ func (r *Runner) Run(ctx context.Context, params RunParams) (*Result, error) {
 		return r.runOpenCodeStreaming(cmd, buf, params.SessionID, stderrBuf, !params.NoPersistTurns)
 	}
 	return r.runStreaming(cmd, buf, params.SessionID, stderrBuf, !params.NoPersistTurns)
+}
+
+func (r *Runner) reserveProcess(sessionID string, cmd *exec.Cmd, activity *activityBuffer) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if existing, ok := r.procs[sessionID]; ok && existing != nil {
+		return false
+	}
+	r.procs[sessionID] = cmd
+	r.activity[sessionID] = activity
+	return true
+}
+
+func (r *Runner) releaseProcess(sessionID string, owner *exec.Cmd) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if existing, ok := r.procs[sessionID]; ok && existing == owner {
+		delete(r.procs, sessionID)
+		delete(r.activity, sessionID)
+	}
 }
 
 // runOpenCodeStreaming parses OpenCode's --format json NDJSON stream. The

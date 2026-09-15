@@ -1,11 +1,14 @@
 package ui
 
 import (
+	"strconv"
 	"strings"
 	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"james/moneypenny/pkg/envelope"
 )
 
 // createModel is a form for creating a new session.
@@ -21,15 +24,97 @@ type createModel struct {
 }
 
 type formField struct {
-	label        string
-	value        string
-	flag         string // CLI flag name
-	isBool       bool
-	explicitBool bool     // send false as well as true for permission overrides
-	traitID      string   // if set, this bool field represents a trait toggle
-	options      []string // if set, field is a selector (cycle with Space)
-	cursorPos    int
-	input        *textInput // if set, delegates key handling and rendering to textInput
+	label          string
+	value          string
+	flag           string // CLI flag name
+	isBool         bool
+	explicitBool   bool     // send false as well as true for permission overrides
+	traitID        string   // if set, this bool field represents a trait toggle
+	options        []string // if set, field is a selector (cycle with Space)
+	cursorPos      int
+	input          *textInput // if set, delegates key handling and rendering to textInput
+	defaultDerived bool       // custom threshold follows the selected context tier
+}
+
+const compactionThresholdFlag = "--compaction-threshold-tokens"
+
+func defaultCompactionThresholdValue(contextTier string) string {
+	return strconv.Itoa(envelope.DefaultCompactionThresholdTokensForContext(contextTier))
+}
+
+func syncDefaultCompactionThreshold(fields []formField) {
+	contextTier := ""
+	for _, field := range fields {
+		if field.flag == "--context" {
+			contextTier = field.value
+			break
+		}
+	}
+	for i := range fields {
+		if fields[i].flag != compactionThresholdFlag || !fields[i].defaultDerived {
+			continue
+		}
+		fields[i].value = defaultCompactionThresholdValue(contextTier)
+		fields[i].cursorPos = len(fields[i].value)
+		fields[i].syncToInput()
+	}
+}
+
+func markCompactionThresholdEdited(field *formField, msg tea.KeyMsg) {
+	if field.flag != compactionThresholdFlag {
+		return
+	}
+	switch msg.String() {
+	case "backspace", "delete", "ctrl+u", " ":
+		field.defaultDerived = false
+	default:
+		if msg.Type == tea.KeyRunes {
+			field.defaultDerived = false
+		}
+	}
+}
+
+func isFormFieldVisible(fields []formField, index int) bool {
+	if index < 0 || index >= len(fields) || fields[index].flag != compactionThresholdFlag {
+		return true
+	}
+	for _, field := range fields {
+		if field.flag == "--compaction" {
+			return field.value == "custom"
+		}
+	}
+	return false
+}
+
+func moveFormCursor(fields []formField, cursor, direction int) int {
+	if len(fields) == 0 {
+		return 0
+	}
+	for i := 0; i < len(fields); i++ {
+		cursor += direction
+		if cursor < 0 {
+			cursor = len(fields) - 1
+		} else if cursor >= len(fields) {
+			cursor = 0
+		}
+		if isFormFieldVisible(fields, cursor) {
+			return cursor
+		}
+	}
+	return cursor
+}
+
+func visibleFormCursor(fields []formField, cursor int) int {
+	if !isFormFieldVisible(fields, cursor) {
+		cursor = moveFormCursor(fields, cursor, 1)
+	}
+	visible := 0
+	for i := 0; i < cursor; i++ {
+		if isFormFieldVisible(fields, i) {
+			visible++
+		}
+	}
+	return visible
 }
 
 // syncFromInput copies textInput state back to the formField value/cursorPos.
@@ -64,6 +149,7 @@ func newCreateModel(c *client) createModel {
 			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
 			{label: "Gadgets (James tooling)", flag: "--gadgets", isBool: true, value: "false"},
 			{label: "Compaction", flag: "--compaction", value: "custom", options: []string{"custom", "agent"}},
+			{label: "Custom compaction threshold (tokens)", flag: compactionThresholdFlag, value: defaultCompactionThresholdValue(""), defaultDerived: true},
 		}, gadgetCapabilityFields(nil)...),
 	}
 }
@@ -135,17 +221,14 @@ func (m createModel) Update(msg tea.Msg) (createModel, tea.Cmd) {
 			return m, nil
 		}
 		field := &m.fields[m.cursor]
+		markCompactionThresholdEdited(field, msg)
 		switch msg.String() {
 		case "up":
-			if m.cursor > 0 {
-				m.cursor--
-			}
+			m.cursor = moveFormCursor(m.fields, m.cursor, -1)
 		case "down":
-			if m.cursor < len(m.fields)-1 {
-				m.cursor++
-			}
+			m.cursor = moveFormCursor(m.fields, m.cursor, 1)
 		case "tab":
-			m.cursor = (m.cursor + 1) % len(m.fields)
+			m.cursor = moveFormCursor(m.fields, m.cursor, 1)
 		case "enter":
 			// If on last field or prompt is filled, submit.
 			prompt := m.fields[0].value
@@ -172,6 +255,9 @@ func (m createModel) Update(msg tea.Msg) (createModel, tea.Cmd) {
 		case "left":
 			if field.options != nil {
 				cycleFieldOptionsBack(field)
+				if field.flag == "--context" {
+					syncDefaultCompactionThreshold(m.fields)
+				}
 			} else if !field.isBool && field.cursorPos > 0 {
 				_, size := utf8.DecodeLastRuneInString(field.value[:field.cursorPos])
 				field.cursorPos -= size
@@ -179,6 +265,9 @@ func (m createModel) Update(msg tea.Msg) (createModel, tea.Cmd) {
 		case "right":
 			if field.options != nil {
 				cycleFieldOptions(field)
+				if field.flag == "--context" {
+					syncDefaultCompactionThreshold(m.fields)
+				}
 			} else if !field.isBool && field.cursorPos < len(field.value) {
 				_, size := utf8.DecodeRuneInString(field.value[field.cursorPos:])
 				field.cursorPos += size
@@ -202,6 +291,9 @@ func (m createModel) Update(msg tea.Msg) (createModel, tea.Cmd) {
 		case " ":
 			if field.options != nil {
 				cycleFieldOptions(field)
+				if field.flag == "--context" {
+					syncDefaultCompactionThreshold(m.fields)
+				}
 			} else if field.isBool {
 				if field.value == "true" {
 					field.value = "false"
@@ -268,10 +360,15 @@ func (m createModel) View() string {
 	lStyle := labelStyle.Width(labelW)
 
 	var rows []string
+	visibleCursor := visibleFormCursor(m.fields, m.cursor)
+	rowIndex := 0
 	for i, f := range m.fields {
+		if !isFormFieldVisible(m.fields, i) {
+			continue
+		}
 		label := lStyle.Render(truncateDisplay(f.label+":", labelW))
 		var value string
-		if i == m.cursor {
+		if rowIndex == visibleCursor {
 			if f.options != nil {
 				display := f.value
 				if display == "" {
@@ -303,12 +400,13 @@ func (m createModel) View() string {
 			}
 		}
 		rows = append(rows, "  "+label+" "+value+"\n")
+		rowIndex++
 	}
 	height := m.height - 10
 	if m.height == 0 {
 		height = len(rows)
 	}
-	b.WriteString(formViewport(rows, m.cursor, height))
+	b.WriteString(formViewport(rows, visibleCursor, height))
 	b.WriteString(fieldInactiveStyle.Render(gadgetNotificationHint))
 
 	b.WriteString("\n")

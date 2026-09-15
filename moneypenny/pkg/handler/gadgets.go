@@ -220,7 +220,7 @@ func (h *Handler) prepareGadgets(sessionID string, params *agent.RunParams) erro
 		params.SystemPrompt += "All-agent discovery and messaging: gadgets agents list; gadgets agents message ID (body on stdin). This does not grant session editing or deletion.\n"
 	}
 	if caps.EditSessions || caps.EditOwnSession {
-		params.SystemPrompt += "Session editing: gadgets sessions edit [SESSION_ID] [--name name] [--system-prompt text] [--model model] [--effort value] [--context tier] [--path path] [--compaction mode] [--yolo=true|false]. "
+		params.SystemPrompt += "Session editing: gadgets sessions edit [SESSION_ID] [--name name] [--system-prompt text] [--model model] [--effort value] [--context tier] [--path path] [--compaction mode] [--compaction-threshold-tokens tokens] [--yolo=true|false]. "
 		if caps.EditSessions {
 			params.SystemPrompt += "You may edit any tracked session."
 		} else {

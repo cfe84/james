@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -45,6 +46,9 @@ type Session struct {
 	// CompactionMode is "agent" (rely on the agent's built-in compaction) or
 	// "custom" (James-managed distillation/summary/substitution).
 	CompactionMode string
+	// CompactionThresholdTokens is the persisted absolute context-token count
+	// at which custom compaction runs.
+	CompactionThresholdTokens int
 	// ContextTokens is the last measured/estimated underlying-context size and
 	// ContextWindow the model's max context. Used to trigger custom compaction
 	// at a threshold and to surface usage in clients.
@@ -72,11 +76,73 @@ const (
 type ConversationTurn struct {
 	ID              int64
 	SessionID       string
-	Role            string // "user" or "assistant"
+	Role            string // user, assistant, scheduled, callback, system, compaction, or distillation outcome
 	Content         string
 	SourceSessionID string
 	SourceName      string
 	CreatedAt       time.Time
+}
+
+// DistillationProgress is durable work state kept outside the conversation.
+// SnapshotMaxTurnID prevents a retry from silently mixing a moving transcript.
+type DistillationProgress struct {
+	SessionID         string
+	SnapshotMaxTurnID int64
+	ConfigKey         string
+	NextChunk         int
+	ChunkCount        int
+}
+
+// CommitCompactionHandoff atomically publishes a successful fresh agent
+// session. Until this commits, the old underlying session remains resumable.
+// The marker and summary are written in the same transaction as the metadata
+// handoff so readers never observe half of a compaction.
+func (s *Store) CommitCompactionHandoff(sessionID, agentSessionID string, contextWindow int, summary string) error {
+	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(agentSessionID) == "" ||
+		contextWindow <= 0 || strings.TrimSpace(summary) == "" {
+		return fmt.Errorf("invalid compaction handoff")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin compaction handoff: %w", err)
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC()
+	res, err := tx.Exec(`UPDATE sessions SET agent_session_id = ?, context_tokens = 0,
+		context_window = ?, revision = revision + 1 + ?, updated_at = ? WHERE session_id = ?`,
+		agentSessionID, contextWindow, 1+boolInt(strings.TrimSpace(summary) != ""), now, sessionID)
+	if err != nil {
+		return fmt.Errorf("publish compaction session: %w", err)
+	}
+
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("compaction handoff rows affected: %w", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("session %q not found", sessionID)
+	}
+	if _, err := tx.Exec(`INSERT INTO conversation_turns (session_id, role, content)
+		VALUES (?, 'compaction', ?)`, sessionID, "compacted"); err != nil {
+		return fmt.Errorf("record compaction marker: %w", err)
+	}
+	if strings.TrimSpace(summary) != "" {
+		if _, err := tx.Exec(`INSERT INTO conversation_turns (session_id, role, content)
+			VALUES (?, 'compaction_summary', ?)`, sessionID, summary); err != nil {
+			return fmt.Errorf("record compaction summary: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit compaction handoff: %w", err)
+	}
+	return nil
+}
+
+func boolInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
 }
 
 // Schedule states
@@ -169,6 +235,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     yolo INTEGER NOT NULL DEFAULT 0,
     path TEXT NOT NULL DEFAULT '',
     status TEXT NOT NULL DEFAULT 'idle',
+    compaction_threshold_tokens INTEGER NOT NULL DEFAULT 150000,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
     ,revision INTEGER NOT NULL DEFAULT 0
@@ -187,6 +254,16 @@ CREATE TABLE IF NOT EXISTS conversation_turns (
 
 CREATE INDEX IF NOT EXISTS idx_conversation_session ON conversation_turns(session_id);
 CREATE INDEX IF NOT EXISTS idx_conversation_session_created ON conversation_turns(session_id, created_at, id);
+
+CREATE TABLE IF NOT EXISTS distillation_progress (
+    session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+    snapshot_max_turn_id INTEGER NOT NULL,
+    config_key TEXT NOT NULL,
+    next_chunk INTEGER NOT NULL DEFAULT 0,
+    chunk_count INTEGER NOT NULL DEFAULT 0,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (session_id, snapshot_max_turn_id, config_key)
+);
 
 CREATE TABLE IF NOT EXISTS prompt_queue (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -311,6 +388,22 @@ CREATE INDEX IF NOT EXISTS idx_channel_outbox_pending ON channel_outbox(status);
 	db.Exec(`ALTER TABLE sessions ADD COLUMN agent_session_id TEXT NOT NULL DEFAULT ''`)
 	db.Exec(`UPDATE sessions SET agent_session_id = session_id WHERE agent_session_id = ''`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN compaction_mode TEXT NOT NULL DEFAULT 'agent'`)
+	var hasCompactionThresholdTokens int
+	if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info('sessions') WHERE name = 'compaction_threshold_tokens'`).Scan(&hasCompactionThresholdTokens); err != nil {
+		return err
+	}
+	if hasCompactionThresholdTokens == 0 {
+		if _, err := db.Exec(`ALTER TABLE sessions ADD COLUMN compaction_threshold_tokens INTEGER NOT NULL DEFAULT 150000`); err != nil {
+			return err
+		}
+		// A newly added column has one fixed SQLite default. Resolve the
+		// context-tier-specific default only for rows that did not previously
+		// have a persisted token threshold. This runs once because the column
+		// existence check makes the migration idempotent.
+		if _, err := db.Exec(`UPDATE sessions SET compaction_threshold_tokens = 800000 WHERE context_tier = 'long_context'`); err != nil {
+			return err
+		}
+	}
 	db.Exec(`ALTER TABLE sessions ADD COLUMN context_tokens INTEGER NOT NULL DEFAULT 0`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN context_window INTEGER NOT NULL DEFAULT 0`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN opencode_cost REAL NOT NULL DEFAULT 0`)
@@ -374,11 +467,17 @@ func (s *Store) CreateSession(sess *Session) error {
 	if sess.CompactionMode == "" {
 		sess.CompactionMode = CompactionCustom
 	}
+	if sess.CompactionThresholdTokens == 0 {
+		sess.CompactionThresholdTokens = envelope.DefaultCompactionThresholdTokensForContext(sess.ContextTier)
+	}
+	if err := envelope.ValidateCompactionThresholdTokens(sess.CompactionThresholdTokens); err != nil {
+		return fmt.Errorf("create session: %w", err)
+	}
 
 	_, err := s.db.Exec(
-		`INSERT INTO sessions (session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, gadget_route, gadget_capabilities, status, agent_session_id, compaction_mode, created_at, updated_at, revision, generation)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)`,
-		sess.SessionID, sess.Name, sess.Agent, sess.SystemPrompt, sess.Model, sess.Effort, sess.ContextTier, yolo, sess.Path, sess.Environment, sess.GadgetRoute, sess.GadgetCapabilities, sess.Status, sess.AgentSessionID, sess.CompactionMode, now, now,
+		`INSERT INTO sessions (session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, gadget_route, gadget_capabilities, status, agent_session_id, compaction_mode, compaction_threshold_tokens, created_at, updated_at, revision, generation)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)`,
+		sess.SessionID, sess.Name, sess.Agent, sess.SystemPrompt, sess.Model, sess.Effort, sess.ContextTier, yolo, sess.Path, sess.Environment, sess.GadgetRoute, sess.GadgetCapabilities, sess.Status, sess.AgentSessionID, sess.CompactionMode, sess.CompactionThresholdTokens, now, now,
 	)
 	if err != nil {
 		return fmt.Errorf("create session: %w", err)
@@ -389,7 +488,7 @@ func (s *Store) CreateSession(sess *Session) error {
 // GetSession retrieves a session by ID. Returns nil, nil if not found.
 func (s *Store) GetSession(sessionID string) (*Session, error) {
 	row := s.db.QueryRow(
-		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, gadget_route, gadget_capabilities, status, memory, agent_session_id, compaction_mode, context_tokens, context_window, opencode_cost, schedule_ready_at, created_at, updated_at, revision, generation
+		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, gadget_route, gadget_capabilities, status, memory, agent_session_id, compaction_mode, compaction_threshold_tokens, context_tokens, context_window, opencode_cost, schedule_ready_at, created_at, updated_at, revision, generation
 		 FROM sessions WHERE session_id = ?`, sessionID,
 	)
 
@@ -398,7 +497,7 @@ func (s *Store) GetSession(sessionID string) (*Session, error) {
 	var scheduleReadyAt sql.NullTime
 	err := row.Scan(
 		&sess.SessionID, &sess.Name, &sess.Agent, &sess.SystemPrompt, &sess.Model, &sess.Effort, &sess.ContextTier,
-		&yolo, &sess.Path, &sess.Environment, &sess.GadgetRoute, &sess.GadgetCapabilities, &sess.Status, &sess.Memory, &sess.AgentSessionID, &sess.CompactionMode,
+		&yolo, &sess.Path, &sess.Environment, &sess.GadgetRoute, &sess.GadgetCapabilities, &sess.Status, &sess.Memory, &sess.AgentSessionID, &sess.CompactionMode, &sess.CompactionThresholdTokens,
 		&sess.ContextTokens, &sess.ContextWindow, &sess.OpenCodeCost, &scheduleReadyAt, &sess.CreatedAt, &sess.UpdatedAt, &sess.Revision, &sess.Generation,
 	)
 	if err == sql.ErrNoRows {
@@ -414,13 +513,17 @@ func (s *Store) GetSession(sessionID string) (*Session, error) {
 	if sess.AgentSessionID == "" {
 		sess.AgentSessionID = sess.SessionID
 	}
+	sess.CompactionThresholdTokens = envelope.EffectiveCompactionThresholdTokens(sess.CompactionThresholdTokens, sess.ContextTier)
+	if err := envelope.ValidateCompactionThresholdTokens(sess.CompactionThresholdTokens); err != nil {
+		return nil, fmt.Errorf("get session: invalid compaction threshold: %w", err)
+	}
 	return sess, nil
 }
 
 // ListSessions returns all sessions.
 func (s *Store) ListSessions() ([]*Session, error) {
 	rows, err := s.db.Query(
-		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, gadget_route, gadget_capabilities, status, memory, agent_session_id, compaction_mode, context_tokens, context_window, opencode_cost, schedule_ready_at, created_at, updated_at, revision, generation
+		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, gadget_route, gadget_capabilities, status, memory, agent_session_id, compaction_mode, compaction_threshold_tokens, context_tokens, context_window, opencode_cost, schedule_ready_at, created_at, updated_at, revision, generation
 		 FROM sessions ORDER BY created_at`,
 	)
 	if err != nil {
@@ -435,7 +538,7 @@ func (s *Store) ListSessions() ([]*Session, error) {
 		var scheduleReadyAt sql.NullTime
 		if err := rows.Scan(
 			&sess.SessionID, &sess.Name, &sess.Agent, &sess.SystemPrompt, &sess.Model, &sess.Effort, &sess.ContextTier,
-			&yolo, &sess.Path, &sess.Environment, &sess.GadgetRoute, &sess.GadgetCapabilities, &sess.Status, &sess.Memory, &sess.AgentSessionID, &sess.CompactionMode,
+			&yolo, &sess.Path, &sess.Environment, &sess.GadgetRoute, &sess.GadgetCapabilities, &sess.Status, &sess.Memory, &sess.AgentSessionID, &sess.CompactionMode, &sess.CompactionThresholdTokens,
 			&sess.ContextTokens, &sess.ContextWindow, &sess.OpenCodeCost, &scheduleReadyAt, &sess.CreatedAt, &sess.UpdatedAt, &sess.Revision, &sess.Generation,
 		); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
@@ -447,6 +550,10 @@ func (s *Store) ListSessions() ([]*Session, error) {
 		if sess.AgentSessionID == "" {
 			sess.AgentSessionID = sess.SessionID
 		}
+		sess.CompactionThresholdTokens = envelope.EffectiveCompactionThresholdTokens(sess.CompactionThresholdTokens, sess.ContextTier)
+		if err := envelope.ValidateCompactionThresholdTokens(sess.CompactionThresholdTokens); err != nil {
+			return nil, fmt.Errorf("list sessions: invalid compaction threshold: %w", err)
+		}
 		sessions = append(sessions, sess)
 	}
 	return sessions, rows.Err()
@@ -454,6 +561,16 @@ func (s *Store) ListSessions() ([]*Session, error) {
 
 // UpdateSessionFields updates specific fields of a session.
 func (s *Store) UpdateSessionFields(sessionID string, name, systemPrompt, model, effort, contextTier, path, compactionMode, environment, gadgetRoute *string, yolo *bool, gadgetCapabilities ...*string) error {
+	return s.updateSessionFields(sessionID, name, systemPrompt, model, effort, contextTier, path, compactionMode, nil, environment, gadgetRoute, yolo, gadgetCapabilities...)
+}
+
+// UpdateSessionFieldsWithCompactionThresholdTokens updates session metadata,
+// including the optional persisted custom-compaction token threshold.
+func (s *Store) UpdateSessionFieldsWithCompactionThresholdTokens(sessionID string, name, systemPrompt, model, effort, contextTier, path, compactionMode *string, compactionThresholdTokens *int, environment, gadgetRoute *string, yolo *bool, gadgetCapabilities ...*string) error {
+	return s.updateSessionFields(sessionID, name, systemPrompt, model, effort, contextTier, path, compactionMode, compactionThresholdTokens, environment, gadgetRoute, yolo, gadgetCapabilities...)
+}
+
+func (s *Store) updateSessionFields(sessionID string, name, systemPrompt, model, effort, contextTier, path, compactionMode *string, compactionThresholdTokens *int, environment, gadgetRoute *string, yolo *bool, gadgetCapabilities ...*string) error {
 	sess, err := s.GetSession(sessionID)
 	if err != nil {
 		return err
@@ -486,6 +603,12 @@ func (s *Store) UpdateSessionFields(sessionID string, name, systemPrompt, model,
 	if compactionMode != nil {
 		sess.CompactionMode = *compactionMode
 	}
+	if compactionThresholdTokens != nil {
+		if err := envelope.ValidateCompactionThresholdTokens(*compactionThresholdTokens); err != nil {
+			return fmt.Errorf("update session: %w", err)
+		}
+		sess.CompactionThresholdTokens = *compactionThresholdTokens
+	}
 	if environment != nil {
 		sess.Environment = *environment
 	}
@@ -503,8 +626,8 @@ func (s *Store) UpdateSessionFields(sessionID string, name, systemPrompt, model,
 		yoloInt = 1
 	}
 	res, err := s.db.Exec(
-		`UPDATE sessions SET name = ?, system_prompt = ?, model = ?, effort = ?, context_tier = ?, yolo = ?, path = ?, compaction_mode = ?, environment = ?, gadget_route = ?, gadget_capabilities = COALESCE(?, gadget_capabilities), revision = revision + 1, updated_at = ? WHERE session_id = ?`,
-		sess.Name, sess.SystemPrompt, sess.Model, sess.Effort, sess.ContextTier, yoloInt, sess.Path, sess.CompactionMode, sess.Environment, sess.GadgetRoute, capabilities, now, sessionID,
+		`UPDATE sessions SET name = ?, system_prompt = ?, model = ?, effort = ?, context_tier = ?, yolo = ?, path = ?, compaction_mode = ?, compaction_threshold_tokens = ?, environment = ?, gadget_route = ?, gadget_capabilities = COALESCE(?, gadget_capabilities), revision = revision + 1, updated_at = ? WHERE session_id = ?`,
+		sess.Name, sess.SystemPrompt, sess.Model, sess.Effort, sess.ContextTier, yoloInt, sess.Path, sess.CompactionMode, sess.CompactionThresholdTokens, sess.Environment, sess.GadgetRoute, capabilities, now, sessionID,
 	)
 	if err != nil {
 		return fmt.Errorf("update session: %w", err)
@@ -805,6 +928,7 @@ func (s *Store) GetConversation(sessionID string) ([]*ConversationTurn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get conversation: %w", err)
 	}
+
 	defer rows.Close()
 
 	var turns []*ConversationTurn
@@ -816,6 +940,40 @@ func (s *Store) GetConversation(sessionID string) ([]*ConversationTurn, error) {
 		turns = append(turns, t)
 	}
 	return turns, rows.Err()
+}
+
+func (s *Store) GetDistillationProgress(sessionID string, snapshotMaxTurnID int64, configKey string) (*DistillationProgress, error) {
+	var p DistillationProgress
+	err := s.db.QueryRow(`SELECT session_id, snapshot_max_turn_id, config_key, next_chunk, chunk_count
+		FROM distillation_progress WHERE session_id = ? AND snapshot_max_turn_id = ? AND config_key = ?`,
+		sessionID, snapshotMaxTurnID, configKey).Scan(&p.SessionID, &p.SnapshotMaxTurnID, &p.ConfigKey, &p.NextChunk, &p.ChunkCount)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+func (s *Store) PutDistillationProgress(p DistillationProgress) error {
+	if strings.TrimSpace(p.SessionID) == "" || strings.TrimSpace(p.ConfigKey) == "" ||
+		p.SnapshotMaxTurnID < 0 || p.NextChunk < 0 || p.ChunkCount < 0 || p.NextChunk > p.ChunkCount {
+		return fmt.Errorf("invalid distillation progress")
+	}
+	_, err := s.db.Exec(`INSERT INTO distillation_progress
+		(session_id, snapshot_max_turn_id, config_key, next_chunk, chunk_count, updated_at)
+		VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(session_id, snapshot_max_turn_id, config_key) DO UPDATE SET
+		next_chunk=excluded.next_chunk, chunk_count=excluded.chunk_count, updated_at=CURRENT_TIMESTAMP`,
+		p.SessionID, p.SnapshotMaxTurnID, p.ConfigKey, p.NextChunk, p.ChunkCount)
+	return err
+}
+
+func (s *Store) ClearDistillationProgress(sessionID string, snapshotMaxTurnID int64, configKey string) error {
+	_, err := s.db.Exec(`DELETE FROM distillation_progress WHERE session_id = ? AND snapshot_max_turn_id = ? AND config_key = ?`,
+		sessionID, snapshotMaxTurnID, configKey)
+	return err
 }
 
 // GetConversationCount returns the total number of turns for a session.

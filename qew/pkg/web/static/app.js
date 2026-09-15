@@ -61,6 +61,10 @@
   let chatInputCache = {}; // sessionId → draft text
   let pendingAttachments = []; // files staged for the next send: [{name,size,type,b64,url}]
   const ATTACH_MAX_BYTES = 10 * 1024 * 1024; // 10MB per-file cap (mirrors moneypenny)
+  const COMPACTION_THRESHOLD_DEFAULT = 150000;
+  const COMPACTION_THRESHOLD_LONG_CONTEXT = 800000;
+  const COMPACTION_THRESHOLD_MIN = 10000;
+  const COMPACTION_THRESHOLD_MAX = 900000;
   let multilineCompose = false; // per-session preference; true means Enter inserts a newline
   let qewConnected = false;
   let pushReconnectTimer = null;
@@ -68,6 +72,48 @@
   let pushGeneration = 0;
   let sendInFlight = false;
   const sessionWatermarks = {};
+
+  function defaultCompactionThreshold(contextTier) {
+    return contextTier === 'long_context'
+      ? COMPACTION_THRESHOLD_LONG_CONTEXT
+      : COMPACTION_THRESHOLD_DEFAULT;
+  }
+
+  function effectiveCompactionThreshold(value, contextTier) {
+    return value === undefined || value === null || value === 0
+      ? defaultCompactionThreshold(contextTier)
+      : value;
+  }
+
+  function validateCompactionThreshold(value) {
+    if (!/^\d+$/.test(value)) return `Compaction threshold must be an integer from ${COMPACTION_THRESHOLD_MIN} to ${COMPACTION_THRESHOLD_MAX} tokens`;
+    const parsed = Number(value);
+    if (!Number.isSafeInteger(parsed) ||
+        parsed < COMPACTION_THRESHOLD_MIN ||
+        parsed > COMPACTION_THRESHOLD_MAX) {
+      return `Compaction threshold must be between ${COMPACTION_THRESHOLD_MIN} and ${COMPACTION_THRESHOLD_MAX} tokens`;
+    }
+    return '';
+  }
+
+  function syncCompactionThreshold(modeId, inputId, labelId) {
+    const mode = document.getElementById(modeId);
+    const input = document.getElementById(inputId);
+    const label = document.getElementById(labelId);
+    if (!mode || !input) return;
+    const custom = mode.value === 'custom';
+    input.disabled = !custom;
+    input.style.display = custom ? '' : 'none';
+    if (label) label.style.display = custom ? '' : 'none';
+  }
+
+  function syncWizardThresholdDefault() {
+    const input = document.getElementById('wiz-compaction-threshold');
+    const context = document.getElementById('wiz-context');
+    if (input && wizardState.thresholdDefaultDerived) {
+      input.value = defaultCompactionThreshold(context ? context.value : '');
+    }
+  }
 
   function setConnectionState(connected) {
     qewConnected = connected;
@@ -1529,14 +1575,14 @@
 
   // --- Deploy Agent Wizard ---
 
-  let wizardState = { step: 1, moneypennies: [], selectedMP: '', currentPath: '', projects: [], copy: false, source: null, sourceId: '' };
+  let wizardState = { step: 1, moneypennies: [], selectedMP: '', currentPath: '', projects: [], copy: false, source: null, sourceId: '', thresholdDefaultDerived: true };
 
   // wizardTitle reflects whether the wizard is creating a fresh agent or
   // duplicating an existing session.
   function wizardTitle() { return wizardState.copy ? 'Duplicate Agent' : 'New Agent'; }
 
   async function openCreateWizard() {
-    wizardState = { step: 1, moneypennies: [], selectedMP: '', currentPath: '', projects: projectsCache, copy: false, source: null, sourceId: '' };
+    wizardState = { step: 1, moneypennies: [], selectedMP: '', currentPath: '', projects: projectsCache, copy: false, source: null, sourceId: '', thresholdDefaultDerived: true };
     if (traitsCache.length === 0) await loadTraitsCache();
     showWizardStep1();
   }
@@ -1568,6 +1614,8 @@
       step: 1, moneypennies: [], selectedMP: s.moneypenny || '',
       currentPath: s.path || '~', projects: projectsCache,
       copy: true, source: s, sourceId: srcId,
+      thresholdDefaultDerived: !s.compaction_threshold_tokens ||
+        s.compaction_threshold_tokens === defaultCompactionThreshold(s.context_tier || ''),
     };
     showWizardStep1();
   }
@@ -1933,6 +1981,10 @@
     const agentOpts = agents.map(a => `<option value="${escapeAttr(a)}"${a === srcAgent ? ' selected' : ''}>${escapeHtml(a)}</option>`).join('');
 
     const defName = copy ? ('Copy of ' + (src.name || '')) : '';
+    const sourceCompactionMode = copy ? (src.compaction_mode || 'custom') : 'custom';
+    const sourceCompactionThreshold = copy
+      ? effectiveCompactionThreshold(src.compaction_threshold_tokens, src.context_tier || '')
+      : COMPACTION_THRESHOLD_DEFAULT;
     const promptLabel = copy ? 'Prompt (optional)' : 'Prompt *';
     const promptPlaceholder = copy ? 'Leave blank to acknowledge summary' : 'What should the agent do?';
     const submitLabel = copy ? 'Duplicate Agent' : 'Deploy Agent';
@@ -1980,9 +2032,11 @@
       ${gadgetCapabilities.render('wiz', copy ? src.gadget_capabilities : undefined)}
       <label for="wiz-compaction">Compaction</label>
       <select id="wiz-compaction">
-        <option value="custom"${(copy ? (src.compaction_mode || 'custom') : 'custom') === 'custom' ? ' selected' : ''}>Custom (distill to memory, then summarize)</option>
-        <option value="agent"${(copy ? (src.compaction_mode || 'custom') : 'custom') === 'agent' ? ' selected' : ''}>Agent (rely on the agent's own compaction)</option>
+        <option value="custom"${sourceCompactionMode === 'custom' ? ' selected' : ''}>Custom (distill to memory, then summarize)</option>
+        <option value="agent"${sourceCompactionMode === 'agent' ? ' selected' : ''}>Agent (rely on the agent's own compaction)</option>
       </select>
+      <label for="wiz-compaction-threshold" id="wiz-compaction-threshold-label">Custom compaction threshold (tokens)</label>
+      <input id="wiz-compaction-threshold" type="number" min="${COMPACTION_THRESHOLD_MIN}" max="${COMPACTION_THRESHOLD_MAX}" step="1" value="${sourceCompactionThreshold}">
       ${traitsCache.length ? `<label>Traits</label><div id="wiz-traits" style="display:flex;flex-direction:column;gap:4px">` +
         traitsCache.map(t => { const checked = copy ? (Array.isArray(src.traits) && src.traits.includes(t.id)) : t.def; return `<div class="toggle-row"><input type="checkbox" class="wiz-trait" id="wiz-trait-${escapeAttr(t.id)}" value="${escapeAttr(t.id)}"${checked ? ' checked' : ''}><label for="wiz-trait-${escapeAttr(t.id)}" style="margin:0;color:var(--text)" title="${escapeAttr(t.preview)}">${escapeHtml(t.name)}</label></div>`; }).join('') +
         `</div>` : ''}
@@ -2004,6 +2058,14 @@
 
     document.getElementById('wiz-submit').addEventListener('click', submitCreateSession);
     document.getElementById('wiz-agent').addEventListener('change', syncWizardAgentDeps);
+    document.getElementById('wiz-context').addEventListener('change', syncWizardThresholdDefault);
+    document.getElementById('wiz-compaction-threshold').addEventListener('input', () => {
+      wizardState.thresholdDefaultDerived = false;
+    });
+    document.getElementById('wiz-compaction').addEventListener('change', () => {
+      syncCompactionThreshold('wiz-compaction', 'wiz-compaction-threshold', 'wiz-compaction-threshold-label');
+    });
+    syncCompactionThreshold('wiz-compaction', 'wiz-compaction-threshold', 'wiz-compaction-threshold-label');
     syncWizardAgentDeps();
   }
 
@@ -2031,6 +2093,7 @@
         contextSel.innerHTML = contextTierOptionsHtml(agent, '');
       }
     }
+    syncWizardThresholdDefault();
     const modelSel = document.getElementById('wiz-model');
     if (modelSel) {
       const cur = modelSel.value;
@@ -2104,6 +2167,13 @@
     args.push(...gadgetCapabilities.args('wiz'));
     const compaction = document.getElementById('wiz-compaction').value;
     if (compaction) args.push('--compaction', compaction);
+    const compactionThreshold = document.getElementById('wiz-compaction-threshold').value;
+    const thresholdError = validateCompactionThreshold(compactionThreshold);
+    if (thresholdError) {
+      alert(thresholdError);
+      return;
+    }
+    args.push('--compaction-threshold-tokens', compactionThreshold);
     // Only emit explicit --traits once traits have loaded; emitting an empty
     // selection before traits are known would suppress backend default/source
     // traits. In copy mode also preserve any source traits not shown in the
@@ -4503,6 +4573,8 @@
       }
       const s = resp.data || {};
       const selectedTraits = Array.isArray(s.traits) ? s.traits : [];
+      let thresholdDefaultDerived = !s.compaction_threshold_tokens ||
+        s.compaction_threshold_tokens === defaultCompactionThreshold(s.context_tier || '');
       const projectOpts = projectsCache.filter(p => p.status !== 'done')
         .map(p => `<option value="${escapeAttr(p.name)}"${p.name === (s.project || '') ? ' selected' : ''}>${escapeHtml(p.name)}</option>`).join('');
 
@@ -4544,6 +4616,8 @@
           <option value="agent"${(s.compaction_mode || 'agent') === 'agent' ? ' selected' : ''}>Agent (rely on the agent's own compaction)</option>
           <option value="custom"${(s.compaction_mode || 'agent') === 'custom' ? ' selected' : ''}>Custom (distill to memory, then summarize)</option>
         </select>
+        <label for="es-compaction-threshold" id="es-compaction-threshold-label">Custom compaction threshold (tokens)</label>
+        <input id="es-compaction-threshold" type="number" min="${COMPACTION_THRESHOLD_MIN}" max="${COMPACTION_THRESHOLD_MAX}" step="1" value="${effectiveCompactionThreshold(s.compaction_threshold_tokens, s.context_tier || '')}">
         ${traitsCache.length ? `<label>Traits</label><div id="es-traits" style="display:flex;flex-direction:column;gap:4px">` +
           traitsCache.map(t => `<div class="toggle-row"><input type="checkbox" class="es-trait" id="es-trait-${escapeAttr(t.id)}" value="${escapeAttr(t.id)}"${selectedTraits.includes(t.id) ? ' checked' : ''}><label for="es-trait-${escapeAttr(t.id)}" style="margin:0;color:var(--text)" title="${escapeAttr(t.preview)}">${escapeHtml(t.name)}</label></div>`).join('') +
           `</div>` : ''}
@@ -4616,6 +4690,16 @@
         if (origSorted !== newSorted) args.push('--traits', newTraits.join(','));
         const compaction = document.getElementById('es-compaction').value;
         if (compaction !== (s.compaction_mode || 'agent')) args.push('--compaction', compaction);
+        const compactionThreshold = document.getElementById('es-compaction-threshold').value;
+        const originalCompactionThreshold = effectiveCompactionThreshold(s.compaction_threshold_tokens, s.context_tier || '');
+        const thresholdError = validateCompactionThreshold(compactionThreshold);
+        if (thresholdError) {
+          alert(thresholdError);
+          return;
+        }
+        if (Number(compactionThreshold) !== originalCompactionThreshold) {
+          args.push('--compaction-threshold-tokens', compactionThreshold);
+        }
 
         if (args.length <= 1) { closeWizard(); return; }
 
@@ -4652,6 +4736,22 @@
           btn.textContent = 'Save';
         }
       });
+      document.getElementById('es-compaction').addEventListener('change', () => {
+        syncCompactionThreshold('es-compaction', 'es-compaction-threshold', 'es-compaction-threshold-label');
+      });
+      const editContext = document.getElementById('es-context');
+      if (editContext) {
+        editContext.addEventListener('change', () => {
+          if (thresholdDefaultDerived) {
+            document.getElementById('es-compaction-threshold').value =
+              defaultCompactionThreshold(editContext.value);
+          }
+        });
+      }
+      document.getElementById('es-compaction-threshold').addEventListener('input', () => {
+        thresholdDefaultDerived = false;
+      });
+      syncCompactionThreshold('es-compaction', 'es-compaction-threshold', 'es-compaction-threshold-label');
     } catch (e) {
       renderWizardModal(`<h3>Edit Session</h3><div class="empty-state">Error: ${escapeHtml(e.message)}</div>
         <div class="modal-actions"><button class="btn-muted" onclick="window._qewCloseWizard()">Close</button></div>`);

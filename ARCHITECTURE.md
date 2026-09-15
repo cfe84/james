@@ -347,6 +347,11 @@ compaction, and distillation. `prepareRunInstructions` first prepares gadgets,
 then consults Memory capability (not the former provider/yolo memory gate).
 Disabled memory adds explicit no-access guidance, compaction summarizes only,
 and standalone distillation rejects the request before entering working state.
+Custom compaction bootstraps a fresh agent with `NoPersistTurns` and no
+schedule/channel metadata, commits the handoff atomically, then performs the
+real continuation with `Resume=true`. Distillation progress is stored in a
+separate keyed table (snapshot max turn id, configuration, chunk index), so
+retries do not pollute the transcript or repeat completed chunks.
 Enabled memory runs the importer/retry hook, seeds a knowledge-only root if
 absent, and reloads the actual root body into `<root-memory>`. Initialization,
 read, and migration errors are surfaced.
@@ -725,7 +730,11 @@ changes, queue cleanup, log-rotation changes, or a claim of fixing the live RAM 
 
 44. **Hierarchical, searchable session memory**: The v1.23.0 operator interfaces remain: `show/list/search/update/delete memory` return `MemoryResult` with display text plus structured outline/nodes/node/children/results. `UpdateMemory` retains manual argument parsing so a Markdown body beginning with `-` stays verbatim. TUI and Qew reuse their browse/edit/search models and locked existing-node Path field. Since v1.78.0 these handlers use the same per-session SQLite package as gadgets; the old main-database tree and flat blob are temporary importer inputs only. Current limits, root injection, and revisions are defined in [Authoritative session memory](#authoritative-session-memory-v1780), not by the retired storage implementations.
 
-45. **Custom session compaction**: James drives an explicit distill/summarize/substitute pipeline while retaining the stable James session ID. The underlying `agent_session_id` changes on substitution; gadget credentials and process tracking remain bound to the James session. `compaction_mode` is `agent` for migrated sessions and `custom` by default for new sessions, configured via CLI/TUI/Qew. `shouldCompact` checks the 75%-window threshold at the start of a continuation or queue drain, not at turn end. Context usage is persisted and displayed; Claude reports usage directly while Copilot uses transcript estimates and the configured model-window lookup. Manual `compact session` (TUI/Qew `K`) requires idle state and seeds "Await next instructions." **Pipeline:** write the collapsed compaction marker; run the current agent with shared gadgets/root-memory instructions to preserve durable knowledge and emit a handoff summary; substitute a fresh underlying session and reset context accounting; then run the pending prompt with the summary and refreshed root. If Memory is disabled, the first phase only summarizes and requests no memory access. The fresh session is never told that memory necessarily contains the entire history. Narration and the canonical summary remain available as train-of-thought turns, while the `compaction` role renders as a collapsed marker.
+45. **Custom session compaction**: James drives an explicit distill/summarize/substitute pipeline while retaining the stable James session ID. The underlying `agent_session_id` changes on substitution; gadget credentials and process tracking remain bound to the James session. `compaction_mode` is `agent` for migrated sessions and `custom` by default for new sessions, configured via CLI/TUI/Qew. Each session also persists a validated absolute `compaction_threshold_tokens`
+value (10,000–900,000; default 150,000, or 800,000 for explicit
+`long_context`); `shouldCompact` uses it only in Custom mode at the start of a
+continuation or queue drain, not at turn end. Agent mode retains the value but
+ignores it. Manual `compact session` (TUI/Qew `K`) requires idle state. **Pipeline:** run a prompt-disciplined bootstrap with the handoff summary, resolve its provider-generated session id when needed, publish the id/context baseline and collapsed compaction marker in one SQLite transaction, then run the pending prompt only for automatic compaction. Manual compaction stops after the commit; an automatic prompt is never classified by its text, so `Await next instructions.` remains a valid prompt. If Memory is disabled, the first phase only summarizes and requests no memory access. The fresh session is never told that memory necessarily contains the entire history. Narration and the canonical summary remain available as train-of-thought turns, while the `compaction` role renders as a collapsed marker.
 
 46. **Memory distillation (`distillate session`)**: This standalone maintenance operation leaves the live agent session and transcript untouched. The handler requires idle state and the Memory capability, rejecting disabled memory before entering working state, then returns asynchronously with "distilling" status. `runDistillation` loads the transcript through `cleanTranscript`, prepares the same gadgets/root-memory instructions as normal runs, and calls `runner.Run` with a throwaway underlying session ID and `NoPersistTurns`. It does not persist that new ID, narration, final result, or context accounting; live activity still streams. The agent reads and maintains authoritative SQLite memory through `gadgets memory`, without Hem/MI6 connectivity. CLI `hem distillate session`, TUI command-mode `D`, and Qew palette/Actions retain their existing flow.
 
@@ -1225,3 +1234,47 @@ The Qew dashboard treats its last successful response as the visible snapshot.
 Transient HTTP or transport failures do not replace that snapshot with an error
 view; the shared connection indicator communicates the degraded state. An error
 view is used only before the first successful dashboard response.
+
+## Compaction and distillation safety hardening (v1.92.0)
+
+Moneypenny claims an idle session with an atomic `UPDATE ... WHERE status =
+'idle'` before starting manual compaction or distillation. The agent Runner
+rejects a second process for the same James session and only removes its
+process/activity entry if it still owns that entry.
+
+Custom compaction is a two-phase handoff. Distillation runs without persisting
+ephemeral reasoning; a fresh underlying session is run first, and a successful
+run is published by one SQLite transaction that updates the underlying session
+id/context baseline and writes the compaction marker and handoff summary.
+Failures leave the prior resumable session metadata intact. The bootstrap is a
+reduced-capability, prompt-disciplined run: it uses Yolo=false and omits
+attachments, routing, ready markers, and memory/tool instruction preparation,
+but retains the normal project environment; it is not a process sandbox.
+Distillation uses bounded turn-aligned transcript chunks and computes its
+snapshot watermark from distillable source turns only, so appended outcome
+turns do not move a retry to a new snapshot. A newly appended source turn does
+start a new snapshot. Each formatted distillation prompt is bounded by the
+64 KiB cap, including wrapper text and UTF-8 payload bytes. Durable
+completed/partial outcome turns let operators see exactly where a retry
+stopped.
+
+## Persisted custom-compaction threshold (v1.93.0)
+
+The Moneypenny session store owns the single authoritative
+`compaction_threshold_tokens` absolute token count. The shared envelope package
+defines context-tier defaults (150,000 normally and 800,000 only for explicit
+`long_context`) and inclusive safe bounds (10,000–900,000), and the handler
+validates create, update, and import requests before they reach SQLite. The
+schema migration adds the column with a default of 150,000, then updates
+existing `long_context` rows to 800,000 only during the one-time column
+addition; repeated startup does not overwrite persisted values.
+
+Hem's create, update, copy, show, protocol, and TUI paths carry the same
+optional value; Qew's create/copy and edit forms reuse the existing modal
+patterns and hide/disable the numeric control for `agent` mode. Untouched
+default-derived controls follow context-tier changes, while edited values are
+preserved. Session details always return the effective value, including for
+legacy records. Only `custom` mode consults the value:
+`shouldCompact` compares measured context tokens with
+`compaction_threshold_tokens`, while `agent` mode remains entirely delegated to
+the underlying agent.

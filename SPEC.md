@@ -91,6 +91,8 @@ erDiagram
         string agent "claude, etc."
         string path "working directory"
         string system_prompt "agent instructions"
+        string compaction_mode "agent or custom"
+        int compaction_threshold_tokens "custom trigger context-token count, 10000-900000"
         bool yolo "skip permissions"
         string status "idle, working"
         string hem_status "active, completed"
@@ -213,6 +215,28 @@ When Copilot emits a terminal `result` event and a non-empty final answer, Money
 #### Context tier
 
 Copilot exposes a **context-window tier** via the `--context <tier>` CLI flag, with values `default` (the standard window) and `long_context` (the 1M-token window). This is a copilot-native mechanism — the long-context variants are *not* separate `--model` identifiers (the `-1m` model ids copilot lists are rejected as `--model` values); the same model id is combined with `--context long_context` to raise its `max_context_window_tokens` (e.g. `copilot --model claude-sonnet-5 --context long_context` → 1,000,000). Moneypenny appends `--context <tier>` to both the one-shot and interactive copilot arg builders whenever a non-empty tier is set (persisted per session or supplied as a per-prompt override); an empty tier appends nothing (agent default). Claude has no equivalent and ignores the setting. The tier is stored per session (`sessions.context_tier`), can be overridden per prompt (`continue_session`/`queue_prompt` `context_tier`, persisted on `prompt_queue.context_tier`), and is surfaced end-to-end through the `--context` CLI flag and the TUI/Qew forms and per-conversation override pickers.
+
+#### Custom compaction threshold
+
+Each session persists one `compaction_threshold_tokens` absolute context-token
+count. The context tier supplies the default: **150,000** tokens for empty or
+`default`, and **800,000** tokens only for explicit `long_context`. The accepted
+inclusive range is **10,000–900,000**; Moneypenny, Hem, and Qew validate
+external values at their respective protocol, command, and form boundaries
+without coercion. The threshold is used only when `compaction_mode` is
+`custom`, when `context_tokens >= compaction_threshold_tokens`. `agent` mode
+retains the stored value but ignores it and relies on the agent's own
+compaction. Switching modes therefore preserves the value for a later return
+to `custom`.
+
+The value is carried by create, update, copy, session-detail, TUI, Qew, and
+Moneypenny import payloads. `hem create session` and `hem update session` expose
+`--compaction-threshold-tokens`; session show/details report the effective
+value. Hem's legacy JSONL importer does not contain compaction metadata and
+therefore derives the 150,000-token default from its empty context tier.
+Omitted values resolve from the context tier. Existing databases without the
+field add it with a 150,000-token SQLite default and then derive 800,000 for
+existing `long_context` rows during the one-time migration.
 
 
 Method: **create_session**: creates a new session with an agent. Format of the data is `{ "agent": "claude", "system_prompt": "a system prompt for the agent", "yolo": boolean indicating if the session should be started with --dangerously-skip-permissions, "prompt": "prompt for the agent", "session_id": "GUID used for communication about that session id", "name": "a session name", "path": "the path where to start the agent" }`
@@ -641,7 +665,7 @@ an already-running agent turn. Notifications cannot be disabled by these flags.
 `hem copy session SOURCE_ID [PROMPT...] [flags]`
 
 - Creates a new session bootstrapped from a summary of an existing one. Source session is preserved (no state migration, no completion).
-- All flags from `create session` apply and override the source's values: `-m/--moneypenny`, `--agent`, `--model`, `--effort`, `--context`, `--name`, `--system-prompt`, `--traits`, `--env`, `--yolo`, `--gadgets`, `--path`, `--compaction`, `--project`, `--async`. Any flag omitted is copied from the source (traits are inherited from the source unless `--traits` is given; the compaction mode and user-provided environment are inherited unless explicitly replaced).
+- All flags from `create session` apply and override the source's values: `-m/--moneypenny`, `--agent`, `--model`, `--effort`, `--context`, `--name`, `--system-prompt`, `--traits`, `--env`, `--yolo`, `--gadgets`, `--path`, `--compaction`, `--compaction-threshold-tokens`, `--project`, `--async`. Any flag omitted is copied from the source (traits are inherited from the source unless `--traits` is given; the compaction mode, threshold, and user-provided environment are inherited unless explicitly replaced).
 - The target moneypenny can differ from the source's (cross-host copy). The source's conversation history stays on the source moneypenny — only the summary is transferred.
 - **The summary is generated with the _target_ agent's parameters, not the source's.** Summarization is pure text-processing of the stored transcript, so it runs on whichever agent the copy targets (resolved `--agent`/`--model`/`--effort`/`--context`/`--yolo`). This means a copy targeting a working agent no longer depends on the source agent being available — e.g. duplicating a Claude session to Copilot works even when Claude is broken/unauthenticated. (The one-shot still executes on the source moneypenny, which owns the transcript, so the target agent must be installed there.)
 - **Cross-agent copies drop the source model/effort/context** unless explicitly overridden: when `--agent` changes the agent from the source's, the source's `--model`/`--effort`/`--context` are NOT inherited (they belong to a different model namespace and would be invalid for the new agent); the new agent picks its own defaults instead. Passing any of those flags explicitly still overrides. When the agent is unchanged, all three are inherited as before.
@@ -1392,14 +1416,24 @@ Traits are a hem-level concept (like projects); moneypenny is unaware of them. T
 
 ## Session Compaction
 
-Controls how a session's context is condensed as it grows. Set per session via the `--compaction agent|custom` flag on `create session` / `update session`, the TUI create/edit/wizard **Compaction** option, or the Qew create/edit dialogs.
+Controls how a session's context is condensed as it grows. Set per session via
+the `--compaction agent|custom` and optional
+`--compaction-threshold-tokens 10000..900000` flags on `create session` /
+`update session`, the TUI create/edit/wizard **Compaction** controls, or the
+Qew create/edit dialogs.
 
 - **`agent`** (default for pre-existing sessions): rely on the underlying agent's own automatic compaction. James does nothing special.
-- **`custom`** (default for new sessions): when context reaches **75%** of the model's window, James runs a custom compaction before the next turn so session knowledge is preserved.
+- **`custom`** (default for new sessions): when context reaches the session's
+  configured absolute threshold (default **150,000** tokens, or **800,000** for
+  explicit `long_context`; inclusive range **10,000–900,000**), James runs a
+  custom compaction before the next turn so session knowledge is preserved.
+  The threshold control is shown only for Custom mode; Agent mode retains the
+  value but ignores it.
 
 **Custom compaction pipeline:**
-1. **Distillation (in-session):** when memory is enabled, the live agent preserves durable knowledge under the shared system-level memory contract, then emits a standalone handoff summary. When memory is disabled, it summarizes without requesting memory access.
-2. **Substitution:** a fresh underlying agent session is started (the James session id is unchanged) seeded with the summary. Memory-enabled runs also receive the refreshed root index, without claiming memory holds the full history. For automatic compaction the pending prompt is then run; for manual compaction the agent is told to "Await next instructions."
+1. **Claim:** compaction claims the idle session in the store before doing work, so concurrent manual, scheduled, or user continuations cannot start a duplicate runner.
+2. **Distillation (in-session):** when memory is enabled, the live agent preserves durable knowledge under the shared system-level memory contract, then emits a standalone handoff summary. When memory is disabled, it summarizes without requesting memory access. The distillation run does not add ephemeral reasoning to the live transcript.
+3. **Two-phase substitution:** a reduced-capability, prompt-disciplined bootstrap creates a fresh underlying agent session with the summary, then one SQLite transaction publishes the new agent-session id, resets context usage, and appends the compaction marker and summary. When the provider generates the id (as OpenCode does), the non-empty id returned by the bootstrap is committed and used for the continuation; a handoff is rejected if no id can be resolved. Bootstrap runs with Yolo disabled and no attachments, channel routing, ready marker, or memory/tool instruction injection while retaining the normal project environment; it is not a separate process sandbox. Automatic continuation resumes that new session with the original attachments/channel/ready metadata, including an automatic prompt whose text happens to be `Await next instructions.`; bootstrap never creates schedules, routes replies, or persists turns. Manual compaction stops after the handoff commit without manufacturing an assistant turn. A bootstrap or commit failure leaves the old session resumable; a later continuation failure keeps the new id and records only a safe outcome code.
 
 **Context usage** is tracked per turn and shown in the chat header (`🗃️ N% (Xk/Yk)`). Claude reports real token usage and its context window directly; Copilot exposes none, so usage is estimated (~4 chars/token) against a burned-in, code-tunable per-model window table.
 
@@ -1409,7 +1443,7 @@ Controls how a session's context is condensed as it grows. Set per session via t
 
 ## Memory Distillation
 
-`distillate session SESSION_ID` — asks the session's agent (same agent/model/effort) to read the **entire** transcript and fold every durable detail into the session's hierarchical memory, updating existing nodes rather than duplicating. Unlike compaction, distillation does **not** replace the live agent session or add any turns to the transcript — it runs a throwaway underlying agent purely to maintain memory, leaving the live context untouched.
+`distillate session SESSION_ID` — asks the session's agent (same agent/model/effort) to read the transcript in bounded, turn-aligned chunks and fold every durable detail into the session's hierarchical memory, updating existing nodes rather than duplicating. Each completed chunk advances durable progress outside the conversation, keyed by the snapshot's maximum **distillable source-turn** id and run configuration; status/outcome turns appended by the operation therefore cannot change the retry key, while a newly appended distillable user/assistant/scheduled/callback turn intentionally starts a new snapshot. A failed later chunk resumes at the next incomplete chunk. Operation/status roles are excluded from the snapshot. Chunk payloads are conservatively byte-bounded (including prompt-wrapper overhead), split only at UTF-8 boundaries, and labeled when split. Unlike compaction, distillation does **not** replace the live agent session or add reasoning turns — it runs throwaway underlying agents purely to maintain memory, leaving the live context untouched.
 
 - Available in the CLI (`hem distillate session ID`), TUI (chat command-mode `D`), and Qew (command palette `D` or Actions ▸ Distill to Memory).
 - Runs asynchronously on the moneypenny; the session shows busy (`distilling`) while the agent inspects and writes memory, then returns to idle.

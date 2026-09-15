@@ -14,24 +14,25 @@ import (
 
 // sessionParams holds the parameters for creating or continuing a session.
 type sessionParams struct {
-	MoneypennyName     string
-	SessionName        string
-	SystemPrompt       string
-	Path               string
-	Agent              string
-	Model              string
-	Effort             string
-	ContextTier        string
-	ProjectID          string
-	Yolo               bool
-	Gadgets            bool
-	Async              bool
-	CompactionMode     string // "agent" or "custom" (empty = moneypenny default)
-	TraitsSpec         string // comma-separated trait IDs/names; resolved to TraitIDs
-	TraitIDs           []string
-	Nick               string // optional short nickname/alias for the session
-	Environment        environmentValues
-	GadgetCapabilities *envelope.GadgetCapabilities
+	MoneypennyName            string
+	SessionName               string
+	SystemPrompt              string
+	Path                      string
+	Agent                     string
+	Model                     string
+	Effort                    string
+	ContextTier               string
+	ProjectID                 string
+	Yolo                      bool
+	Gadgets                   bool
+	Async                     bool
+	CompactionMode            string // "agent" or "custom" (empty = moneypenny default)
+	CompactionThresholdTokens *int   // persisted custom-compaction token threshold
+	TraitsSpec                string // comma-separated trait IDs/names; resolved to TraitIDs
+	TraitIDs                  []string
+	Nick                      string // optional short nickname/alias for the session
+	Environment               environmentValues
+	GadgetCapabilities        *envelope.GadgetCapabilities
 }
 
 var environmentVariableName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -219,6 +220,9 @@ func buildCreateSessionData(params *sessionParams, sessionID, prompt string) (ma
 	}
 	if params.CompactionMode != "" {
 		cmdData["compaction_mode"] = params.CompactionMode
+	}
+	if params.CompactionThresholdTokens != nil {
+		cmdData["compaction_threshold_tokens"] = *params.CompactionThresholdTokens
 	}
 	if len(params.Environment) > 0 {
 		environment, err := params.Environment.Map()

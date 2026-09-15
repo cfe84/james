@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"james/moneypenny/pkg/agent"
 	"james/moneypenny/pkg/envelope"
@@ -24,9 +25,11 @@ func TestCompactionPromptsRespectMemoryPermissions(t *testing.T) {
 				if err := os.MkdirAll(dir, 0700); err != nil {
 					t.Fatal(err)
 				}
+
 				if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Recorded knowledge"), 0600); err != nil {
 					t.Fatal(err)
 				}
+
 				for _, system := range []string{"Base instructions", compactionSeedSystemPrompt("Base instructions", "Handoff summary")} {
 					params := agent.RunParams{Agent: name, Yolo: yolo, SystemPrompt: system}
 					if err := h.prepareRunInstructions(sid, &params); err != nil {
@@ -184,9 +187,202 @@ func TestDistillationTaskUsesSystemContract(t *testing.T) {
 	if !strings.Contains(distillPrompt, "system memory contract") {
 		t.Fatal("distillation task must use the shared memory contract")
 	}
+
 	for _, duplicate := range []string{"README.md", "4000", "2000", notifyUserSystemPromptSuffix} {
 		if strings.Contains(distillPrompt, duplicate) {
 			t.Fatalf("unexpected instructions in task: %s", duplicate)
 		}
+
+	}
+}
+
+func TestCleanTranscriptPreservesPromptRoles(t *testing.T) {
+	turns := []*store.ConversationTurn{
+		{Role: "scheduled", Content: "wake up"},
+		{Role: "callback", Content: "child report", SourceName: "worker"},
+		{Role: "assistant", Content: "done"},
+	}
+	got := cleanTranscript(turns)
+	for _, want := range []string{"SCHEDULED: wake up", "CALLBACK (worker): child report", "ASSISTANT: done"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("transcript lost role metadata %q: %s", want, got)
+		}
+	}
+}
+
+func TestDistillationChunksAreTurnAlignedAndBounded(t *testing.T) {
+	turns := []*store.ConversationTurn{
+		{Role: "user", Content: "one"},
+		{Role: "assistant", Content: "two"},
+		{Role: "user", Content: "three"},
+	}
+
+	chunks := distillationChunks(turns, distillationPromptOverhead()+len("USER: one\n\nASSISTANT: two\n\n")+1)
+	if len(chunks) != 2 || !strings.Contains(chunks[0], "ASSISTANT: two") || !strings.Contains(chunks[1], "USER: three") {
+		t.Fatalf("unexpected turn-aligned chunks: %#v", chunks)
+	}
+}
+
+func TestDistillationChunksExcludeOperationTurns(t *testing.T) {
+	turns := []*store.ConversationTurn{
+		{ID: 1, Role: "user", Content: "keep"},
+		{ID: 2, Role: "compaction", Content: "do not feed back"},
+		{ID: 3, Role: "distillation_partial", Content: "do not feed back"},
+		{ID: 4, Role: "assistant", Content: "also keep"},
+	}
+	got := strings.Join(distillationChunks(turns, distillationPromptOverhead()+1024), "")
+	if strings.Contains(got, "do not feed back") || !strings.Contains(got, "keep") {
+		t.Fatalf("operation turns entered transcript: %q", got)
+	}
+}
+
+func TestTurnsThroughSnapshotExcludesLaterTurns(t *testing.T) {
+	turns := []*store.ConversationTurn{
+		{ID: 1, Role: "user", Content: "old"},
+		{ID: 2, Role: "assistant", Content: "old reply"},
+		{ID: 3, Role: "user", Content: "new"},
+	}
+
+	got := cleanTranscript(turnsThroughSnapshot(turns, 2))
+	if strings.Contains(got, "new") || !strings.Contains(got, "old") {
+		t.Fatalf("snapshot watermark not enforced: %q", got)
+	}
+}
+
+func TestDistillationChunksSplitUTF8WithinByteBudget(t *testing.T) {
+	const payloadCap = 96
+	chunks := distillationChunks([]*store.ConversationTurn{
+		{Role: "user", Content: strings.Repeat("界", 100)},
+	}, distillationPromptOverhead()+payloadCap)
+	if len(chunks) < 2 {
+		t.Fatal("oversized UTF-8 turn was not split")
+	}
+	for _, chunk := range chunks {
+		if len(fmt.Sprintf(distillPrompt, chunk)) > distillationPromptOverhead()+payloadCap {
+			t.Fatalf("chunk exceeds byte budget: %d", len(chunk))
+		}
+		if !utf8.ValidString(chunk) {
+			t.Fatal("chunk split invalid UTF-8")
+		}
+	}
+}
+
+func TestDistillationPromptCapIncludesWrapperASCIIAndUTF8(t *testing.T) {
+	const cap = 512
+	for _, content := range []string{"ascii " + strings.Repeat("x", 800), strings.Repeat("界", 800)} {
+		chunks := distillationChunks([]*store.ConversationTurn{{Role: "user", Content: content}}, cap)
+		if len(chunks) == 0 {
+			t.Fatal("expected chunks")
+		}
+		for _, chunk := range chunks {
+			if got := len(fmt.Sprintf(distillPrompt, chunk)); got > cap {
+				t.Fatalf("prompt exceeds final cap for %q: %d > %d", content[:5], got, cap)
+			}
+			if !utf8.ValidString(chunk) {
+				t.Fatal("chunk is invalid UTF-8")
+			}
+		}
+	}
+}
+
+func TestDistillationChunksRejectBudgetThatCannotFitPromptWrapper(t *testing.T) {
+	turns := []*store.ConversationTurn{{Role: "user", Content: "source"}}
+	for _, cap := range []int{0, distillationPromptOverhead() - 1} {
+		if chunks := distillationChunks(turns, cap); len(chunks) != 0 {
+			t.Fatalf("prompt cap %d unexpectedly generated chunks: %#v", cap, chunks)
+		}
+	}
+}
+
+func TestDistillationSnapshotWatermarkUsesSourceTurns(t *testing.T) {
+	turns := []*store.ConversationTurn{
+		{ID: 10, Role: "user", Content: "source"},
+		{ID: 11, Role: "system", Content: "distillation_partial_failed"},
+		{ID: 12, Role: "system", Content: "distillation_completed"},
+	}
+	if got := distillationSnapshotMaxID(turns); got != 10 {
+		t.Fatalf("outcome turns moved snapshot watermark: got %d", got)
+	}
+	turns = append(turns, &store.ConversationTurn{ID: 13, Role: "user", Content: "new source"})
+	if got := distillationSnapshotMaxID(turns); got != 13 {
+		t.Fatalf("new source turn did not start a snapshot: got %d", got)
+	}
+}
+
+func TestDistillationRetryResumesFailedChunkAfterOutcomeAppend(t *testing.T) {
+	h, sid := newMemoryAuxiliaryTestHandler(t, "claude", envelope.GadgetCapabilities{Memory: true})
+	payloads := []string{
+		"first-" + strings.Repeat("A", 70000),
+		"second-" + strings.Repeat("B", 70000),
+	}
+	for _, content := range payloads {
+		if err := h.store.AddConversationTurn(sid, "user", content); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sourceTurns, err := h.store.GetConversation(sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceSnapshot := distillationSnapshotMaxID(sourceTurns)
+
+	var prompts []string
+	calls := 0
+	var logs strings.Builder
+	h.vlog = func(format string, args ...interface{}) { fmt.Fprintf(&logs, format+"\n", args...) }
+	h.runAgentFunc = func(_ context.Context, p agent.RunParams) (*agent.Result, error) {
+		calls++
+		prompts = append(prompts, p.Prompt)
+		if calls == 2 {
+			return nil, context.Canceled
+		}
+		return &agent.Result{Text: "recorded"}, nil
+	}
+	h.runDistillation(sid)
+	if calls < 2 {
+		t.Fatalf("expected a middle chunk failure, got %d calls", calls)
+	}
+	turns, err := h.store.GetConversation(sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if turns[len(turns)-1].Content != "distillation_partial_failed" {
+		t.Fatalf("missing failed outcome: %+v", turns)
+	}
+	progress, err := h.store.GetDistillationProgress(sid, sourceSnapshot, "claude||||false")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if progress == nil || progress.SnapshotMaxTurnID != sourceSnapshot || progress.NextChunk != 1 {
+		t.Fatalf("failed run moved or lost source snapshot progress: %+v", progress)
+	}
+
+	firstPrompt := prompts[0]
+	failedPrompt := prompts[1]
+	h.runDistillation(sid)
+	if len(prompts) <= 2 {
+		t.Fatalf("retry did not run an incomplete chunk: calls=%d", len(prompts))
+	}
+	if prompts[2] != failedPrompt || prompts[2] == firstPrompt {
+		t.Fatalf("retry did not start at failed chunk: prompt order %d, %d, %d", 0, 1, 2)
+	}
+	turns, err = h.store.GetConversation(sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var completed, partial int
+	for _, turn := range turns {
+		if turn.Role != "system" {
+			continue
+		}
+		switch turn.Content {
+		case "distillation_partial_failed":
+			partial++
+		case "distillation_completed":
+			completed++
+		}
+	}
+	if partial != 1 || completed != 1 {
+		t.Fatalf("unexpected distillation outcomes: partial=%d completed=%d calls=%d logs=%s", partial, completed, calls, logs.String())
 	}
 }

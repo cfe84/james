@@ -300,6 +300,9 @@ func (e *Executor) editGadgetSession(source *store.Session, raw json.RawMessage)
 	appendString("context", update.ContextTier)
 	appendString("path", update.Path)
 	appendString("compaction", update.CompactionMode)
+	if update.CompactionThresholdTokens != nil {
+		args = append(args, fmt.Sprintf("--compaction-threshold-tokens=%d", *update.CompactionThresholdTokens))
+	}
 	if update.Yolo != nil {
 		args = append(args, fmt.Sprintf("--yolo=%t", *update.Yolo))
 	}

@@ -12,10 +12,6 @@ import (
 	"james/moneypenny/pkg/store"
 )
 
-// compactionThreshold is the fraction of a model's context window at which
-// custom compaction is triggered before the next turn.
-const compactionThreshold = 0.75
-
 // compactionDistillPrompt asks the live agent to persist its working context
 // into hierarchical memory and then emit a standalone handoff summary as its
 // final message. It runs against the CURRENT underlying agent session so all
@@ -131,19 +127,13 @@ func (h *Handler) shouldCompact(sess *store.Session) bool {
 	if sess == nil || sess.CompactionMode != store.CompactionCustom {
 		return false
 	}
-	window := sess.ContextWindow
-	if window <= 0 {
-		window = contextWindowFor(sess.Agent, sess.Model)
-	}
-	if window <= 0 {
-		return false
-	}
-	return sess.ContextTokens >= int(float64(window)*compactionThreshold)
+	threshold := envelope.EffectiveCompactionThresholdTokens(sess.CompactionThresholdTokens, sess.ContextTier)
+	return sess.ContextTokens >= threshold
 }
 
 // compactSessionCmd is the dispatch for compact_session: it kicks off the full
 // custom-compaction pipeline regardless of the session's configured mode.
-func (h *Handler) compactSessionCmd(_ context.Context, cmd *envelope.Command) *envelope.Response {
+func (h *Handler) compactSessionCmd(ctx context.Context, cmd *envelope.Command) *envelope.Response {
 	var data envelope.CompactSessionData
 	if err := json.Unmarshal(cmd.Data, &data); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
@@ -161,9 +151,12 @@ func (h *Handler) compactSessionCmd(_ context.Context, cmd *envelope.Command) *e
 	if sess.Status != store.StateIdle {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotIdle, fmt.Sprintf("session is not idle: %s", sess.Status))
 	}
-
-	if err := h.store.UpdateSessionStatus(data.SessionID, store.StateWorking); err != nil {
+	claimed, err := h.store.ClaimIdleSession(ctx, data.SessionID)
+	if err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to update status: %v", err))
+	}
+	if !claimed {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotIdle, "session is no longer idle")
 	}
 	if h.notifyWriter != nil {
 		_ = h.notifyWriter.SendAsync(envelope.EventChatStatus, data.SessionID, map[string]string{
@@ -172,7 +165,7 @@ func (h *Handler) compactSessionCmd(_ context.Context, cmd *envelope.Command) *e
 		})
 	}
 
-	go h.runCompaction(data.SessionID, "Await next instructions.", sess.Model, sess.Effort)
+	go h.runCompactionWithParams(data.SessionID, "", sess.Model, sess.Effort, compactionManual, agent.RunParams{})
 
 	return envelope.SuccessResponse(cmd.RequestID, envelope.CompactSessionResponse{SessionID: data.SessionID})
 }
@@ -185,23 +178,33 @@ func (h *Handler) compactSessionCmd(_ context.Context, cmd *envelope.Command) *e
 //     James session) is started, seeded with the summary and the given next
 //     prompt. Memory is used only when enabled by the agent's permissions.
 //
-// nextPrompt is the prompt to seed the fresh session with: the actual next
-// prompt for automatic compaction, or "Await next instructions." for manual
+// nextPrompt is the prompt to seed the fresh session with for automatic
 // compaction. effModel/effEffort are the resolved overrides for the run.
 //
 // The caller must have set the session status to working.
 func (h *Handler) runCompaction(sessionID, nextPrompt, effModel, effEffort string) {
-	handedOff := false
+	h.runCompactionWithParams(sessionID, nextPrompt, effModel, effEffort, compactionContinue, agent.RunParams{})
+}
+
+type compactionRunMode uint8
+
+const (
+	compactionManual compactionRunMode = iota
+	compactionContinue
+)
+
+// runCompactionWithParams preserves continuation-only metadata (attachments,
+// channel routing, and ready markers) while replacing the underlying session.
+func (h *Handler) runCompactionWithParams(sessionID, nextPrompt, effModel, effEffort string, mode compactionRunMode, continuation agent.RunParams) {
+	notifyIdle := true
+	idleReason := "compaction_failed"
 	defer func() {
-		if handedOff {
-			return
-		}
 		if err := h.store.UpdateSessionStatus(sessionID, store.StateIdle); err != nil {
 			h.vlog("compaction: cannot restore idle state for session %s: %v", sessionID, err)
 		}
-		if h.notifyWriter != nil {
+		if h.notifyWriter != nil && notifyIdle {
 			for _, event := range []string{envelope.EventSessionStateChanged, envelope.EventChatStatus} {
-				if err := h.notifyWriter.SendAsync(event, sessionID, map[string]string{"status": store.StateIdle, "reason": "compaction_failed"}); err != nil {
+				if err := h.notifyWriter.SendAsync(event, sessionID, map[string]string{"status": store.StateIdle, "reason": idleReason}); err != nil {
 					h.vlog("compaction: cannot notify idle state for session %s: %v", sessionID, err)
 				}
 			}
@@ -233,67 +236,127 @@ func (h *Handler) runCompaction(sessionID, nextPrompt, effModel, effEffort strin
 		Resume:         true,
 		AgentSessionID: sess.AgentSessionID,
 		SessionDir:     h.sessionDir(sessionID),
+		NoPersistTurns: true,
 	}
 	if err := h.prepareRunInstructions(sessionID, &distillParams); err != nil {
 		h.vlog("compaction: cannot prepare memory for session %s: %v", sessionID, err)
-		if saveErr := h.store.AddConversationTurn(sessionID, "system", fmt.Sprintf("Compaction failed: %v", err)); saveErr != nil {
-			h.vlog("compaction: cannot record failure for session %s: %v", sessionID, saveErr)
-		}
+		h.recordCompactionFailure(sessionID, "compaction_prepare_failed")
 		return
 	}
 
 	// The marker starts the compacted context; do not insert it if preparation fails.
-	_ = h.store.AddConversationTurn(sessionID, "compaction", "compacted")
-
 	ctx := context.Background()
 	var summary string
-	if res, runErr := h.runner.Run(ctx, distillParams); runErr != nil {
+	if res, runErr := h.runAuxiliary(ctx, distillParams); runErr != nil {
 		h.vlog("compaction distillation failed for session %s: %v", sessionID, runErr)
+		h.recordCompactionFailure(sessionID, "compaction_summary_runner_failed")
+		return
 	} else {
 		summary = strings.TrimSpace(res.Text)
 	}
-
-	// The runner already persisted the distillation's narration as agent_text
-	// train-of-thought turns; the final summary often duplicates the trailing
-	// one (Claude). Replace it with a single canonical agent_text turn so the
-	// summary is visible when train-of-thought is shown without duplication.
-	if summary != "" {
-		_, _ = h.store.DeleteLastTurnIfMatches(sessionID, "agent_text", summary)
-		_ = h.store.AddConversationTurn(sessionID, "agent_text", summary)
+	if !validCompactionSummary(summary) {
+		h.recordCompactionFailure(sessionID, "compaction_summary_empty")
+		return
 	}
 
-	// 2. Substitution: mint a fresh underlying agent session id and reset the
-	// measured context to a clean baseline.
+	// 2. Bootstrap and substitution: create a fresh underlying session without
+	// publishing it, then commit the handoff before the real continuation.
 	newAgentID := initialAgentSessionID(sess.Agent, newAgentSessionID())
-	_ = h.store.SetAgentSessionID(sessionID, newAgentID)
 	window := sess.ContextWindow
 	if window <= 0 {
 		window = contextWindowFor(sess.Agent, effModel)
 	}
-	_ = h.store.SetContextUsage(sessionID, 0, window)
 
 	seedSystem := compactionSeedSystemPrompt(sess.SystemPrompt, summary)
 
 	seedPrompt := strings.TrimSpace(nextPrompt)
-	if seedPrompt == "" {
-		seedPrompt = "Await next instructions."
+	contextTier := sess.ContextTier
+	if continuation.ContextTier != "" {
+		contextTier = continuation.ContextTier
 	}
 
-	// Run the fresh session through the normal path so assistant-turn storage,
-	// queue draining, context tracking, and idle notification all apply.
-	// runAgent appends the current memory contract/root when enabled.
-	handedOff = true
-	h.runAgent(sessionID, agent.RunParams{
+	environment, envErr := sessionEnvironment(sess)
+	if envErr != nil {
+		h.vlog("compaction: invalid session environment for %s", sessionID)
+		h.recordCompactionFailure(sessionID, "compaction_environment_failed")
+		return
+	}
+	// Bootstrap creates the new underlying session but is deliberately
+	// side-effect free: no turns, schedules, attachments, channel routing, or
+	// ready marker. It is prompt-disciplined rather than capability-isolated:
+	// the runner has no bootstrap-specific attachment/routing/ready inputs, but
+	// the agent process still receives its normal project environment.
+	bootstrap := agent.RunParams{
 		SessionID:      sessionID,
 		Agent:          sess.Agent,
-		Prompt:         seedPrompt,
 		SystemPrompt:   seedSystem,
 		Model:          effModel,
 		Effort:         effEffort,
-		ContextTier:    sess.ContextTier,
-		Yolo:           sess.Yolo,
+		ContextTier:    contextTier,
+		Yolo:           false,
 		Path:           sess.Path,
 		Resume:         false,
 		AgentSessionID: newAgentID,
+		SessionDir:     h.sessionDir(sessionID),
+		NoPersistTurns: true,
+		Environment:    environment,
+		Prompt:         "Initialize this session for the supplied handoff; do not produce a user-facing response.",
+	}
+	// Do not install memory/tool instructions for bootstrap. The handoff
+	// summary is already in the seed system prompt; memory/tool setup belongs
+	// to the real continuation.
+	bootstrapResult, err := h.runAuxiliary(context.Background(), bootstrap)
+	if err != nil {
+		h.vlog("compaction: bootstrap runner failed for %s", sessionID)
+		h.recordCompactionFailure(sessionID, "compaction_bootstrap_failed")
+		return
+	}
+	resolvedAgentID := resolveCompactionAgentSessionID(newAgentID, bootstrapResult)
+	if resolvedAgentID == "" {
+		h.vlog("compaction: bootstrap returned no agent session id for %s", sessionID)
+		h.recordCompactionFailure(sessionID, "compaction_bootstrap_missing_id")
+		return
+	}
+	if err := h.store.CommitCompactionHandoff(sessionID, resolvedAgentID, window, summary); err != nil {
+		h.vlog("compaction: handoff commit failed for %s", sessionID)
+		h.recordCompactionFailure(sessionID, "compaction_handoff_commit_failed")
+		return
+	}
+	idleReason = "compacted"
+	// Manual compaction stops here: it must not manufacture an assistant turn.
+	if mode == compactionManual {
+		return
+	}
+	// The continuation owns its completion/error notifications after the
+	// handoff. Do not emit a second, misleading compaction result.
+	notifyIdle = false
+	// The real continuation resumes the bootstrapped session and carries all
+	// routing/attachment metadata from the original request.
+	h.runAgent(sessionID, agent.RunParams{
+		SessionID: sessionID, Agent: sess.Agent, Prompt: seedPrompt,
+		SystemPrompt: seedSystem, Model: effModel, Effort: effEffort,
+		ContextTier: contextTier, Yolo: sess.Yolo, Path: sess.Path,
+		Resume: true, AgentSessionID: resolvedAgentID, Attachments: continuation.Attachments,
+		ReplyChannelID: continuation.ReplyChannelID, MarkReady: continuation.MarkReady,
+		Environment: environment,
 	})
+}
+
+func resolveCompactionAgentSessionID(requested string, result *agent.Result) string {
+	if result != nil {
+		if providerID := strings.TrimSpace(result.AgentSessionID); providerID != "" {
+			return providerID
+		}
+	}
+	return strings.TrimSpace(requested)
+}
+
+func validCompactionSummary(summary string) bool {
+	return strings.TrimSpace(summary) != ""
+}
+
+func (h *Handler) recordCompactionFailure(sessionID, message string) {
+	if err := h.store.AddConversationTurn(sessionID, "system", message); err != nil {
+		h.vlog("compaction: cannot record failure for session %s: %v", sessionID, err)
+	}
 }

@@ -91,6 +91,22 @@ test('create, copy and edit surfaces load and use the reusable controls', () => 
   assert.ok(app.includes("gadgetCapabilities.args('es', s.gadget_capabilities || null)"));
 });
 
+test('custom compaction threshold is bounded and hidden for agent mode', () => {
+  const app = fs.readFileSync(path.join(__dirname, '../pkg/web/static/app.js'), 'utf8');
+  assert.match(app, /const COMPACTION_THRESHOLD_DEFAULT = 150000/);
+  assert.match(app, /const COMPACTION_THRESHOLD_LONG_CONTEXT = 800000/);
+  assert.match(app, /const COMPACTION_THRESHOLD_MIN = 10000/);
+  assert.match(app, /const COMPACTION_THRESHOLD_MAX = 900000/);
+  assert.match(app, /id="wiz-compaction-threshold" type="number" min="\$\{COMPACTION_THRESHOLD_MIN\}" max="\$\{COMPACTION_THRESHOLD_MAX\}"/);
+  assert.match(app, /id="es-compaction-threshold" type="number" min="\$\{COMPACTION_THRESHOLD_MIN\}" max="\$\{COMPACTION_THRESHOLD_MAX\}"/);
+  assert.match(app, /input\.disabled = !custom/);
+  assert.match(app, /input\.style\.display = custom \? '' : 'none'/);
+  assert.match(app, /--compaction-threshold-tokens/);
+  assert.match(app, /Custom compaction threshold \(tokens\)/);
+  assert.match(app, /thresholdDefaultDerived/);
+  assert.match(app, /Compaction threshold must be between/);
+});
+
 test('all-subagents dialog supports keyboard navigation and Escape dismissal', () => {
   const app = fs.readFileSync(path.join(__dirname, '../pkg/web/static/app.js'), 'utf8');
   assert.match(app, /const closeRoot = modal \|\| overlay\.querySelector\('\.cmd-palette'\)/);

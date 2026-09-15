@@ -1,8 +1,11 @@
 package store
 
 import (
+	"database/sql"
 	"math"
 	"testing"
+
+	"james/moneypenny/pkg/envelope"
 )
 
 func newTestStore(t *testing.T) *Store {
@@ -48,9 +51,13 @@ func TestCreateAndGetSession(t *testing.T) {
 	if got.Agent != "claude" {
 		t.Errorf("Agent = %q, want %q", got.Agent, "claude")
 	}
+	if got.CompactionThresholdTokens != envelope.DefaultCompactionThresholdTokens {
+		t.Errorf("CompactionThresholdTokens = %d, want %d", got.CompactionThresholdTokens, envelope.DefaultCompactionThresholdTokens)
+	}
 	if got.SystemPrompt != "You are helpful." {
 		t.Errorf("SystemPrompt = %q, want %q", got.SystemPrompt, "You are helpful.")
 	}
+
 	if !got.Yolo {
 		t.Error("Yolo = false, want true")
 	}
@@ -88,6 +95,128 @@ func TestAddOpenCodeCost(t *testing.T) {
 	}
 	if math.Abs(got.OpenCodeCost-0.0168) > 1e-9 {
 		t.Errorf("OpenCodeCost = %v, want 0.0168", got.OpenCodeCost)
+	}
+}
+
+func TestCompactionThresholdValidationAndPersistence(t *testing.T) {
+	s := newTestStore(t)
+	for _, threshold := range []int{envelope.MinCompactionThresholdTokens, envelope.MaxCompactionThresholdTokens} {
+		id := "threshold-" + string(rune('0'+threshold/envelope.MinCompactionThresholdTokens))
+		if err := s.CreateSession(&Session{
+			SessionID: id, Name: id, Agent: "copilot",
+			CompactionThresholdTokens: threshold,
+		}); err != nil {
+			t.Fatalf("CreateSession(%d): %v", threshold, err)
+		}
+		got, err := s.GetSession(id)
+		if err != nil {
+			t.Fatalf("GetSession(%d): %v", threshold, err)
+		}
+		if got.CompactionThresholdTokens != threshold {
+			t.Errorf("threshold = %d, want %d", got.CompactionThresholdTokens, threshold)
+		}
+		if err := s.UpdateSessionFieldsWithCompactionThresholdTokens(id, nil, nil, nil, nil, nil, nil, nil, &threshold, nil, nil, nil); err != nil {
+			t.Fatalf("UpdateSessionFieldsWithCompactionThresholdTokens(%d): %v", threshold, err)
+		}
+	}
+	if err := s.CreateSession(&Session{SessionID: "legacy", Name: "legacy", Agent: "copilot"}); err != nil {
+		t.Fatalf("CreateSession(legacy): %v", err)
+	}
+	if _, err := s.db.Exec("UPDATE sessions SET compaction_threshold_tokens = 0 WHERE session_id = 'legacy'"); err != nil {
+		t.Fatalf("simulate legacy zero threshold: %v", err)
+	}
+	legacy, err := s.GetSession("legacy")
+	if err != nil {
+		t.Fatalf("GetSession(legacy): %v", err)
+	}
+	if legacy.CompactionThresholdTokens != envelope.DefaultCompactionThresholdTokens {
+		t.Fatalf("legacy threshold = %d, want %d", legacy.CompactionThresholdTokens, envelope.DefaultCompactionThresholdTokens)
+	}
+	for _, threshold := range []int{envelope.MinCompactionThresholdTokens - 1, envelope.MaxCompactionThresholdTokens + 1} {
+		if err := s.CreateSession(&Session{
+			SessionID: "invalid-" + string(rune('0'+threshold%10)), Name: "invalid", Agent: "copilot",
+			CompactionThresholdTokens: threshold,
+		}); err == nil {
+			t.Errorf("CreateSession(%d) succeeded, want validation error", threshold)
+		}
+		invalid := threshold
+		if err := s.UpdateSessionFieldsWithCompactionThresholdTokens("threshold-5", nil, nil, nil, nil, nil, nil, nil, &invalid, nil, nil, nil); err == nil {
+			t.Errorf("UpdateSessionFieldsWithCompactionThresholdTokens(%d) succeeded, want validation error", threshold)
+		}
+	}
+}
+
+func TestCompactionThresholdDefaultsFollowContextAndUpdatesPreserveExplicitValue(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateSession(&Session{
+		SessionID: "long-default", Name: "long", Agent: "copilot", ContextTier: "long_context",
+	}); err != nil {
+		t.Fatalf("CreateSession(long): %v", err)
+	}
+	long, err := s.GetSession("long-default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if long.CompactionThresholdTokens != envelope.LongContextCompactionThresholdTokens {
+		t.Fatalf("long context threshold = %d, want %d", long.CompactionThresholdTokens, envelope.LongContextCompactionThresholdTokens)
+	}
+
+	normalTier := ""
+	if err := s.UpdateSessionFieldsWithCompactionThresholdTokens("long-default", nil, nil, nil, nil, &normalTier, nil, nil, nil, nil, nil, nil); err != nil {
+		t.Fatalf("clear context tier: %v", err)
+	}
+	updated, err := s.GetSession("long-default")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.ContextTier != "" || updated.CompactionThresholdTokens != envelope.LongContextCompactionThresholdTokens {
+		t.Fatalf("context update overwrote threshold: %+v", updated)
+	}
+}
+
+func TestCompactionThresholdMigrationDerivesLongContextOnlyOnce(t *testing.T) {
+	db, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`
+		CREATE TABLE sessions (
+			session_id TEXT PRIMARY KEY,
+			name TEXT NOT NULL,
+			agent TEXT NOT NULL,
+			context_tier TEXT NOT NULL DEFAULT ''
+		);
+		INSERT INTO sessions(session_id, name, agent, context_tier) VALUES
+			('legacy-long', 'long', 'copilot', 'long_context'),
+			('legacy-normal', 'normal', 'copilot', '');
+	`); err != nil {
+		t.Fatalf("create legacy schema: %v", err)
+	}
+	if err := migrate(db); err != nil {
+		t.Fatalf("first migration: %v", err)
+	}
+	var long, normal int
+	if err := db.QueryRow(`SELECT compaction_threshold_tokens FROM sessions WHERE session_id = 'legacy-long'`).Scan(&long); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT compaction_threshold_tokens FROM sessions WHERE session_id = 'legacy-normal'`).Scan(&normal); err != nil {
+		t.Fatal(err)
+	}
+	if long != envelope.LongContextCompactionThresholdTokens || normal != envelope.DefaultCompactionThresholdTokens {
+		t.Fatalf("migration defaults = long %d normal %d", long, normal)
+	}
+	if _, err := db.Exec(`UPDATE sessions SET compaction_threshold_tokens = ? WHERE session_id = 'legacy-long'`, envelope.MinCompactionThresholdTokens); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate(db); err != nil {
+		t.Fatalf("second migration: %v", err)
+	}
+	if err := db.QueryRow(`SELECT compaction_threshold_tokens FROM sessions WHERE session_id = 'legacy-long'`).Scan(&long); err != nil {
+		t.Fatal(err)
+	}
+	if long != envelope.MinCompactionThresholdTokens {
+		t.Fatalf("second migration overwrote explicit threshold: %d", long)
 	}
 }
 
@@ -306,7 +435,30 @@ func TestGetSessionNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
 	}
+
 	if got != nil {
 		t.Errorf("expected nil for non-existent session, got %+v", got)
+	}
+
+}
+
+func TestCommitCompactionHandoffIsAtomic(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateSession(&Session{SessionID: "handoff", Name: "handoff", Agent: "claude", AgentSessionID: "old"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CommitCompactionHandoff("handoff", "new", 200000, "summary"); err != nil {
+		t.Fatal(err)
+	}
+	sess, err := s.GetSession("handoff")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sess.AgentSessionID != "new" || sess.ContextTokens != 0 || sess.ContextWindow != 200000 || sess.Revision != 3 {
+		t.Fatalf("handoff metadata = %+v", sess)
+	}
+	turns, err := s.GetConversation("handoff")
+	if err != nil || len(turns) != 2 || turns[0].Role != "compaction" || turns[1].Role != "compaction_summary" {
+		t.Fatalf("handoff turns = %#v, err=%v", turns, err)
 	}
 }
