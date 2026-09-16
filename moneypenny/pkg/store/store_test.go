@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"math"
+	"sync"
 	"testing"
 
 	"james/moneypenny/pkg/envelope"
@@ -14,8 +15,55 @@ func newTestStore(t *testing.T) *Store {
 	if err != nil {
 		t.Fatalf("New(:memory:): %v", err)
 	}
+
 	t.Cleanup(func() { s.Close() })
 	return s
+}
+
+func TestClientOperationLifecycleAndConflict(t *testing.T) {
+	s := newTestStore(t)
+	s.db.SetMaxOpenConns(1)
+	if err := s.CreateSession(&Session{SessionID: "s1", Name: "test", Agent: "copilot"}); err != nil {
+		t.Fatal(err)
+	}
+	first, existing, err := s.BeginClientOperation("s1", "op-1", "digest-a", map[string]any{"status": OperationAccepted})
+	if err != nil || existing || first.Status != OperationAccepted {
+		t.Fatalf("first reservation = %#v existing=%v err=%v", first, existing, err)
+	}
+	replay, existing, err := s.BeginClientOperation("s1", "op-1", "digest-a", map[string]any{"status": OperationAccepted})
+	if err != nil || !existing || string(replay.Response) != string(first.Response) {
+		t.Fatalf("replay = %#v existing=%v err=%v", replay, existing, err)
+	}
+	if _, _, err := s.BeginClientOperation("s1", "op-1", "digest-b", nil); err == nil {
+		t.Fatal("conflicting retry unexpectedly succeeded")
+	}
+	if ok, err := s.UpdateClientOperationStatus("s1", "op-1", OperationAccepted, OperationRunning, nil); err != nil || !ok {
+		t.Fatalf("accepted -> running: ok=%v err=%v", ok, err)
+	}
+	if ok, err := s.UpdateClientOperationStatus("s1", "op-1", OperationAccepted, OperationQueued, nil); err != nil || ok {
+		t.Fatalf("stale transition changed operation: ok=%v err=%v", ok, err)
+	}
+	var wg sync.WaitGroup
+	results := make(chan bool, 8)
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, already, err := s.BeginClientOperation("s1", "op-concurrent", "same", map[string]any{"accepted": true})
+			results <- err == nil && !already
+		}()
+	}
+	wg.Wait()
+	close(results)
+	var inserted int
+	for result := range results {
+		if result {
+			inserted++
+		}
+	}
+	if inserted != 1 {
+		t.Fatalf("concurrent reservations inserted %d rows, want 1", inserted)
+	}
 }
 
 func TestCreateAndGetSession(t *testing.T) {
@@ -395,6 +443,7 @@ func TestAgentMessageProvenancePersistsForImmediateAndQueuedTurns(t *testing.T) 
 	if err := s.CreateSession(&Session{SessionID: "target", Name: "target", Agent: "agent"}); err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
+
 	if err := s.AddConversationTurnFrom("target", "user", "immediate", "source-id", "ian"); err != nil {
 		t.Fatalf("AddConversationTurnFrom: %v", err)
 	}
@@ -460,5 +509,42 @@ func TestCommitCompactionHandoffIsAtomic(t *testing.T) {
 	turns, err := s.GetConversation("handoff")
 	if err != nil || len(turns) != 2 || turns[0].Role != "compaction" || turns[1].Role != "compaction_summary" {
 		t.Fatalf("handoff turns = %#v, err=%v", turns, err)
+	}
+}
+
+func TestDrainQueueGroupSeparatesDurableOperationsAndBatchesLegacy(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateSession(&Session{SessionID: "queue-groups", Name: "queue-groups", Agent: "agent"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.QueuePromptChannelFromOperation("queue-groups", "legacy", "", "", "", "", "", "", 0, false, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.QueuePromptChannelFromOperation("queue-groups", "op-a", "", "", "", "", "", "", 0, false, "op-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.QueuePromptChannelFromOperation("queue-groups", "op-b", "", "", "", "", "", "", 0, false, "op-b"); err != nil {
+		t.Fatal(err)
+	}
+	group, err := s.DrainQueueGroup("queue-groups")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(group) != 1 || group[0].OperationID != "" {
+		t.Fatalf("first group = %#v, want legacy only", group)
+	}
+	group, err = s.DrainQueueGroup("queue-groups")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(group) != 1 || group[0].OperationID != "op-a" {
+		t.Fatalf("second group = %#v, want op-a only", group)
+	}
+	group, err = s.DrainQueueGroup("queue-groups")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(group) != 1 || group[0].OperationID != "op-b" {
+		t.Fatalf("third group = %#v, want op-b only", group)
 	}
 }

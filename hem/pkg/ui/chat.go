@@ -384,6 +384,8 @@ type historyLoadedMsg struct {
 	contextTokens  int
 	contextWindow  int
 	compactionMode string
+	revision       int64
+	generation     int64
 	err            error
 }
 
@@ -473,7 +475,7 @@ func (m chatModel) loadHistory() tea.Cmd {
 			nick = detail.Nick
 		}
 		uilog("loadHistory: done in %v, turns=%d total=%d status=%s", time.Since(start), len(page.Conversation), page.Total, status)
-		return historyLoadedMsg{conversation: page.Conversation, total: page.Total, status: status, nick: nick, contextTokens: ctxTokens, contextWindow: ctxWindow, compactionMode: compactionMode}
+		return historyLoadedMsg{conversation: page.Conversation, total: page.Total, status: status, nick: nick, contextTokens: ctxTokens, contextWindow: ctxWindow, compactionMode: compactionMode, revision: page.Revision, generation: page.Generation}
 	}
 }
 
@@ -732,6 +734,9 @@ func copyToClipboard(text string) error {
 // With notifications (--ff-use-notifications): 180s fallback, broadcasts handle real-time.
 // Without notifications (default): 3s when working, 30s when idle.
 func (m chatModel) chatPollTickAdaptive() tea.Cmd {
+	if pushFirstBehavior && m.client.useNotifications {
+		return nil
+	}
 	var interval time.Duration
 	if m.client.useNotifications {
 		interval = chatPollInterval
@@ -810,7 +815,7 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 		// MI6 broadcast channel closed — try to re-subscribe.
 		if ch := m.client.broadcasts(); ch != nil {
 			uilog("MI6 chat broadcast: reconnected, re-subscribing")
-			return m, listenForChatBroadcasts(ch, m.sessionID)
+			return m, tea.Batch(listenForChatBroadcasts(ch, m.sessionID), m.loadHistory(), m.loadSchedules(), m.loadSubagents(), m.loadActivity())
 		}
 		uilog("MI6 chat broadcast: still disconnected, retrying in 3s")
 		return m, func() tea.Msg {
@@ -955,6 +960,15 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 				m.conversation = append(m.conversation, pendingQueued...)
 				m.recentCount = len(msg.conversation) + len(pendingQueued)
 				m.scroll = 0
+			}
+			if m.sessionID != "" && msg.generation >= 0 {
+				sessionID, revision, generation := m.sessionID, msg.revision, msg.generation
+				return m, func() tea.Msg {
+					if err := m.client.acknowledgeSession(sessionID, revision, generation); err != nil {
+						uilog("acknowledge visible session: %v", err)
+					}
+					return nil
+				}
 			}
 		} else if msg.err != nil {
 			uilog("history load error: %v", msg.err)

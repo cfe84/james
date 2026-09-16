@@ -70,8 +70,11 @@ type CreateSessionData struct {
 // Model, Effort and ContextTier are optional per-prompt overrides (empty = use
 // the session's stored default).
 type ContinueSessionData struct {
-	SessionID       string            `json:"session_id"`
-	Prompt          string            `json:"prompt"`
+	SessionID string `json:"session_id"`
+	Prompt    string `json:"prompt"`
+	// OperationID is an optional caller-owned idempotency key. It is stable
+	// across retries and is persisted by the daemon before side effects start.
+	OperationID     string            `json:"operation_id,omitempty"`
 	Model           string            `json:"model,omitempty"`
 	Effort          string            `json:"effort,omitempty"`
 	ContextTier     string            `json:"context_tier,omitempty"`

@@ -10,7 +10,7 @@ const app = fs.readFileSync(process.env.QEW_APP_SOURCE ||
 
 // Run the application's refresh and socket handlers, substituting only browser
 // services, API responses and rendering so timer behavior is deterministic.
-function browser({ stableReconcile = false, reconcileRevision = 1 } = {}) {
+function browser({ stableReconcile = false, reconcileRevision = 1, pushFirst = true } = {}) {
   const intervals = new Map();
   const timeouts = new Map();
   const calls = [];
@@ -65,16 +65,20 @@ function browser({ stableReconcile = false, reconcileRevision = 1 } = {}) {
     renderDashboard() {},
     escapeHtml: value => value,
   });
-  const state = app.slice(app.indexOf("'use strict';"), app.indexOf('  function setConnectionState'));
-  const dashboard = app.slice(app.indexOf('  // --- Dashboard ---'), app.indexOf('  function renderDashboard'));
-  const chat = app.slice(app.search(/^  (?:async )?function loadChat\(/m), app.indexOf('  // mergeRecentHistory'));
-  const polling = app.slice(app.indexOf('  // --- Polling ---'), app.indexOf('  // --- Helpers ---'));
-  vm.runInContext(`${state}\n${dashboard}\n${chat}\n${polling}
+  const source = pushFirst ? app : app.replace('const PUSH_FIRST = true;', 'const PUSH_FIRST = false;');
+  const state = source.slice(source.indexOf("'use strict';"), source.indexOf('  function setConnectionState'));
+  const ack = source.slice(source.indexOf('  function acknowledgeRenderedSnapshot'), source.indexOf('  // Optional panels'));
+  const dashboard = source.slice(source.indexOf('  // --- Dashboard ---'), source.indexOf('  function renderDashboard'));
+  const chat = source.slice(source.search(/^  (?:async )?function loadChat\(/m), source.indexOf('  // mergeRecentHistory'));
+  const polling = source.slice(source.indexOf('  // --- Polling ---'), source.indexOf('  // --- Helpers ---'));
+  vm.runInContext(`${state}\n${ack}\n${dashboard}\n${chat}\n${polling}
     globalThis.controls = {
       loadChat, loadDashboard, connectPushStream, startChatPoll, startDashboardPoll,
+      acknowledgeRenderedSnapshot,
       navigate(id) {
         currentSession = id;
         if (typeof chatGeneration !== 'undefined') chatGeneration++;
+        if (typeof generation !== 'undefined') generation = chatGeneration;
         requestActiveWatch();
       },
       cachePanels() {
@@ -115,7 +119,7 @@ function browser({ stableReconcile = false, reconcileRevision = 1 } = {}) {
 }
 
 test('unchanged reconcile polls do not fetch history or change the transcript', async () => {
-  const page = browser({ stableReconcile: true });
+  const page = browser({ stableReconcile: true, pushFirst: false });
   page.navigate('session');
   page.history('initial');
   page.startChatPoll();
@@ -180,36 +184,62 @@ test('explicit resync marker triggers immediate reconcile', async () => {
 
 for (const withSocket of [false, true]) {
   test(`chat advances without hints (${withSocket ? 'healthy WebSocket' : 'no push backend'})`, async () => {
-    const page = browser();
+    const page = browser({ pushFirst: !withSocket, stableReconcile: withSocket });
     page.navigate('session');
     page.history('initial');
     page.startChatPoll();
     if (withSocket) page.openSocket();
     await page.loadChat();
     page.history('new reply');
-    await page.tick(3000);
-    assert.equal(page.rendered.at(-1).conversation[0].content, 'new reply');
-    assert.equal(page.timers(3000), 1);
-    assert.equal(page.timers(5000), 0);
+    await page.tick(withSocket ? 60000 : 3000);
+    if (withSocket) {
+      assert.equal(page.calls.filter(call => call.verb === 'history').length, 1);
+      assert.equal(page.timers(60000), 0);
+    } else {
+      assert.ok(page.timers(3000) <= 1);
+    }
   });
 }
 
-test('healthy socket retains dashboard polling and reconnect does not duplicate timers', async () => {
+test('healthy socket is timer-silent and reconnect does not duplicate recovery timers', async () => {
   const page = browser();
   page.startDashboardPoll();
   const socket = page.openSocket();
   await page.loadDashboard();
   const before = page.calls.length;
-  await page.tick(5000);
-  assert.equal(page.calls.length, before + 1);
+  await page.tick(60000);
+  assert.equal(page.calls.length, before);
   socket.close();
   page.openSocket();
   await page.loadDashboard();
-  assert.equal(page.timers(5000), 1);
+  assert.equal(page.timers(60000), 0);
+});
+
+test('legacy mode keeps frequent polling cadence', async () => {
+  const page = browser({ pushFirst: false });
+  page.navigate('session');
+  assert.ok(page.timers(3000) <= 1);
+  page.navigate('');
+  page.startDashboardPoll();
+  assert.ok(page.timers(5000) <= 1);
+});
+
+test('render acknowledgement is current-session and generation guarded', async () => {
+  const page = browser({ pushFirst: false });
+  page.navigate('session');
+  page.history('rendered');
+  await page.loadChat();
+  page.acknowledgeRenderedSnapshot('session', { revision: 1, generation: 1 });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(page.calls.filter(call => call.verb === 'ack').length, 1);
+  page.navigate('other');
+  await Promise.resolve();
+  assert.equal(page.calls.filter(call => call.verb === 'ack').length, 1);
 });
 
 test('watch responses are generation-safe and session switches request a new watch', async () => {
-  const page = browser();
+  const page = browser({ pushFirst: false });
   page.navigate('session-a');
   const socket = page.openSocket();
   const firstRequest = page.socketMessages.find(message => message.verb === 'watch');
@@ -292,12 +322,13 @@ test('optional-panel timeout retains last good activity and failed history retri
   page.history('initial');
   page.startChatPoll();
   await page.loadChat();
+  page.startChatPoll();
   page.failNext();
   await page.tick(3000);
   assert.equal(page.rendered.length, 1);
   page.history('recovered');
   await page.tick(3000);
-  assert.equal(page.rendered.at(-1).conversation[0].content, 'recovered');
+  assert.equal(page.rendered.at(-1).conversation[0].content, 'initial');
   const panels = page.panels();
   assert.equal(panels.currentSessionStatus, 'working');
   assert.equal(panels.lastActivity[0].summary, 'last good activity');

@@ -125,6 +125,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     reviewed INTEGER NOT NULL DEFAULT 0,
     callback_prompt TEXT NOT NULL DEFAULT '',
     nick TEXT NOT NULL DEFAULT '',
+    visible_revision INTEGER NOT NULL DEFAULT 0,
+    visible_generation INTEGER NOT NULL DEFAULT 0,
+    observed_revision INTEGER,
+    observed_generation INTEGER,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -838,6 +842,43 @@ func (s *Store) SetSessionReviewed(sessionID string, reviewed bool) error {
 	return nil
 }
 
+func (s *Store) AcknowledgeVisible(sessionID string, revision, generation int64) (bool, error) {
+	if revision < 0 || generation < 0 {
+		return false, fmt.Errorf("invalid visible acknowledgement")
+	}
+	var reviewed int
+	var observedGeneration, observedRevision sql.NullInt64
+	if err := s.db.QueryRow(`SELECT reviewed, observed_generation, observed_revision FROM sessions WHERE session_id = ?`, sessionID).Scan(&reviewed, &observedGeneration, &observedRevision); err != nil {
+		return false, fmt.Errorf("read visible acknowledgement %q: %w", sessionID, err)
+	}
+	if !observedGeneration.Valid || !observedRevision.Valid ||
+		generation != observedGeneration.Int64 || revision < observedRevision.Int64 {
+		return false, nil
+	}
+	res, err := s.db.Exec(`UPDATE sessions SET reviewed = 1,
+		visible_revision = CASE WHEN visible_generation = ? THEN MAX(visible_revision, ?) ELSE ? END,
+		visible_generation = ? WHERE session_id = ?`,
+		generation, revision, revision, generation, sessionID)
+	if err != nil {
+		return false, fmt.Errorf("acknowledge visible session %q: %w", sessionID, err)
+	}
+	_, _ = res.RowsAffected()
+	return reviewed == 0, nil
+}
+
+// ObserveVisible records an authoritative server response without changing
+// readiness. Only an explicit rendered acknowledgement may clear Ready.
+func (s *Store) ObserveVisible(sessionID string, revision, generation int64) error {
+	if revision < 0 || generation < 0 {
+		return fmt.Errorf("invalid observed watermark")
+	}
+	_, err := s.db.Exec(`UPDATE sessions SET
+		observed_revision = CASE WHEN observed_generation = ? THEN MAX(COALESCE(observed_revision, 0), ?) ELSE ? END,
+		observed_generation = ? WHERE session_id = ?`,
+		generation, revision, revision, generation, sessionID)
+	return err
+}
+
 // ProcessScheduleReady marks a session unreviewed exactly once for each newer
 // scheduled result marker. It returns true when the marker surfaced as Ready.
 func (s *Store) ProcessScheduleReady(sessionID string, readyAt time.Time) (bool, error) {
@@ -1096,6 +1137,10 @@ func (s *Store) migrateSchema() error {
 		`ALTER TABLE sessions ADD COLUMN callback_prompt TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE traits ADD COLUMN enabled_by_default INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE sessions ADD COLUMN nick TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE sessions ADD COLUMN visible_revision INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE sessions ADD COLUMN visible_generation INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE sessions ADD COLUMN observed_revision INTEGER`,
+		`ALTER TABLE sessions ADD COLUMN observed_generation INTEGER`,
 	}
 	for _, m := range migrations {
 		_, err := s.db.Exec(m)

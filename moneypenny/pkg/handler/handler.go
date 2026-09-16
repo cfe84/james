@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -28,6 +29,7 @@ import (
 )
 
 var sessionIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+var operationIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`)
 
 var environmentNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
@@ -189,6 +191,60 @@ func (h *Handler) runAuxiliary(ctx context.Context, params agent.RunParams) (*ag
 		return nil, fmt.Errorf("agent runner unavailable")
 	}
 	return h.runner.Run(ctx, params)
+}
+
+func (h *Handler) reserveOperation(sessionID, operationID string, data envelope.ContinueSessionData, queued bool, requestID string) *envelope.Response {
+	if operationID == "" {
+		return nil
+	}
+	if !operationIDPattern.MatchString(operationID) {
+		return envelope.ErrorResponse(requestID, envelope.ErrInvalidRequest, "operation_id must be 1-128 ASCII characters matching [A-Za-z0-9][A-Za-z0-9._:-]*")
+	}
+	raw, _ := json.Marshal(struct {
+		Prompt      string   `json:"prompt"`
+		Attachments []string `json:"attachments,omitempty"`
+		Model       string   `json:"model,omitempty"`
+		Effort      string   `json:"effort,omitempty"`
+		ContextTier string   `json:"context_tier,omitempty"`
+	}{data.Prompt, data.Attachments, data.Model, data.Effort, data.ContextTier})
+	digest := fmt.Sprintf("%x", sha256.Sum256(raw))
+	accepted := map[string]interface{}{"session_id": sessionID, "accepted": true, "completed": false, "status": store.OperationAccepted, "operation_id": operationID}
+	if queued {
+		accepted["queued"] = true
+	}
+	op, existing, err := h.store.BeginClientOperation(sessionID, operationID, digest, accepted)
+	if err != nil {
+		return envelope.ErrorResponse(requestID, envelope.ErrInvalidRequest, err.Error())
+	}
+	if existing {
+		return envelope.SuccessResponse(requestID, json.RawMessage(op.Response))
+	}
+	return nil
+}
+
+func (h *Handler) operationState(sessionID, operationID string, data envelope.ContinueSessionData) (store.ClientOperation, bool, error) {
+	if operationID == "" {
+		return store.ClientOperation{}, false, nil
+	}
+	if !operationIDPattern.MatchString(operationID) {
+		return store.ClientOperation{}, false, fmt.Errorf("operation_id must be 1-128 ASCII characters matching [A-Za-z0-9][A-Za-z0-9._:-]*")
+	}
+	raw, _ := json.Marshal(struct {
+		Prompt      string   `json:"prompt"`
+		Attachments []string `json:"attachments,omitempty"`
+		Model       string   `json:"model,omitempty"`
+		Effort      string   `json:"effort,omitempty"`
+		ContextTier string   `json:"context_tier,omitempty"`
+	}{data.Prompt, data.Attachments, data.Model, data.Effort, data.ContextTier})
+	digest := fmt.Sprintf("%x", sha256.Sum256(raw))
+	op, found, err := h.store.GetClientOperation(sessionID, operationID)
+	if err != nil || !found {
+		return op, found, err
+	}
+	if op.Digest != digest {
+		return store.ClientOperation{}, false, fmt.Errorf("operation_id %q was already used with different input", operationID)
+	}
+	return op, true, nil
 }
 
 // sessionDir returns the per-session persistent directory under the data dir,
@@ -577,8 +633,61 @@ func (h *Handler) continueSession(ctx context.Context, cmd *envelope.Command) *e
 	if sess == nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, fmt.Sprintf("session not found: %s", data.SessionID))
 	}
+	op, found, err := h.operationState(data.SessionID, data.OperationID, data)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
+	}
+	if found && op.Status != store.OperationAccepted && op.Status != store.OperationFailed {
+		return envelope.SuccessResponse(cmd.RequestID, json.RawMessage(op.Response))
+	}
+	if found && op.Status == store.OperationAccepted {
+		if queued, err := h.store.HasQueuedOperation(data.SessionID, data.OperationID); err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
+		} else if queued {
+			updated, err := h.store.UpdateClientOperationStatus(data.SessionID, data.OperationID, store.OperationAccepted, store.OperationQueued, map[string]interface{}{
+				"session_id": data.SessionID, "accepted": true, "completed": false, "status": store.OperationQueued, "queued": true, "operation_id": data.OperationID,
+			})
+			if err != nil {
+				return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to repair queued operation: %v", err))
+			}
+			if !updated {
+				reloaded, found, err := h.store.GetClientOperation(data.SessionID, data.OperationID)
+				if err != nil || !found {
+					return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, "queued operation disappeared during repair")
+				}
+				return envelope.SuccessResponse(cmd.RequestID, json.RawMessage(reloaded.Response))
+			}
+			reloaded, found, err := h.store.GetClientOperation(data.SessionID, data.OperationID)
+			if err != nil || !found {
+				return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, "queued operation could not be reloaded after repair")
+			}
+			return envelope.SuccessResponse(cmd.RequestID, json.RawMessage(reloaded.Response))
+		}
+	}
+	if found && op.Status == store.OperationFailed {
+		updated, err := h.store.UpdateClientOperationStatus(data.SessionID, data.OperationID, store.OperationFailed, store.OperationAccepted, map[string]interface{}{
+			"session_id": data.SessionID, "accepted": true, "completed": false, "status": store.OperationAccepted, "operation_id": data.OperationID,
+		})
+		if err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to repair failed operation: %v", err))
+		}
+		if !updated {
+			op, found, err = h.store.GetClientOperation(data.SessionID, data.OperationID)
+			if err != nil || !found {
+				return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, "failed operation disappeared during repair")
+			}
+		}
+	}
+	if !found {
+		if response := h.reserveOperation(data.SessionID, data.OperationID, data, false, cmd.RequestID); response != nil {
+			return response
+		}
+	}
 	// Check status is idle.
 	if sess.Status != store.StateIdle {
+		if data.OperationID != "" {
+			return h.queuePrompt(ctx, cmd)
+		}
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotIdle, fmt.Sprintf("session is not idle: %s", sess.Status))
 	}
 
@@ -589,7 +698,22 @@ func (h *Handler) continueSession(ctx context.Context, cmd *envelope.Command) *e
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to update status: %v", err))
 	}
 	if !claimed {
+		if data.OperationID != "" {
+			return h.queuePrompt(ctx, cmd)
+		}
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotIdle, "session is no longer idle")
+	}
+	if data.OperationID != "" {
+		if ok, err := h.store.UpdateClientOperationStatus(data.SessionID, data.OperationID, store.OperationAccepted, store.OperationRunning, nil); err != nil || !ok {
+			_ = h.store.UpdateSessionStatus(data.SessionID, store.StateIdle)
+			if err != nil {
+				return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
+			}
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotIdle, "operation is already being processed")
+		}
+		_, _ = h.store.UpdateClientOperationStatus(data.SessionID, data.OperationID, store.OperationRunning, store.OperationRunning, map[string]interface{}{
+			"session_id": data.SessionID, "accepted": true, "completed": false, "status": store.OperationRunning, "operation_id": data.OperationID,
+		})
 	}
 
 	// Notify that session is now working.
@@ -618,6 +742,12 @@ func (h *Handler) continueSession(ctx context.Context, cmd *envelope.Command) *e
 		promptRole = "callback"
 	}
 	if err := h.store.AddConversationTurnFrom(data.SessionID, promptRole, prompt, data.SourceSessionID, data.SourceName); err != nil {
+		if data.OperationID != "" {
+			_, _ = h.store.UpdateClientOperationStatus(data.SessionID, data.OperationID, store.OperationRunning, store.OperationFailed, map[string]interface{}{
+				"session_id": data.SessionID, "accepted": false, "completed": false, "status": store.OperationFailed, "operation_id": data.OperationID,
+			})
+		}
+		_ = h.store.UpdateSessionStatus(data.SessionID, store.StateIdle)
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to add conversation turn: %v", err))
 	}
 
@@ -642,7 +772,7 @@ func (h *Handler) continueSession(ctx context.Context, cmd *envelope.Command) *e
 	if h.shouldCompact(sess) {
 		h.vlog("context threshold reached for session %s; auto-compacting before continue", data.SessionID)
 		go h.runCompactionWithParams(data.SessionID, prompt, effModel, effEffort, compactionContinue, agent.RunParams{
-			ContextTier: data.ContextTier, Attachments: data.Attachments,
+			ContextTier: data.ContextTier, Attachments: data.Attachments, OperationID: data.OperationID,
 		})
 		return envelope.SuccessResponse(cmd.RequestID, envelope.ContinueSessionResponse{
 			SessionID: data.SessionID,
@@ -662,6 +792,7 @@ func (h *Handler) continueSession(ctx context.Context, cmd *envelope.Command) *e
 		Path:         sess.Path,
 		Resume:       true,
 		Attachments:  data.Attachments,
+		OperationID:  data.OperationID,
 	})
 
 	return envelope.SuccessResponse(cmd.RequestID, envelope.ContinueSessionResponse{
@@ -686,9 +817,84 @@ func (h *Handler) queuePrompt(_ context.Context, cmd *envelope.Command) *envelop
 	if sess == nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, fmt.Sprintf("session not found: %s", data.SessionID))
 	}
+	op, found, err := h.operationState(data.SessionID, data.OperationID, data)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
+	}
+	if found && op.Status != store.OperationAccepted && op.Status != store.OperationFailed {
+		return envelope.SuccessResponse(cmd.RequestID, json.RawMessage(op.Response))
+	}
+	if found && op.Status == store.OperationFailed {
+		updated, err := h.store.UpdateClientOperationStatus(data.SessionID, data.OperationID, store.OperationFailed, store.OperationAccepted, map[string]interface{}{
+			"session_id": data.SessionID, "accepted": true, "completed": false, "status": store.OperationAccepted, "queued": true, "operation_id": data.OperationID,
+		})
+		if err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to repair failed queued operation: %v", err))
+		}
+		if !updated {
+			op, found, err = h.store.GetClientOperation(data.SessionID, data.OperationID)
+			if err != nil || !found {
+				return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, "failed queued operation disappeared during repair")
+			}
+			if op.Status != store.OperationAccepted && op.Status != store.OperationFailed {
+				return envelope.SuccessResponse(cmd.RequestID, json.RawMessage(op.Response))
+			}
+		}
+	}
+	if !found {
+		if response := h.reserveOperation(data.SessionID, data.OperationID, data, true, cmd.RequestID); response != nil {
+			return response
+		}
+	}
 
-	if err := h.store.QueuePromptChannelFrom(data.SessionID, data.Prompt, data.Model, data.Effort, data.ContextTier, data.Source, data.SourceSessionID, data.SourceName, 0, false); err != nil {
+	if err := h.store.QueuePromptChannelFromOperation(data.SessionID, data.Prompt, data.Model, data.Effort, data.ContextTier, data.Source, data.SourceSessionID, data.SourceName, 0, false, data.OperationID); err != nil {
+		if data.OperationID != "" {
+			queued, checkErr := h.store.HasQueuedOperation(data.SessionID, data.OperationID)
+			if checkErr != nil {
+				return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to verify queued operation after enqueue error: %v", checkErr))
+			}
+			if queued {
+				updated, transitionErr := h.store.UpdateClientOperationStatus(data.SessionID, data.OperationID, store.OperationAccepted, store.OperationQueued, map[string]interface{}{
+					"session_id": data.SessionID, "accepted": true, "completed": false, "status": store.OperationQueued, "queued": true, "operation_id": data.OperationID,
+				})
+				if transitionErr != nil {
+					return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to repair queued operation after enqueue error: %v", transitionErr))
+				}
+				if !updated {
+					reloaded, found, getErr := h.store.GetClientOperation(data.SessionID, data.OperationID)
+					if getErr != nil || !found {
+						return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, "queued operation disappeared during enqueue repair")
+					}
+					return envelope.SuccessResponse(cmd.RequestID, json.RawMessage(reloaded.Response))
+				}
+				reloaded, found, getErr := h.store.GetClientOperation(data.SessionID, data.OperationID)
+				if getErr != nil || !found {
+					return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, "queued operation could not be reloaded after enqueue repair")
+				}
+				return envelope.SuccessResponse(cmd.RequestID, json.RawMessage(reloaded.Response))
+			}
+		}
+		if data.OperationID != "" {
+			_, _ = h.store.UpdateClientOperationStatus(data.SessionID, data.OperationID, store.OperationAccepted, store.OperationFailed, map[string]interface{}{
+				"session_id": data.SessionID, "accepted": false, "completed": false, "status": store.OperationFailed, "operation_id": data.OperationID,
+			})
+		}
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to queue prompt: %v", err))
+	}
+	if data.OperationID != "" {
+		updated, err := h.store.UpdateClientOperationStatus(data.SessionID, data.OperationID, store.OperationAccepted, store.OperationQueued, map[string]interface{}{
+			"session_id": data.SessionID, "accepted": true, "completed": false, "status": store.OperationQueued, "queued": true, "operation_id": data.OperationID,
+		})
+		if err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to mark queued operation: %v", err))
+		}
+		if !updated {
+			reloaded, found, err := h.store.GetClientOperation(data.SessionID, data.OperationID)
+			if err != nil || !found {
+				return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, "queued operation disappeared after enqueue")
+			}
+			return envelope.SuccessResponse(cmd.RequestID, json.RawMessage(reloaded.Response))
+		}
 	}
 
 	queueLen, _ := h.store.QueueLength(data.SessionID)
@@ -697,6 +903,10 @@ func (h *Handler) queuePrompt(_ context.Context, cmd *envelope.Command) *envelop
 	return envelope.SuccessResponse(cmd.RequestID, map[string]interface{}{
 		"session_id":   data.SessionID,
 		"queued":       true,
+		"accepted":     true,
+		"completed":    false,
+		"status":       store.OperationQueued,
+		"operation_id": data.OperationID,
 		"queue_length": queueLen,
 	})
 }
@@ -945,6 +1155,11 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 		}
 		_ = h.store.AddConversationTurn(sessionID, "system", errMsg)
 		_ = h.store.UpdateSessionStatus(sessionID, store.StateIdle)
+		if params.OperationID != "" {
+			_, _ = h.store.UpdateClientOperationStatus(sessionID, params.OperationID, store.OperationRunning, store.OperationFailed, map[string]interface{}{
+				"session_id": sessionID, "accepted": false, "completed": false, "status": store.OperationFailed, "operation_id": params.OperationID,
+			})
+		}
 
 		// Notify hem that session became idle after error.
 		if h.notifyWriter != nil {
@@ -995,6 +1210,11 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 	}
 
 	h.vlog("agent completed for session %s", sessionID)
+	if params.OperationID != "" {
+		_, _ = h.store.UpdateClientOperationStatus(sessionID, params.OperationID, store.OperationRunning, store.OperationCompleted, map[string]interface{}{
+			"session_id": sessionID, "accepted": true, "completed": true, "status": store.OperationCompleted, "operation_id": params.OperationID,
+		})
+	}
 
 	// Record context usage for this turn so custom compaction can be triggered
 	// at the configured threshold and clients can display usage. Claude reports
@@ -1042,6 +1262,15 @@ func (h *Handler) continueQueuedPrompts(sessionID string) {
 		}
 
 		first := group[0]
+		if first.OperationID != "" {
+			if ok, err := h.store.UpdateClientOperationStatus(sessionID, first.OperationID, store.OperationQueued, store.OperationRunning, map[string]interface{}{
+				"session_id": sessionID, "accepted": true, "completed": false, "status": store.OperationRunning, "operation_id": first.OperationID,
+			}); err != nil || !ok {
+				h.vlog("failed to transition queued operation %s for session %s: %v", first.OperationID, sessionID, err)
+				_ = h.store.UpdateSessionStatus(sessionID, store.StateIdle)
+				return
+			}
+		}
 
 		// Process each prompt in the group as its own conversation turn.
 		texts := make([]string, 0, len(group))
@@ -1054,6 +1283,13 @@ func (h *Handler) continueQueuedPrompts(sessionID string) {
 			}
 			if err := h.store.AddConversationTurnFrom(sessionID, role, qp.Prompt, qp.SourceSessionID, qp.SourceName); err != nil {
 				h.vlog("failed to add queued conversation turn for session %s: %v", sessionID, err)
+				if qp.OperationID != "" {
+					_, _ = h.store.UpdateClientOperationStatus(sessionID, qp.OperationID, store.OperationRunning, store.OperationFailed, map[string]interface{}{
+						"session_id": sessionID, "accepted": false, "completed": false, "status": store.OperationFailed, "operation_id": qp.OperationID,
+					})
+				}
+				_ = h.store.UpdateSessionStatus(sessionID, store.StateIdle)
+				return
 			}
 			texts = append(texts, qp.Prompt)
 		}
@@ -1100,6 +1336,7 @@ func (h *Handler) continueQueuedPrompts(sessionID string) {
 			Resume:         true,
 			ReplyChannelID: first.ReplyChannelID,
 			MarkReady:      first.MarkReady,
+			OperationID:    first.OperationID,
 		})
 		return
 	}

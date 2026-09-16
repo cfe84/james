@@ -617,6 +617,8 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.ShowSession(args)
 	case "history session", "log session":
 		return e.HistorySession(args)
+	case "ack session", "acknowledge session":
+		return e.AcknowledgeSession(args)
 	case "reconcile session":
 		return e.ReconcileSession(args)
 	case "update session":
@@ -1125,10 +1127,12 @@ type SessionCreatedResult struct {
 }
 
 type SessionContinuedResult struct {
-	SessionID string `json:"session_id"`
-	Response  string `json:"response,omitempty"`
-	Async     bool   `json:"async"`
-	Queued    bool   `json:"queued,omitempty"`
+	SessionID   string `json:"session_id"`
+	Response    string `json:"response,omitempty"`
+	Async       bool   `json:"async"`
+	Queued      bool   `json:"queued,omitempty"`
+	Accepted    bool   `json:"accepted"`
+	OperationID string `json:"operation_id,omitempty"`
 }
 
 type SessionStateResult struct {
@@ -2111,6 +2115,7 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 
 func (e *Executor) ContinueSession(args []string) *protocol.Response {
 	var sessionID, callbackPrompt, model, effort, contextTier, fromID string
+	var operationID string
 	var async bool
 	var attachments stringListFlag
 
@@ -2122,6 +2127,7 @@ func (e *Executor) ContinueSession(args []string) *protocol.Response {
 		fs.StringVar(&effort, "effort", "", "temporary effort/complexity override for this prompt (empty = session default)")
 		fs.StringVar(&contextTier, "context", "", "temporary copilot context-tier override for this prompt: default or long_context (empty = session default)")
 		fs.StringVar(&fromID, "from", "", "originating agent session ID (set automatically by gadgets)")
+		fs.StringVar(&operationID, "operation-id", "", "durable client operation id (safe to retry)")
 		fs.Var(&attachments, "attachment", "absolute path of an attachment saved on the moneypenny (repeatable)")
 	})
 	if err != nil {
@@ -2158,6 +2164,9 @@ func (e *Executor) ContinueSession(args []string) *protocol.Response {
 		"session_id": sessionID,
 		"prompt":     prompt,
 	}
+	if operationID != "" {
+		cmdData["operation_id"] = operationID
+	}
 	if fromID != "" {
 		cmdData["source_session_id"] = fromID
 		cmdData["source_name"] = e.agentOriginLabel(fromID)
@@ -2185,8 +2194,10 @@ func (e *Executor) ContinueSession(args []string) *protocol.Response {
 				return protocol.ErrResponse(fmt.Sprintf("queueing prompt: %v", queueErr))
 			}
 			return protocol.OKResponse(SessionContinuedResult{
-				SessionID: sessionID,
-				Queued:    true,
+				SessionID:   sessionID,
+				Queued:      true,
+				Accepted:    true,
+				OperationID: operationID,
 			})
 		}
 		return protocol.ErrResponse(err.Error())
@@ -2200,8 +2211,10 @@ func (e *Executor) ContinueSession(args []string) *protocol.Response {
 
 	if async {
 		return protocol.OKResponse(SessionContinuedResult{
-			SessionID: sessionID,
-			Async:     true,
+			SessionID:   sessionID,
+			Async:       true,
+			Accepted:    true,
+			OperationID: operationID,
 		})
 	}
 
@@ -2216,8 +2229,10 @@ func (e *Executor) ContinueSession(args []string) *protocol.Response {
 	_ = e.store.SetSessionReviewed(sessionID, true)
 
 	return protocol.OKResponse(SessionContinuedResult{
-		SessionID: sessionID,
-		Response:  response,
+		SessionID:   sessionID,
+		Response:    response,
+		Accepted:    true,
+		OperationID: operationID,
 	})
 }
 
@@ -3539,6 +3554,7 @@ func (e *Executor) HistorySession(args []string) *protocol.Response {
 	} else if err := json.Unmarshal(resp.Data, &sessionData); err != nil {
 		return protocol.ErrResponse(fmt.Sprintf("parsing conversation: %v", err))
 	}
+	_ = e.store.ObserveVisible(sessionID, sessionData.Revision, sessionData.Generation)
 
 	conv := sessionData.Conversation
 	if conv == nil {
@@ -3546,13 +3562,6 @@ func (e *Executor) HistorySession(args []string) *protocol.Response {
 	}
 	if numTurns > 0 && numTurns < len(conv) {
 		conv = conv[len(conv)-numTurns:]
-	}
-
-	// Mark session as reviewed only if the last turn is from the assistant,
-	// meaning the agent has finished and the user is seeing the final response.
-	// If the agent is still working (last turn is user), don't mark reviewed yet.
-	if len(conv) > 0 && conv[len(conv)-1].Role == "assistant" {
-		_ = e.store.SetSessionReviewed(sessionID, true)
 	}
 
 	return protocol.OKResponse(HistoryResult{
@@ -3564,6 +3573,30 @@ func (e *Executor) HistorySession(args []string) *protocol.Response {
 		NextCursor:   sessionData.NextCursor,
 		HasMore:      sessionData.HasMore,
 	})
+}
+
+func (e *Executor) AcknowledgeSession(args []string) *protocol.Response {
+	var sessionID string
+	var revision, generation int64
+	remaining, err := parseFlagsFromArgs("ack-session", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&sessionID, "session-id", "", "session ID")
+		fs.Int64Var(&revision, "revision", 0, "authoritative rendered revision")
+		fs.Int64Var(&generation, "generation", 0, "authoritative rendered generation")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if sessionID == "" && len(remaining) > 0 {
+		sessionID = remaining[0]
+	}
+	if sessionID == "" || revision < 0 || generation < 0 {
+		return protocol.ErrResponse("session_id, revision, and generation are required")
+	}
+	changed, err := e.store.AcknowledgeVisible(sessionID, revision, generation)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	return protocol.OKResponse(map[string]interface{}{"session_id": sessionID, "acknowledged": changed, "revision": revision, "generation": generation})
 }
 
 func (e *Executor) ReconcileSession(args []string) *protocol.Response {

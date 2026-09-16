@@ -1285,3 +1285,31 @@ legacy records. Only `custom` mode consults the value:
 `shouldCompact` compares measured context tokens with
 `compaction_threshold_tokens`, while `agent` mode remains entirely delegated to
 the underlying agent.
+# Communication refactor decisions
+
+The event broker and leased watches remain invalidation-only; they do not
+become a transcript journal. Push-first clients fetch an initial authoritative
+snapshot, reconcile on a hint, and fall back to slow recovery polling only
+when the connection/watch is unavailable, expired, overflowing, or legacy.
+`PUSH_FIRST` in Qew and `pushFirstBehavior` in the Hem TUI are temporary
+compile-time gates defaulting on; each has a complete legacy polling branch.
+
+Moneypenny's `client_operations` table is the durable idempotency boundary for
+prompt/continue. The session and operation ID are the key, and a SHA-256
+digest over prompt/attachments/model/effort/context prevents materially
+different retries while ignoring source-only routing metadata. Lifecycle
+transitions are `accepted`, `running`, `queued`, `completed`, and `failed`;
+CAS transitions let a retry repair accepted/failed work without replaying a
+running or completed operation. This covers prompt/continue side effects only,
+not scheduling, and is lifecycle state rather than a second transcript journal.
+Queue draining preserves this boundary: legacy prompts with an empty operation
+ID may retain override-group batching, but every operation-ID prompt is its own
+execution group and transitions queued -> running -> completed/failed
+individually. A unique session/operation queue index makes concurrent retries
+converge on one queued row; an accepted retry repairs an already-persisted
+queue row after a crash window instead of creating a duplicate.
+
+Hem readiness now uses an explicit visible watermark. Passive history,
+reconcile, and push reads do not mutate readiness. `ack session` records the
+caller-supplied rendered revision/generation and clears Ready only for a
+monotonic generation/revision; lower generations or revisions are ignored.

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"path/filepath"
@@ -63,6 +64,37 @@ type Session struct {
 	UpdatedAt       time.Time
 	Revision        int64
 	Generation      int64
+}
+
+func (s *Store) GetClientOperation(sessionID, operationID string) (ClientOperation, bool, error) {
+	var op ClientOperation
+	err := s.db.QueryRow(`SELECT session_id, operation_id, digest, status, response_json FROM client_operations WHERE session_id = ? AND operation_id = ?`, sessionID, operationID).
+		Scan(&op.SessionID, &op.OperationID, &op.Digest, &op.Status, &op.Response)
+	if err == sql.ErrNoRows {
+		return ClientOperation{}, false, nil
+	}
+	if err != nil {
+		return ClientOperation{}, false, fmt.Errorf("read operation: %w", err)
+	}
+	return op, true, nil
+}
+
+func (s *Store) UpdateClientOperationStatus(sessionID, operationID, from, to string, response any) (bool, error) {
+	raw := ""
+	if response != nil {
+		encoded, err := json.Marshal(response)
+		if err != nil {
+			return false, fmt.Errorf("marshal operation response: %w", err)
+		}
+		raw = string(encoded)
+	}
+	res, err := s.db.Exec(`UPDATE client_operations SET status = ?, response_json = CASE WHEN ? <> '' THEN ? ELSE response_json END, updated_at = CURRENT_TIMESTAMP
+		WHERE session_id = ? AND operation_id = ? AND status = ?`, to, raw, raw, sessionID, operationID, from)
+	if err != nil {
+		return false, fmt.Errorf("update operation status: %w", err)
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
 
 // Compaction modes.
@@ -144,6 +176,47 @@ func boolInt(v bool) int {
 	return 0
 }
 
+// BeginClientOperation atomically reserves an operation id and stores the
+// accepted response before any agent/queue work is started.
+func (s *Store) BeginClientOperation(sessionID, operationID, digest string, response any) (ClientOperation, bool, error) {
+	if sessionID == "" || operationID == "" || digest == "" {
+		return ClientOperation{}, false, fmt.Errorf("operation identity is required")
+	}
+	raw, err := json.Marshal(response)
+	if err != nil {
+		return ClientOperation{}, false, fmt.Errorf("marshal operation response: %w", err)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return ClientOperation{}, false, fmt.Errorf("begin operation: %w", err)
+	}
+	defer tx.Rollback()
+	result, err := tx.Exec(`INSERT OR IGNORE INTO client_operations (session_id, operation_id, digest, status, response_json) VALUES (?, ?, ?, ?, ?)`,
+		sessionID, operationID, digest, OperationAccepted, string(raw))
+	if err != nil {
+		return ClientOperation{}, false, fmt.Errorf("persist operation: %w", err)
+	}
+	var existing ClientOperation
+	if affected, _ := result.RowsAffected(); affected == 0 {
+		err = tx.QueryRow(`SELECT session_id, operation_id, digest, status, response_json FROM client_operations WHERE session_id = ? AND operation_id = ?`, sessionID, operationID).
+			Scan(&existing.SessionID, &existing.OperationID, &existing.Digest, &existing.Status, &existing.Response)
+		if err != nil {
+			return ClientOperation{}, false, fmt.Errorf("read operation after concurrent reservation: %w", err)
+		}
+		if existing.Digest != digest {
+			return ClientOperation{}, false, fmt.Errorf("operation_id %q was already used with different input", operationID)
+		}
+		if err := tx.Commit(); err != nil {
+			return ClientOperation{}, false, fmt.Errorf("commit operation lookup: %w", err)
+		}
+		return existing, true, nil
+	}
+	if err := tx.Commit(); err != nil {
+		return ClientOperation{}, false, fmt.Errorf("commit operation: %w", err)
+	}
+	return ClientOperation{SessionID: sessionID, OperationID: operationID, Digest: digest, Status: OperationAccepted, Response: raw}, false, nil
+}
+
 // Schedule states
 const (
 	SchedulePending = "pending"
@@ -170,6 +243,24 @@ type Schedule struct {
 type Store struct {
 	db           *sql.DB
 	notifyWriter *envelope.NotificationWriter
+}
+
+const (
+	OperationPending   = "pending"
+	OperationAccepted  = "accepted"
+	OperationQueued    = "queued"
+	OperationRunning   = "running"
+	OperationCompleted = "completed"
+	OperationFailed    = "failed"
+)
+
+// ClientOperation is the durable idempotency record for a caller operation.
+type ClientOperation struct {
+	SessionID   string
+	OperationID string
+	Digest      string
+	Status      string
+	Response    []byte
 }
 
 // New opens (or creates) the SQLite database at the given path and runs migrations.
@@ -278,6 +369,17 @@ CREATE TABLE IF NOT EXISTS prompt_queue (
 
 CREATE INDEX IF NOT EXISTS idx_prompt_queue_session ON prompt_queue(session_id);
 
+CREATE TABLE IF NOT EXISTS client_operations (
+    session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+    operation_id TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    status TEXT NOT NULL,
+    response_json TEXT NOT NULL DEFAULT '',
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (session_id, operation_id)
+);
+
 CREATE TABLE IF NOT EXISTS schedules (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
@@ -333,6 +435,13 @@ CREATE INDEX IF NOT EXISTS idx_channel_outbox_pending ON channel_outbox(status);
 	db.Exec(`ALTER TABLE schedules ADD COLUMN cron_expr TEXT NOT NULL DEFAULT ''`)
 	db.Exec(`ALTER TABLE schedules ADD COLUMN mark_ready INTEGER NOT NULL DEFAULT 0`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN schedule_ready_at DATETIME`)
+	db.Exec(`CREATE TABLE IF NOT EXISTS client_operations (
+		session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+		operation_id TEXT NOT NULL, digest TEXT NOT NULL, status TEXT NOT NULL,
+		response_json TEXT NOT NULL DEFAULT '',
+		created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (session_id, operation_id))`)
 
 	// Migration: add model column to sessions if missing.
 	db.Exec(`ALTER TABLE sessions ADD COLUMN model TEXT NOT NULL DEFAULT ''`)
@@ -352,6 +461,7 @@ CREATE INDEX IF NOT EXISTS idx_channel_outbox_pending ON channel_outbox(status);
 	db.Exec(`ALTER TABLE prompt_queue ADD COLUMN model TEXT NOT NULL DEFAULT ''`)
 	db.Exec(`ALTER TABLE prompt_queue ADD COLUMN effort TEXT NOT NULL DEFAULT ''`)
 	db.Exec(`ALTER TABLE prompt_queue ADD COLUMN context_tier TEXT NOT NULL DEFAULT ''`)
+	db.Exec(`ALTER TABLE prompt_queue ADD COLUMN operation_id TEXT NOT NULL DEFAULT ''`)
 
 	// Migration: add a source column to prompt_queue so the drain path can tell
 	// scheduler-originated prompts apart from user-typed ones (empty = user).
@@ -420,8 +530,18 @@ CREATE INDEX IF NOT EXISTS idx_channel_outbox_pending ON channel_outbox(status);
 			return err
 		}
 	}
+	var hasOperationID int
+	if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info('prompt_queue') WHERE name = 'operation_id'`).Scan(&hasOperationID); err != nil {
+		return err
+	}
+	if hasOperationID == 0 {
+		if _, err := db.Exec(`ALTER TABLE prompt_queue ADD COLUMN operation_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
 	_, err = db.Exec(`
 		CREATE UNIQUE INDEX IF NOT EXISTS idx_queue_recurring_schedule ON prompt_queue(schedule_id) WHERE schedule_id != 0;
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_queue_operation ON prompt_queue(session_id, operation_id) WHERE operation_id != '';
 		CREATE INDEX IF NOT EXISTS idx_queue_session_order ON prompt_queue(session_id, created_at, id);
 		CREATE INDEX IF NOT EXISTS idx_queue_scheduled ON prompt_queue(session_id, source);
 		CREATE INDEX IF NOT EXISTS idx_schedules_session_status ON schedules(session_id, status, scheduled_at, id);`)
@@ -983,6 +1103,7 @@ type QueuedPrompt struct {
 	// (channels.id). 0 = no channel routing.
 	ReplyChannelID int64
 	MarkReady      bool
+	OperationID    string
 }
 
 func boolToInt(value bool) int {
@@ -1008,14 +1129,30 @@ func (s *Store) QueuePromptChannel(sessionID, prompt, model, effort, contextTier
 
 // QueuePromptChannelFrom is QueuePromptChannel with agent-origin provenance.
 func (s *Store) QueuePromptChannelFrom(sessionID, prompt, model, effort, contextTier, source, sourceSessionID, sourceName string, replyChannelID int64, markReady bool) error {
+	return s.QueuePromptChannelFromOperation(sessionID, prompt, model, effort, contextTier, source, sourceSessionID, sourceName, replyChannelID, markReady, "")
+}
+
+func (s *Store) QueuePromptChannelFromOperation(sessionID, prompt, model, effort, contextTier, source, sourceSessionID, sourceName string, replyChannelID int64, markReady bool, operationID string) error {
 	_, err := s.db.Exec(
-		`INSERT INTO prompt_queue (session_id, prompt, model, effort, context_tier, source, source_session_id, source_name, reply_channel_id, mark_ready) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sessionID, prompt, model, effort, contextTier, source, sourceSessionID, sourceName, replyChannelID, boolToInt(markReady),
+		`INSERT INTO prompt_queue (session_id, prompt, model, effort, context_tier, source, source_session_id, source_name, reply_channel_id, mark_ready, operation_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sessionID, prompt, model, effort, contextTier, source, sourceSessionID, sourceName, replyChannelID, boolToInt(markReady), operationID,
 	)
 	if err != nil {
 		return fmt.Errorf("queue prompt: %w", err)
 	}
 	return nil
+}
+
+func (s *Store) HasQueuedOperation(sessionID, operationID string) (bool, error) {
+	if operationID == "" {
+		return false, nil
+	}
+	var n int
+	err := s.db.QueryRow(`SELECT count(*) FROM prompt_queue WHERE session_id = ? AND operation_id = ?`, sessionID, operationID).Scan(&n)
+	if err != nil {
+		return false, fmt.Errorf("check queued operation: %w", err)
+	}
+	return n != 0, nil
 }
 
 const (
@@ -1034,7 +1171,7 @@ func (s *Store) DrainQueueGroup(sessionID string) ([]QueuedPrompt, error) {
 	defer tx.Rollback()
 
 	rows, err := tx.Query(
-		`SELECT id, prompt, model, effort, context_tier, source, source_session_id, source_name, reply_channel_id, mark_ready FROM prompt_queue WHERE session_id = ? ORDER BY created_at, id LIMIT ?`, sessionID, MaxQueueBatch,
+		`SELECT id, prompt, model, effort, context_tier, source, source_session_id, source_name, reply_channel_id, mark_ready, operation_id FROM prompt_queue WHERE session_id = ? ORDER BY created_at, id LIMIT ?`, sessionID, MaxQueueBatch,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("drain queue group: %w", err)
@@ -1045,12 +1182,13 @@ func (s *Store) DrainQueueGroup(sessionID string) ([]QueuedPrompt, error) {
 	var haveFirst bool
 	var firstModel, firstEffort, firstTier string
 	var firstChannel int64
+	var firstOperationID string
 	totalBytes := 0
 	for rows.Next() {
 		var id int64
 		var qp QueuedPrompt
 		var markReady int
-		if err := rows.Scan(&id, &qp.Prompt, &qp.Model, &qp.Effort, &qp.ContextTier, &qp.Source, &qp.SourceSessionID, &qp.SourceName, &qp.ReplyChannelID, &markReady); err != nil {
+		if err := rows.Scan(&id, &qp.Prompt, &qp.Model, &qp.Effort, &qp.ContextTier, &qp.Source, &qp.SourceSessionID, &qp.SourceName, &qp.ReplyChannelID, &markReady, &qp.OperationID); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("scan queued prompt: %w", err)
 		}
@@ -1062,10 +1200,16 @@ func (s *Store) DrainQueueGroup(sessionID string) ([]QueuedPrompt, error) {
 			haveFirst = true
 			firstModel, firstEffort, firstTier = qp.Model, qp.Effort, qp.ContextTier
 			firstChannel = qp.ReplyChannelID
+			firstOperationID = qp.OperationID
 		} else if qp.Model != firstModel || qp.Effort != firstEffort || qp.ContextTier != firstTier || qp.ReplyChannelID != firstChannel || qp.MarkReady != prompts[0].MarkReady {
 			// Different override or reply channel: end of the leading group. Keeping
 			// reply channel in the grouping key ensures a group's response is routed
 			// to exactly one channel (or none).
+			break
+		} else if firstOperationID != "" || qp.OperationID != firstOperationID {
+			// Durable operation-ID prompts must execute independently so each
+			// operation owns exactly one terminal transition. Legacy prompts
+			// (empty IDs) retain override-group batching.
 			break
 		}
 		ids = append(ids, id)

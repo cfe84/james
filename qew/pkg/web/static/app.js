@@ -1,7 +1,11 @@
 (function() {
   'use strict';
 
+  // Temporary push cutover gate. Keep the legacy timers available until all
+  // supported clients advertise watch/reconcile behavior.
+  const PUSH_FIRST = true;
   const POLL_INTERVAL = 5000;
+  const RECOVERY_POLL_INTERVAL = 60000;
   let ws = null;
   let currentSession = null;
   let pollTimer = null;
@@ -150,8 +154,23 @@
       window.location.href = '/login';
       throw new Error('Session expired');
     }
+
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     return resp.json();
+  }
+
+  function newOperationID() {
+    if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+    return `qew-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  }
+
+  function acknowledgeRenderedSnapshot(sessionID, data) {
+    if (!sessionID || !data || typeof data.revision !== 'number' || typeof data.generation !== 'number') return;
+    const ackGeneration = chatGeneration;
+    Promise.resolve().then(() => {
+      if (currentSession !== sessionID || chatGeneration !== ackGeneration) return;
+      return apiCall('ack', 'session', [sessionID, '--revision', String(data.revision), '--generation', String(data.generation)]);
+    }).catch(() => {});
   }
 
   // Optional panels must not hold the transcript hostage when a daemon or
@@ -1084,6 +1103,9 @@
       if (histResp) mergeRecentHistory(histResp.data);
       setConnectionState(true);
       renderChat(false);
+      if (histResp && histResp.data && Array.isArray(histResp.data.conversation)) {
+        acknowledgeRenderedSnapshot(sessAtStart, histResp.data);
+      }
     } catch (e) {
       if (currentSession !== sessAtStart || generation !== chatGeneration) return;
       setConnectionState(false);
@@ -1569,7 +1591,7 @@
       if (hasAttachments) {
         attachmentPaths = await uploadPendingAttachments(currentSession);
       }
-      const args = [currentSession, '--async'];
+      const args = [currentSession, '--async', '--operation-id', newOperationID()];
       if (overrideModel) args.push('--model', overrideModel);
       if (overrideEffort) args.push('--effort', overrideEffort);
       if (overrideContext) args.push('--context', overrideContext);
@@ -5547,8 +5569,8 @@
         return;
       }
       // Socket liveness does not imply end-to-end Moneypenny event delivery.
-      if (currentSession) startChatPoll();
-      else startDashboardPoll();
+      stopChatPoll();
+      stopDashboardPoll();
       if (pushHeartbeatTimer) clearInterval(pushHeartbeatTimer);
       pushHeartbeatTimer = setInterval(() => {
         if (ws && ws.readyState === WebSocket.OPEN) {
@@ -5618,8 +5640,15 @@
       activeWatchID = null;
       activeWatchRequestID = null;
       if (pushHeartbeatTimer) { clearInterval(pushHeartbeatTimer); pushHeartbeatTimer = null; }
-      if (currentSession) startChatPoll();
-      else startDashboardPoll();
+      if (PUSH_FIRST) {
+        // Unhealthy push-first clients use only bounded recovery polling.
+        if (currentSession) startChatPoll();
+        else startDashboardPoll();
+      } else {
+        // Legacy clients retain their original frequent full polling cadence.
+        if (currentSession) startLegacyChatPoll();
+        else startLegacyDashboardPoll();
+      }
       // Do not wait for the first interval: the authoritative HTTP read also
       // closes the gap between the last hint and this disconnect.
       if (currentSession) loadChat();
@@ -5633,6 +5662,13 @@
   function startDashboardPoll() {
     stopChatPoll();
     stopDashboardPoll();
+    if (PUSH_FIRST && ws && ws.readyState === WebSocket.OPEN) return;
+    pollTimer = setInterval(loadDashboard, PUSH_FIRST ? RECOVERY_POLL_INTERVAL : POLL_INTERVAL);
+  }
+
+  function startLegacyDashboardPoll() {
+    stopChatPoll();
+    stopDashboardPoll();
     pollTimer = setInterval(loadDashboard, POLL_INTERVAL);
   }
 
@@ -5641,6 +5677,13 @@
   }
 
   function startChatPoll() {
+    stopDashboardPoll();
+    stopChatPoll();
+    if (PUSH_FIRST && ws && ws.readyState === WebSocket.OPEN) return;
+    chatPollTimer = setInterval(loadChat, PUSH_FIRST ? RECOVERY_POLL_INTERVAL : 3000);
+  }
+
+  function startLegacyChatPoll() {
     stopDashboardPoll();
     stopChatPoll();
     chatPollTimer = setInterval(loadChat, 3000);

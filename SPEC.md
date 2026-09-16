@@ -1838,3 +1838,32 @@ When a dashboard refresh fails after a successful snapshot has been loaded, Qew
 keeps the current conversation list visible and reports the disconnected state
 through the header. The connection error is shown in the dashboard only when
 there is no prior successful snapshot.
+# Communication refactor completion
+
+Watch-capable healthy Qew and TUI clients use event invalidation and
+revision/generation reconciliation instead of routine chat/history and
+dashboard polling. Initial snapshots, explicit refreshes, reconnect/resync,
+overflow, unavailable/expired/legacy watch paths, and bounded recovery polling
+remain authoritative. The temporary `PUSH_FIRST`/`pushFirstBehavior` gates
+default to true and must be removed only after legacy watch clients are retired.
+
+Prompt/continue accepts an optional caller-owned `operation_id` (1-128 ASCII
+characters matching `[A-Za-z0-9][A-Za-z0-9._:-]*`). Moneypenny persists a
+session-scoped payload digest and lifecycle status in SQLite before starting or
+queueing work. Status is `accepted`, `running`, `queued`, `completed`, or
+`failed`; retries repair accepted/failed work and replay running/queued/completed
+operations. Reusing an ID with different prompt, attachments, model, effort, or
+context is rejected; source-only routing metadata is not part of the digest.
+Omitting the ID preserves legacy behavior. Acceptance is distinct from
+eventual completion, and operation IDs do not cover scheduling.
+When queued, each non-empty operation ID is drained as an independent agent
+execution so its lifecycle reaches its own terminal state; only legacy no-ID
+prompts retain override-group batching. Queue persistence uses a unique
+session/operation key, allowing retries after an acceptance/queue crash window
+to recover the existing row without duplicate execution.
+
+History reads are passive. A client may acknowledge readiness only through
+`ack session` after rendering an authoritative revision/generation. Acks are
+monotonic and generation-scoped; stale, lower, failed-render, and push-only
+hints do not clear Ready. A generation change establishes a new watermark only
+through a valid acknowledgement.

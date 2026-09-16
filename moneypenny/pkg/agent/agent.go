@@ -336,6 +336,8 @@ type RunParams struct {
 	// MarkReady requests that Hem surface this completed scheduled run in its
 	// Ready group after the agent becomes idle.
 	MarkReady bool
+	// OperationID identifies the durable caller operation, when applicable.
+	OperationID string
 }
 
 // agentSessionID returns the id to hand to the underlying agent CLI.

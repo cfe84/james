@@ -390,3 +390,38 @@ func TestTraitEnabledByDefault(t *testing.T) {
 		t.Fatalf("t2 name not updated: %q", byID["t2"].Name)
 	}
 }
+
+func TestVisibleAcknowledgementIsMonotonicAndGenerationScoped(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.AddMoneypenny(&Moneypenny{Name: "mp", TransportType: TransportFIFO, FIFOIn: "/tmp/in", FIFOOut: "/tmp/out"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TrackSession("s1", "mp"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ObserveVisible("s1", 4, 2); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := s.AcknowledgeVisible("s1", 4, 2); err != nil || !changed {
+		t.Fatalf("initial ack changed=%v err=%v", changed, err)
+	}
+	if err := s.SetSessionReviewed("s1", false); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := s.AcknowledgeVisible("s1", 3, 1); err != nil || changed {
+		t.Fatalf("stale generation changed=%v err=%v", changed, err)
+	}
+	if changed, err := s.AcknowledgeVisible("s1", 2, 2); err != nil || changed {
+		t.Fatalf("lower revision changed=%v err=%v", changed, err)
+	}
+	if err := s.ObserveVisible("s1", 1, 3); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := s.AcknowledgeVisible("s1", 1, 3); err != nil || !changed {
+		t.Fatalf("new generation changed=%v err=%v", changed, err)
+	}
+	got, err := s.GetSession("s1")
+	if err != nil || !got.Reviewed {
+		t.Fatalf("reviewed=%v err=%v", got.Reviewed, err)
+	}
+}

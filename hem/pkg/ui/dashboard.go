@@ -16,6 +16,7 @@ type broadcastMsg struct{ resp *protocol.Response }
 type broadcastReconnectMsg struct{} // signals that broadcast channel closed, should reconnect
 
 const (
+	pushFirstBehavior           = true             // temporary; remove after legacy clients are retired
 	dashboardPollInterval       = 60 * time.Second // Slow fallback (notifications enabled)
 	dashboardPollIntervalActive = 5 * time.Second  // Fast poll when sessions are working (no notifications)
 )
@@ -23,6 +24,9 @@ const (
 // dashboardPollTickAdaptive polls faster when sessions are working and
 // notifications are disabled (the default).
 func (m dashboardModel) dashboardPollTickAdaptive() tea.Cmd {
+	if pushFirstBehavior && m.client.useNotifications {
+		return nil
+	}
 	var interval time.Duration
 	if m.client.useNotifications {
 		interval = dashboardPollInterval
@@ -73,7 +77,7 @@ type dashboardEntry struct {
 	Moneypenny      string
 	CreatedAt       string
 	LastActive      string
-	Category        int // 0=READY, 1=WORKING, 2=IDLE, 3=COMPLETED
+	Category        int    // 0=READY, 1=WORKING, 2=IDLE, 3=COMPLETED
 	ParentSessionID string // non-empty for subagent entries
 	Nick            string // optional short nickname/alias
 }
@@ -297,7 +301,7 @@ func (m dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 		// Broadcasts() will attempt reconnect if connection is dead.
 		if ch := m.client.broadcasts(); ch != nil {
 			uilog("MI6 broadcast: reconnected, re-subscribing")
-			return m, listenForBroadcasts(ch)
+			return m, tea.Batch(listenForBroadcasts(ch), m.loadDashboard())
 		}
 		// Still disconnected — retry after a delay.
 		uilog("MI6 broadcast: still disconnected, retrying in 3s")
@@ -575,7 +579,7 @@ func (m dashboardModel) View() string {
 	var b strings.Builder
 
 	if m.title != "" {
-		b.WriteString(titleStyle.Render(" "+m.title+" "))
+		b.WriteString(titleStyle.Render(" " + m.title + " "))
 		b.WriteString("\n")
 	}
 
@@ -647,7 +651,7 @@ func (m dashboardModel) View() string {
 	if w < 80 {
 		w = 80
 	}
-	agentWidth := 9 // "copilot" + gap
+	agentWidth := 9                                     // "copilot" + gap
 	fixedWidth := 2 + statusWidth + 14 + 8 + agentWidth // indent + status + lastActive + gaps + agent
 	if showProject {
 		fixedWidth += 14 // project column + gap
