@@ -272,3 +272,29 @@ func TestDashboardOnlineAttentionUnchanged(t *testing.T) {
 		}
 	}
 }
+
+func TestDashboardWorkingParentKeepsWorkingStatusWithReadyChild(t *testing.T) {
+	e := newHierarchyExecutor(t)
+	if err := e.store.AddMoneypenny(&store.Moneypenny{Name: "mac", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.TrackSession("parent", "mac"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.TrackSubSession("child", "mac", "parent"); err != nil {
+		t.Fatal(err)
+	}
+	e.cacheManager.UpdateMP("mac", map[string]mpSessionInfo{
+		"parent": {SessionID: "parent", Name: "parent", Status: "working"},
+		"child":  {SessionID: "child", Name: "child", Status: "idle"},
+	})
+	e.cacheManager.SetRefreshing(true)
+
+	rows := dashboardTable(t, e.Dashboard([]string{"--show-subs"}))
+	if got := rows["parent"][3]; got != "working (active) [1 subs, 1 ready]" {
+		t.Fatalf("parent status = %q, want working with ready-child summary", got)
+	}
+	if got := rows["child"][3]; got != "ready (active)" {
+		t.Fatalf("child status = %q, want ready", got)
+	}
+}

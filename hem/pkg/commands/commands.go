@@ -5958,9 +5958,10 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 			}
 		}
 
-		// Promote to READY if any subagent is ready (idle + unreviewed).
+		// An idle parent becomes READY when any subagent is ready (idle + unreviewed).
+		// Keep WORKING (and other non-idle) parents in their own state.
 		subReady := false
-		if sortKey != 0 && sess.HemStatus != "completed" && mpStatus != "offline" {
+		if mpStatus == "idle" && sess.HemStatus != "completed" {
 			for _, sub := range subsByParent[sess.SessionID] {
 				if sub.HemStatus == "completed" || sub.Reviewed {
 					continue

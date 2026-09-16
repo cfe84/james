@@ -1500,6 +1500,10 @@ Groups sessions by state:
 3. **IDLE** — session is idle and reviewed (user has seen the response)
 4. **COMPLETED** — user marked session as done (hidden unless `--all`)
 
+An unreviewed, ready child can promote an idle parent into the READY group, while
+the parent's own WORKING status takes precedence over child readiness. Child
+ready counts and summaries remain visible on the parent row.
+
 The "reviewed" flag tracks whether the user has seen the latest agent response. A session becomes unreviewed when `continue_session` is called. It becomes reviewed when the user views the conversation history and the last turn is from the assistant (i.e., the agent has finished). This prevents the chat view's polling from prematurely marking a session as reviewed while the agent is still working. The user can also manually toggle the flag with `hem mark session` (see **Session commands**) — "mark as ready" (unread) re-promotes an idle session into the READY group, and `--read` clears it; in the TUI/Qew this is bound to `u`.
 
 Each session row also shows which agent it runs (`claude` or `copilot`). The agent is reported by the moneypenny in its `list_sessions` response and rendered as a colored label in the TUI dashboard (orange for copilot, violet for claude). Sessions on offline/unknown moneypennies show `-`.
