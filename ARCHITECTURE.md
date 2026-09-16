@@ -511,14 +511,16 @@ The recovery path is intentionally not a second event journal. Hem forwards the
 `reconcile session` command over the existing local/FIFO and persistent MI6
 client seams; tests cover the store-to-handler-to-Hem broker path and the Qew
 response handling, not a full subprocess MI6/browser deployment.
-Moneypenny returns the current watermark plus at most 100 recent turns / 1 MiB.
-Generation changes request a reset; if a cursor gap cannot be replayed from a
-journal, clients apply the bounded recent snapshot and use existing history
-pagination for older turns. Qew maintains per-session watermarks, suppresses
-stale hints, and triggers reconciliation on reconnect or explicit overflow
-markers. Polling remains enabled and authoritative. Encoded-byte chunk cursors,
-lease/watch refcounting, speculative replay cursors, and full end-to-end
-MI6/browser acceptance remain deferred.
+Moneypenny returns the current watermark plus at most 100 recent turns / 1 MiB,
+bounded by incrementally marshaling the encoded JSON response (including UTF-8
+escaping). History and reconcile pages carry a versioned URL-safe cursor with
+generation, end-relative turn offset, and last turn ID; malformed or
+stale-generation cursors are rejected. `next_cursor` and `has_more` propagate
+through Hem to Qew. Generation changes request a reset; if a cursor gap cannot
+be replayed from a journal, clients apply the bounded recent snapshot and use
+existing history pagination for older turns. Qew maintains per-session
+watermarks, suppresses stale hints, and triggers reconciliation on reconnect or
+explicit overflow markers. Polling remains enabled and authoritative.
 
 Hem uses a client/server architecture over a Unix domain socket (`~/.config/james/hem/hem.sock`).
 
@@ -793,7 +795,7 @@ ignores it. Manual `compact session` (TUI/Qew `K`) requires idle state. **Pipeli
 
 72. **Qew session omnibar / quick switcher (v1.52.0)**: a dashboard quick-switcher opened by pressing `o` (previously free on the dashboard; `o` in chat is the model override, so no conflict). `openOmnibar()` builds candidates entirely from the cached `lastDashboardData.rows` (no network call): each row maps to `{sessionId, name, project, statusRaw, moneypenny, lastActive, parent(row[7]), agent, nick(row[9])}`, **excludes archived** sessions (statusRaw containing `(completed)`), and **sorts by recency** (`Date.parse(lastActive)` desc, undated rows last). It renders a `.cmd-palette.omni` modal (via `renderWizardModal`) with a focused text `<input>` and a scrollable `.omni-list`. Typing filters by **nickname + name only** using the existing `fuzzyMatch` subsequence matcher, ranks nickname matches ahead of title-only matches while preserving recency within each tier, and resets the cursor; the input's own `keydown` listener handles `ArrowUp`/`ArrowDown` (move cursor + `scrollIntoView`), `Enter` (open), and `Escape` (close), each with `stopPropagation` so the global document handler (which, with a `.modal-overlay` present, otherwise only routes Escape→`escapeCloseModal`) never sees them. `updateOmniList()` re-renders **only** the results list (not the whole modal) so the input keeps focus and caret across filtering/navigation; each row shows `nick · name` plus a muted sub-line (`agent · moneypenny · relativeTime`). Opening reuses the shared `openDashEntry()` (so a subagent row opens its parent then `_openSubagent`); row click also opens via a `data-omni-idx` delegated handler. `closeOmnibar()` nulls the state and tears down the modal (`closeWizard`); a `Close` button matches `escapeCloseModal`'s label fallback. No protocol/store/CLI change — pure Qew frontend.
 
-73. **Subagent callbacks as distinct turns**: A subagent replies using `gadgets subagents message PARENT_ID`; the daemon supplies its source identity and Hem checks the current hierarchy. `messageGadgetAgent` attaches `source:"callback"` for parent replies, preserves source ID/name, marks the destination unreviewed/reactivates completed sessions, and tries `continue_session`, falling back to `queue_prompt` only when busy. Moneypenny stores the callback role both for direct delivery and when draining the queue. Operator `hem callback session ... --from ...` and `watch session` remain supported administrative flows, but their commands/identity flags are not agent instructions. TUI's highlighted `callbackStyle` and Qew's `.msg.callback` render callbacks compactly with ↩️ and always show them regardless of the train-of-thought toggle. The role uses existing `prompt_queue.source` and conversation-turn `role` fields.
+73. **Subagent callbacks as distinct turns**: A subagent replies using `gadgets subagents message PARENT_ID`; the daemon supplies its source identity and Hem checks the current hierarchy. This parent-reply path is unconditional and remains injected even when the revocable Subagents capability is disabled. When that capability is enabled, Moneypenny's injected prompt defines James subagents as real Hem/Moneypenny child sessions, requires `gadgets subagents create` rather than generic task tools or runtime/background delegation, requires post-create verification through `gadgets subagents list`, and directs child/parent communication through `gadgets subagents message`. `messageGadgetAgent` attaches `source:"callback"` for parent replies, preserves source ID/name, marks the destination unreviewed/reactivates completed sessions, and tries `continue_session`, falling back to `queue_prompt` only when busy. Moneypenny stores the callback role both for direct delivery and when draining the queue. Operator `hem callback session ... --from ...` and `watch session` remain supported administrative flows, but their commands/identity flags are not agent instructions. TUI's highlighted `callbackStyle` and Qew's `.msg.callback` render callbacks compactly with ↩️ and always show them regardless of the train-of-thought toggle. The role uses existing `prompt_queue.source` and conversation-turn `role` fields.
 
 74. **Completed subagents are hidden from live chat (`v1.54.0`)**: a parent conversation's inline subagent status rows and numbered navigation are now scoped to non-completed children, preventing finished tasks from crowding active work. The full child list remains available deliberately: **Hem TUI** keeps the existing `Esc` → `a` subagent picker as an explicitly labelled **All subagents** screen (including completed entries), while **Qew** retains both `lastSubagents` (active-only, for inline rows and `1`–`9`) and `allSubagents` (unfiltered). Qew's command palette adds `l` → **All subagents**, a modal list with each child's name/status that opens any entry, including completed work. `allSubagentsCursor` drives its clamped `j`/`k` and arrow-key selection, `Enter` reuses `openAllSubagent()` to open it, and generic modal Escape invokes the Close button. The backend `list subsession` response is unchanged; filtering happens only at the respective live-chat presentation boundary.
 
@@ -1225,7 +1227,7 @@ ephemeral hints rather than transcript data. Network delivery is not performed
 inside SQLite transactions and accepted agent/scheduler execution does not
 depend on relay or browser lifetime.
 
-## Leased session watches (next unreleased gate)
+## Leased session watches (v1.94.0)
 
 The existing bounded hint path now has a lifecycle-only watch protocol. Qew
 assigns each authenticated WebSocket a connection ID and monotonically unique
@@ -1244,6 +1246,19 @@ stops at expiry. Watches are invalidation hints only: polling remains the
 authoritative read path, and agent execution, scheduler dispatch, SQLite
 transactions, and persisted output do not depend on watch or socket lifetime.
 The existing authentication and WebSocket Origin checks are unchanged.
+
+### Subprocess disconnect acceptance (v1.95.0)
+
+The deterministic acceptance suite now exercises the daemon through a built
+Moneypenny child process, including open/renew/close, duplicate close, clean
+stdin disconnect, abrupt process termination, and restart with a fresh epoch.
+Hem and Qew acceptance tests cover the corresponding abrupt connection cleanup,
+shared-session aggregate lifetime, final-consumer unwatch, lease expiry,
+overflow/resync markers, and idempotent shutdown. These tests deliberately use
+local process and in-memory transports only; they do not require MI6
+credentials or an external network. The process-boundary checks validate
+lifecycle cleanup, not durable state: watch leases remain optional hints and
+never own agent, scheduler, SQLite, or persisted-output lifetime.
 ### Qew dashboard failure handling
 
 The Qew dashboard treats its last successful response as the visible snapshot.

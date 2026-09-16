@@ -206,11 +206,12 @@ func (h *Handler) prepareGadgets(sessionID string, params *agent.RunParams) erro
 	params.SystemPrompt += "\n\n<gadgets>\nUse the gadgets executable for session tools. Identity is bound by the daemon; never supply another session ID or alter credentials. Commands return structured JSON and writes accept stdin. Permissions are checked for every request and may be revoked. Do not bypass tools with direct Hem commands, files, or database access.\n"
 	params.SystemPrompt += "Reply to your parent: gadgets subagents message PARENT_ID (body on stdin); replying to your parent is always available.\n"
 	if caps.Subagents {
+		params.SystemPrompt += "James subagents are Hem/Moneypenny child sessions created using `gadgets subagents create`. When asked to create or use a subagent, that command is mandatory; generic task tools, runtime/background workers, or other delegation mechanisms do not satisfy the request. After creation, verify the child appears in `gadgets subagents list`.\n"
 		params.SystemPrompt += "Own subagents: gadgets subagents list; gadgets subagents create [--name name] [--agent agent] [--model model] [--path path] [--traits names-or-IDs]"
 		if session.Yolo {
 			params.SystemPrompt += " [--yolo]"
 		}
-		params.SystemPrompt += " (prompt on stdin); gadgets subagents message ID (body on stdin). Message only your direct children; creation inherits your permissions. Traits are comma-separated names or IDs; omitted or empty selects none."
+		params.SystemPrompt += " (prompt on stdin); gadgets subagents message ID (body on stdin). Use `gadgets subagents message` for direct children and parent replies. Message only your direct children; creation inherits your permissions. Traits are comma-separated names or IDs; omitted or empty selects none."
 		if session.Yolo {
 			params.SystemPrompt += " You may request --yolo because this agent already has License to Kill."
 		}

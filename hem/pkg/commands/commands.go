@@ -1357,6 +1357,8 @@ type HistoryResult struct {
 	Total        int                `json:"total"` // total turns in the session
 	Revision     int64              `json:"revision"`
 	Generation   int64              `json:"generation"`
+	NextCursor   string             `json:"next_cursor,omitempty"`
+	HasMore      bool               `json:"has_more,omitempty"`
 }
 
 type ProjectResult struct {
@@ -3472,12 +3474,14 @@ func (e *Executor) HistorySession(args []string) *protocol.Response {
 	var numTurns int
 	var count int
 	var from int
+	var cursor string
 
 	remaining, err := parseFlagsFromArgs("history-session", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&sessionID, "session-id", "", "session ID")
 		fs.IntVar(&numTurns, "n", 0, "number of turns to show (0 = all)")
 		fs.IntVar(&count, "count", 0, "page size (0 = all)")
 		fs.IntVar(&from, "from", 0, "offset from end")
+		fs.StringVar(&cursor, "cursor", "", "opaque pagination cursor")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -3506,6 +3510,9 @@ func (e *Executor) HistorySession(args []string) *protocol.Response {
 	} else {
 		cmdData["all"] = true
 	}
+	if cursor != "" {
+		cmdData["cursor"] = cursor
+	}
 
 	ctx := context.Background()
 	resp, err := e.sendCommand(ctx, mp, "get_session_conversation", cmdData)
@@ -3518,6 +3525,8 @@ func (e *Executor) HistorySession(args []string) *protocol.Response {
 		Total        int                `json:"total"`
 		Revision     int64              `json:"revision"`
 		Generation   int64              `json:"generation"`
+		NextCursor   string             `json:"next_cursor"`
+		HasMore      bool               `json:"has_more"`
 	}
 	// Handle both new format (object with conversation+total) and old format (bare array).
 	if len(resp.Data) > 0 && resp.Data[0] == '[' {
@@ -3552,16 +3561,20 @@ func (e *Executor) HistorySession(args []string) *protocol.Response {
 		Total:        sessionData.Total,
 		Revision:     sessionData.Revision,
 		Generation:   sessionData.Generation,
+		NextCursor:   sessionData.NextCursor,
+		HasMore:      sessionData.HasMore,
 	})
 }
 
 func (e *Executor) ReconcileSession(args []string) *protocol.Response {
 	var sessionID string
 	var revision, generation int64
+	var cursor string
 	remaining, err := parseFlagsFromArgs("reconcile-session", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&sessionID, "session-id", "", "session ID")
 		fs.Int64Var(&revision, "revision", 0, "last authoritative revision")
 		fs.Int64Var(&generation, "generation", 0, "last authoritative generation")
+		fs.StringVar(&cursor, "cursor", "", "opaque pagination cursor")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -3577,7 +3590,7 @@ func (e *Executor) ReconcileSession(args []string) *protocol.Response {
 		return protocol.ErrResponse(err.Error())
 	}
 	resp, err := e.sendCommand(context.Background(), mp, "reconcile_session", map[string]interface{}{
-		"session_id": sessionID, "revision": revision, "generation": generation,
+		"session_id": sessionID, "revision": revision, "generation": generation, "cursor": cursor,
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())

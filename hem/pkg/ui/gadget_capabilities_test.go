@@ -34,6 +34,13 @@ func permissionArgs(args []string) map[string]string {
 }
 
 func TestCreateFormsSendExplicitGadgetPermissions(t *testing.T) {
+	fields := gadgetCapabilityFields(nil)
+	for _, field := range fields {
+		if field.flag == "--gadget-subagents" && field.label != "Gadget: James child sessions" {
+			t.Fatalf("ambiguous subagent label: %q", field.label)
+		}
+	}
+
 	for _, wizard := range []bool{false, true} {
 		sender := &permissionTestSender{}
 		c := &client{sender: sender}

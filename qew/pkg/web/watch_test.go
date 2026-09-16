@@ -85,3 +85,50 @@ func TestWatchHubCloseLastAndImmediateOpenKeepsRenewalGeneration(t *testing.T) {
 		t.Fatalf("renewal generation lost after close/open: renewing=%v groups=%d", h.renewing, len(h.groups))
 	}
 }
+
+func TestWatchHubReleasesAbruptConnectionAndExpiresConsumers(t *testing.T) {
+	hem := &watchHem{}
+	now := time.Now()
+	h := &watchHub{
+		hem: hem, groups: make(map[string]*qewWatchGroup), byID: make(map[string]string),
+		now: func() time.Time { return now }, leaseDuration: time.Second,
+	}
+	_, err := h.open("connection-a", 1, "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := h.open("connection-b", 2, "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Closing one WebSocket without an application-level unwatch must release
+	// only its consumers; the shared upstream remains for the other connection.
+	h.releaseConnection("connection-a", 1)
+	h.mu.Lock()
+	if len(h.groups["session"].consumers) != 1 {
+		t.Fatalf("consumers after abrupt first disconnect = %d, want 1", len(h.groups["session"].consumers))
+	}
+	h.mu.Unlock()
+
+	now = second.expires.Add(time.Second)
+	h.mu.Lock()
+	h.expireLocked(now)
+	h.mu.Unlock()
+	h.closeHub()
+
+	deadline := time.After(time.Second)
+	for {
+		hem.mu.Lock()
+		requests := append([]*Request(nil), hem.reqs...)
+		hem.mu.Unlock()
+		if len(requests) == 2 && requests[1].Verb == "unwatch" {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("expired final consumer did not remove upstream: %+v", requests)
+		case <-time.After(time.Millisecond):
+		}
+	}
+}

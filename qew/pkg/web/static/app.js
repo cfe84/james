@@ -28,6 +28,7 @@
   let chatRecentCount = 0;     // number of turns in the latest poll window
   let chatTotal = 0;           // total server turn count
   let chatLoadingMore = false; // an older-history fetch is in flight
+  let chatHistoryCursor = '';   // opaque server cursor for the next older page
   let chatForceScrollBottom = false; // one-shot: force scroll to bottom on next render
   let lastSchedules = [];      // cached so an older-history re-render needn't refetch
   let lastSubagents = [];     // non-completed subagents shown in the live chat
@@ -881,6 +882,7 @@
     chatRecentCount = 0;
     chatTotal = 0;
     chatLoadingMore = false;
+    chatHistoryCursor = '';
     chatForceScrollBottom = false;
     lastSchedules = [];
     lastSubagents = [];
@@ -1096,6 +1098,7 @@
     const recent = (data && Array.isArray(data.conversation)) ? data.conversation : [];
     const total = (data && typeof data.total === 'number') ? data.total : recent.length;
     const truncated = data && data.truncated === true;
+    if (data && typeof data.next_cursor === 'string') chatHistoryCursor = data.next_cursor;
 
     // Don't let an empty poll (a transient race during working state) wipe out a
     // conversation we already have — just refresh the known total.
@@ -1182,13 +1185,16 @@
     const sessAtStart = currentSession;
     const knownTotal = chatTotal;
     try {
-      const resp = await apiCall('history', 'session', [currentSession, '--count', String(count), '--from', String(from)]);
+      const args = [currentSession, '--count', String(count), '--from', chatHistoryCursor ? '0' : String(from)];
+      if (chatHistoryCursor) args.push('--cursor', chatHistoryCursor);
+      const resp = await apiCall('history', 'session', args);
       // Discard if the session changed, or if a concurrent poll moved the total
       // (which would make this end-relative page overlap/misalign). The user can
       // scroll again to retry against the new state.
       if (currentSession !== sessAtStart || chatTotal !== knownTotal) return;
       if (resp.status === 'ok' && resp.data && Array.isArray(resp.data.conversation) && resp.data.conversation.length) {
         chatConversation = resp.data.conversation.concat(chatConversation);
+        chatHistoryCursor = typeof resp.data.next_cursor === 'string' ? resp.data.next_cursor : '';
         renderChat(true);
       }
     } catch (e) { /* leave state intact; next scroll retries */ }

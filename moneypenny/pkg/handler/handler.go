@@ -585,7 +585,6 @@ func (h *Handler) continueSession(ctx context.Context, cmd *envelope.Command) *e
 	if sess == nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, fmt.Sprintf("session not found: %s", data.SessionID))
 	}
-
 	// Check status is idle.
 	if sess.Status != store.StateIdle {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotIdle, fmt.Sprintf("session is not idle: %s", sess.Status))
@@ -1219,6 +1218,10 @@ func (h *Handler) getSessionConversation(ctx context.Context, cmd *envelope.Comm
 	if sess == nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, fmt.Sprintf("session not found: %s", data.SessionID))
 	}
+	offset, chunkStart, err := cursorPosition(data.Cursor, sess.Generation)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
+	}
 
 	total, err := h.store.GetConversationCount(data.SessionID)
 	if err != nil {
@@ -1229,13 +1232,13 @@ func (h *Handler) getSessionConversation(ctx context.Context, cmd *envelope.Comm
 	if data.All {
 		// Never materialize an unbounded transcript for a wire read. Full
 		// transcript consumers use the same paginated path repeatedly.
-		turns, err = h.store.GetConversationPaginated(data.SessionID, 100, data.From)
+		turns, err = h.store.GetConversationPaginated(data.SessionID, 100, data.From+offset)
 	} else {
 		count := data.Count
 		if count <= 0 {
 			count = 10
 		}
-		turns, err = h.store.GetConversationPaginated(data.SessionID, count, data.From)
+		turns, err = h.store.GetConversationPaginated(data.SessionID, count, data.From+offset)
 	}
 	if err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to get conversation: %v", err))
@@ -1245,21 +1248,9 @@ func (h *Handler) getSessionConversation(ctx context.Context, cmd *envelope.Comm
 	if maxBytes <= 0 || maxBytes > 4*1024*1024 {
 		maxBytes = 1024 * 1024
 	}
-	conversation := make([]envelope.ConversationTurn, 0, len(turns))
-	bytes := 0
-	for _, t := range turns {
-		if len(conversation) > 0 && bytes+len(t.Content) > maxBytes {
-			break
-		}
-		conversation = append(conversation, envelope.ConversationTurn{
-			ID:              t.ID,
-			Role:            t.Role,
-			Content:         t.Content,
-			SourceSessionID: t.SourceSessionID,
-			SourceName:      t.SourceName,
-			CreatedAt:       t.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
-		})
-		bytes += len(t.Content)
+	conversation, nextCursor, hasMore, _, err := boundedConversation(data.SessionID, turns, total, sess.Revision, sess.Generation, data.From+offset, chunkStart, maxBytes, false)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
 	}
 
 	return envelope.SuccessResponse(cmd.RequestID, envelope.SessionConversation{
@@ -1268,6 +1259,8 @@ func (h *Handler) getSessionConversation(ctx context.Context, cmd *envelope.Comm
 		Total:        total,
 		Revision:     sess.Revision,
 		Generation:   sess.Generation,
+		NextCursor:   nextCursor,
+		HasMore:      hasMore,
 	})
 }
 
@@ -1287,33 +1280,30 @@ func (h *Handler) reconcileSession(_ context.Context, cmd *envelope.Command) *en
 	if err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to count conversation: %v", err))
 	}
+	offset, chunkStart, err := cursorPosition(data.Cursor, sess.Generation)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
+	}
 	if data.Revision == sess.Revision && data.Generation == sess.Generation {
 		return envelope.SuccessResponse(cmd.RequestID, envelope.SessionReconcile{
 			SessionID: data.SessionID, Total: total, Revision: sess.Revision, Generation: sess.Generation,
 		})
 	}
-	turns, err := h.store.GetConversationPaginated(data.SessionID, 100, 0)
+	turns, err := h.store.GetConversationPaginated(data.SessionID, 100, offset)
 	if err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to reconcile conversation: %v", err))
 	}
-	conversation := make([]envelope.ConversationTurn, 0, len(turns))
-	bytes := 0
-	for _, t := range turns {
-		if len(conversation) > 0 && bytes+len(t.Content) > 1024*1024 {
-			break
-		}
-		conversation = append(conversation, envelope.ConversationTurn{
-			ID: t.ID, Role: t.Role, Content: t.Content,
-			SourceSessionID: t.SourceSessionID, SourceName: t.SourceName,
-			CreatedAt: t.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
-		})
-		bytes += len(t.Content)
+	conversation, nextCursor, hasMore, _, err := boundedConversation(data.SessionID, turns, total, sess.Revision, sess.Generation, offset, chunkStart, maxConversationResponseBytes, true)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
 	}
 	return envelope.SuccessResponse(cmd.RequestID, envelope.SessionReconcile{
 		SessionID: data.SessionID, Conversation: conversation, Total: total,
 		Revision: sess.Revision, Generation: sess.Generation,
 		ResetRequired: data.Generation != 0 && data.Generation != sess.Generation,
-		Truncated:     len(conversation) < total,
+		Truncated:     hasMore,
+		NextCursor:    nextCursor,
+		HasMore:       hasMore,
 	})
 }
 

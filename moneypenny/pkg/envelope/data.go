@@ -129,6 +129,7 @@ type GetConversationData struct {
 	MaxBytes   int    `json:"max_bytes,omitempty"`
 	Revision   int64  `json:"revision,omitempty"`
 	Generation int64  `json:"generation,omitempty"`
+	Cursor     string `json:"cursor,omitempty"`
 }
 
 // GetLogsData requests the newest daemon log lines. Lines defaults to 100.
@@ -197,6 +198,8 @@ type SessionConversation struct {
 	Total        int                `json:"total"` // total number of turns in the session
 	Revision     int64              `json:"revision"`
 	Generation   int64              `json:"generation"`
+	NextCursor   string             `json:"next_cursor,omitempty"`
+	HasMore      bool               `json:"has_more,omitempty"`
 }
 
 type SessionReconcile struct {
@@ -207,6 +210,8 @@ type SessionReconcile struct {
 	Generation    int64              `json:"generation"`
 	ResetRequired bool               `json:"reset_required"`
 	Truncated     bool               `json:"truncated"`
+	NextCursor    string             `json:"next_cursor,omitempty"`
+	HasMore       bool               `json:"has_more,omitempty"`
 }
 
 // ConversationTurn represents a single prompt/response pair.

@@ -69,6 +69,7 @@ test('reusable controls render accessible toggles and permanent notifications', 
   }
   assert.equal((rendered.match(/type="checkbox"/g) || []).length, Object.keys(defaults).length);
   assert.match(rendered, /Notifications to you are always available/);
+  assert.match(rendered, /Create, list, and message James child sessions; parent replies always allowed/);
   assert.match(rendered, /no management access/);
   assert.match(rendered, /shared trait bodies.*future use by all agents/);
   assert.match(rendered, /Hem administrative proxy.*mutations and permission changes/);

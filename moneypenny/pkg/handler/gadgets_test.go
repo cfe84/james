@@ -315,13 +315,24 @@ func TestGadgetPromptShowsOnlyGrantedCommands(t *testing.T) {
 	if strings.Contains(params.SystemPrompt, "gadgets agents list") || !strings.Contains(params.SystemPrompt, "gadgets memory get") {
 		t.Fatal("default prompt does not match capability defaults")
 	}
+	for _, text := range []string{
+		"James subagents are Hem/Moneypenny child sessions",
+		"When asked to create or use a subagent, that command is mandatory",
+		"generic task tools, runtime/background workers, or other delegation mechanisms do not satisfy the request",
+		"verify the child appears in `gadgets subagents list`",
+		"Use `gadgets subagents message` for direct children and parent replies",
+	} {
+		if !strings.Contains(params.SystemPrompt, text) {
+			t.Fatalf("missing James subagent instruction: %s", text)
+		}
+	}
 
 	setGadgetCaps(t, h, envelope.GadgetCapabilities{Agents: true})
 	params.SystemPrompt = "Base instructions.\nYou have access to agent orchestration using the old Hem CLI\nhem delete session any"
 	if err := h.prepareRunInstructions(gadgetSession, &params); err != nil {
 		t.Fatal(err)
 	}
-	for _, text := range []string{"gadgets memory get", "Own subagents:", "gadgets schedule", "hem delete", "<root-memory>"} {
+	for _, text := range []string{"gadgets memory get", "James subagents are", "Own subagents:", "gadgets schedule", "hem delete", "<root-memory>"} {
 		if strings.Contains(params.SystemPrompt, text) {
 			t.Fatalf("revoked/stale instructions remain: %s", text)
 		}

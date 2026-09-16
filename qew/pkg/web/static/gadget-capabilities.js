@@ -3,7 +3,7 @@
 
   const permissions = [
     { name: 'memory', label: 'Session memory', defaultValue: true },
-    { name: 'subagents', label: 'Create and communicate with own subagents; reply to parent', defaultValue: true },
+    { name: 'subagents', label: 'Create, list, and message James child sessions; parent replies always allowed', defaultValue: true },
     { name: 'agents', label: 'Discover and message any agents (no management access)', defaultValue: false },
     { name: 'create_agents', label: 'Create top-level agents (inherit creator gadget permissions)', defaultValue: false },
     { name: 'edit_sessions', label: 'Edit any tracked session (except gadget permissions)', defaultValue: false },

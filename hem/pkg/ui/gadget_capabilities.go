@@ -40,7 +40,7 @@ func gadgetCapabilityFields(capabilities *envelope.GadgetCapabilities) []formFie
 	}
 	return []formField{
 		{label: "Gadget: memory", flag: "--gadget-memory", isBool: true, explicitBool: true, value: strconv.FormatBool(c.Memory)},
-		{label: "Gadget: own subagents / replies", flag: "--gadget-subagents", isBool: true, explicitBool: true, value: strconv.FormatBool(c.Subagents)},
+		{label: "Gadget: James child sessions", flag: "--gadget-subagents", isBool: true, explicitBool: true, value: strconv.FormatBool(c.Subagents)},
 		{label: "Gadget: discover / message agents", flag: "--gadget-agents", isBool: true, explicitBool: true, value: strconv.FormatBool(c.Agents)},
 		{label: "Gadget: create top-level agents", flag: "--gadget-create-agents", isBool: true, explicitBool: true, value: strconv.FormatBool(c.CreateAgents)},
 		{label: "Gadget: edit any session", flag: "--gadget-edit-sessions", isBool: true, explicitBool: true, value: strconv.FormatBool(c.EditSessions)},

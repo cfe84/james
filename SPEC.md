@@ -132,10 +132,13 @@ the same bounded authoritative snapshot and clients continue with normal
 history pagination. Qew stores a watermark per session, ignores stale or
 duplicate hints, and reconciles after reconnect, overflow, generation changes,
 or dropped hints while retaining polling as the authoritative fallback.
-The tested integration boundary is the persisted store/handler response,
-revisioned notification, Hem broker, and Qew client seam; full subprocess
-MI6/browser acceptance remains deferred, as do encoded-byte chunk cursors and
-lease/watch refcounting.
+History and reconcile pages carry an opaque, URL-safe cursor containing the
+generation, end-relative turn offset, and last turn ID. Cursors are rejected
+when malformed or from an older generation. Before a page is materialized,
+Moneypenny incrementally marshals candidate turns and stops at the configured
+wire-byte budget, accounting for UTF-8 and JSON escaping; `next_cursor` and
+`has_more` carry continuation metadata through Hem to Qew. Polling remains
+authoritative and generation changes still require reset/resync.
 
 MI6 is a transport abstraction that allows, by creating a central place that all hosts can reach, to communicate between these hosts.
 
@@ -975,7 +978,7 @@ back; use `--async` for agent operations and inspect state before retrying.
 | Capability | Default | Agent operations |
 | --- | --- | --- |
 | Memory | On, revocable | Get/list/search/set/batch/delete memory; inspect current revision |
-| Subagents | On, revocable | Create own subagents; list/message direct children and reply to parent |
+| Subagents | On, revocable | Create, list, and message James child sessions |
 | Agents | Off, explicit combined grant | Discover and message all Hem-tracked agents |
 | Create agents | Off, separate explicit grant | Create independent top-level agents on the caller's Moneypenny |
 | Traits | Off, explicit grant | List/view existing shared traits and replace their prompt bodies |
@@ -989,7 +992,12 @@ deletion, or other management of sessions. Subagents scope does not cover siblin
 arbitrary descendants, or unrelated sessions. Gadget-created subagents inherit
 the parent's current capabilities; scoped creation gadgets cannot override
 permissions. Operator changes to a parent are not a promise of recursively changing
-already-created children's settings.
+already-created children's settings. James subagents are real Hem/Moneypenny child
+sessions created with `gadgets subagents create`; generic task tools, runtime
+workers, and other delegation mechanisms are not substitutes. Agents must verify
+new children with `gadgets subagents list` and use `gadgets subagents message` for
+direct-child messages. Replies to the parent use the same message command and remain
+always available even when the Subagents capability is disabled.
 
 The separate `create_agents` grant enables `gadgets agents create` with a
 nonempty prompt on stdin and optional `--name`, `--agent`, `--model`, `--path`, and `--traits`.
@@ -1787,7 +1795,7 @@ so a slow client cannot retain a writer or broadcast subscription indefinitely.
 The browser also performs an immediate authoritative HTTP resync when a socket
 closes, while retaining the polling fallback.
 
-### Leased session watches (next unreleased gate)
+### Leased session watches (v1.94.0)
 
 Qew session watches are connection-scoped and carry a reconnect epoch. A
 browser consumer receives a renewable 60-second lease; the browser heartbeat
@@ -1802,8 +1810,20 @@ Qew and Hem renew upstream only while live downstream consumers remain.
 Sleeping tabs can expire and reconnect with their cursor, followed by bounded
 authoritative reconciliation. WebSocket and relay lifetime never cancels agent
 execution, scheduler dispatch, SQLite commits, or persisted output. Polling
-continues to be authoritative; this gate does not remove polling or introduce
-byte-safe cursors.
+continues to be authoritative; this gate does not remove polling.
+
+### Subprocess disconnect acceptance (v1.95.0)
+
+The acceptance coverage includes a real Moneypenny subprocess: it verifies
+watch open/renew/close, duplicate close, clean downstream EOF, abrupt daemon
+termination, and restart with a new epoch. Hem and Qew tests verify that an
+abrupt connection releases only its own consumer, shared aggregates survive
+while another consumer remains, the final consumer sends one unwatch, expired
+leases clean up resources, and bounded hint overflow produces a resync marker.
+The tests use only local child processes and deterministic fakes; production
+MI6 credentials and external network services are not required. Watches remain
+optional invalidation hints, so these disconnect paths cannot cancel agent
+execution, scheduler dispatch, SQLite commits, or persisted output.
 
 ### Push notification session routing (v1.89.1)
 
@@ -1836,7 +1856,8 @@ clients. Qew can subscribe over either path, and its WebSocket layer uses the
 hints as additional refresh triggers. Overflow and reconnect are treated as
 resync conditions: authoritative HTTP polling remains enabled and is required
 for correctness. Session-scoped leases/refcounts, replay, durable revisions,
-watermarks, and operation IDs remain deferred.
+watermarks, and operation IDs are covered by later sections; no durable event
+journal or client operation log is introduced.
 ### Dashboard disconnect behavior
 
 When a dashboard refresh fails after a successful snapshot has been loaded, Qew
