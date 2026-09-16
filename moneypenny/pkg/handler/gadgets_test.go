@@ -39,9 +39,6 @@ func gadgetTestHandler(t *testing.T) (*Handler, agent.RunParams) {
 			t.Fatal(err)
 		}
 	}
-	if err := h.MigrateMemoryToSQLite(); err != nil {
-		t.Fatal(err)
-	}
 	var params agent.RunParams
 	if err := h.prepareRunInstructions(gadgetSession, &params); err != nil {
 		t.Fatal(err)
@@ -217,9 +214,6 @@ func TestGadgetMemoryAtomicAndOperatorSurfaces(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, "split", "child", "README.md")); !os.IsNotExist(err) {
 		t.Fatal("operation wrote retired memory files")
-	}
-	if count, _ := h.store.MemoryNodeCount(gadgetSession); count != 0 {
-		t.Fatal("operation wrote memory into main database")
 	}
 }
 

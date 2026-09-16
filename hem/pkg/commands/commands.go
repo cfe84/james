@@ -4718,7 +4718,8 @@ type ModelOption struct {
 //     forever (no TTL).
 func (e *Executor) fetchModelsFromMoneypenny(ctx context.Context, mp *store.Moneypenny, agentName string, allowEmpty bool) (ListModelsResult, error) {
 	resp, err := e.sendCommand(ctx, mp, "list_models", map[string]interface{}{
-		"agent": agentName,
+		"agent":   agentName,
+		"refresh": allowEmpty,
 	})
 	if err != nil {
 		return ListModelsResult{}, err
@@ -4836,12 +4837,21 @@ func (e *Executor) ListModels(args []string) *protocol.Response {
 		}
 	}
 
-	// Cache miss (or forced refresh): hit the moneypenny synchronously.
+	// Cache miss returns a safe empty result immediately while the cache warms
+	// in the background. Explicit refresh remains synchronous so failures are
+	// visible to the caller.
+	if !refresh {
+		e.asyncRefreshModelCache(mp, agentName)
+		return protocol.OKResponse(ListModelsResult{Agent: agentName, Cached: true})
+	}
+
+	// Forced refresh: hit the moneypenny synchronously.
 	// --refresh is "user explicitly asked for the current state" so we
 	// honour an empty response (allows recovery from a permanently revoked
 	// access state). A cache miss without --refresh stays conservative:
 	// transient empties don't pollute a cold cache.
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
 	fresh, err := e.fetchModelsFromMoneypenny(ctx, mp, agentName, refresh)
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -4891,7 +4901,8 @@ func (e *Executor) RefreshModels(args []string) *protocol.Response {
 	// Explicit refresh: write the result even if empty (lets users recover
 	// from a permanently revoked source — without this, a stale row would
 	// outlive the underlying access).
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
 	fresh, err := e.fetchModelsFromMoneypenny(ctx, mp, agentName, true)
 	if err != nil {
 		return protocol.ErrResponse(err.Error())

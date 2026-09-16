@@ -119,7 +119,7 @@ func TestDisabledMemoryRunDoesNotMigrateOrInject(t *testing.T) {
 		for _, yolo := range []bool{false, true} {
 			h, sid := newMemoryAuxiliaryTestHandler(t, name, envelope.GadgetCapabilities{})
 			root := filepath.Join(h.dataDir, "sessions", sid, "memory")
-			// Malformed legacy storage would fail migration if disabled memory were touched.
+			// Malformed storage must not matter when disabled memory is untouched.
 			if err := os.MkdirAll(filepath.Join(root, "README.md"), 0700); err != nil {
 				t.Fatal(err)
 			}
@@ -154,7 +154,11 @@ func TestAuxiliaryMemoryPreparationFailureRecoversIdle(t *testing.T) {
 			if err := h.store.AddConversationTurn(sid, "user", "Preserve this task"); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.MkdirAll(filepath.Join(h.dataDir, "sessions", sid, "memory", "README.md"), 0700); err != nil {
+			memoryDB := filepath.Join(h.dataDir, "sessions", sid, "memory.db")
+			if err := os.MkdirAll(filepath.Dir(memoryDB), 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(memoryDB, []byte("not sqlite"), 0600); err != nil {
 				t.Fatal(err)
 			}
 			// A nil runner ensures failed preparation never invokes an agent.

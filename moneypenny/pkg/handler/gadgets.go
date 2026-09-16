@@ -422,9 +422,6 @@ func (h *Handler) executeGadget(ctx context.Context, sessionID string, request g
 }
 
 func (h *Handler) memoryGadget(sessionID string, request gadgetRequest) (any, error) {
-	if err := h.MigrateSessionMemoryToSQLite(sessionID); err != nil {
-		return nil, &gadgetError{"migration_required", err.Error()}
-	}
 	root := h.memoryDir(sessionID)
 	switch request.Method {
 	case "memory.get", "memory.list", "memory.revisions":

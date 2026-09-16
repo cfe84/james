@@ -223,7 +223,7 @@ func (h *Handler) sessionDirPath(sessionID string) (string, error) {
 }
 
 // memoryDir is the historical location used by the memory API to resolve the
-// authoritative sibling memory.db. Files here are retained migration backups.
+// authoritative sibling memory.db. Files here are retained inactive backups.
 func (h *Handler) memoryDir(sessionID string) string {
 	sd := h.sessionDir(sessionID)
 	if sd == "" {
@@ -498,10 +498,6 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 	if err := h.store.CreateSession(sess); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionAlreadyExists, fmt.Sprintf("session already exists: %s", data.SessionID))
 	}
-	if err := h.MigrateSessionMemoryToSQLite(data.SessionID); err != nil {
-		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
-	}
-
 	// Set status to working.
 	if err := h.store.UpdateSessionStatus(data.SessionID, store.StateWorking); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to update status: %v", err))
@@ -517,10 +513,6 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, "copy_memory_from is not a known session")
 		} else {
 			srcMem := h.memoryDir(data.CopyMemoryFrom)
-			if err := h.MigrateSessionMemoryToSQLite(data.CopyMemoryFrom); err != nil {
-				_ = h.store.UpdateSessionStatus(data.SessionID, store.StateIdle)
-				return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
-			}
 			dstMem := h.memoryDir(data.SessionID)
 			if srcMem != "" && dstMem != "" {
 				if err := memory.CopyTree(srcMem, dstMem); err != nil {
@@ -1452,9 +1444,6 @@ func (h *Handler) showMemory(_ context.Context, cmd *envelope.Command) *envelope
 	if memDir == "" {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, "no session directory available")
 	}
-	if err := h.MigrateSessionMemoryToSQLite(data.SessionID); err != nil {
-		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
-	}
 
 	resp := envelope.ShowMemoryResponse{SessionID: data.SessionID, Path: data.Path}
 	if strings.TrimSpace(data.Path) == "" {
@@ -1520,9 +1509,6 @@ func (h *Handler) listMemory(_ context.Context, cmd *envelope.Command) *envelope
 	if memDir == "" {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, "no session directory available")
 	}
-	if err := h.MigrateSessionMemoryToSQLite(data.SessionID); err != nil {
-		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
-	}
 
 	parent := ""
 	if strings.TrimSpace(data.Path) != "" {
@@ -1558,9 +1544,6 @@ func (h *Handler) searchMemory(_ context.Context, cmd *envelope.Command) *envelo
 	if memDir == "" {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, "no session directory available")
 	}
-	if err := h.MigrateSessionMemoryToSQLite(data.SessionID); err != nil {
-		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
-	}
 
 	nodes, err := memory.Search(memDir, data.Query)
 	if err != nil {
@@ -1587,9 +1570,6 @@ func (h *Handler) updateMemory(_ context.Context, cmd *envelope.Command) *envelo
 	memDir := h.memoryDir(data.SessionID)
 	if memDir == "" {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, "no session directory available")
-	}
-	if err := h.MigrateSessionMemoryToSQLite(data.SessionID); err != nil {
-		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
 	}
 
 	// Body is authoritative for the file model. For backward compatibility with
@@ -1631,9 +1611,6 @@ func (h *Handler) deleteMemory(_ context.Context, cmd *envelope.Command) *envelo
 	memDir := h.memoryDir(data.SessionID)
 	if memDir == "" {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, "no session directory available")
-	}
-	if err := h.MigrateSessionMemoryToSQLite(data.SessionID); err != nil {
-		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
 	}
 
 	deleted, err := memory.Delete(memDir, data.Path, data.Recursive)
@@ -1811,7 +1788,7 @@ func (h *Handler) forceUpdate(cmd *envelope.Command) *envelope.Response {
 	return envelope.SuccessResponse(cmd.RequestID, envelope.ForceUpdateResponse{Queued: h.forceUpdateFunc()})
 }
 
-func (h *Handler) listModels(_ context.Context, cmd *envelope.Command) *envelope.Response {
+func (h *Handler) listModels(ctx context.Context, cmd *envelope.Command) *envelope.Response {
 	var data envelope.ListModelsData
 	if err := json.Unmarshal(cmd.Data, &data); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
@@ -1827,9 +1804,35 @@ func (h *Handler) listModels(_ context.Context, cmd *envelope.Command) *envelope
 	case "claude":
 		models = claudeModels()
 	case "copilot":
-		models = copilotModels()
+		if data.Refresh {
+			var err error
+			models, err = copilotModelsRefresh(ctx)
+			if err != nil {
+				return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("copilot model discovery failed: %v", err))
+			}
+		} else {
+			models = copilotModels()
+		}
 	case "opencode":
-		models = openCodeModels()
+		if data.Refresh {
+			models = openCodeModels()
+			if len(models) == 0 {
+				return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, "opencode model discovery returned no models")
+			}
+		} else {
+			opencodeModelMu.Lock()
+			if !opencodeModelRefreshing {
+				opencodeModelRefreshing = true
+				go func() {
+					openCodeModels()
+					opencodeModelMu.Lock()
+					opencodeModelRefreshing = false
+					opencodeModelMu.Unlock()
+				}()
+			}
+			opencodeModelMu.Unlock()
+			models = nil
+		}
 	default:
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("unknown agent: %s", agentName))
 	}
@@ -1878,10 +1881,21 @@ func openCodeModels() []envelope.ModelInfo {
 
 // Copilot model cache (querying is slow, ~10-20s).
 var (
-	copilotModelCache     []envelope.ModelInfo
-	copilotModelCacheTime time.Time
-	copilotModelCacheTTL  = 24 * time.Hour
+	copilotModelMu          sync.Mutex
+	copilotModelRefresh     *copilotRefresh
+	opencodeModelMu         sync.Mutex
+	opencodeModelRefreshing bool
+	copilotModelCache       []envelope.ModelInfo
+	copilotModelCacheTime   time.Time
+	copilotModelCacheTTL    = 24 * time.Hour
+	copilotDiscover         = discoverCopilotModels
 )
+
+type copilotRefresh struct {
+	done   chan struct{}
+	models []envelope.ModelInfo
+	err    error
+}
 
 // copilotModelLogRe matches each "[id,Display Name]" pair on copilot's
 // debug-level "Listed models:" log line (older builds).
@@ -1902,14 +1916,48 @@ var copilotModelIDRe = regexp.MustCompile(`^[a-z][a-z0-9.]*-[a-z0-9.-]+$`)
 // stdout answer is the reliable source. Results are cached to avoid repeated
 // slow queries.
 func copilotModels() []envelope.ModelInfo {
+	copilotModelMu.Lock()
 	if len(copilotModelCache) > 0 && time.Since(copilotModelCacheTime) < copilotModelCacheTTL {
-		log.Printf("copilot models: returning %d cached models (age: %v)", len(copilotModelCache), time.Since(copilotModelCacheTime))
-		return copilotModelCache
+		models := append([]envelope.ModelInfo(nil), copilotModelCache...)
+		copilotModelMu.Unlock()
+		return models
 	}
+	if copilotModelRefresh != nil {
+		models := append([]envelope.ModelInfo(nil), copilotModelCache...)
+		copilotModelMu.Unlock()
+		return models
+	}
+	stale := append([]envelope.ModelInfo(nil), copilotModelCache...)
+	refresh := startCopilotRefreshLocked(context.Background())
+	copilotModelMu.Unlock()
+	_ = refresh
+	return stale
+}
+
+func startCopilotRefreshLocked(ctx context.Context) *copilotRefresh {
+	refresh := &copilotRefresh{done: make(chan struct{})}
+	copilotModelRefresh = refresh
+	go func() {
+		models, err := copilotDiscover(ctx)
+		copilotModelMu.Lock()
+		refresh.models = append([]envelope.ModelInfo(nil), models...)
+		refresh.err = err
+		if err == nil && len(models) > 0 {
+			copilotModelCache = append([]envelope.ModelInfo(nil), models...)
+			copilotModelCacheTime = time.Now()
+		}
+		copilotModelRefresh = nil
+		close(refresh.done)
+		copilotModelMu.Unlock()
+	}()
+	return refresh
+}
+
+func discoverCopilotModels(ctx context.Context) ([]envelope.ModelInfo, error) {
 	path, err := agent.FindAgent("copilot")
 	if err != nil {
 		log.Printf("copilot models: copilot not found: %v", err)
-		return nil
+		return nil, err
 	}
 
 	log.Printf("copilot models: querying copilot at %s", path)
@@ -1919,7 +1967,7 @@ func copilotModels() []envelope.ModelInfo {
 	logDir, err := os.MkdirTemp("", "copilot-models-")
 	if err != nil {
 		log.Printf("copilot models: failed to create log dir: %v", err)
-		return nil
+		return nil, err
 	}
 	defer os.RemoveAll(logDir)
 
@@ -1928,7 +1976,8 @@ func copilotModels() []envelope.ModelInfo {
 	// model so the query can't fail because a pinned identifier was retired.
 	// --log-level debug + --log-dir capture logs for the best-effort primary
 	// parse below.
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	var cancel context.CancelFunc
+	ctx, cancel = context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, path,
 		"-p", "List the model identifiers available for --model. One per line. No other text, no markdown formatting.",
@@ -1946,15 +1995,16 @@ func copilotModels() []envelope.ModelInfo {
 		// Don't bail yet: the model list may still have been logged, and the
 		// stdout answer captured before the failure can also hold the list.
 		log.Printf("copilot models: query exited with error (will still parse output): %v", runErr)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 	}
 
 	// Best-effort: older copilot builds logged an authoritative model list with
 	// friendly display names. Parse it when present (it isn't on 1.0.69+).
 	if models := parseCopilotModelLog(logDir); len(models) > 0 {
-		copilotModelCache = models
-		copilotModelCacheTime = time.Now()
 		log.Printf("copilot models: parsed %d models from debug log", len(models))
-		return models
+		return models, nil
 	}
 
 	// Reliable path: parse the model's textual answer, keeping only lines that
@@ -1972,14 +2022,33 @@ func copilotModels() []envelope.ModelInfo {
 		models = append(models, envelope.ModelInfo{Name: id, Value: id})
 	}
 	if len(models) > 0 {
-		copilotModelCache = models
-		copilotModelCacheTime = time.Now()
 		log.Printf("copilot models: cached %d models (stdout)", len(models))
-		return models
+		return models, nil
 	}
 
 	log.Printf("copilot models: no models parsed")
-	return nil
+	return nil, fmt.Errorf("no models parsed")
+}
+
+func copilotModelsRefresh(ctx context.Context) ([]envelope.ModelInfo, error) {
+	copilotModelMu.Lock()
+	refresh := copilotModelRefresh
+	if refresh == nil {
+		refresh = startCopilotRefreshLocked(ctx)
+	}
+	copilotModelMu.Unlock()
+	select {
+	case <-refresh.done:
+		copilotModelMu.Lock()
+		models, err := append([]envelope.ModelInfo(nil), refresh.models...), refresh.err
+		copilotModelMu.Unlock()
+		if err == nil && len(models) == 0 {
+			return nil, fmt.Errorf("no models parsed")
+		}
+		return models, err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // parseCopilotModelLog scans copilot's debug log files in logDir for the
@@ -2094,10 +2163,6 @@ func (h *Handler) importSession(_ context.Context, cmd *envelope.Command) *envel
 	}
 	if err := h.store.CreateSession(sess); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionAlreadyExists, fmt.Sprintf("session already exists: %s", data.SessionID))
-	}
-
-	if err := h.MigrateSessionMemoryToSQLite(data.SessionID); err != nil {
-		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
 	}
 
 	// Import conversation turns.

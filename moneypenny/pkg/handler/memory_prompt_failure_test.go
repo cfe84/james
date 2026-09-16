@@ -24,8 +24,11 @@ func TestRootMemoryFailureSurfacesAndReturnsIdle(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := &Handler{store: st, dataDir: t.TempDir(), vlog: func(string, ...interface{}) {}}
-	root := filepath.Join(h.dataDir, "sessions", sid, "memory", "README.md")
-	if err := os.MkdirAll(root, 0700); err != nil {
+	root := filepath.Join(h.dataDir, "sessions", sid, "memory.db")
+	if err := os.MkdirAll(filepath.Dir(root), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(root, []byte("not sqlite"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	// No runner is configured: preparing unreadable memory must abort before execution.

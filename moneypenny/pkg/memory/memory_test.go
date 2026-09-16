@@ -2,7 +2,6 @@ package memory
 
 import (
 	"database/sql"
-	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -214,19 +213,6 @@ func mustGet(t *testing.T, root, path string) *Node {
 	return n
 }
 
-func writeReadme(t *testing.T, root, path, body string) string {
-	t.Helper()
-	dir := filepath.Join(root, filepath.FromSlash(path))
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	file := filepath.Join(dir, readmeName)
-	if err := os.WriteFile(file, []byte(body), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return file
-}
-
 func TestDatabaseAuthoritativeAndOnDemand(t *testing.T) {
 	root := memoryRoot(t)
 	mustSet(t, root, "topic", "database body")
@@ -356,260 +342,6 @@ func TestDeletionLiteralCaseSensitivePaths(t *testing.T) {
 	}
 }
 
-func TestMigrationFilesWinFallbackAndRemainUntouched(t *testing.T) {
-	root := memoryRoot(t)
-	bigRoot := strings.Repeat("根", MaxBodyChars+100)
-	rootFile := writeReadme(t, root, "", bigRoot)
-	file := writeReadme(t, root, "topic", "file wins")
-	emptyFile := writeReadme(t, root, "empty", "")
-	if err := os.MkdirAll(filepath.Join(root, "directory-only/child"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	rootStat, _ := os.Stat(rootFile)
-	fallback := []*Node{
-		{Path: "", Body: "stale root"},
-		{Path: "topic", Title: "stale title", Body: "stale"},
-		{Path: "empty", Body: "stale"},
-		{Path: "legacy", Title: "Legacy title", Description: "Legacy summary", Body: strings.Repeat("x", 5000)},
-		{Path: "directory-only", Body: "retained fallback"},
-	}
-	if _, err := List(root); !errors.Is(err, ErrMigrationRequired) {
-		t.Fatalf("access before migration: %v", err)
-	}
-	if err := Migrate(root, fallback); err != nil {
-		t.Fatal(err)
-	}
-	if n := mustGet(t, root, ""); n.Body != bigRoot {
-		t.Fatal("oversized root changed")
-	}
-	if n := mustGet(t, root, "topic"); n.Body != "file wins" || n.Title != "" {
-		t.Fatalf("file did not override legacy: %+v", n)
-	}
-	if mustGet(t, root, "empty").Body != "" || mustGet(t, root, "directory-only").Body != "" {
-		t.Fatal("empty README and absent README precedence confused")
-	}
-	mustGet(t, root, "directory-only/child")
-	if n, err := Get(root, "legacy"); err != nil || n != nil {
-		t.Fatalf("stale deleted legacy node resurrected: %+v, %v", n, err)
-	}
-	for path, want := range map[string]string{rootFile: bigRoot, file: "file wins", emptyFile: ""} {
-		got, err := os.ReadFile(path)
-		if err != nil || string(got) != want {
-			t.Fatalf("backup changed %q: %v", path, err)
-		}
-	}
-	after, _ := os.Stat(rootFile)
-	if !after.ModTime().Equal(rootStat.ModTime()) {
-		t.Fatal("backup mtime changed")
-	}
-	if _, err := Set(root, "", bigRoot); err == nil {
-		t.Fatal("grandfathered root must still respect limits on replacement")
-	}
-	mustSet(t, root, "topic", "database wins now")
-	writeReadme(t, root, "topic", "backup edited later")
-	if _, err := Delete(root, "empty", true); err != nil {
-		t.Fatal(err)
-	}
-	if err := Migrate(root, []*Node{nil}); err != nil {
-		t.Fatalf("completed migration should ignore changed sources: %v", err)
-	}
-	if mustGet(t, root, "topic").Body != "database wins now" {
-		t.Fatal("backup replaced authoritative database")
-	}
-	if n, _ := Get(root, "empty"); n != nil {
-		t.Fatal("deleted imported node resurrected")
-	}
-}
-
-func TestMigrationRetryAndTransactionalMarker(t *testing.T) {
-	root := memoryRoot(t)
-	writeReadme(t, root, "", "root")
-	writeReadme(t, root, "first", "first")
-	if err := os.MkdirAll(filepath.Join(root, "broken", readmeName), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := Migrate(root, []*Node{{Path: "legacy", Body: "legacy"}}); err == nil || !strings.Contains(err.Error(), "safe to retry") {
-		t.Fatalf("expected explicit retryable migration error: %v", err)
-	}
-	db, err := sql.Open("sqlite3", DatabasePath(root))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-	for _, table := range []string{"memory_nodes", "memory_metadata"} {
-		var count int
-		if err := db.QueryRow("SELECT count(*) FROM " + table).Scan(&count); err != nil || count != 0 {
-			t.Fatalf("partial migration %s: %d, %v", table, count, err)
-		}
-	}
-	if err := os.Remove(filepath.Join(root, "broken", readmeName)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`CREATE TRIGGER fail_marker BEFORE INSERT ON memory_metadata
-			BEGIN SELECT RAISE(ABORT, 'marker failure'); END`); err != nil {
-		t.Fatal(err)
-	}
-	if err := Migrate(root, nil); err == nil {
-		t.Fatal("expected completion-marker failure")
-	}
-	var count int
-	if err := db.QueryRow("SELECT count(*) FROM memory_nodes").Scan(&count); err != nil || count != 0 {
-		t.Fatalf("nodes committed without marker: %d, %v", count, err)
-	}
-	if _, err := db.Exec("DROP TRIGGER fail_marker"); err != nil {
-		t.Fatal(err)
-	}
-	if err := Migrate(root, []*Node{{Path: "legacy", Body: "legacy"}}); err != nil {
-		t.Fatal(err)
-	}
-	if node, err := Get(root, "legacy"); err != nil || node != nil {
-		t.Fatal("retry resurrected stale legacy node")
-	}
-	mustGet(t, root, "first")
-	if Count(root) != 3 {
-		t.Fatal("retry lost nodes")
-	}
-}
-
-func TestMigrationNoFilesPreservesFallbackRoot(t *testing.T) {
-	for _, existingDir := range []bool{false, true} {
-		t.Run(map[bool]string{false: "absent", true: "empty-directory"}[existingDir], func(t *testing.T) {
-			root := memoryRoot(t)
-			if existingDir {
-				if err := os.MkdirAll(root, 0o700); err != nil {
-					t.Fatal(err)
-				}
-			}
-			body := strings.Repeat("r", 6000)
-			if err := Migrate(root, []*Node{{Path: "", Body: body}, {Path: "a/b", Body: "legacy"}}); err != nil {
-				t.Fatal(err)
-			}
-			if mustGet(t, root, "").Body != body {
-				t.Fatal("legacy root overwritten by an empty directory")
-			}
-			mustGet(t, root, "a")
-		})
-	}
-}
-
-func TestMigrationImportsLegacyDirectoryWithLongName(t *testing.T) {
-	root := memoryRoot(t)
-	long := "agent-created-directory-with-a-prose-name-that-exceeds-the-current-sixty-four-character-slug-limit"
-	body := "preserved legacy note"
-	writeReadme(t, root, long+"/child", body)
-
-	if err := Migrate(root, nil); err != nil {
-		t.Fatalf("migration rejected a legacy directory: %v", err)
-	}
-	nodes, err := List(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var imported *Node
-	for _, node := range nodes {
-		if node.Body == body {
-			imported = node
-			break
-		}
-	}
-	if imported == nil {
-		t.Fatal("legacy note was not imported")
-	}
-	if !strings.HasPrefix(imported.Path, "legacy-") || !strings.Contains(imported.Path, "/child") {
-		t.Fatalf("legacy path was not mapped safely: %+v", imported)
-	}
-	if !strings.Contains(imported.Description, "backup files") {
-		t.Fatalf("mapped path was not identified: %+v", imported)
-	}
-	if got, err := os.ReadFile(filepath.Join(root, long, "child", readmeName)); err != nil || string(got) != body {
-		t.Fatalf("legacy backup changed: %q, %v", got, err)
-	}
-}
-
-func TestMigrationImportsLegacyFallbackWithInvalidPath(t *testing.T) {
-	root := memoryRoot(t)
-	long := "legacy-memory-row-with-a-prose-path-component-that-exceeds-the-current-sixty-four-character-limit"
-	body := "preserved database note"
-	if err := Migrate(root, []*Node{{Path: long + `\child`, Description: "old summary", Body: body}}); err != nil {
-		t.Fatalf("migration rejected legacy database path: %v", err)
-	}
-	nodes, err := List(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var imported *Node
-	for _, node := range nodes {
-		if node.Body == body {
-			imported = node
-			break
-		}
-	}
-	if imported == nil || !strings.HasPrefix(imported.Path, "legacy-") || !strings.HasSuffix(imported.Path, "/child") {
-		t.Fatalf("legacy database path was not mapped safely: %+v", imported)
-	}
-	if !strings.Contains(imported.Description, "old summary") || !strings.Contains(imported.Description, "legacy database path") {
-		t.Fatalf("legacy metadata was not retained: %+v", imported)
-	}
-}
-
-func TestMigrationSymlinksFailWithoutFollowing(t *testing.T) {
-	for _, linkKind := range []string{"root", "directory", "readme"} {
-		t.Run(linkKind, func(t *testing.T) {
-			root := memoryRoot(t)
-			outside := t.TempDir()
-			if err := os.WriteFile(filepath.Join(outside, "secret"), []byte("not memory"), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			var link, target string
-			switch linkKind {
-			case "root":
-				link, target = root, outside
-			case "directory":
-				link, target = filepath.Join(root, "link"), outside
-			case "readme":
-				link, target = filepath.Join(root, readmeName), filepath.Join(outside, "secret")
-			}
-			if err := os.MkdirAll(filepath.Dir(link), 0o700); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.Symlink(target, link); err != nil {
-				t.Fatal(err)
-			}
-			if err := Migrate(root, nil); err == nil {
-				t.Fatal("migration followed a symlink")
-			}
-			if got, err := os.ReadFile(filepath.Join(outside, "secret")); err != nil || string(got) != "not memory" {
-				t.Fatal("symlink target touched")
-			}
-		})
-	}
-}
-
-func TestCopyTreePreservesOversizedAndIgnoresBackups(t *testing.T) {
-	src, dst := memoryRoot(t), memoryRoot(t)
-	body := strings.Repeat("old", 2000)
-	writeReadme(t, src, "", body)
-	writeReadme(t, src, "a/b", "old")
-	if err := Migrate(src, nil); err != nil {
-		t.Fatal(err)
-	}
-	mustSet(t, src, "a/b", "current")
-	mustSet(t, dst, "unrelated", "retained")
-	if err := CopyTree(src, dst); err != nil {
-		t.Fatal(err)
-	}
-	if mustGet(t, dst, "").Body != body || mustGet(t, dst, "a/b").Body != "current" {
-		t.Fatal("copy did not use authoritative complete data")
-	}
-	mustGet(t, dst, "unrelated")
-	if _, err := os.Stat(dst); !os.IsNotExist(err) {
-		t.Fatal("copy created backup folder")
-	}
-	if err := CopyTree(memoryRoot(t), memoryRoot(t)); err != nil {
-		t.Fatalf("copy absent source: %v", err)
-	}
-}
-
 func TestOutlineUnicodeBoundAndSearchRanking(t *testing.T) {
 	root := memoryRoot(t)
 	mustSet(t, root, "", "# Root")
@@ -635,22 +367,10 @@ func TestOutlineUnicodeBoundAndSearchRanking(t *testing.T) {
 	}
 }
 
-func TestConcurrentUpdatesAndMigration(t *testing.T) {
+func TestConcurrentUpdates(t *testing.T) {
 	root := memoryRoot(t)
-	writeReadme(t, root, "", "imported")
 	var wg sync.WaitGroup
-	errs := make(chan error, 30)
-	for range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			errs <- Migrate(root, nil)
-		}()
-	}
-	wg.Wait()
-	if n := mustGet(t, root, ""); n.Revision != 1 {
-		t.Fatalf("migration ran more than once: %+v", n)
-	}
+	errs := make(chan error, 20)
 	for range 20 {
 		wg.Add(1)
 		go func() {
@@ -666,7 +386,7 @@ func TestConcurrentUpdatesAndMigration(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if n := mustGet(t, root, ""); n.Revision != 21 {
+	if n := mustGet(t, root, ""); n.Revision != 20 {
 		t.Fatalf("lost revisions: %+v", n)
 	}
 	if len(connections) != 0 {

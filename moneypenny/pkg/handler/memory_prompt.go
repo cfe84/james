@@ -129,9 +129,6 @@ func (h *Handler) prepareRunInstructions(sessionID string, params *agent.RunPara
 		params.SystemPrompt += "\n\nPersistent session memory is disabled. Do not read or write session memory through gadgets, native file tools, or direct database access, even if earlier instructions mention memory."
 		return nil
 	}
-	if err := h.MigrateSessionMemoryToSQLite(sessionID); err != nil {
-		return fmt.Errorf("prepare memory migration: %w", err)
-	}
 	memDir := h.memoryDir(sessionID)
 	if memDir == "" {
 		return fmt.Errorf("prepare memory: session memory directory unavailable")

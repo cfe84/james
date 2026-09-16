@@ -131,11 +131,6 @@ func main() {
 		h.SetLogFile(service.DefaultLogFile(*dataDir))
 	}
 
-	// Temporary importer: migrate all sessions before accepting any work.
-	// Failures are transactional and retryable on the next daemon startup.
-	if err := h.MigrateMemoryToSQLite(); err != nil {
-		log.Fatalf("memory migration failed (repair source/access and restart to retry): %v", err)
-	}
 	if err := h.StartGadgets(); err != nil {
 		log.Fatalf("start gadgets: %v", err)
 	}

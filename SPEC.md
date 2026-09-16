@@ -1219,37 +1219,11 @@ Path is locked when editing an existing node. Same-moneypenny duplication copies
 an authoritative SQLite snapshot through `CopyTree`, preserving oversized
 imported bodies, never copying backup README files.
 
-### Temporary importer
-
-Before accepting work at boot, Moneypenny runs a **temporary files→SQLite
-importer** for every registered session, including inactive sessions. It also
-offers an idempotent per-session retry before access. Imported nodes and the
-`files-to-sqlite-v1` completion marker commit in the same transaction. A failure
-rolls back, is surfaced, and remains retryable; successful imports are not
-replayed after restart or later edits to backup files.
-The boot pass attempts all sessions and aborts daemon startup if any import
-fails; repair the source/access problem and restart to retry before accepting work.
-
-If **any `README.md` exists anywhere in the legacy memory tree**, that file tree
-is authoritative over **all** stale memory rows in the main operational database,
-including paths absent from the file tree. This is **not a per-path merge**:
-deleted notes must not be resurrected from stale rows. Empty README files count.
-Only when there is no README does the importer fall back to legacy `memory_nodes`,
-or the old flat `sessions.memory` blob as `notes` when there are no legacy nodes.
-README bodies—including oversized roots and descendants—are preserved intact;
-directories without a README remain navigable nodes. Legacy directory components
-that no longer meet the current 64-character slug rule are deterministically
-mapped to `legacy-<hash>` SQLite paths and flagged as such; their original files
-remain untouched backups. The same mapping applies to invalid paths in legacy
-database rows, preserving historical content while keeping new gadget writes
-strictly validated. Unreadable sources, symlinks, and non-directory roots
-still fail rather than silently lose knowledge.
-
-Legacy files remain untouched **backups**, not writable authority; old operational
-memory rows are migration inputs only. Both the former startup and lazy
-**SQLite→file exporters have been removed**. This importer is transitional, not
-a permanent synchronization layer. Its removal evaluation is already scheduled
-as **#366 for September 16, 2026 at 11:15 Pacific**.
+Legacy files remain untouched **inactive, unmanaged backups**. No importer,
+exporter, or synchronization process reads, writes, or reconciles those trees;
+the session-local SQLite database is the sole runtime memory authority. Existing
+SQLite data remains available, and backup trees are retained for any future
+operator-led recovery.
 
 ### Operator notifications
 

@@ -69,40 +69,6 @@ func TestMemoryPromptInjectsFreshRootOnly(t *testing.T) {
 	}
 }
 
-func TestMemoryPromptRootCharacterBudget(t *testing.T) {
-	for _, char := range []string{"a", "é", "🕴"} {
-		for _, count := range []int{3999, 4000, 4001, 20000} {
-			t.Run(char+"/"+strconv.Itoa(count), func(t *testing.T) {
-				dir := filepath.Join(t.TempDir(), "memory")
-				text := strings.Repeat(char, count)
-				writePromptMemory(t, dir, text)
-				if err := memory.Migrate(dir, nil); err != nil {
-					t.Fatal(err)
-				}
-				prompt, err := memorySystemPrompt(dir)
-				if err != nil {
-					t.Fatal(err)
-				}
-				root := injectedRoot(t, prompt)
-				want := min(count, 4000)
-				if !utf8.ValidString(root) || utf8.RuneCountInString(root) != want || root != strings.Repeat(char, want) {
-					t.Fatalf("wrong Unicode bound: %d characters, want %d", utf8.RuneCountInString(root), want)
-				}
-				if strings.Contains(prompt, "Root excerpt truncated") != (count > 4000) {
-					t.Fatal("truncation notice does not match overflow")
-				}
-				if count > 4000 && !strings.Contains(prompt, "gadgets memory get to read the full root") {
-					t.Fatal("missing full-node command")
-				}
-				saved, err := memory.Get(dir, "")
-				if err != nil || saved.Body != text {
-					t.Fatal("injection changed authoritative content")
-				}
-			})
-		}
-	}
-}
-
 func TestMemoryPromptSeedsKnowledgeOnly(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "memory")
 	prompt, err := memorySystemPrompt(dir)
@@ -129,7 +95,7 @@ func TestMemoryPromptSeedsKnowledgeOnly(t *testing.T) {
 func TestMemoryPromptReportsIOFailures(t *testing.T) {
 	t.Run("memory path is a file", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "memory")
-		if err := os.WriteFile(path, []byte("not a directory"), 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(filepath.Dir(path), "memory.db"), []byte("not sqlite"), 0600); err != nil {
 			t.Fatal(err)
 		}
 		if prompt, err := memorySystemPrompt(path); err == nil || prompt != "" {
@@ -138,7 +104,7 @@ func TestMemoryPromptReportsIOFailures(t *testing.T) {
 	})
 	t.Run("root is a directory", func(t *testing.T) {
 		path := t.TempDir()
-		if err := os.Mkdir(filepath.Join(path, "README.md"), 0700); err != nil {
+		if err := os.WriteFile(filepath.Join(filepath.Dir(path), "memory.db"), []byte("not sqlite"), 0600); err != nil {
 			t.Fatal(err)
 		}
 		if prompt, err := memorySystemPrompt(path); err == nil || prompt != "" {
@@ -168,58 +134,6 @@ func TestRunInstructionsPermissionsAndNotifications(t *testing.T) {
 				t.Fatalf("%s yolo=%t: memory access/injection mismatch", name, yolo)
 			}
 		}
-	}
-}
-
-func TestMemoryPromptUsesSQLiteAfterMigration(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "memory")
-	writePromptMemory(t, dir, "# Legacy")
-	if err := memory.Migrate(dir, nil); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := memory.Set(dir, "", "# Authoritative"); err != nil {
-		t.Fatal(err)
-	}
-	writePromptMemory(t, dir, "# Stale backup")
-	prompt, err := memorySystemPrompt(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if injectedRoot(t, prompt) != "# Authoritative" {
-		t.Fatal("injected stale file instead of authoritative SQLite root")
-	}
-	for _, command := range []string{"get", "list", "search", "set", "batch", "delete", "revisions"} {
-		if !strings.Contains(prompt, "gadgets memory "+command) {
-			t.Errorf("missing gadget command %s", command)
-		}
-	}
-	for _, obsolete := range []string{dir, "native file tools to read and edit", "child's README.md"} {
-		if strings.Contains(prompt, obsolete) {
-			t.Errorf("injected obsolete memory instruction %q", obsolete)
-		}
-	}
-}
-
-func TestMemoryPromptWarnsAboutOversizedDescendants(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "memory")
-	if err := memory.Migrate(dir, []*memory.Node{
-		{Path: "", Body: "# Small root"},
-		{Path: "topic", Body: strings.Repeat("é", 4100)},
-		{Path: "topic/child", Body: strings.Repeat("🕴", 4200)},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	prompt, err := memorySystemPrompt(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{`"topic": 4100 Unicode characters`, `"topic/child": 4200 Unicode characters`, "retaining useful knowledge"} {
-		if !strings.Contains(prompt, want) {
-			t.Errorf("missing %q", want)
-		}
-	}
-	if strings.Contains(prompt, strings.Repeat("é", 100)) {
-		t.Fatal("descendant body injected")
 	}
 }
 

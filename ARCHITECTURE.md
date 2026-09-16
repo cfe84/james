@@ -260,10 +260,11 @@ authorization onto every Hem or Moneypenny command.
 `moneypenny/pkg/memory` now stores each session's memory in
 **`<sessionDir>/memory.db`**, independent of the daemon's operational database.
 Its historical `<sessionDir>/memory` argument is retained internally only to
-resolve the sibling database; that directory's README files are retired import
-sources/backups, not live storage. Each database has `memory_nodes`
+resolve the sibling database; that directory's README files are inactive,
+unmanaged backups, not live storage. No importer, exporter, or synchronization
+process reads or writes those trees. Each database has `memory_nodes`
 (`path` primary key with binary collation, `title`, `description`, `body`,
-`revision`) and `memory_metadata` (migration marker). SQLite uses WAL,
+`revision`). SQLite uses WAL,
 `synchronous=FULL`, a 5-second busy timeout, and immediate write transactions.
 Per-operation connections are closed promptly, with at most 16 databases open
 concurrently and one SQL connection per handle. A fixed 64-lock stripe array
@@ -303,43 +304,16 @@ Same-host duplication calls `CopyTree` on the authoritative snapshot, never
 backup files. Migration and copying preserve imported oversized bodies; ordinary
 replacement writes must meet the limit.
 
-### Temporary files-to-SQLite importer
+### Legacy memory backups
 
-`handler/memory_sqlite_migration.go` visits every registered session at boot
-before work is accepted, including inactive sessions. It loads legacy operational
-`memory_nodes` (or the older flat `sessions.memory` blob as `notes` when no nodes
-exist) as fallback inputs for `memory.Migrate`. Individual failures are reported
-and other sessions are still attempted; the idempotent per-session hook retries
-before memory access/run preparation so failed imports are not silently treated
-as empty memory.
-The entry point aborts startup if the boot pass reports any failure, before
-starting the gadgets listener or accepting work; repair and restart is the boot
-retry path.
-
-`memory/migration.go` imports the retired directory tree transactionally. Legacy
-folder components that do not meet current memory slug rules (including the
-64-character maximum) map deterministically to `legacy-<hash>` node paths and
-are flagged in their metadata; the untouched source tree remains the record of
-the original name. The importer applies that mapping to legacy database-row
-paths as well, so historical rows cannot prevent startup; ordinary gadget writes
-continue to reject invalid paths. **Any
-README.md anywhere in the tree makes the entire file tree authoritative over
-all stale operational-database rows**, including rows whose paths are missing
-from the files. An empty README also counts. This is deliberately not a per-path
-merge: deleted file notes must not be resurrected from stale database rows.
-Only a tree without any README permits fallback rows. Directories become nodes
-even without a README; bodies, including oversized root/descendant notes, are
-preserved intact. Symlinks, invalid paths, and unreadable sources fail visibly.
-
-The `files-to-sqlite-v1` marker in `memory_metadata` commits with all imported
-nodes. Rollback leaves no success marker, allowing explicit safe retries.
-After success, later reads/restarts do not replay backup files over live SQLite
-edits. Files remain untouched backups and legacy operational rows remain
-import-only; no migration writes README files or modifies the main database.
-Both startup and lazy **SQLite→file** exporters have been removed.
-This is temporary compatibility code, not ongoing bidirectional synchronization.
-Removal evaluation is already scheduled as **#366, September 16, 2026,
-11:15 Pacific**.
+The former files-to-SQLite importer and SQLite-to-files exporters are retired.
+Legacy README trees remain untouched inactive, unmanaged backups only. No boot
+hook, lazy retry, operational-database fallback, importer, exporter, or
+synchronization process reads or writes them. The session-local `memory.db`
+created by the authoritative memory APIs is the sole runtime store; previously
+imported SQLite data remains usable. The documented rollout evidence supports
+this repository-wide retirement, without asserting that every historical host
+has been inspected.
 
 ### Root-first memory prompt
 
@@ -353,9 +327,8 @@ schedule/channel metadata, commits the handoff atomically, then performs the
 real continuation with `Resume=true`. Distillation progress is stored in a
 separate keyed table (snapshot max turn id, configuration, chunk index), so
 retries do not pollute the transcript or repeat completed chunks.
-Enabled memory runs the importer/retry hook, seeds a knowledge-only root if
-absent, and reloads the actual root body into `<root-memory>`. Initialization,
-read, and migration errors are surfaced.
+Enabled memory seeds a knowledge-only root if absent and reloads the actual root
+body into `<root-memory>`. Initialization and read errors are surfaced.
 
 Only the authored root is injected, not the recursive outline or descendant
 bodies. The root target is **2,000 characters**, and its injected body is capped
@@ -628,7 +601,7 @@ hem/
 
 30. **Model selection**: TUI forms (wizard, edit) use cycling selectors for agent and model fields instead of free-text input. Models are discovered per moneypenny via the `list_models` method: Claude returns hardcoded aliases (sonnet, opus, haiku); Copilot shells out to `copilot -p` **with debug logging** (`--model auto --log-level debug --log-dir <tmp>`) and parses the authoritative `Listed models:` line the CLI emits after querying its `/models` endpoint — the full list (dozens of entries with display names), not the model's own hallucinated answer. Earlier versions asked copilot to *list* its identifiers in a prompt, which returned only the handful the model happened to name (~5); the debug-log parse fixes that. Embedding models (`text-embedding*`, not valid `--model` values) are filtered, and the old stdout-text parse is retained as a fallback. `--model auto` is used (not a pinned identifier, which would break when models are retired). The wizard caches models per agent type and reloads when the agent selection changes. The edit form loads models when the session detail arrives (using the session's agent type). Model options always include an empty value (no override / default). If the session already has a model not in the discovered list, it's added as an option to preserve it. **Qew mirrors this (v1.8.0):** the create wizard exposes Agent (dropdown defaulting to copilot), Model and Effort `<select>`s; changing the agent calls `syncWizardAgentDeps()` which rebuilds the effort options (`effortOptions()` mirrors hem's per-agent list) and re-fetches models via the `list-models` verb (a stale-fetch guard ignores a response if the agent changed again meanwhile). The edit-session dialog adds Model and Effort dropdowns (agent is fixed for an existing session); models are fetched from the session's `moneypenny`+`agent`, the current model is preserved as a `(current)` option when absent from the list, and clearing effort emits the backend's `none` clear sentinel. Shared JS helpers (`loadModels`, `modelOptionsHtml`, `effortOptionsHtml`) keep both dialogs consistent. The git diff review modal opens via a `modal-large` variant class (97vw/97vh, flex column) so large diffs are readable; `renderWizardModal(content, modalClass)` takes an optional class and the diff body (`.diff-content`) flexes to fill the height and **wraps long lines** (`white-space: pre-wrap; overflow-wrap: anywhere`) so no horizontal scrolling is needed. The Git Log modal shares the same `modal-large` variant. **Git log commit review (v1.10.0):** `formatGitLog` wraps each commit line (matched by the graph+hash regex) in a clickable `.log-commit` span carrying `data-hash`; a click delegate calls `showCommit(hash)`, which fetches `git-show session <id> --hash <hash>` (`git show --stat --patch`) and renders it through the *same* review machinery as the working-tree diff. The shared `diffReview` state gained a `mode` (`'diff'`|`'commit'`) and `commit` (hash) field: `renderDiffView()` swaps the title (Commit `<short>`) and actions (Back instead of Commit/Commit&Push) and `buildReviewPrompt()` swaps the boilerplate to reference the commit hash. `parseDiffLines(text, {commitPreamble:true})` leaves the commit-metadata/diffstat preamble (everything before the first `diff ` header) non-commentable since it has no file/line context. Stale-response races (log→commit→back→another commit) are guarded by a monotonic `gitViewToken` checked after every await; **Back** confirms before discarding unsent comments. This commit-review capability is Qew-only — the TUI's `diffTabCommit` shows commit contents read-only. The diff is parsed client-side by `parseDiffLines()` (a JS port of hem's `parseDiffMeta`) into per-line metadata (file, real line number, code), rendered as clickable `.diff-line` blocks; clicking opens an inline comment editor and saved comments live in per-line slots keyed by the line's sequential index. `buildReviewPrompt()`/`formatReviewComment()` are JS ports of the same functions in `hem/pkg/ui/diff.go`, producing a byte-identical review prompt that is sent to the agent via the normal `continue session --async` path (so TUI and Qew reviews are indistinguishable to the agent). The Qew header shows the running version: `main.Version` (build-time `-ldflags`) is passed into `web.NewServer` and served from an unauthenticated `/version` endpoint that `app.js` fetches on load.
 
-31. **Session memory (hierarchical tree)**: The hierarchy remains a materialized path tree with an empty-path root and auto-created ancestors. Since v1.78.0 its authority is the session-local `memory.db`, not operational-database memory tables or Markdown folders. The runtime injects the bounded authored root only; full outlines remain operator browsing data. See [Authoritative session memory](#authoritative-session-memory-v1780).
+31. **Session memory (hierarchical tree)**: The hierarchy remains a materialized path tree with an empty-path root and auto-created ancestors. Since v1.78.0 its authority is the session-local `memory.db`, not operational-database memory tables or Markdown folders. Legacy file trees are inactive unmanaged backups; no importer, exporter, or synchronization runs. The runtime injects the bounded authored root only; full outlines remain operator browsing data. See [Authoritative session memory](#authoritative-session-memory-v1780).
 
 32. **Diagnostics**: `hem diagnose` uses a two-phase client-side architecture for streaming output. Phase 1 runs local checks (data directory, SSH keys, database) without a server connection, printing results immediately. Phase 2 sends a single `diagnose` command to the server, which pings all moneypennies in parallel, checks agent availability via `check_agents`, and collects cache/session stats. The CLI unpacks the structured `DiagnoseResult` and prints each section as it goes. JSON mode (`-o json`) buffers all checks and outputs a single JSON array at the end. Agent binary detection uses `exec.LookPath()` for cross-platform support (Windows, macOS, Linux). The `check_agents` moneypenny command is version-gated (≥1.0.0) for retrocompatibility with older moneypenny instances.
 
@@ -743,7 +716,7 @@ ignores it. Manual `compact session` (TUI/Qew `K`) requires idle state. **Pipeli
 
 47. **Scheduled invocations as train-of-thought (v1.27.0)**: A fired schedule's prompt was previously stored as a `user` conversation turn, so it rendered as a message the user typed. It is now stored under a dedicated **`scheduled`** role that renders in the train-of-thought style (⏰, gray/italic, hidden unless the show-thoughts toggle is on) in both the TUI (`chat.go`) and Qew (`app.js`) — the same gated block as `thinking`/`agent_text`. The always-visible `system` "[Scheduled task triggered at …]" marker turn is retained as the at-a-glance indicator. To classify correctly across the busy/queued path, `prompt_queue` gained a `source` column (migrated; `''` = user-typed, `'scheduled'` = scheduler-fired); `QueuePrompt` takes a `source` arg and `DrainQueueGroup`/`DrainQueue` carry it on `QueuedPrompt.Source`, so when the queue drains the scheduler-fired prompt is written as a `scheduled` turn while user-typed prompts stay `user`. The shared `cleanTranscript` helper treats `scheduled` as a USER turn so the instruction is preserved verbatim in compaction/distillation transcripts, and `estimateContextTokens` counts it like any other turn (it is real context).
 
-48. **Retired file-based memory (v1.28.0 → v1.78.0)**: Direct README editing, memory-directory grants, provider/yolo memory gating, and startup/lazy SQLite→file exports are removed. The current design keeps memory local without needing an agent-side Hem connection: a scoped gadgets endpoint owns access to a separate session SQLite database. Legacy README files are preserved backup inputs to the [temporary importer](#temporary-files-to-sqlite-importer), not an alternate write surface. The established browser/editor and `copy_memory_from` flow are retained on the shared SQLite APIs.
+48. **Retired file-based memory (v1.28.0 → v1.78.0)**: Direct README editing, memory-directory grants, provider/yolo memory gating, and startup/lazy SQLite→file exports are removed. The current design keeps memory local without needing an agent-side Hem connection: a scoped gadgets endpoint owns access to a separate session SQLite database. Legacy README files are preserved inactive unmanaged backups, not an alternate write surface. The established browser/editor and `copy_memory_from` flow are retained on the shared SQLite APIs.
 
 49. **Qew changed-files diff view + reviewed markers (v1.31.0)**: The Qew git-diff modal gained a per-file view and ephemeral reviewed marks, mirroring the hem TUI's files tab (`hem/pkg/ui/diff.go`) — entirely client-side in `qew/pkg/web/static/app.js`, no protocol/moneypenny changes (moneypenny still serves only the whole unified diff via `git_diff`; the file split is computed in JS, exactly as the TUI does). The shared `diffReview` state gained `view` (`'diff'`|`'files'`), `selectedFile`, `fileList`, `fileCursor`, `reviewed` (`path→bool`, in-memory only, reset every open — matching the TUI's view-scoped map, **not persisted**), and `visibleSeqs`. `buildFileList()` is a JS port of the TUI's `buildFileList` (one entry per file in order of appearance with `+added`/`-removed` counts; zero-change entries flagged `binary`); `totalChangedLines()` and a 400-line `FILES_AUTO_THRESHOLD` constant mirror `filesAutoThreshold`, so a multi-file working-tree diff whose total changed lines exceed 400 opens on the files list. `renderDiffView()` is now a dispatcher: `renderFilesView()` (the `#diff-files-list` changed-files list) when `mode==='diff' && view==='files'`, else `renderFileDiffView()` (the existing inline-comment diff UI, optionally filtered to `selectedFile`). The key change that keeps inline comments correct under filtering: `renderDiffReview()` records `visibleSeqs` (the global line index of each rendered `.diff-line`) and keeps comment slots keyed by **global** seq, so `moveDiffCursor`/`openCommentEditorAtCursor` map the DOM-position cursor back through `visibleSeqs`, comments survive switching between whole-tree and per-file views, and a single **Send comments** still submits every comment across all files (`buildReviewPrompt` is unchanged). Navigation: in the files list `handleFilesListKey` does `j`/`k`/`↓`/`↑` (auto-repeat allowed via the same `isNav` gate as the other Qew lists), `Enter`/click → `openSelectedFile` (sets `selectedFile`, view→`diff`), `Space` → `toggleReviewedFile` (re-renders the list, green `✔`), `Tab`/**View all** → `showAllDiff`; in the whole-tree diff `f`/`Tab` → `showFilesView` (only when `fileList` is non-empty); a single-file diff shows a **Back** button (→ files list) instead of **Close**. `handleDiffModalKey` gates files-mode on the actual presence of `#diff-files-list` in the DOM (so a leftover `diffReview` from a closed modal can't hijack keys in an unrelated modal). The feature is **working-tree-diff only**; the commit-review modal (`mode==='commit'`) keeps its single read-through layout (`showCommit` resets via the shared `emptyDiffReview()` factory and forces `mode='commit'`). `escapeCloseModal`'s Close/Cancel/Back/OK precedence makes Escape do the right thing per view (files list → Close, single-file → Back to files).
 

@@ -548,7 +548,8 @@ type ExecuteCommandResponse struct {
 
 // ListModelsData is the data payload for list_models.
 type ListModelsData struct {
-	Agent string `json:"agent"`
+	Agent   string `json:"agent"`
+	Refresh bool   `json:"refresh,omitempty"`
 }
 
 // ModelInfo describes an available model.

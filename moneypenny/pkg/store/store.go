@@ -37,7 +37,6 @@ type Session struct {
 	GadgetRoute        string
 	GadgetCapabilities string
 	Status             string
-	Memory             string
 	// AgentSessionID is the session id handed to the underlying agent CLI
 	// (claude/copilot) via --session-id/--resume. It is decoupled from
 	// SessionID so custom compaction can substitute a fresh underlying agent
@@ -293,20 +292,6 @@ CREATE TABLE IF NOT EXISTS schedules (
 CREATE INDEX IF NOT EXISTS idx_schedules_session ON schedules(session_id);
 CREATE INDEX IF NOT EXISTS idx_schedules_pending ON schedules(status, scheduled_at);
 
-CREATE TABLE IF NOT EXISTS memory_nodes (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
-    path TEXT NOT NULL,
-    title TEXT NOT NULL DEFAULT '',
-    description TEXT NOT NULL DEFAULT '',
-    body TEXT NOT NULL DEFAULT '',
-    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(session_id, path)
-);
-
-CREATE INDEX IF NOT EXISTS idx_memory_nodes_session ON memory_nodes(session_id);
-
 CREATE TABLE IF NOT EXISTS channels (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
@@ -360,7 +345,6 @@ CREATE INDEX IF NOT EXISTS idx_channel_outbox_pending ON channel_outbox(status);
 	db.Exec(`ALTER TABLE sessions ADD COLUMN context_tier TEXT NOT NULL DEFAULT ''`)
 
 	// Migration: add memory column to sessions if missing.
-	db.Exec(`ALTER TABLE sessions ADD COLUMN memory TEXT NOT NULL DEFAULT ''`)
 
 	// Migration: add per-prompt model/effort override columns to prompt_queue.
 	// These carry a temporary override chosen for a specific queued message so
@@ -488,7 +472,7 @@ func (s *Store) CreateSession(sess *Session) error {
 // GetSession retrieves a session by ID. Returns nil, nil if not found.
 func (s *Store) GetSession(sessionID string) (*Session, error) {
 	row := s.db.QueryRow(
-		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, gadget_route, gadget_capabilities, status, memory, agent_session_id, compaction_mode, compaction_threshold_tokens, context_tokens, context_window, opencode_cost, schedule_ready_at, created_at, updated_at, revision, generation
+		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, gadget_route, gadget_capabilities, status, agent_session_id, compaction_mode, compaction_threshold_tokens, context_tokens, context_window, opencode_cost, schedule_ready_at, created_at, updated_at, revision, generation
 		 FROM sessions WHERE session_id = ?`, sessionID,
 	)
 
@@ -497,7 +481,7 @@ func (s *Store) GetSession(sessionID string) (*Session, error) {
 	var scheduleReadyAt sql.NullTime
 	err := row.Scan(
 		&sess.SessionID, &sess.Name, &sess.Agent, &sess.SystemPrompt, &sess.Model, &sess.Effort, &sess.ContextTier,
-		&yolo, &sess.Path, &sess.Environment, &sess.GadgetRoute, &sess.GadgetCapabilities, &sess.Status, &sess.Memory, &sess.AgentSessionID, &sess.CompactionMode, &sess.CompactionThresholdTokens,
+		&yolo, &sess.Path, &sess.Environment, &sess.GadgetRoute, &sess.GadgetCapabilities, &sess.Status, &sess.AgentSessionID, &sess.CompactionMode, &sess.CompactionThresholdTokens,
 		&sess.ContextTokens, &sess.ContextWindow, &sess.OpenCodeCost, &scheduleReadyAt, &sess.CreatedAt, &sess.UpdatedAt, &sess.Revision, &sess.Generation,
 	)
 	if err == sql.ErrNoRows {
@@ -523,7 +507,7 @@ func (s *Store) GetSession(sessionID string) (*Session, error) {
 // ListSessions returns all sessions.
 func (s *Store) ListSessions() ([]*Session, error) {
 	rows, err := s.db.Query(
-		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, gadget_route, gadget_capabilities, status, memory, agent_session_id, compaction_mode, compaction_threshold_tokens, context_tokens, context_window, opencode_cost, schedule_ready_at, created_at, updated_at, revision, generation
+		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, gadget_route, gadget_capabilities, status, agent_session_id, compaction_mode, compaction_threshold_tokens, context_tokens, context_window, opencode_cost, schedule_ready_at, created_at, updated_at, revision, generation
 		 FROM sessions ORDER BY created_at`,
 	)
 	if err != nil {
@@ -538,7 +522,7 @@ func (s *Store) ListSessions() ([]*Session, error) {
 		var scheduleReadyAt sql.NullTime
 		if err := rows.Scan(
 			&sess.SessionID, &sess.Name, &sess.Agent, &sess.SystemPrompt, &sess.Model, &sess.Effort, &sess.ContextTier,
-			&yolo, &sess.Path, &sess.Environment, &sess.GadgetRoute, &sess.GadgetCapabilities, &sess.Status, &sess.Memory, &sess.AgentSessionID, &sess.CompactionMode, &sess.CompactionThresholdTokens,
+			&yolo, &sess.Path, &sess.Environment, &sess.GadgetRoute, &sess.GadgetCapabilities, &sess.Status, &sess.AgentSessionID, &sess.CompactionMode, &sess.CompactionThresholdTokens,
 			&sess.ContextTokens, &sess.ContextWindow, &sess.OpenCodeCost, &scheduleReadyAt, &sess.CreatedAt, &sess.UpdatedAt, &sess.Revision, &sess.Generation,
 		); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
@@ -684,39 +668,6 @@ func (s *Store) AddOpenCodeCost(sessionID string, cost float64) error {
 	)
 	if err != nil {
 		return fmt.Errorf("add OpenCode cost: %w", err)
-	}
-	return nil
-}
-
-// GetMemory returns the memory content for a session.
-func (s *Store) GetMemory(sessionID string) (string, error) {
-	var memory string
-	err := s.db.QueryRow(`SELECT memory FROM sessions WHERE session_id = ?`, sessionID).Scan(&memory)
-	if err == sql.ErrNoRows {
-		return "", fmt.Errorf("session %q not found", sessionID)
-	}
-	if err != nil {
-		return "", fmt.Errorf("get memory: %w", err)
-	}
-	return memory, nil
-}
-
-// SetMemory replaces the memory content for a session.
-func (s *Store) SetMemory(sessionID, content string) error {
-	now := time.Now().UTC()
-	res, err := s.db.Exec(
-		`UPDATE sessions SET memory = ?, revision = revision + 1, updated_at = ? WHERE session_id = ?`,
-		content, now, sessionID,
-	)
-	if err != nil {
-		return fmt.Errorf("set memory: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("rows affected: %w", err)
-	}
-	if n == 0 {
-		return fmt.Errorf("session %q not found", sessionID)
 	}
 	return nil
 }

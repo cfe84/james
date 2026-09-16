@@ -1,6 +1,6 @@
 // Package memory stores each session's authoritative memory in memory.db.
-// Public functions retain the historical <session>/memory directory argument;
-// README files in that directory are migration inputs, never live storage.
+// The historical <session>/memory argument identifies the database's parent;
+// any files in that directory are unmanaged backups.
 package memory
 
 import (
@@ -21,19 +21,13 @@ import (
 )
 
 const (
-	readmeName        = "README.md"
 	MaxPathSegmentLen = 64
 	MaxBodyChars      = 4000
 	RootTargetChars   = 2000
 	outlineMaxLen     = 4000
 	descriptionMaxLen = 200
 	maxOpenDatabases  = 16
-	migrationMarker   = "files-to-sqlite-v1"
 )
-
-// ErrMigrationRequired means the caller must run Migrate with legacy fallback
-// nodes before using this session. It is safe to retry after migration succeeds.
-var ErrMigrationRequired = errors.New("memory migration required; retry after Migrate succeeds")
 
 var connections = make(chan struct{}, maxOpenDatabases)
 var databaseLocks [64]sync.Mutex
@@ -105,7 +99,7 @@ func (db *database) close() {
 	db.lock.Unlock()
 }
 
-func open(root string, migrating bool) (_ *database, err error) {
+func open(root string) (_ *database, err error) {
 	if strings.TrimSpace(root) == "" {
 		return nil, errors.New("memory directory is empty")
 	}
@@ -160,28 +154,9 @@ func open(root string, migrating bool) (_ *database, err error) {
 			description TEXT NOT NULL DEFAULT '',
 			body TEXT NOT NULL DEFAULT '',
 			revision INTEGER NOT NULL DEFAULT 1
-		);
-		CREATE TABLE IF NOT EXISTS memory_metadata (
-			key TEXT PRIMARY KEY, value TEXT NOT NULL
 		);`)
 	if err != nil {
 		return nil, fmt.Errorf("initialize memory database: %w", err)
-	}
-	if !migrating {
-		var completed int
-		err = db.QueryRow("SELECT count(*) FROM memory_metadata WHERE key = ?", migrationMarker).Scan(&completed)
-		if err != nil {
-			return nil, err
-		}
-		if completed == 0 {
-			entries, readErr := os.ReadDir(root)
-			if readErr != nil && !os.IsNotExist(readErr) {
-				return nil, fmt.Errorf("inspect memory migration source: %w", readErr)
-			}
-			if len(entries) > 0 {
-				return nil, ErrMigrationRequired
-			}
-		}
 	}
 	return &database{DB: db, lock: lock}, nil
 }
@@ -205,7 +180,7 @@ func Get(root, path string) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	db, err := open(root, false)
+	db, err := open(root)
 	if err != nil {
 		return nil, err
 	}
@@ -218,7 +193,7 @@ func Get(root, path string) (*Node, error) {
 }
 
 func queryNodes(root, where string, args ...any) ([]*Node, error) {
-	db, err := open(root, false)
+	db, err := open(root)
 	if err != nil {
 		return nil, err
 	}
@@ -297,7 +272,7 @@ func normalizeNodes(nodes []*Node, enforceLimit bool) ([]*Node, error) {
 
 // SetBatch commits all replacements and auto-created ancestors together, or none.
 // New/updated bodies are limited to MaxBodyChars Unicode code points. The root
-// target of RootTargetChars is advisory; migration and CopyTree preserve old bodies.
+// target of RootTargetChars is advisory; CopyTree preserves existing bodies.
 // Duplicate normalized paths are rejected. Supplied Revision values are ignored.
 func SetBatch(root string, nodes []*Node) error {
 	normalized, err := normalizeNodes(nodes, true)
@@ -337,7 +312,7 @@ func setNodes(root string, nodes []*Node) error {
 	if len(nodes) == 0 {
 		return nil
 	}
-	db, err := open(root, false)
+	db, err := open(root)
 	if err != nil {
 		return err
 	}
@@ -363,7 +338,7 @@ func Delete(root, path string, recursive bool) (int, error) {
 	if norm == "" {
 		return 0, errors.New("cannot delete the root memory node")
 	}
-	db, err := open(root, false)
+	db, err := open(root)
 	if err != nil {
 		return 0, err
 	}
@@ -466,9 +441,9 @@ func Count(root string) int {
 	return count
 }
 
-// CountWithError reports database and pending-migration errors rather than hiding them.
+// CountWithError reports database errors rather than hiding them.
 func CountWithError(root string) (int, error) {
-	db, err := open(root, false)
+	db, err := open(root)
 	if err != nil {
 		return 0, err
 	}
@@ -486,7 +461,7 @@ func IsEmpty(root string) bool {
 
 // IsEmptyWithError reports whether no note contains content or metadata.
 func IsEmptyWithError(root string) (bool, error) {
-	db, err := open(root, false)
+	db, err := open(root)
 	if err != nil {
 		return false, err
 	}

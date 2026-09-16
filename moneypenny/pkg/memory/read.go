@@ -15,7 +15,7 @@ type Page struct {
 	NextOffset *int `json:"next_offset,omitempty"`
 }
 
-// Read retrieves a bounded Unicode slice, so even unusually large imported
+// Read retrieves a bounded Unicode slice, so even unusually large
 // notes remain readable through the bounded gadget protocol without truncation
 // of stored knowledge. Offsets are Unicode code points, never bytes.
 func Read(root, path string, offset, limit int) (*Page, error) {
@@ -26,7 +26,7 @@ func Read(root, path string, offset, limit int) (*Page, error) {
 	if offset < 0 || limit < 1 || limit > MaxReadCharacters {
 		return nil, fmt.Errorf("offset must be nonnegative and limit must be 1–%d Unicode characters", MaxReadCharacters)
 	}
-	db, err := open(root, false)
+	db, err := open(root)
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +75,7 @@ type Size struct {
 
 // Oversized returns only paths and character counts, never descendant bodies.
 func Oversized(root string) ([]Size, error) {
-	db, err := open(root, false)
+	db, err := open(root)
 	if err != nil {
 		return nil, err
 	}
