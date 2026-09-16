@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"math"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -37,9 +38,32 @@ type formField struct {
 }
 
 const compactionThresholdFlag = "--compaction-threshold-tokens"
+const compactionThresholdDisplayScale = 1000
 
 func defaultCompactionThresholdValue(contextTier string) string {
-	return strconv.Itoa(envelope.DefaultCompactionThresholdTokensForContext(contextTier))
+	return compactionThresholdDisplayValue(envelope.DefaultCompactionThresholdTokensForContext(contextTier))
+}
+
+func compactionThresholdDisplayValue(tokens int) string {
+	if tokens%compactionThresholdDisplayScale == 0 {
+		return strconv.Itoa(tokens / compactionThresholdDisplayScale)
+	}
+	return strconv.FormatFloat(float64(tokens)/compactionThresholdDisplayScale, 'f', -1, 64)
+}
+
+func formFieldArgumentValue(field formField) string {
+	if field.flag != compactionThresholdFlag {
+		return field.value
+	}
+	thousands, err := strconv.ParseFloat(field.value, 64)
+	tokens := thousands * compactionThresholdDisplayScale
+	maxInt := int(^uint(0) >> 1)
+	minInt := -maxInt - 1
+	if err != nil || math.IsNaN(tokens) || math.IsInf(tokens, 0) ||
+		tokens != math.Trunc(tokens) || tokens > float64(maxInt) || tokens < float64(minInt) {
+		return field.value
+	}
+	return strconv.Itoa(int(tokens))
 }
 
 func syncDefaultCompactionThreshold(fields []formField) {
@@ -149,7 +173,7 @@ func newCreateModel(c *client) createModel {
 			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
 			{label: "Gadgets (James tooling)", flag: "--gadgets", isBool: true, value: "false"},
 			{label: "Compaction", flag: "--compaction", value: "custom", options: []string{"custom", "agent"}},
-			{label: "Custom compaction threshold (tokens)", flag: compactionThresholdFlag, value: defaultCompactionThresholdValue(""), defaultDerived: true},
+			{label: "Custom compaction threshold (thousands of tokens)", flag: compactionThresholdFlag, value: defaultCompactionThresholdValue(""), defaultDerived: true},
 		}, gadgetCapabilityFields(nil)...),
 	}
 }
@@ -199,7 +223,7 @@ func (m createModel) createSession() tea.Cmd {
 			if f.isBool {
 				args = append(args, f.flag)
 			} else {
-				args = append(args, f.flag, f.value)
+				args = append(args, f.flag, formFieldArgumentValue(f))
 			}
 		}
 		if len(traitIDs) > 0 {

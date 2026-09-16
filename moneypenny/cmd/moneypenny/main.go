@@ -121,6 +121,7 @@ func main() {
 
 	runner := agent.New(vlog)
 	h := handler.New(st, runner, Version, *dataDir)
+	defer h.Close()
 	h.SetLogger(vlog.Printf)
 	if *logFile != "" {
 		h.SetLogFile(*logFile)
@@ -764,7 +765,10 @@ func runInstallWizard() {
 				os.Exit(0)
 			}
 			// Uninstall the old one first.
-			_ = service.Uninstall(ul)
+			if err := service.Uninstall(ul); err != nil {
+				fmt.Printf("Error uninstalling existing service: %v\n", err)
+				os.Exit(1)
+			}
 			fmt.Println()
 		}
 	}

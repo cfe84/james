@@ -16,6 +16,7 @@ function browser({ stableReconcile = false, reconcileRevision = 1 } = {}) {
   const calls = [];
   const rendered = [];
   const sockets = [];
+  const socketMessages = [];
   let timerID = 0;
   let history = { conversation: [], total: 0 };
   let pending = null;
@@ -34,7 +35,7 @@ function browser({ stableReconcile = false, reconcileRevision = 1 } = {}) {
       static OPEN = 1;
       static CONNECTING = 0;
       constructor() { this.readyState = 0; sockets.push(this); }
-      send() {}
+      send(message) { socketMessages.push(JSON.parse(message)); }
       close() { this.readyState = 3; this.onclose(); }
     },
     setInterval(fn, ms) { const id = ++timerID; intervals.set(id, { fn, ms }); return id; },
@@ -74,6 +75,7 @@ function browser({ stableReconcile = false, reconcileRevision = 1 } = {}) {
       navigate(id) {
         currentSession = id;
         if (typeof chatGeneration !== 'undefined') chatGeneration++;
+        requestActiveWatch();
       },
       cachePanels() {
         currentSessionStatus = 'working';
@@ -88,7 +90,7 @@ function browser({ stableReconcile = false, reconcileRevision = 1 } = {}) {
       panels() { return { currentSessionStatus, lastActivity, lastSchedules, allSubagents }; }
     };`, context);
   return {
-    ...context.controls, calls, rendered, sockets,
+    ...context.controls, calls, rendered, sockets, socketMessages,
     history(content) {
       history = {
         conversation: [{ role: 'assistant', content }],
@@ -204,6 +206,24 @@ test('healthy socket retains dashboard polling and reconnect does not duplicate 
   page.openSocket();
   await page.loadDashboard();
   assert.equal(page.timers(5000), 1);
+});
+
+test('watch responses are generation-safe and session switches request a new watch', async () => {
+  const page = browser();
+  page.navigate('session-a');
+  const socket = page.openSocket();
+  const firstRequest = page.socketMessages.find(message => message.verb === 'watch');
+  assert.equal(firstRequest.args[0], 'session-a');
+  page.navigate('session-b');
+  const watchRequests = page.socketMessages.filter(message => message.verb === 'watch');
+  assert.equal(watchRequests.at(-1).args[0], 'session-b');
+  socket.onmessage({ data: JSON.stringify({
+    verb: 'watch', noun: 'session', status: 'ok', request_id: firstRequest.request_id,
+    data: { watch_id: 'stale-watch', session_id: 'session-a' },
+  }) });
+  assert.deepEqual(page.socketMessages.at(-1), {
+    verb: 'unwatch', noun: 'watch', args: ['stale-watch'],
+  });
 });
 
 test('timer ticks and push bursts share one chat refresh and leave hidden dashboard alone', async () => {

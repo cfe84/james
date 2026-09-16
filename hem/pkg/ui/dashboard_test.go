@@ -110,7 +110,7 @@ func TestUnifySubagentCategories(t *testing.T) {
 func TestCompactionThresholdFieldVisibilityAndNavigation(t *testing.T) {
 	fields := []formField{
 		{flag: "--compaction", value: "agent"},
-		{flag: compactionThresholdFlag, value: "10000"},
+		{flag: compactionThresholdFlag, value: "10"},
 		{flag: "--model", value: ""},
 	}
 	if isFormFieldVisible(fields, 1) {
@@ -126,7 +126,7 @@ func TestCompactionThresholdFieldVisibilityAndNavigation(t *testing.T) {
 	if got := moveFormCursor(fields, 0, 1); got != 1 {
 		t.Fatalf("moveFormCursor() = %d, want 1", got)
 	}
-	if fields[1].value != "10000" {
+	if fields[1].value != "10" {
 		t.Fatalf("threshold value = %q, want preserved value", fields[1].value)
 	}
 }
@@ -134,18 +134,36 @@ func TestCompactionThresholdFieldVisibilityAndNavigation(t *testing.T) {
 func TestCompactionThresholdDefaultTracksContextUntilEdited(t *testing.T) {
 	fields := []formField{
 		{flag: "--context", value: ""},
-		{flag: compactionThresholdFlag, value: "150000", defaultDerived: true},
+		{flag: compactionThresholdFlag, value: "150", defaultDerived: true},
 	}
 	fields[0].value = "long_context"
 	syncDefaultCompactionThreshold(fields)
-	if fields[1].value != "800000" {
-		t.Fatalf("derived threshold = %q, want 800000", fields[1].value)
+	if fields[1].value != "800" {
+		t.Fatalf("derived threshold = %q, want 800", fields[1].value)
 	}
 	fields[1].defaultDerived = false
-	fields[1].value = "123456"
+	fields[1].value = "123"
 	fields[0].value = ""
 	syncDefaultCompactionThreshold(fields)
-	if fields[1].value != "123456" {
+	if fields[1].value != "123" {
 		t.Fatalf("edited threshold changed with context: %q", fields[1].value)
+	}
+}
+
+func TestCompactionThresholdFormValueConvertsThousandsToTokens(t *testing.T) {
+	for _, test := range []struct {
+		display string
+		tokens  string
+	}{
+		{display: "150", tokens: "150000"},
+		{display: "123.456", tokens: "123456"},
+	} {
+		field := formField{flag: compactionThresholdFlag, value: test.display}
+		if got := formFieldArgumentValue(field); got != test.tokens {
+			t.Fatalf("formFieldArgumentValue(%q) = %q, want %q", test.display, got, test.tokens)
+		}
+	}
+	if got := compactionThresholdDisplayValue(123456); got != "123.456" {
+		t.Fatalf("compactionThresholdDisplayValue() = %q, want 123.456", got)
 	}
 }

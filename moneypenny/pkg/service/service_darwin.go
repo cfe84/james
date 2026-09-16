@@ -3,10 +3,13 @@
 package service
 
 import (
+	"bytes"
+	"encoding/xml"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/template"
 )
@@ -25,10 +28,9 @@ const plistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
     <string>{{.Label}}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{{.Shell}}</string>
-        <string>-l</string>
-        <string>-c</string>
-        <string>exec {{.Command}}</string>
+{{- range .Arguments}}
+        <string>{{xml .}}</string>
+{{- end}}
     </array>
     <key>RunAtLoad</key>
     <true/>
@@ -47,11 +49,10 @@ const plistTemplate = `<?xml version="1.0" encoding="UTF-8"?>
 `
 
 type plistData struct {
-	Label   string
-	Shell   string // user's login shell
-	Command string // quoted binary path + args
-	LogFile string
-	UserName string
+	Label     string
+	Arguments []string
+	LogFile   string
+	UserName  string
 }
 
 func plistPath(userLevel bool) string {
@@ -62,8 +63,36 @@ func plistPath(userLevel bool) string {
 	return filepath.Join("/Library", "LaunchDaemons", plistLabel+".plist")
 }
 
+func launchdDomain(userLevel bool) string {
+	if !userLevel {
+		return "system"
+	}
+	return "gui/" + strconv.Itoa(os.Getuid())
+}
+
+func launchdTarget(userLevel bool) string {
+	return launchdDomain(userLevel) + "/" + plistLabel
+}
+
+func runLaunchctl(args ...string) ([]byte, error) {
+	return exec.Command("launchctl", args...).CombinedOutput()
+}
+
+func launchdServiceAbsent(err error, output []byte) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(string(output))
+	return strings.Contains(message, "no such process") ||
+		strings.Contains(message, "could not find service")
+}
+
 // Install creates a launchd plist and loads it.
 func Install(cfg *Config) error {
+	if cfg.UserLevel && os.Geteuid() == 0 {
+		return fmt.Errorf("user-level launchd services must be installed without sudo")
+	}
+
 	path := plistPath(cfg.UserLevel)
 
 	// Ensure parent directory exists.
@@ -78,29 +107,10 @@ func Install(cfg *Config) error {
 		}
 	}
 
-	// Detect user's login shell for environment loading.
-	shell := os.Getenv("SHELL")
-	if shell == "" {
-		shell = "/bin/zsh" // macOS default since Catalina
-	}
-
-	// Build the full command string for shell -l -c "exec ...".
-	// Quote the binary path in case it contains spaces.
-	cmdParts := []string{fmt.Sprintf("'%s'", cfg.BinaryPath)}
-	for _, a := range cfg.BuildArgs() {
-		// Quote args that contain spaces.
-		if strings.Contains(a, " ") {
-			cmdParts = append(cmdParts, fmt.Sprintf("'%s'", a))
-		} else {
-			cmdParts = append(cmdParts, a)
-		}
-	}
-
 	data := plistData{
-		Label:   plistLabel,
-		Shell:   shell,
-		Command: strings.Join(cmdParts, " "),
-		LogFile: cfg.LogFile,
+		Label:     plistLabel,
+		Arguments: append([]string{cfg.BinaryPath}, cfg.BuildArgs()...),
+		LogFile:   cfg.LogFile,
 	}
 
 	// For system-level daemons, run as the current user.
@@ -110,7 +120,13 @@ func Install(cfg *Config) error {
 		}
 	}
 
-	tmpl, err := template.New("plist").Parse(plistTemplate)
+	tmpl, err := template.New("plist").Funcs(template.FuncMap{
+		"xml": func(value string) string {
+			var escaped bytes.Buffer
+			_ = xml.EscapeText(&escaped, []byte(value))
+			return escaped.String()
+		},
+	}).Parse(plistTemplate)
 	if err != nil {
 		return fmt.Errorf("parse plist template: %w", err)
 	}
@@ -119,28 +135,62 @@ func Install(cfg *Config) error {
 	if err != nil {
 		return fmt.Errorf("create plist file: %w", err)
 	}
-	defer f.Close()
 
 	if err := tmpl.Execute(f, data); err != nil {
+		_ = f.Close()
 		return fmt.Errorf("write plist: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close plist file: %w", err)
 	}
 
 	fmt.Printf("wrote %s\n", path)
 
-	// Load the service.
-	var cmd *exec.Cmd
-	if cfg.UserLevel {
-		cmd = exec.Command("launchctl", "load", path)
-	} else {
-		cmd = exec.Command("sudo", "launchctl", "load", path)
-	}
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("launchctl load: %w", err)
+	if output, err := exec.Command("plutil", "-lint", path).CombinedOutput(); err != nil {
+		return fmt.Errorf("validate plist: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 
-	fmt.Printf("service loaded and started\n")
+	// Use the explicit launchd domain APIs. The legacy `load` command can print
+	// "Load failed" while still returning success on current macOS releases.
+	args := []string{"bootstrap", launchdDomain(cfg.UserLevel), path}
+	target := launchdTarget(cfg.UserLevel)
+	var output []byte
+	if cfg.UserLevel {
+		output, err = runLaunchctl("enable", target)
+	} else {
+		output, err = exec.Command("sudo", "launchctl", "enable", target).CombinedOutput()
+	}
+	if err != nil {
+		return fmt.Errorf("launchctl enable: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	if cfg.UserLevel {
+		output, err = runLaunchctl(args...)
+	} else {
+		output, err = exec.Command("sudo", append([]string{"launchctl"}, args...)...).CombinedOutput()
+	}
+	if err != nil {
+		return fmt.Errorf("launchctl bootstrap: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	if err := verifyLoaded(cfg.UserLevel); err != nil {
+		return err
+	}
+
+	fmt.Printf("service bootstrapped and started\n")
+	return nil
+}
+
+func verifyLoaded(userLevel bool) error {
+	var output []byte
+	var err error
+	if userLevel {
+		output, err = runLaunchctl("print", launchdTarget(userLevel))
+	} else {
+		output, err = exec.Command("sudo", "launchctl", "print", launchdTarget(userLevel)).CombinedOutput()
+	}
+	if err != nil {
+		return fmt.Errorf("service bootstrap did not register %s: %w: %s",
+			launchdTarget(userLevel), err, strings.TrimSpace(string(output)))
+	}
 	return nil
 }
 
@@ -152,16 +202,19 @@ func Uninstall(userLevel bool) error {
 		return fmt.Errorf("service not installed (no plist at %s)", path)
 	}
 
-	// Unload.
-	var cmd *exec.Cmd
+	// Boot out the explicit domain target. It is safe to continue when the
+	// service was already absent, but removal errors must remain visible.
+	args := []string{"bootout", launchdTarget(userLevel)}
+	var output []byte
+	var err error
 	if userLevel {
-		cmd = exec.Command("launchctl", "unload", path)
+		output, err = runLaunchctl(args...)
 	} else {
-		cmd = exec.Command("sudo", "launchctl", "unload", path)
+		output, err = exec.Command("sudo", append([]string{"launchctl"}, args...)...).CombinedOutput()
 	}
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	_ = cmd.Run() // ignore error if not loaded
+	if err != nil && !launchdServiceAbsent(err, output) {
+		return fmt.Errorf("launchctl bootout: %w: %s", err, strings.TrimSpace(string(output)))
+	}
 
 	if err := os.Remove(path); err != nil {
 		return fmt.Errorf("remove plist: %w", err)
@@ -178,10 +231,11 @@ func Status(userLevel bool) (installed bool, running bool, err error) {
 		return false, false, nil
 	}
 
-	out, err := exec.Command("launchctl", "list").Output()
-	if err != nil {
-		return true, false, nil
+	if userLevel {
+		_, err = runLaunchctl("print", launchdTarget(userLevel))
+	} else {
+		err = exec.Command("sudo", "launchctl", "print", launchdTarget(userLevel)).Run()
 	}
-	running = strings.Contains(string(out), plistLabel)
+	running = err == nil
 	return true, running, nil
 }

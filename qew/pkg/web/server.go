@@ -64,11 +64,17 @@ type Server struct {
 	passkeys     *PasskeyStore
 	waMu         sync.Mutex
 	waChallenges map[string]*waChallenge
+	watchHub     *watchHub
 }
 
 type loginTracker struct {
 	failures int
 	lastFail time.Time
+}
+
+func mustJSON(v interface{}) json.RawMessage {
+	b, _ := json.Marshal(v)
+	return b
 }
 
 // NewServer creates a new Qew web server. secretSeed is a persistent random key
@@ -81,7 +87,7 @@ func NewServer(hem HemClient, listenAddr, password string, development bool, vlo
 	keyInput = append(keyInput, secretSeed...)
 	keyInput = append(keyInput, []byte(password)...)
 	derived := sha256.Sum256(keyInput)
-	return &Server{
+	s := &Server{
 		hem:           hem,
 		vlog:          vlog,
 		addr:          listenAddr,
@@ -93,6 +99,8 @@ func NewServer(hem HemClient, listenAddr, password string, development bool, vlo
 		passkeys:      passkeys,
 		waChallenges:  make(map[string]*waChallenge),
 	}
+	s.watchHub = newWatchHub(hem)
+	return s
 }
 
 // Run starts the HTTP server.
@@ -139,6 +147,12 @@ func (s *Server) Run() error {
 	s.vlog.Printf("Qew web server listening on %s", s.addr)
 	log.Printf("Qew web UI: http://%s", s.addr)
 	return http.ListenAndServe(s.addr, mux)
+}
+
+func (s *Server) Close() {
+	if s.watchHub != nil {
+		s.watchHub.closeHub()
+	}
 }
 
 func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
@@ -205,6 +219,12 @@ func (s *Server) isAllowedOrigin(origin, host string) bool {
 func (s *Server) handleWS(ws *websocket.Conn, deadline time.Time) {
 	defer ws.Close()
 	s.vlog.Printf("WebSocket connected: %s", ws.Request().RemoteAddr)
+	connectionID, epoch, err := nextWatchConnection()
+	if err != nil {
+		s.vlog.Printf("allocating websocket identity: %v", err)
+		return
+	}
+	defer s.watchHub.releaseConnection(connectionID, epoch)
 
 	// Enforce the session deadline on this long-lived connection: close it when
 	// the upgrade token would expire, so a still-open socket can't outlive the
@@ -308,8 +328,64 @@ func (s *Server) handleWS(ws *websocket.Conn, deadline time.Time) {
 		}
 
 		if req.Verb == "ping" {
+			s.watchHub.renewLocal(connectionID, epoch)
 			select {
 			case sendCh <- &Response{Status: "ok", Verb: "pong"}:
+			case <-done:
+				return
+			}
+			continue
+		}
+
+		if req.Verb == "watch" && req.Noun == "session" {
+			sessionID := ""
+			if len(req.Args) > 0 {
+				sessionID = req.Args[0]
+			}
+			watch, err := s.watchHub.open(connectionID, epoch, sessionID)
+			if err != nil {
+				select {
+				case sendCh <- map[string]string{"status": "error", "message": err.Error()}:
+				case <-done:
+					return
+				}
+				continue
+			}
+			select {
+			case sendCh <- &Response{Status: "ok", Verb: "watch", Noun: "session", RequestID: req.RequestID, Data: mustJSON(map[string]interface{}{"watch_id": watch.id, "session_id": sessionID, "expires_at": watch.expires})}:
+			case <-done:
+				return
+			}
+			continue
+		}
+
+		if req.Verb == "renew" && req.Noun == "watch" {
+			if len(req.Args) == 0 {
+				continue
+			}
+			watch, err := s.watchHub.renew(req.Args[0], connectionID, epoch)
+			if err != nil {
+				select {
+				case sendCh <- map[string]string{"status": "error", "message": err.Error()}:
+				case <-done:
+					return
+				}
+				continue
+			}
+			select {
+			case sendCh <- &Response{Status: "ok", Verb: "renew", Noun: "watch", RequestID: req.RequestID, Data: mustJSON(watch)}:
+			case <-done:
+				return
+			}
+			continue
+		}
+
+		if req.Verb == "unwatch" && req.Noun == "watch" {
+			if len(req.Args) > 0 {
+				s.watchHub.close(req.Args[0], connectionID, epoch)
+			}
+			select {
+			case sendCh <- &Response{Status: "ok", Verb: "unwatch", Noun: "watch", RequestID: req.RequestID}:
 			case <-done:
 				return
 			}

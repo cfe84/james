@@ -105,7 +105,8 @@ mi6/
 13. **Mutable session hierarchy**: Hem stores the parent relationship in `sessions.parent_session_id`, so adopting (`adopt session --parent`) or promoting (`promote session`) a session is a local relationship update only. Adoption requires the same Moneypenny and walks parent links to reject cycles; promotion clears only the selected session's parent, retaining its children. No Moneypenny state, history, memory, schedules, or active agent process changes.
 14. **Coordinated gadget client updates (v1.78.0)**: Moneypenny's updater stages matching `moneypenny`, `mi6-client`, `hem`, and `gadgets` binaries from the release archive. The idle update transition installs `gadgets` even when absent from an older installation. Agents invoke the new scoped client, not Hem; daemon→Hem MI6 routing still requires the matching relay client. Top-level build/test/install and release packaging include the standalone, CGO-free `gadgets` binary.
 15. **Non-interactive service provisioning**: `moneypenny install --non-interactive` uses the same platform service backends as the interactive wizard but validates all provisioning choices from explicit flags. It requires a selected service level and transport, requires a MI6 relay fingerprint for remote transports, and refuses to replace an existing service unless `--force` is explicit.
-16. **Qew MI6 registration defaults**: Hem's authenticated `diagnose` response includes its configured MI6 control address and relay fingerprint. Qew reads these values when opening the Add Moneypenny modal, pre-filling the relay endpoint (but not Hem's control-session ID) and fingerprint. This avoids duplicated relay configuration and prevents session collisions while preserving editable inputs.
+16. **macOS launchd provisioning**: Darwin service installation writes a LaunchAgent or LaunchDaemon plist with native `ProgramArguments` entries, explicitly enables its fully qualified label, bootstraps it into the `gui/<uid>` or `system` domain, and verifies registration with `launchctl print`. User-level installation rejects `sudo` so the LaunchAgent remains owned by its login user and can join that user's GUI domain; system-level installation uses the system domain. Uninstall uses the matching `bootout` operation and surfaces failures that are not caused by an already-absent service; the documented `No such process`/missing-service response is tolerated during replacement. This avoids shell quoting issues and the deprecated `load`/`unload` behavior that can report a misleading success after launchd rejects a service.
+17. **Qew MI6 registration defaults**: Hem's authenticated `diagnose` response includes its configured MI6 control address and relay fingerprint. Qew reads these values when opening the Add Moneypenny modal, pre-filling the relay endpoint (but not Hem's control-session ID) and fingerprint. This avoids duplicated relay configuration and prevents session collisions while preserving editable inputs.
 
 ### Auth Flow
 
@@ -1224,10 +1225,25 @@ ephemeral hints rather than transcript data. Network delivery is not performed
 inside SQLite transactions and accepted agent/scheduler execution does not
 depend on relay or browser lifetime.
 
-This phase does not claim replay, durable event journals, session-scoped
-watch/refcount leases, watermarks, durable revisions/cursors, read-through
-acknowledgements, or operation IDs. Those are required before polling can be
-removed.
+## Leased session watches (next unreleased gate)
+
+The existing bounded hint path now has a lifecycle-only watch protocol. Qew
+assigns each authenticated WebSocket a connection ID and monotonically unique
+epoch, aggregates consumers by session, and sends one upstream watch while the
+aggregate has consumers. Hem and Moneypenny validate the same
+`watch_id`/connection/epoch tuple, renew leases at 20 seconds, and expire them
+after 60 seconds. Close and unsubscribe are idempotent at every hop; socket
+close, auth/session expiry, read/write failure, missed heartbeat, and
+navigation release Qew local state without relying on successful delivery of an
+unsubscribe. Hem and Moneypenny converge on transport loss through lease
+expiry. Reconnects get a new epoch, so stale A-B-A events and renewals cannot
+revive current state.
+
+An upstream renewal loop runs only for non-empty downstream aggregates and
+stops at expiry. Watches are invalidation hints only: polling remains the
+authoritative read path, and agent execution, scheduler dispatch, SQLite
+transactions, and persisted output do not depend on watch or socket lifetime.
+The existing authentication and WebSocket Origin checks are unchanged.
 ### Qew dashboard failure handling
 
 The Qew dashboard treats its last successful response as the visible snapshot.
@@ -1273,7 +1289,10 @@ Hem's create, update, copy, show, protocol, and TUI paths carry the same
 optional value; Qew's create/copy and edit forms reuse the existing modal
 patterns and hide/disable the numeric control for `agent` mode. Untouched
 default-derived controls follow context-tier changes, while edited values are
-preserved. Session details always return the effective value, including for
+preserved. The Hem and Qew UI adapters display thousands of tokens and
+multiply by 1,000 when producing the absolute-token CLI argument; storage,
+protocol payloads, and CLI semantics remain absolute tokens. Session details
+always return the effective value, including for
 legacy records. Only `custom` mode consults the value:
 `shouldCompact` compares measured context tokens with
 `compaction_threshold_tokens`, while `agent` mode remains entirely delegated to

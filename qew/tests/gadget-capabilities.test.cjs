@@ -99,14 +99,14 @@ test('custom compaction threshold is bounded and hidden for agent mode', () => {
     [thresholds.DEFAULT, thresholds.LONG_CONTEXT, thresholds.MIN, thresholds.MAX],
     [150000, 800000, 10000, 900000],
   );
-  assert.match(app, /id="wiz-compaction-threshold" type="number" min="\$\{COMPACTION_THRESHOLD_MIN\}" max="\$\{COMPACTION_THRESHOLD_MAX\}"/);
-  assert.match(app, /id="es-compaction-threshold" type="number" min="\$\{COMPACTION_THRESHOLD_MIN\}" max="\$\{COMPACTION_THRESHOLD_MAX\}"/);
+  assert.match(app, /id="wiz-compaction-threshold" type="number" min="\$\{COMPACTION_THRESHOLD_MIN\}" max="\$\{COMPACTION_THRESHOLD_MAX\}".*<span>k tokens<\/span>/);
+  assert.match(app, /id="es-compaction-threshold" type="number" min="\$\{COMPACTION_THRESHOLD_MIN\}" max="\$\{COMPACTION_THRESHOLD_MAX\}".*<span>k tokens<\/span>/);
   assert.match(app, /input\.disabled = !custom/);
-  assert.match(app, /input\.style\.display = custom \? '' : 'none'/);
+  assert.match(app, /control\.style\.display = custom \? 'flex' : 'none'/);
   assert.match(app, /--compaction-threshold-tokens/);
-  assert.match(app, /Custom compaction threshold \(tokens\)/);
+  assert.match(app, /Custom compaction threshold/);
   assert.match(app, /thresholdDefaultDerived/);
-  assert.match(helper, /Compaction threshold must be between/);
+  assert.match(helper, /thousand tokens/);
 });
 
 test('Qew threshold helpers follow context defaults and inclusive validation', () => {
@@ -115,10 +115,16 @@ test('Qew threshold helpers follow context defaults and inclusive validation', (
   assert.equal(thresholds.defaultForContext('long_context'), 800000);
   assert.equal(thresholds.effective(0, 'long_context'), 800000);
   assert.equal(thresholds.effective(150000, 'long_context'), 150000);
-  for (const value of ['10000', '900000']) assert.equal(thresholds.validate(value), '');
-  assert.notEqual(thresholds.validate('9999'), '');
-  assert.notEqual(thresholds.validate('900001'), '');
-  assert.notEqual(thresholds.validate('10000.5'), '');
+  assert.equal(thresholds.defaultDisplayForContext(''), 150);
+  assert.equal(thresholds.defaultDisplayForContext('long_context'), 800);
+  assert.equal(thresholds.effectiveDisplay(150000, 'long_context'), 150);
+  assert.equal(thresholds.toTokens('150'), 150000);
+  assert.equal(thresholds.effectiveDisplay(123456, ''), 123.456);
+  assert.equal(thresholds.toTokens('123.456'), 123456);
+  for (const value of ['10', '123.456', '900']) assert.equal(thresholds.validateDisplay(value), '');
+  assert.notEqual(thresholds.validateDisplay('9'), '');
+  assert.notEqual(thresholds.validateDisplay('901'), '');
+  assert.notEqual(thresholds.validateDisplay('10.0001'), '');
 });
 
 test('all-subagents dialog supports keyboard navigation and Escape dismissal', () => {

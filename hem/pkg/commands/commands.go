@@ -85,8 +85,36 @@ func New(s *store.Store, mi6KeyPath string) *Executor {
 		watchManager:  NewWatchManager(),
 		eventBroker:   NewEventBroker(),
 	}
+
+	e.watchManager.SetExpireCallback(e.expireWatchLease)
 	e.clientManager.SetEventHandler(e.handleMoneypennyEvent)
 	return e
+}
+
+// Close stops background executor resources.
+func (e *Executor) Close() {
+	if e.watchManager != nil {
+		e.watchManager.Close()
+	}
+}
+
+func (e *Executor) expireWatchLease(upstream WatchLease) {
+	if e.store == nil {
+		return
+	}
+	sess, err := e.store.GetSession(upstream.SessionID)
+	if err != nil || sess == nil {
+		return
+	}
+	mp, err := e.store.GetMoneypenny(sess.MoneypennyName)
+	if err != nil || mp == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _ = e.sendCommand(ctx, mp, "unwatch_session", map[string]interface{}{
+		"watch_id": upstream.WatchID, "connection_id": upstream.ConnectionID, "epoch": upstream.Epoch, "session_id": upstream.SessionID,
+	})
 }
 
 // Subscribe exposes bounded invalidation hints to local Hem clients.
@@ -702,6 +730,12 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.PromoteSession(args)
 	case "watch session":
 		return e.WatchSession(args)
+	case "watch lease":
+		return e.OpenWatchLease(args)
+	case "renew watch":
+		return e.RenewWatchLease(args)
+	case "unwatch watch":
+		return e.CloseWatchLease(args)
 
 	// Memory commands
 	case "show memory":
@@ -7328,6 +7362,141 @@ func (e *Executor) WatchSession(args []string) *protocol.Response {
 			})
 		}
 	}
+}
+
+type watchLeaseArgs struct {
+	watchID, connectionID, sessionID string
+	epoch                            uint64
+}
+
+func parseWatchLeaseArgs(name string, args []string) (watchLeaseArgs, error) {
+	var out watchLeaseArgs
+	var epoch string
+	remaining, err := parseFlagsFromArgs(name, args, func(fs *flag.FlagSet) {
+		fs.StringVar(&out.watchID, "watch-id", "", "watch identity")
+		fs.StringVar(&out.connectionID, "connection-id", "", "connection identity")
+		fs.StringVar(&out.sessionID, "session-id", "", "session identity")
+		fs.StringVar(&epoch, "epoch", "", "connection epoch")
+	})
+	if err != nil {
+		return out, err
+	}
+	if out.sessionID == "" && len(remaining) > 0 {
+		out.sessionID = remaining[0]
+	}
+	if out.watchID == "" || out.connectionID == "" || out.sessionID == "" || epoch == "" {
+		return out, fmt.Errorf("watch-id, connection-id, session-id, and epoch are required")
+	}
+	n, err := strconv.ParseUint(epoch, 10, 64)
+	if err != nil || n == 0 {
+		return out, fmt.Errorf("invalid epoch")
+	}
+	out.epoch = n
+	return out, nil
+}
+
+func (e *Executor) OpenWatchLease(args []string) *protocol.Response {
+	a, err := parseWatchLeaseArgs("watch-lease", args)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if e.store == nil {
+		return protocol.ErrResponse("store unavailable")
+	}
+	sess, err := e.store.GetSession(a.sessionID)
+	if err != nil || sess == nil {
+		return protocol.ErrResponse("session not found")
+	}
+	lease, first, err := e.watchManager.OpenLease(a.watchID, a.connectionID, a.epoch, a.sessionID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if first {
+		upstream, ok := e.watchManager.Aggregate(a.sessionID)
+		if !ok {
+			e.watchManager.CloseLease(a.watchID, a.connectionID, a.epoch)
+			return protocol.ErrResponse("opening watch: aggregate unavailable")
+		}
+		mp, mpErr := e.store.GetMoneypenny(sess.MoneypennyName)
+		if mpErr != nil || mp == nil {
+			e.watchManager.CloseLease(a.watchID, a.connectionID, a.epoch)
+			return protocol.ErrResponse(fmt.Sprintf("moneypenny unavailable: %v", mpErr))
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, mpErr = e.sendCommand(ctx, mp, "watch_session", map[string]interface{}{
+			"watch_id": upstream.WatchID, "connection_id": upstream.ConnectionID, "epoch": upstream.Epoch, "session_id": upstream.SessionID,
+		})
+		cancel()
+		if mpErr != nil {
+			e.watchManager.CloseLease(a.watchID, a.connectionID, a.epoch)
+			return protocol.ErrResponse(fmt.Sprintf("starting moneypenny watch: %v", mpErr))
+		}
+	}
+	return protocol.OKResponse(lease)
+}
+
+func (e *Executor) RenewWatchLease(args []string) *protocol.Response {
+	a, err := parseWatchLeaseArgs("renew-watch", args)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	lease, err := e.watchManager.RenewLease(a.watchID, a.connectionID, a.epoch)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if e.store != nil {
+		sess, getErr := e.store.GetSession(lease.SessionID)
+		if getErr != nil || sess == nil {
+			return protocol.ErrResponse("session not found")
+		}
+		mp, mpErr := e.store.GetMoneypenny(sess.MoneypennyName)
+		if mpErr != nil || mp == nil {
+			return protocol.ErrResponse(fmt.Sprintf("moneypenny unavailable: %v", mpErr))
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		upstream, ok := e.watchManager.Aggregate(lease.SessionID)
+		if !ok {
+			cancel()
+			return protocol.ErrResponse("renewing watch: aggregate unavailable")
+		}
+		_, mpErr = e.sendCommand(ctx, mp, "renew_watch", map[string]interface{}{
+			"watch_id": upstream.WatchID, "connection_id": upstream.ConnectionID, "epoch": upstream.Epoch, "session_id": upstream.SessionID,
+		})
+		cancel()
+		if mpErr != nil {
+			return protocol.ErrResponse(fmt.Sprintf("renewing moneypenny watch: %v", mpErr))
+		}
+	}
+	return protocol.OKResponse(lease)
+}
+
+func (e *Executor) CloseWatchLease(args []string) *protocol.Response {
+	a, err := parseWatchLeaseArgs("unwatch-watch", args)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	sessionID, last, upstream := e.watchManager.CloseLease(a.watchID, a.connectionID, a.epoch)
+	if sessionID == "" {
+		return protocol.OKResponse(map[string]interface{}{"closed": false})
+	}
+	if last && e.store != nil {
+		sess, getErr := e.store.GetSession(sessionID)
+		if getErr != nil || sess == nil {
+			return protocol.ErrResponse("session not found")
+		}
+		mp, mpErr := e.store.GetMoneypenny(sess.MoneypennyName)
+		if mpErr != nil || mp == nil {
+			return protocol.ErrResponse(fmt.Sprintf("moneypenny unavailable: %v", mpErr))
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, mpErr = e.sendCommand(ctx, mp, "unwatch_session", map[string]interface{}{
+			"watch_id": upstream.WatchID, "connection_id": upstream.ConnectionID, "epoch": upstream.Epoch, "session_id": sessionID,
+		}); mpErr != nil {
+			return protocol.ErrResponse(fmt.Sprintf("stopping moneypenny watch: %v", mpErr))
+		}
+	}
+	return protocol.OKResponse(map[string]interface{}{"closed": true, "last": last, "session_id": sessionID})
 }
 
 func truncate(s string, n int) string {

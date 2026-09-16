@@ -955,6 +955,7 @@ func runServer() {
 	log.Printf("hem server v%s", Version)
 
 	exec := commands.New(st, keyPath)
+	defer exec.Close()
 	exec.Version = Version
 	exec.MI6Control = mi6Control
 	exec.MI6ServerFingerprint = mi6ServerFingerprint

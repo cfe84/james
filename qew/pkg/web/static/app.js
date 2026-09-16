@@ -62,38 +62,57 @@
   let pendingAttachments = []; // files staged for the next send: [{name,size,type,b64,url}]
   const ATTACH_MAX_BYTES = 10 * 1024 * 1024; // 10MB per-file cap (mirrors moneypenny)
   const compactionThreshold = window.jamesCompactionThreshold;
-  const COMPACTION_THRESHOLD_DEFAULT = compactionThreshold.DEFAULT;
-  const COMPACTION_THRESHOLD_LONG_CONTEXT = compactionThreshold.LONG_CONTEXT;
-  const COMPACTION_THRESHOLD_MIN = compactionThreshold.MIN;
-  const COMPACTION_THRESHOLD_MAX = compactionThreshold.MAX;
+  const COMPACTION_THRESHOLD_DEFAULT = compactionThreshold.toDisplay(compactionThreshold.DEFAULT);
+  const COMPACTION_THRESHOLD_LONG_CONTEXT = compactionThreshold.toDisplay(compactionThreshold.LONG_CONTEXT);
+  const COMPACTION_THRESHOLD_MIN = compactionThreshold.toDisplay(compactionThreshold.MIN);
+  const COMPACTION_THRESHOLD_MAX = compactionThreshold.toDisplay(compactionThreshold.MAX);
   let multilineCompose = false; // per-session preference; true means Enter inserts a newline
   let qewConnected = false;
   let pushReconnectTimer = null;
   let pushHeartbeatTimer = null;
   let pushGeneration = 0;
   let sendInFlight = false;
+  let activeWatchID = null;
+  let activeWatchRequestID = null;
   const sessionWatermarks = {};
 
+  function releaseActiveWatch() {
+    if (activeWatchID && ws && ws.readyState === WebSocket.OPEN) {
+      try { ws.send(JSON.stringify({verb: 'unwatch', noun: 'watch', args: [activeWatchID]})); } catch (_) {}
+    }
+    activeWatchID = null;
+    activeWatchRequestID = null;
+  }
+
+  function requestActiveWatch() {
+    if (!currentSession || !ws || ws.readyState !== WebSocket.OPEN) return;
+    const id = `watch-${++requestId}`;
+    activeWatchRequestID = id;
+    try { ws.send(JSON.stringify({verb: 'watch', noun: 'session', args: [currentSession], request_id: id})); } catch (_) {}
+  }
+
   function defaultCompactionThreshold(contextTier) {
-    return compactionThreshold.defaultForContext(contextTier);
+    return compactionThreshold.defaultDisplayForContext(contextTier);
   }
 
   function effectiveCompactionThreshold(value, contextTier) {
-    return compactionThreshold.effective(value, contextTier);
+    return compactionThreshold.effectiveDisplay(value, contextTier);
   }
 
   function validateCompactionThreshold(value) {
-    return compactionThreshold.validate(value);
+    return compactionThreshold.validateDisplay(value);
   }
 
   function syncCompactionThreshold(modeId, inputId, labelId) {
     const mode = document.getElementById(modeId);
     const input = document.getElementById(inputId);
     const label = document.getElementById(labelId);
+    const control = document.getElementById(`${inputId}-control`);
     if (!mode || !input) return;
     const custom = mode.value === 'custom';
     input.disabled = !custom;
-    input.style.display = custom ? '' : 'none';
+    if (control) control.style.display = custom ? 'flex' : 'none';
+    else input.style.display = custom ? '' : 'none';
     if (label) label.style.display = custom ? '' : 'none';
   }
 
@@ -821,6 +840,7 @@
   }
 
   async function openChat(sessionId, name, mp) {
+    releaseActiveWatch();
     chatGeneration++;
     stopDashboardPoll();
     stopChatPoll();
@@ -872,6 +892,7 @@
       history.replaceState(null, '', newHash);
     }
     await loadChat();
+    requestActiveWatch();
     if (currentSession) startChatPoll();
   }
 
@@ -894,6 +915,7 @@
       openChat(parent.id, parent.name, parent.mp);
       return;
     }
+    releaseActiveWatch();
     chatGeneration++;
     currentSession = null;
     currentSessionName = '';
@@ -2025,8 +2047,8 @@
         <option value="custom"${sourceCompactionMode === 'custom' ? ' selected' : ''}>Custom (distill to memory, then summarize)</option>
         <option value="agent"${sourceCompactionMode === 'agent' ? ' selected' : ''}>Agent (rely on the agent's own compaction)</option>
       </select>
-      <label for="wiz-compaction-threshold" id="wiz-compaction-threshold-label">Custom compaction threshold (tokens)</label>
-      <input id="wiz-compaction-threshold" type="number" min="${COMPACTION_THRESHOLD_MIN}" max="${COMPACTION_THRESHOLD_MAX}" step="1" value="${sourceCompactionThreshold}">
+      <label for="wiz-compaction-threshold" id="wiz-compaction-threshold-label">Custom compaction threshold</label>
+      <div id="wiz-compaction-threshold-control" style="display:flex;align-items:center;gap:8px"><input id="wiz-compaction-threshold" type="number" min="${COMPACTION_THRESHOLD_MIN}" max="${COMPACTION_THRESHOLD_MAX}" step="0.001" value="${sourceCompactionThreshold}"><span>k tokens</span></div>
       ${traitsCache.length ? `<label>Traits</label><div id="wiz-traits" style="display:flex;flex-direction:column;gap:4px">` +
         traitsCache.map(t => { const checked = copy ? (Array.isArray(src.traits) && src.traits.includes(t.id)) : t.def; return `<div class="toggle-row"><input type="checkbox" class="wiz-trait" id="wiz-trait-${escapeAttr(t.id)}" value="${escapeAttr(t.id)}"${checked ? ' checked' : ''}><label for="wiz-trait-${escapeAttr(t.id)}" style="margin:0;color:var(--text)" title="${escapeAttr(t.preview)}">${escapeHtml(t.name)}</label></div>`; }).join('') +
         `</div>` : ''}
@@ -2163,7 +2185,7 @@
       alert(thresholdError);
       return;
     }
-    args.push('--compaction-threshold-tokens', compactionThreshold);
+    args.push('--compaction-threshold-tokens', String(window.jamesCompactionThreshold.toTokens(compactionThreshold)));
     // Only emit explicit --traits once traits have loaded; emitting an empty
     // selection before traits are known would suppress backend default/source
     // traits. In copy mode also preserve any source traits not shown in the
@@ -4606,8 +4628,8 @@
           <option value="agent"${(s.compaction_mode || 'agent') === 'agent' ? ' selected' : ''}>Agent (rely on the agent's own compaction)</option>
           <option value="custom"${(s.compaction_mode || 'agent') === 'custom' ? ' selected' : ''}>Custom (distill to memory, then summarize)</option>
         </select>
-        <label for="es-compaction-threshold" id="es-compaction-threshold-label">Custom compaction threshold (tokens)</label>
-        <input id="es-compaction-threshold" type="number" min="${COMPACTION_THRESHOLD_MIN}" max="${COMPACTION_THRESHOLD_MAX}" step="1" value="${effectiveCompactionThreshold(s.compaction_threshold_tokens, s.context_tier || '')}">
+        <label for="es-compaction-threshold" id="es-compaction-threshold-label">Custom compaction threshold</label>
+        <div id="es-compaction-threshold-control" style="display:flex;align-items:center;gap:8px"><input id="es-compaction-threshold" type="number" min="${COMPACTION_THRESHOLD_MIN}" max="${COMPACTION_THRESHOLD_MAX}" step="0.001" value="${effectiveCompactionThreshold(s.compaction_threshold_tokens, s.context_tier || '')}"><span>k tokens</span></div>
         ${traitsCache.length ? `<label>Traits</label><div id="es-traits" style="display:flex;flex-direction:column;gap:4px">` +
           traitsCache.map(t => `<div class="toggle-row"><input type="checkbox" class="es-trait" id="es-trait-${escapeAttr(t.id)}" value="${escapeAttr(t.id)}"${selectedTraits.includes(t.id) ? ' checked' : ''}><label for="es-trait-${escapeAttr(t.id)}" style="margin:0;color:var(--text)" title="${escapeAttr(t.preview)}">${escapeHtml(t.name)}</label></div>`).join('') +
           `</div>` : ''}
@@ -4688,7 +4710,7 @@
           return;
         }
         if (Number(compactionThreshold) !== originalCompactionThreshold) {
-          args.push('--compaction-threshold-tokens', compactionThreshold);
+          args.push('--compaction-threshold-tokens', String(window.jamesCompactionThreshold.toTokens(compactionThreshold)));
         }
 
         if (args.length <= 1) { closeWizard(); return; }
@@ -5527,6 +5549,7 @@
           try { ws.send(JSON.stringify({verb: 'ping'})); } catch (_) { socket.close(); }
         }
       }, 20000);
+      requestActiveWatch();
       // Events are invalidation hints and may have been lost while the socket
       // was reconnecting. Re-read the active lane immediately.
       if (currentSession) loadChat();
@@ -5537,6 +5560,23 @@
       let msg;
       try { msg = JSON.parse(event.data); } catch (_) { return; }
       if (msg.verb === 'pong') return;
+      if (msg.verb === 'watch' && msg.noun === 'session' && msg.status === 'ok' &&
+          msg.request_id === activeWatchRequestID && msg.data &&
+          msg.data.session_id === currentSession) {
+        activeWatchID = msg.data.watch_id || null;
+        activeWatchRequestID = null;
+        return;
+      }
+      if (msg.verb === 'watch' && msg.noun === 'session' && msg.status === 'ok' &&
+          msg.data && msg.data.watch_id &&
+          (msg.request_id !== activeWatchRequestID || msg.data.session_id !== currentSession)) {
+        try {
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({verb: 'unwatch', noun: 'watch', args: [msg.data.watch_id]}));
+          }
+        } catch (_) {}
+        return;
+      }
       if (msg.event === 'resync_required') {
         if (currentSession) loadChat(); else loadDashboard();
         return;
@@ -5569,6 +5609,8 @@
     socket.onclose = () => {
       if (generation !== pushGeneration || ws !== socket) return;
       ws = null;
+      activeWatchID = null;
+      activeWatchRequestID = null;
       if (pushHeartbeatTimer) { clearInterval(pushHeartbeatTimer); pushHeartbeatTimer = null; }
       if (currentSession) startChatPoll();
       else startDashboardPoll();

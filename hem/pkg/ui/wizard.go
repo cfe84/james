@@ -144,7 +144,7 @@ func newWizardModel(c *client) wizardModel {
 			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
 			{label: "Gadgets (James tooling)", flag: "--gadgets", isBool: true, value: "false"},
 			{label: "Compaction", flag: "--compaction", value: "custom", options: []string{"custom", "agent"}},
-			{label: "Custom compaction threshold (tokens)", flag: compactionThresholdFlag, value: defaultCompactionThresholdValue(""), defaultDerived: true},
+			{label: "Custom compaction threshold (thousands of tokens)", flag: compactionThresholdFlag, value: defaultCompactionThresholdValue(""), defaultDerived: true},
 		}, gadgetCapabilityFields(nil)...),
 	}
 }
@@ -344,7 +344,7 @@ func (m wizardModel) createSession() tea.Cmd {
 			if f.isBool {
 				args = append(args, f.flag)
 			} else {
-				args = append(args, f.flag, f.value)
+				args = append(args, f.flag, formFieldArgumentValue(f))
 			}
 		}
 		// In copy mode, emit --traits (even empty) so the selection is explicit
@@ -515,7 +515,7 @@ func (m wizardModel) Update(msg tea.Msg) (wizardModel, tea.Cmd) {
 				if threshold == 0 {
 					threshold = envelope.DefaultCompactionThresholdTokensForContext(src.ContextTier)
 				}
-				m.fields[i].value = fmt.Sprintf("%d", threshold)
+				m.fields[i].value = compactionThresholdDisplayValue(threshold)
 				m.fields[i].cursorPos = len(m.fields[i].value)
 				m.fields[i].defaultDerived = src.CompactionThresholdTokens == 0 ||
 					src.CompactionThresholdTokens == envelope.DefaultCompactionThresholdTokensForContext(src.ContextTier)

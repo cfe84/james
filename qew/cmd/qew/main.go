@@ -118,6 +118,7 @@ func main() {
 	}
 
 	srv := web.NewServer(hem, *listenAddr, *password, *development, vlog, Version, secretSeed, passkeys)
+	defer srv.Close()
 	if err := srv.Run(); err != nil {
 		log.Fatalf("server error: %v", err)
 	}

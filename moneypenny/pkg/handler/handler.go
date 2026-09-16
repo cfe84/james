@@ -111,8 +111,9 @@ type Handler struct {
 	triggerUpdateFunc    func() bool                  // returns true if check was queued
 	forceUpdateFunc      func() bool                  // returns true if force-update was queued
 	notifyWriter         *envelope.NotificationWriter // for sending async notifications to hem
-	channels             *channel.Registry            // external communication channel providers
-	channelCmd           string                       // base command for provider MCP servers (default "agency")
+	watches              *watchRegistry
+	channels             *channel.Registry // external communication channel providers
+	channelCmd           string            // base command for provider MCP servers (default "agency")
 	gadgetsMu            sync.Mutex
 	gadgetsServer        *http.Server
 	gadgetsURL           string
@@ -129,6 +130,7 @@ type resultCallback func(sessionID, response string, err error)
 // used to allocate per-session persistent directories (sessions/<sessionID>/).
 func New(s *store.Store, runner *agent.Runner, version, dataDir string) *Handler {
 	h := &Handler{store: s, runner: runner, version: version, dataDir: dataDir, vlog: func(string, ...interface{}) {}}
+	h.watches = newWatchRegistry()
 	h.runAgentFunc = runner.Run
 	h.notifyWriter = envelope.NewNotificationWriter(nil)
 	s.SetNotificationWriter(h.notifyWriter)
@@ -170,6 +172,13 @@ func New(s *store.Store, runner *agent.Runner, version, dataDir string) *Handler
 		}
 	})
 	return h
+}
+
+// Close stops background handler resources.
+func (h *Handler) Close() {
+	if h.watches != nil {
+		h.watches.Close()
+	}
 }
 
 func (h *Handler) runAuxiliary(ctx context.Context, params agent.RunParams) (*agent.Result, error) {
@@ -315,6 +324,12 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.getSessionConversation(ctx, cmd)
 	case "reconcile_session":
 		return h.reconcileSession(ctx, cmd)
+	case "watch_session":
+		return h.watchSession(cmd.Data, cmd.RequestID)
+	case "renew_watch":
+		return h.renewWatch(cmd.Data, cmd.RequestID)
+	case "unwatch_session":
+		return h.unwatchSession(cmd.Data, cmd.RequestID)
 	case "get_logs":
 		return h.getLogs(cmd)
 	case "queue_prompt":

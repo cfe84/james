@@ -73,7 +73,7 @@ func newEditModel(c *client, sessionID string) editModel {
 			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
 			{label: "Gadgets (James tooling)", flag: "--gadgets", isBool: true, value: "false"},
 			{label: "Compaction", flag: "--compaction", value: "agent", options: []string{"agent", "custom"}},
-			{label: "Custom compaction threshold (tokens)", flag: compactionThresholdFlag, value: defaultCompactionThresholdValue(""), defaultDerived: true},
+			{label: "Custom compaction threshold (thousands of tokens)", flag: compactionThresholdFlag, value: defaultCompactionThresholdValue(""), defaultDerived: true},
 		}, gadgetCapabilityFields(nil)...),
 	}
 }
@@ -150,7 +150,7 @@ func (m editModel) save() tea.Cmd {
 				continue
 			}
 			if f.value != m.original[i] {
-				fields[f.flag] = f.value
+				fields[f.flag] = formFieldArgumentValue(f)
 			}
 		}
 		// If effort is being cleared (empty value), send "none" sentinel.
@@ -228,7 +228,7 @@ func (m editModel) Update(msg tea.Msg) (editModel, tea.Cmd) {
 			"--effort":              d.Effort,
 			"--context":             d.ContextTier,
 			"--system-prompt":       d.SystemPrompt,
-			compactionThresholdFlag: fmt.Sprintf("%d", d.CompactionThresholdTokens),
+			compactionThresholdFlag: compactionThresholdDisplayValue(d.CompactionThresholdTokens),
 		}
 		if d.CompactionThresholdTokens == 0 {
 			values[compactionThresholdFlag] = defaultCompactionThresholdValue(d.ContextTier)

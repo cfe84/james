@@ -232,7 +232,10 @@ to `custom`.
 The value is carried by create, update, copy, session-detail, TUI, Qew, and
 Moneypenny import payloads. `hem create session` and `hem update session` expose
 `--compaction-threshold-tokens`; session show/details report the effective
-value. Hem's legacy JSONL importer does not contain compaction metadata and
+value. Hem and Qew forms display the value in thousands of tokens (for example,
+`150` represents 150,000 tokens) and convert it to the absolute token count
+before invoking the unchanged command/protocol boundary. Qew labels the numeric
+control with `k tokens`. Hem's legacy JSONL importer does not contain compaction metadata and
 therefore derives the 150,000-token default from its empty context tier.
 Omitted values resolve from the context tier. Existing databases without the
 field add it with a 150,000-token SQLite default and then derive 800,000 for
@@ -551,6 +554,19 @@ moneypenny install --non-interactive --user \
   --mi6-server-fingerprint SHA256:YOUR_RELAY_FINGERPRINT \
   --auto-update --update-interval 1h
 ```
+
+On macOS, installation uses the explicit `launchctl bootstrap`/`bootout`
+domain APIs for the selected user or system service level and verifies the
+service label after bootstrapping. A failed bootstrap is reported as an
+installation error; the installer does not claim that a service started when
+launchd rejected the plist. Replacing an already-stopped service tolerates
+launchd's `No such process` bootout response before removing the old plist.
+The generated plist uses native `ProgramArguments` entries rather than a shell
+command string, preserving argument boundaries and paths containing spaces.
+User-level installation must run as the login user, not via `sudo`, so its
+LaunchAgent is owned by and can be bootstrapped into that user's GUI domain.
+Installation re-enables the exact launchd label before bootstrapping, so a
+previously disabled service does not remain disabled after replacement.
 
 ### Create
 
@@ -1766,6 +1782,24 @@ on every connection exit. A 90-second read lease (renewed by the browser's
 so a slow client cannot retain a writer or broadcast subscription indefinitely.
 The browser also performs an immediate authoritative HTTP resync when a socket
 closes, while retaining the polling fallback.
+
+### Leased session watches (next unreleased gate)
+
+Qew session watches are connection-scoped and carry a reconnect epoch. A
+browser consumer receives a renewable 60-second lease; the browser heartbeat
+renews it every 20 seconds. Multiple tabs/consumers watching the same session
+share one upstream watch, and the final consumer removes it. Hem and
+Moneypenny apply the same lease/epoch checks and clean up expired, closed,
+unsubscribed, disconnected, failed, and stale watches idempotently. A
+reconnect always gets a fresh epoch, so stale renewals or events from an
+A-B-A reconnect cannot overwrite current state.
+
+Qew and Hem renew upstream only while live downstream consumers remain.
+Sleeping tabs can expire and reconnect with their cursor, followed by bounded
+authoritative reconciliation. WebSocket and relay lifetime never cancels agent
+execution, scheduler dispatch, SQLite commits, or persisted output. Polling
+continues to be authoritative; this gate does not remove polling or introduce
+byte-safe cursors.
 
 ### Push notification session routing (v1.89.1)
 
