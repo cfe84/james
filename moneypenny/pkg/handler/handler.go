@@ -109,6 +109,7 @@ type Handler struct {
 	dataDir              string // moneypenny data root; used for per-session storage
 	logFile              string
 	vlog                 func(string, ...interface{})
+	errorLog             func(string, ...interface{})
 	updateStatusFunc     func() envelope.UpdateStatusResponse
 	triggerUpdateFunc    func() bool                  // returns true if check was queued
 	forceUpdateFunc      func() bool                  // returns true if force-update was queued
@@ -131,7 +132,7 @@ type resultCallback func(sessionID, response string, err error)
 // dataDir is the moneypenny data root (e.g. ~/.config/james/moneypenny) and is
 // used to allocate per-session persistent directories (sessions/<sessionID>/).
 func New(s *store.Store, runner *agent.Runner, version, dataDir string) *Handler {
-	h := &Handler{store: s, runner: runner, version: version, dataDir: dataDir, vlog: func(string, ...interface{}) {}}
+	h := &Handler{store: s, runner: runner, version: version, dataDir: dataDir, vlog: func(string, ...interface{}) {}, errorLog: log.Printf}
 	h.watches = newWatchRegistry()
 	h.runAgentFunc = runner.Run
 	h.notifyWriter = envelope.NewNotificationWriter(nil)
@@ -309,6 +310,11 @@ func (h *Handler) attachmentsDir(sessionID string) string {
 // SetLogger sets a verbose logger.
 func (h *Handler) SetLogger(vlog func(string, ...interface{})) {
 	h.vlog = vlog
+}
+
+// SetErrorLogger configures always-on logging for operational failures.
+func (h *Handler) SetErrorLogger(errorLog func(string, ...interface{})) {
+	h.errorLog = errorLog
 }
 
 // SetLogFile configures the daemon log made available through get_logs.
@@ -1147,12 +1153,14 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 	}
 	if err != nil {
 		h.vlog("agent error for session %s: %v", sessionID, err)
+		h.logAgentFailure(sessionID, params.Agent, err)
 		// Surface the error as a conversation turn so the user can see it.
 		errMsg := "agent_run_failed"
 		if strings.Contains(strings.ToLower(err.Error()), "memory") ||
 			strings.Contains(strings.ToLower(err.Error()), "read") {
 			errMsg = "agent_run_failed_memory_preparation"
 		}
+
 		_ = h.store.AddConversationTurn(sessionID, "system", errMsg)
 		_ = h.store.UpdateSessionStatus(sessionID, store.StateIdle)
 		if params.OperationID != "" {
@@ -1233,6 +1241,14 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 	}
 
 	h.continueQueuedPrompts(sessionID)
+}
+
+func (h *Handler) logAgentFailure(sessionID, agentName string, err error) {
+	if h.errorLog == nil {
+		return
+	}
+	message := strings.SplitN(err.Error(), "\n", 2)[0]
+	h.errorLog("agent run failed: session=%s agent=%s error=%s", sessionID, agentName, message)
 }
 
 func (h *Handler) continueQueuedPrompts(sessionID string) {

@@ -185,6 +185,10 @@ Moneypenny is a client deployed on each host, which handles agent sessions. It i
 - Session-list, session-detail/history/activity, schedule/channel-list, version, daemon-log, and update-status reads have dedicated workers. They do not wait behind shell commands, Git operations, model discovery, or other slow handlers. Mutations remain ordered; requests and replies are correlated by `request_id`, not arrival order. Queues are bounded and overload returns an explicit retryable error rather than blocking command intake.
 - Hem's MI6 transport permits concurrent requests and accepts only response envelopes matching each request's unique ID. The local FIFO client still serializes request/response exchanges over its shared pipe.
 - `-v` flag enables verbose logging to stderr: commands received, agent executions, responses sent.
+- Agent-run failures always write a concise operational record to the daemon
+  error log, even without `-v`. The record contains the James session ID,
+  agent type, and first error line only; prompts, attachments, provider output,
+  raw stream events, and stderr payloads are excluded.
 - Moneypenny can either interface directly on stdio (for local use), or open a connection to an mi6-server. `moneypenny --mi6 mi6.servername.com/this_hosts_name` ; using host name as the session id.
 - Moneypenny has a local store based on sqlite, to keep track of everything it needs (sessions, conversation history, parameters).
 - When integrating through mi6, moneypenny creates an ECDSA ssh-key, stores it locally, and uses that to authenticate with mi6. Use `moneypenny --show-public-key` to output the public key for adding to an mi6-server's authorized_keys.

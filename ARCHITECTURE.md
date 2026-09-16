@@ -1294,6 +1294,11 @@ when the connection/watch is unavailable, expired, overflowing, or legacy.
 `PUSH_FIRST` in Qew and `pushFirstBehavior` in the Hem TUI are temporary
 compile-time gates defaulting on; each has a complete legacy polling branch.
 
+Moneypenny writes a concise error-level record for every agent-run failure
+regardless of verbose logging. It includes only session identity, agent type,
+and the first error line; raw stderr, provider output, prompts, attachments,
+and streamed events are deliberately excluded from logs.
+
 Moneypenny's `client_operations` table is the durable idempotency boundary for
 prompt/continue. The session and operation ID are the key, and a SHA-256
 digest over prompt/attachments/model/effort/context prevents materially
