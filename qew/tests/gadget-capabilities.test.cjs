@@ -130,7 +130,7 @@ test('Qew threshold helpers follow context defaults and inclusive validation', (
 
 test('all-subagents dialog supports keyboard navigation and Escape dismissal', () => {
   const app = fs.readFileSync(path.join(__dirname, '../pkg/web/static/app.js'), 'utf8');
-  assert.match(app, /const closeRoot = modal \|\| overlay\.querySelector\('\.cmd-palette'\)/);
+  assert.match(app, /const closeRoot = overlay\.querySelector\('\.cmd-palette'\) \|\| overlay\.querySelector\('\.modal'\)/);
   assert.match(app, /function handleAllSubagentsKey\(e\)/);
   assert.match(app, /e\.key === 'ArrowDown' \|\| e\.key === 'j'/);
   assert.match(app, /e\.key === 'ArrowUp' \|\| e\.key === 'k'/);
@@ -144,6 +144,12 @@ test('Escape on the session list opens its shortcut reference', () => {
   assert.match(app, /aria-label="Session list shortcuts"/);
   assert.match(app, /<kbd>c<\/kbd> Complete selected session/);
   assert.match(app, /else \{\s*e\.preventDefault\(\);\s*showDashboardShortcuts\(\);/);
+});
+
+test('Escape closes the session list shortcut reference', () => {
+  const app = fs.readFileSync(path.join(__dirname, '../pkg/web/static/app.js'), 'utf8');
+  assert.match(app, /const closeRoot = overlay\.querySelector\('\.cmd-palette'\) \|\| overlay\.querySelector\('\.modal'\)/);
+  assert.match(app, /window\._qewCloseDashboardShortcuts = function\(\) \{ closeWizard\(\); \}/);
 });
 
 test('chat connection loss preserves the transcript and gates sending', () => {

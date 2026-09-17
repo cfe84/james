@@ -6177,8 +6177,9 @@
       }
     }
     // Otherwise click the modal's primary action-row close button.
-    const modal = overlay.querySelector('.modal');
-    const closeRoot = modal || overlay.querySelector('.cmd-palette');
+    // Wizard-rendered command palettes are nested inside the generic modal
+    // wrapper, so prefer the palette when locating its action row.
+    const closeRoot = overlay.querySelector('.cmd-palette') || overlay.querySelector('.modal');
     if (closeRoot) {
       const rows = closeRoot.querySelectorAll(':scope > .modal-actions');
       for (const row of rows) {
