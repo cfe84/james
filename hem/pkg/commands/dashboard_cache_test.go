@@ -278,6 +278,7 @@ func TestDashboardWorkingParentKeepsWorkingStatusWithReadyChild(t *testing.T) {
 	if err := e.store.AddMoneypenny(&store.Moneypenny{Name: "mac", Enabled: true}); err != nil {
 		t.Fatal(err)
 	}
+
 	if err := e.store.TrackSession("parent", "mac"); err != nil {
 		t.Fatal(err)
 	}
@@ -296,5 +297,41 @@ func TestDashboardWorkingParentKeepsWorkingStatusWithReadyChild(t *testing.T) {
 	}
 	if got := rows["child"][3]; got != "ready (active)" {
 		t.Fatalf("child status = %q, want ready", got)
+	}
+}
+
+func TestDashboardShowsAllActiveSubagentsByDefault(t *testing.T) {
+	e := newHierarchyExecutor(t)
+	if err := e.store.AddMoneypenny(&store.Moneypenny{Name: "mac", Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.TrackSession("parent", "mac"); err != nil {
+		t.Fatal(err)
+	}
+	for _, child := range []string{"ready-child", "idle-child", "completed-child"} {
+		if err := e.store.TrackSubSession(child, "mac", "parent"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := e.store.SetSessionReviewed("idle-child", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.SetSessionHemStatus("completed-child", "completed"); err != nil {
+		t.Fatal(err)
+	}
+	e.cacheManager.UpdateMP("mac", map[string]mpSessionInfo{
+		"parent":          {SessionID: "parent", Name: "parent", Status: "working"},
+		"ready-child":     {SessionID: "ready-child", Name: "ready child", Status: "idle"},
+		"idle-child":      {SessionID: "idle-child", Name: "idle child", Status: "idle"},
+		"completed-child": {SessionID: "completed-child", Name: "completed child", Status: "idle"},
+	})
+	e.cacheManager.SetRefreshing(true)
+
+	rows := dashboardTable(t, e.Dashboard(nil))
+	if len(rows["ready-child"]) == 0 || len(rows["idle-child"]) == 0 {
+		t.Fatalf("active subagents missing from default dashboard: %#v", rows)
+	}
+	if _, found := rows["completed-child"]; found {
+		t.Fatalf("completed subagent shown without --show-subs: %#v", rows["completed-child"])
 	}
 }

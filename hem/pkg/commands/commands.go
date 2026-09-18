@@ -6093,10 +6093,6 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 			if subMPStatus == "idle" && !sub.Reviewed {
 				subDisplayStatus = "ready"
 			}
-			// Without --show-subs, only show working or ready subs.
-			if !showSubs && subDisplayStatus != "working" && subDisplayStatus != "ready" {
-				continue
-			}
 			if subName == "" {
 				if len(sub.SessionID) > 12 {
 					subName = sub.SessionID[:12] + "..."
