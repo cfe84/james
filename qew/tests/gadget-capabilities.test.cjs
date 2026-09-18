@@ -131,6 +131,10 @@ test('Qew threshold helpers follow context defaults and inclusive validation', (
 test('all-subagents dialog supports keyboard navigation and Escape dismissal', () => {
   const app = fs.readFileSync(path.join(__dirname, '../pkg/web/static/app.js'), 'utf8');
   assert.match(app, /const closeRoot = overlay\.querySelector\('\.cmd-palette'\) \|\| overlay\.querySelector\('\.modal'\)/);
+  assert.match(app, /function refreshAllSubagents\(\)/);
+  assert.match(app, /apiCall\('list', 'subsession', \[sessionID\]\)/);
+  assert.match(app, /Loading subagents\.\.\./);
+  assert.match(app, /function renderAllSubagents\(error, open\)/);
   assert.match(app, /function handleAllSubagentsKey\(e\)/);
   assert.match(app, /e\.key === 'ArrowDown' \|\| e\.key === 'j'/);
   assert.match(app, /e\.key === 'ArrowUp' \|\| e\.key === 'k'/);

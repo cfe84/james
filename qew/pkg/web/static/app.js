@@ -38,6 +38,7 @@
   let lastSubagents = [];     // non-completed subagents shown in the live chat
   let allSubagents = [];      // complete list, retained for the all-subagents view
   let allSubagentsCursor = 0;
+  let allSubagentsRefresh = null;
   let lastActivity = [];
   const CHAT_PAGE_SIZE = 50;
   let lastSessionStates = {}; // track WORKING→READY transitions for notifications
@@ -1780,19 +1781,58 @@
     }
   }
 
-  function showAllSubagents() {
+  function subagentsFromResponse(response) {
+    if (!response || response.status !== 'ok' || !response.data || !Array.isArray(response.data.rows)) {
+      throw new Error((response && response.message) || 'Unable to load subagents');
+    }
+    return response.data.rows.map(row => ({
+      sessionId: row[0], name: row[1], status: row[2], yolo: row[3] === 'true',
+    }));
+  }
+
+  function refreshAllSubagents() {
+    if (!currentSession) return Promise.resolve();
+    if (!allSubagentsRefresh) {
+      const sessionID = currentSession;
+      const generation = chatGeneration;
+      allSubagentsRefresh = apiCall('list', 'subsession', [sessionID])
+        .then(response => {
+          const subagents = subagentsFromResponse(response);
+          if (currentSession !== sessionID || chatGeneration !== generation) return;
+          allSubagents = subagents;
+          lastSubagents = subagents.filter(sub => !String(sub.status || '').toLowerCase().includes('completed'));
+          renderAllSubagents(false, false);
+        })
+        .catch(error => {
+          if (currentSession !== sessionID || chatGeneration !== generation) return;
+          renderAllSubagents(error.message || 'Unable to load subagents', false);
+        })
+        .finally(() => {
+          allSubagentsRefresh = null;
+        });
+    }
+    return allSubagentsRefresh;
+  }
+
+  function renderAllSubagents(error, open) {
+    if (!open && !document.querySelector('.cmd-palette[aria-label="All subagents"]')) return;
     allSubagentsCursor = 0;
-    const items = allSubagents.length
+    const items = error
+      ? `<div class="empty-state">Unable to load subagents: ${escapeHtml(error)}</div>`
+      : allSubagents.length
       ? allSubagents.map((sub, i) => {
           const name = sub.name || (sub.sessionId ? sub.sessionId.substring(0, 12) + '...' : '?');
           return `<button class="cmd-item all-subagent-item${i === allSubagentsCursor ? ' selected' : ''}" data-all-sub-idx="${i}">🕴️ ${escapeHtml(name)} <span style="color:var(--muted)">[${escapeHtml(sub.status || 'unknown')}]</span></button>`;
         }).join('')
-      : '<div class="empty-state">No subagents</div>';
+      : '<div class="empty-state">Loading subagents...</div>';
+    const actions = error
+      ? '<button class="btn-muted" onclick="window._qewRefreshAllSubagents()">Retry</button>'
+      : '';
     renderWizardModal(`
       <div class="cmd-palette" tabindex="-1" role="dialog" aria-modal="true" aria-label="All subagents">
         <h3>All subagents</h3>
         <div class="cmd-list">${items}</div>
-        <div class="modal-actions"><button class="btn-muted" onclick="window._qewCloseAllSubagents()">Close (Esc)</button></div>
+        <div class="modal-actions">${actions}<button class="btn-muted" onclick="window._qewCloseAllSubagents()">Close (Esc)</button></div>
       </div>
     `);
     const palette = document.querySelector('.cmd-palette');
@@ -1805,7 +1845,16 @@
       palette.focus();
     }
   }
+  function showAllSubagents() {
+    renderAllSubagents(false, true);
+    refreshAllSubagents();
+  }
   window._qewCloseAllSubagents = function() { closeWizard(); };
+  window._qewRefreshAllSubagents = function() {
+    allSubagentsRefresh = null;
+    renderAllSubagents(false, false);
+    refreshAllSubagents();
+  };
 
   function showDashboardShortcuts() {
     renderWizardModal(`
