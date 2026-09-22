@@ -609,7 +609,7 @@ previously disabled service does not remain disabled after replacement.
 
 ### Stop
 
-`hem stop session SESSION_ID` — stops a working session (kills the agent, session goes back to idle).
+`hem stop session SESSION_ID` — stops a working session (cancels the run, kills the agent, drains queued prompts, and returns the session to idle). A result that arrives after cancellation is discarded and cannot restart queued work.
 
 ### Delete
 

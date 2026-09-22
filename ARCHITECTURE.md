@@ -407,7 +407,7 @@ moneypenny/
 
 4. **MI6 integration**: Spawns `mi6-client` as a subprocess, piping stdio through it. Moneypenny auto-generates an ECDSA key on first MI6 use, stores it in `~/.config/james/moneypenny/`. Use `--show-public-key` to get the key for adding to mi6-server's authorized_keys.
 
-5. **Session states**: `idle` (ready for commands) and `working` (agent running). `stop_session` kills the agent and returns to idle. `continue_session` rejected unless idle.
+5. **Session states**: `idle` (ready for commands) and `working` (agent running). `stop_session` cancels the handler-owned run before killing the agent launcher, drains queued prompts, and returns to idle. A canceled run cannot publish a late response, retry recovery, or continue queued work. `continue_session` rejected unless idle.
 
 6. **Error handling**: Standardized error codes (SESSION_NOT_FOUND, SESSION_ALREADY_EXISTS, etc.) returned in the response envelope's `error_code` field.
 

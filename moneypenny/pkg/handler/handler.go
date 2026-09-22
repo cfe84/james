@@ -117,11 +117,17 @@ type Handler struct {
 	watches              *watchRegistry
 	channels             *channel.Registry // external communication channel providers
 	channelCmd           string            // base command for provider MCP servers (default "agency")
+	runsMu               sync.Mutex
+	activeRuns           map[string]*activeRun
 	gadgetsMu            sync.Mutex
 	gadgetsServer        *http.Server
 	gadgetsURL           string
 	gadgetsTokens        map[[32]byte]string
 	gadgetsSessionTokens map[string]string
+}
+
+type activeRun struct {
+	cancel context.CancelFunc
 }
 
 // resultCallback is called when an async agent execution completes.
@@ -133,6 +139,7 @@ type resultCallback func(sessionID, response string, err error)
 // used to allocate per-session persistent directories (sessions/<sessionID>/).
 func New(s *store.Store, runner *agent.Runner, version, dataDir string) *Handler {
 	h := &Handler{store: s, runner: runner, version: version, dataDir: dataDir, vlog: func(string, ...interface{}) {}, errorLog: log.Printf}
+	h.activeRuns = make(map[string]*activeRun)
 	h.watches = newWatchRegistry()
 	h.runAgentFunc = runner.Run
 	h.notifyWriter = envelope.NewNotificationWriter(nil)
@@ -599,7 +606,7 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 	}
 
 	// Run agent asynchronously.
-	go h.runAgent(data.SessionID, agent.RunParams{
+	h.startAgent(data.SessionID, agent.RunParams{
 		SessionID:    data.SessionID,
 		Agent:        data.Agent,
 		Prompt:       data.Prompt,
@@ -786,7 +793,7 @@ func (h *Handler) continueSession(ctx context.Context, cmd *envelope.Command) *e
 	}
 
 	// Run agent asynchronously with Resume=true.
-	go h.runAgent(data.SessionID, agent.RunParams{
+	h.startAgent(data.SessionID, agent.RunParams{
 		SessionID:    data.SessionID,
 		Agent:        sess.Agent,
 		Prompt:       prompt,
@@ -1083,9 +1090,43 @@ func (h *Handler) summarizeSession(ctx context.Context, cmd *envelope.Command) *
 	})
 }
 
-// runAgent executes the agent in the background, updating the store when done.
-// After completion, it checks the prompt queue and auto-continues if there are queued prompts.
+func (h *Handler) startAgent(sessionID string, params agent.RunParams) {
+	ctx, cancel := context.WithCancel(context.Background())
+	run := &activeRun{cancel: cancel}
+	h.runsMu.Lock()
+	h.activeRuns[sessionID] = run
+	h.runsMu.Unlock()
+
+	go func() {
+		defer func() {
+			h.runsMu.Lock()
+			if h.activeRuns[sessionID] == run {
+				delete(h.activeRuns, sessionID)
+			}
+			h.runsMu.Unlock()
+		}()
+		h.runAgentWithContext(ctx, sessionID, params)
+	}()
+}
+
+func (h *Handler) cancelActiveRun(sessionID string) {
+	h.runsMu.Lock()
+	run := h.activeRuns[sessionID]
+	h.runsMu.Unlock()
+	if run != nil {
+		run.cancel()
+	}
+}
+
+// runAgent executes an agent synchronously for tests and internal callers that
+// do not need cancellation. Asynchronous session work must use startAgent.
 func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
+	h.runAgentWithContext(context.Background(), sessionID, params)
+}
+
+// runAgentWithContext updates session state after an agent completes. A canceled
+// context fences a stopped run from publishing a late response or draining work.
+func (h *Handler) runAgentWithContext(ctx context.Context, sessionID string, params agent.RunParams) {
 	// Provide the per-session persistent directory to the agent runner so it
 	// can use it for things like copilot's COPILOT_CUSTOM_INSTRUCTIONS_DIRS.
 	if params.SessionDir == "" {
@@ -1109,10 +1150,13 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 		err = promptErr
 	}
 
-	ctx := context.Background()
 	var result *agent.Result
 	if err == nil {
 		result, err = h.runAuxiliary(ctx, params)
+	}
+	if ctx.Err() != nil {
+		h.vlog("discarding canceled agent run for session %s", sessionID)
+		return
 	}
 	if result != nil && result.AgentSessionID != "" {
 		if persistErr := h.store.SetAgentSessionID(sessionID, result.AgentSessionID); persistErr != nil {
@@ -1150,6 +1194,10 @@ func (h *Handler) runAgent(sessionID string, params agent.RunParams) {
 			params.SystemPrompt += "\n\n<prior-session-summary>\n" + summary + "\n</prior-session-summary>"
 		}
 		result, err = h.runAuxiliary(ctx, params)
+	}
+	if ctx.Err() != nil {
+		h.vlog("discarding canceled agent run for session %s", sessionID)
+		return
 	}
 	if err != nil {
 		h.vlog("agent error for session %s: %v", sessionID, err)
@@ -1339,7 +1387,7 @@ func (h *Handler) continueQueuedPrompts(sessionID string) {
 			return
 		}
 
-		go h.runAgent(sessionID, agent.RunParams{
+		h.startAgent(sessionID, agent.RunParams{
 			SessionID:      sessionID,
 			Agent:          sess.Agent,
 			Prompt:         combinedPrompt,
@@ -1594,6 +1642,7 @@ func (h *Handler) deleteSession(_ context.Context, cmd *envelope.Command) *envel
 
 	// If working, stop the agent process (ignore error if already gone).
 	if sess.Status == store.StateWorking {
+		h.cancelActiveRun(data.SessionID)
 		_ = h.runner.Stop(data.SessionID)
 	}
 
@@ -2370,6 +2419,10 @@ func (h *Handler) stopSession(_ context.Context, cmd *envelope.Command) *envelop
 	if sess == nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, fmt.Sprintf("session not found: %s", data.SessionID))
 	}
+
+	// Cancel publication before killing the launcher: an agent wrapper may
+	// outlive its parent process long enough to return a late response.
+	h.cancelActiveRun(data.SessionID)
 
 	// Try to kill the process if running; ignore errors (process may already be gone).
 	_ = h.runner.Stop(data.SessionID)
@@ -3166,7 +3219,7 @@ func (h *Handler) processDueSchedules(ctx context.Context) {
 			})
 		}
 		if result.Start {
-			go h.runAgent(sch.SessionID, agent.RunParams{
+			h.startAgent(sch.SessionID, agent.RunParams{
 				SessionID:      sch.SessionID,
 				Agent:          sess.Agent,
 				Prompt:         sch.Prompt,

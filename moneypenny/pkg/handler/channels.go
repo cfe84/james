@@ -413,7 +413,7 @@ func (h *Handler) forwardInbound(ch *store.Channel, msgs []channel.Message) bool
 			"reason": "channel_message",
 		})
 	}
-	go h.runAgent(ch.SessionID, agent.RunParams{
+	h.startAgent(ch.SessionID, agent.RunParams{
 		SessionID:      ch.SessionID,
 		Agent:          sess.Agent,
 		Prompt:         prompt,
