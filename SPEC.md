@@ -1239,7 +1239,10 @@ message as a durable `notification` turn, and broadcasts it immediately. Hem
 and Qew always render it as **Action needed**, independently of the
 train-of-thought setting. Agents reserve this for authentication, permission,
 credentials, irreversible decisions, or blocking external dependencies—not
-routine progress.
+routine progress. It is **not** an agent-to-agent channel: agents must never
+use it for progress, completion reports, review results, or messages to another
+agent; direct parent/child communication, including a subagent's completion
+report, uses `gadgets subagents message`.
 
 ## Sub-agents
 

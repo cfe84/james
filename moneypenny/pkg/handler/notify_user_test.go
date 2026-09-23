@@ -22,3 +22,14 @@ func TestNotifyUserTagRejectsOversizedMessage(t *testing.T) {
 		t.Fatal("oversized notification was accepted")
 	}
 }
+
+func TestNotificationInstructionsReserveTagsForHumanIntervention(t *testing.T) {
+	for _, text := range []string{
+		"Never use this tag to report progress, completion, review results, or any\nmessage to another agent",
+		"Report to a parent or child through\ngadgets subagents message instead",
+	} {
+		if !strings.Contains(notifyUserSystemPromptSuffix, text) {
+			t.Fatalf("missing notification boundary: %q", text)
+		}
+	}
+}

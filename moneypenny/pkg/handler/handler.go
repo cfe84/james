@@ -91,6 +91,9 @@ Emit the complete tag in one streamed thinking or intermediate-text message,
 with at most 1000 characters inside it; do not rely on a final-only reply.
 Use this only for authentication, permission dialogs, missing credentials,
 irreversible decisions, or blocked external dependencies—not routine progress.
+Never use this tag to report progress, completion, review results, or any
+message to another agent. Report to a parent or child through
+gadgets subagents message instead.
 The message is saved and shown to the user immediately while you keep working.`
 
 var notifyUserTagRe = regexp.MustCompile(`(?s)<NOTIFY_USER>\s*(.{1,1000}?)\s*</NOTIFY_USER>`)

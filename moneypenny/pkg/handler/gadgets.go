@@ -204,7 +204,7 @@ func (h *Handler) prepareGadgets(sessionID string, params *agent.RunParams) erro
 	params.Environment = env
 	params.SystemPrompt = stripManagedGadgetInstructions(params.SystemPrompt)
 	params.SystemPrompt += "\n\n<gadgets>\nUse the gadgets executable for session tools. Identity is bound by the daemon; never supply another session ID or alter credentials. Commands return structured JSON and writes accept stdin. Permissions are checked for every request and may be revoked. Do not bypass tools with direct Hem commands, files, or database access.\n"
-	params.SystemPrompt += "Reply to your parent: gadgets subagents message PARENT_ID (body on stdin); replying to your parent is always available.\n"
+	params.SystemPrompt += "Reply to your parent: gadgets subagents message PARENT_ID (body on stdin); replying to your parent is always available. Send completion reports, review results, and blockers to the parent with this command, not `gadgets notify` or `<NOTIFY_USER>`.\n"
 	if caps.Subagents {
 		params.SystemPrompt += "James subagents are Hem/Moneypenny child sessions created using `gadgets subagents create`. When asked to create or use a subagent, that command is mandatory; generic task tools, runtime/background workers, or other delegation mechanisms do not satisfy the request. After creation, verify the child appears in `gadgets subagents list`.\n"
 		params.SystemPrompt += "Own subagents: gadgets subagents list; gadgets subagents create [--name name] [--agent agent] [--model model] [--path path] [--traits names-or-IDs]"
@@ -255,7 +255,7 @@ func (h *Handler) prepareGadgets(sessionID string, params *agent.RunParams) erro
 	if caps.Hem {
 		params.SystemPrompt += "Hem administrative proxy: gadgets hem VERB [NOUN] [ARGS...]. This explicit grant allows server-side administrative commands, including mutations and permission changes, independently of other gadget grants. Use only for the user's task. No shell execution, stdin forwarding, interactive/local commands, or transport overrides. Results are JSON; use --async for long-running agent operations. Timeouts do not roll back mutations; inspect state before retrying. Diagnostics: gadgets hem diagnose --name HOST [--session-id ID --scan].\n"
 	}
-	params.SystemPrompt += "Operator notifications are always available: gadgets notify 'action needed' (or supply text on stdin). Use for actionable updates, not routine progress.\n</gadgets>"
+	params.SystemPrompt += "Operator notifications are always available: gadgets notify 'action needed' (or supply text on stdin). This alerts the human operator only. Use it only when human intervention is required for authentication, permissions, credentials, an irreversible decision, or a blocked external dependency. Never use it for progress, completion reports, review results, or messages to another agent; use `gadgets subagents message` for parent/child communication.\n</gadgets>"
 	params.SystemPrompt += notifyUserSystemPromptSuffix
 	return nil
 }
