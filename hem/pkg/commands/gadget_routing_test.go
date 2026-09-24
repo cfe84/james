@@ -561,6 +561,21 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 			}
 		}
 	}
+	response = gadgetRouteRequest(t, e, "target", "subagents.message", map[string]any{"id": "source", "body": "task result"})
+	if response.Status != "ok" {
+		t.Fatalf("invocation callback rejected: %s", response.Message)
+	}
+	for _, wantMethod := range []string{"continue_session", "queue_prompt"} {
+		command = next()
+		data = command.Data.(map[string]any)
+		if command.Method != wantMethod || data["source"] != "callback" || data["source_session_id"] != "target" {
+			t.Fatalf("invocation callback lost callback provenance: %#v", command)
+		}
+	}
+	response = gadgetRouteRequest(t, e, "target", "subagents.message", map[string]any{"id": "source", "body": "second result"})
+	if response.Status != "error" || !strings.Contains(response.Message, "direct children") {
+		t.Fatalf("invocation callback lease was reusable: %#v", response)
+	}
 	for name, call := range map[string]func() *protocol.Response{
 		"create": func() *protocol.Response {
 			return e.CreateSession([]string{"-m=mp", "--agent=copilot", "--async", "--env=JAMES_HEM_ADDRESS=untrusted/route", "hello"})

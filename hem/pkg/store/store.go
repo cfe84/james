@@ -163,7 +163,17 @@ CREATE TABLE IF NOT EXISTS session_traits (
     session_id TEXT NOT NULL,
     trait_id TEXT NOT NULL,
     PRIMARY KEY (session_id, trait_id)
-);`
+);
+
+CREATE TABLE IF NOT EXISTS invocation_reply_leases (
+    invoked_session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+    invoker_session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (invoked_session_id, invoker_session_id)
+);
+CREATE INDEX IF NOT EXISTS idx_invocation_reply_leases_invoker
+    ON invocation_reply_leases(invoker_session_id);
+`
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("create schema: %w", err)
@@ -1151,6 +1161,66 @@ func (s *Store) migrateSchema() error {
 			}
 			return err
 		}
+	}
+	for _, statement := range []string{
+		`CREATE TABLE IF NOT EXISTS invocation_reply_leases (
+			invoked_session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+			invoker_session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+			created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			PRIMARY KEY (invoked_session_id, invoker_session_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_invocation_reply_leases_invoker
+			ON invocation_reply_leases(invoker_session_id)`,
+	} {
+		if _, err := s.db.Exec(statement); err != nil {
+			return fmt.Errorf("apply invocation reply lease migration: %w", err)
+		}
+	}
+	return nil
+}
+
+// GrantInvocationReplyLease allows an independently invoked session to send
+// exactly one callback to the invoking session.
+func (s *Store) GrantInvocationReplyLease(invokedSessionID, invokerSessionID string) error {
+	if invokedSessionID == invokerSessionID {
+		return nil
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO invocation_reply_leases (invoked_session_id, invoker_session_id)
+		VALUES (?, ?)
+		ON CONFLICT(invoked_session_id, invoker_session_id) DO NOTHING`,
+		invokedSessionID, invokerSessionID)
+	if err != nil {
+		return fmt.Errorf("grant invocation reply lease: %w", err)
+	}
+	return nil
+}
+
+// HasInvocationReplyLease reports whether an invocation permits a one-time
+// reply from invokedSessionID back to invokerSessionID.
+func (s *Store) HasInvocationReplyLease(invokedSessionID, invokerSessionID string) (bool, error) {
+	var found int
+	err := s.db.QueryRow(`
+		SELECT 1 FROM invocation_reply_leases
+		WHERE invoked_session_id = ? AND invoker_session_id = ?`,
+		invokedSessionID, invokerSessionID).Scan(&found)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("check invocation reply lease: %w", err)
+	}
+	return true, nil
+}
+
+// ConsumeInvocationReplyLease deletes a used invocation callback lease.
+func (s *Store) ConsumeInvocationReplyLease(invokedSessionID, invokerSessionID string) error {
+	_, err := s.db.Exec(`
+		DELETE FROM invocation_reply_leases
+		WHERE invoked_session_id = ? AND invoker_session_id = ?`,
+		invokedSessionID, invokerSessionID)
+	if err != nil {
+		return fmt.Errorf("consume invocation reply lease: %w", err)
 	}
 	return nil
 }

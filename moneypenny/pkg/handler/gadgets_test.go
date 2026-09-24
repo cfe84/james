@@ -315,7 +315,8 @@ func TestGadgetPromptShowsOnlyGrantedCommands(t *testing.T) {
 		"generic task tools, runtime/background workers, or other delegation mechanisms do not satisfy the request",
 		"verify the child appears in `gadgets subagents list`",
 		"Use `gadgets subagents message` for direct children and parent replies",
-		"Send completion reports, review results, and blockers to the parent with this command",
+		"you may use the same command to send exactly one callback to that invoking session",
+		"Send completion reports, review results, and blockers through this callback path",
 		"Never use it for progress, completion reports, review results, or messages to another agent",
 	} {
 		if !strings.Contains(params.SystemPrompt, text) {

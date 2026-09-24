@@ -117,10 +117,18 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 			return protocol.ErrResponse("gadget target session is not tracked by this Hem")
 		}
 		if route.Method == "subagents.message" {
+			invocationReply := false
 			if source.ParentSessionID == target.SessionID {
 				// Replying to the parent is an unconditional capability.
 			} else if target.ParentSessionID != source.SessionID {
-				return protocol.ErrResponse("subagents may message only direct children or their parent")
+				var err error
+				invocationReply, err = e.store.HasInvocationReplyLease(source.SessionID, target.SessionID)
+				if err != nil {
+					return protocol.ErrResponse(err.Error())
+				}
+				if !invocationReply {
+					return protocol.ErrResponse("subagents may message only direct children, their parent, or the invoker of their current task")
+				}
 			} else {
 				caps, err := e.currentGadgetCapabilities(source)
 				if err != nil {
@@ -130,8 +138,22 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 					return protocol.ErrResponse("subagents may message only direct children or their parent")
 				}
 			}
+			response := e.messageGadgetAgent(source, target, message.Body, source.ParentSessionID == target.SessionID || invocationReply)
+			if response.Status == "ok" && invocationReply {
+				if err := e.store.ConsumeInvocationReplyLease(source.SessionID, target.SessionID); err != nil {
+					return protocol.ErrResponse(err.Error())
+				}
+			}
+			return response
 		}
-		return e.messageGadgetAgent(source, target, message.Body)
+		response := e.messageGadgetAgent(source, target, message.Body, false)
+		if response.Status != "ok" {
+			return response
+		}
+		if err := e.store.GrantInvocationReplyLease(target.SessionID, source.SessionID); err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		return response
 	case "subagents.edit", "subagents.complete", "subagents.stop", "subagents.delete":
 		var request struct {
 			ID string `json:"session_id"`
@@ -364,7 +386,7 @@ func (e *Executor) listGadgetAgents(source *store.Session, scoped bool) *protoco
 	return protocol.OKResponse(map[string]any{"agents": result})
 }
 
-func (e *Executor) messageGadgetAgent(source, target *store.Session, body string) *protocol.Response {
+func (e *Executor) messageGadgetAgent(source, target *store.Session, body string, callback bool) *protocol.Response {
 	if strings.TrimSpace(body) == "" {
 		return protocol.ErrResponse("agent message body is required")
 	}
@@ -376,7 +398,7 @@ func (e *Executor) messageGadgetAgent(source, target *store.Session, body string
 		"session_id": target.SessionID, "prompt": body,
 		"source_session_id": source.SessionID, "source_name": e.agentOriginLabel(source.SessionID),
 	}
-	if source.ParentSessionID == target.SessionID {
+	if callback {
 		data["source"] = "callback"
 	}
 	if target.HemStatus == "completed" {
