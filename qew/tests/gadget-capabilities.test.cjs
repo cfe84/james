@@ -142,6 +142,15 @@ test('all-subagents dialog supports keyboard navigation and Escape dismissal', (
   assert.match(app, /if \(handleAllSubagentsKey\(e\)\) return/);
 });
 
+test('callbacks show their source using muted styling', () => {
+  const app = fs.readFileSync(path.join(__dirname, '../pkg/web/static/app.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '../pkg/web/static/index.html'), 'utf8');
+  assert.match(app, /turn\.source_name \|\| 'subagent'/);
+  assert.match(app, /<strong>\$\{callbackSource\}:<\/strong>/);
+  assert.match(html, /\.msg\.callback \{ color: var\(--muted\);/);
+  assert.match(html, /\.msg\.callback code, \.msg\.callback pre \{ color: var\(--muted\);/);
+});
+
 test('Escape on the session list opens its shortcut reference', () => {
   const app = fs.readFileSync(path.join(__dirname, '../pkg/web/static/app.js'), 'utf8');
   assert.match(app, /function showDashboardShortcuts\(\)/);

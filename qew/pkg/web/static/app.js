@@ -1337,12 +1337,10 @@
       const agentName = currentSessionNick || currentSessionName || 'agent';
       const content = turn.content || '(empty)';
 
-      // Subagent callbacks render compact like a thought but highlighted (↩️ +
-      // primary colour) so they stand out as a report coming back from a
-      // subagent — always shown (not gated by the train-of-thought toggle),
-      // since the agent acts on them.
+      // Subagent callbacks stay visible independently of the thought toggle.
       if (turn.role === 'callback') {
-        html += `<div class="msg callback">↩️ ${formatContent(content)}</div>`;
+        const callbackSource = escapeHtml(turn.source_name || 'subagent');
+        html += `<div class="msg callback">↩️ <strong>${callbackSource}:</strong> ${formatContent(content)}</div>`;
         continue;
       }
       if (turn.role === 'notification') {

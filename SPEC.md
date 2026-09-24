@@ -1281,7 +1281,7 @@ Subagents report results back to their parent as **callbacks**, which render as 
 - **`hem callback session PARENT_ID --from ORIGIN_ID MESSAGE`** delivers a message from a subagent to its parent. The origin session is resolved to a friendly label (`nick · name`, falling back to name / nick / short id) and prefixed as `↩️ Callback from {label}:`. If the parent is idle the callback is delivered immediately; if busy it is queued. Either way the turn is recorded with the `callback` role.
 - `gadgets subagents message PARENT_ID` replies with the callback role and the daemon-bound source identity. Hem checks its authoritative parent/child records on every request; the subagents scope permits only direct children and reply to the parent, not arbitrary siblings or descendants. An independent `gadgets agents message` invocation additionally grants the invoked session one durable callback lease to that specific invoker; Hem consumes the lease only after the callback is delivered, so it does not create ongoing peer-to-peer messaging.
 - `watch session`-delivered results are also tagged as callbacks.
-- In both the TUI and Qew, `callback` turns render compact and indented like a train-of-thought turn but **highlighted** (primary colour, ↩️ marker) so they clearly read as a subagent report. Unlike train-of-thought turns, callbacks are **always shown** (not hidden by the train-of-thought toggle) because the agent acts on them.
+- In both the TUI and Qew, `callback` turns render compact and indented with a light-gray ↩️ marker and the originating subagent's name. Unlike train-of-thought turns, callbacks are **always shown** (not hidden by the train-of-thought toggle) because the agent acts on them.
 
 ### UI
 

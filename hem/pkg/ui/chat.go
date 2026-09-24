@@ -1774,7 +1774,7 @@ func (m chatModel) View() string {
 
 	systemMsgStyle := lipgloss.NewStyle().Foreground(colorMuted).Italic(true)
 	thoughtStyle := lipgloss.NewStyle().Foreground(colorMuted).Italic(true)
-	callbackStyle := lipgloss.NewStyle().Foreground(colorPrimary)
+	callbackStyle := lipgloss.NewStyle().Foreground(colorMuted)
 	notificationStyle := lipgloss.NewStyle().Foreground(colorWarning).Bold(true)
 	conversation := collapseSupersededThoughtTurns(m.conversation)
 	for i, turn := range conversation {
@@ -1808,10 +1808,8 @@ func (m chatModel) View() string {
 			msgLines = append(msgLines, "")
 			continue
 		}
-		// Subagent callbacks render compact and indented like a thought, but
-		// highlighted (↩️ + primary colour) so they stand out as a report coming
-		// back from a subagent — and are always shown (not gated by the
-		// train-of-thought toggle), since the agent acts on them.
+		// Subagent callbacks render compactly and remain visible independently
+		// of the train-of-thought toggle.
 		if turn.Role == "callback" {
 			contentWidth := m.width - 6
 			if contentWidth < 20 {
@@ -1822,9 +1820,13 @@ func (m chatModel) View() string {
 				content = "(empty)"
 			}
 			wrapped := wordWrap(content, contentWidth)
+			source := turn.SourceName
+			if source == "" {
+				source = "subagent"
+			}
 			for i, line := range strings.Split(wrapped, "\n") {
 				if i == 0 {
-					msgLines = append(msgLines, callbackStyle.Render(fmt.Sprintf("  ↩️ %s", line)))
+					msgLines = append(msgLines, callbackStyle.Render(fmt.Sprintf("  ↩️ %s: %s", source, line)))
 				} else {
 					msgLines = append(msgLines, callbackStyle.Render("    "+line))
 				}
