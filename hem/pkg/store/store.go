@@ -263,6 +263,50 @@ func (s *Store) DeleteMoneypenny(name string) error {
 	return nil
 }
 
+// RenameMoneypenny changes a registration name without losing its sessions or
+// associated defaults, projects, and cached models.
+func (s *Store) RenameMoneypenny(oldName, newName string) error {
+	if strings.TrimSpace(newName) == "" || strings.TrimSpace(oldName) == "" {
+		return fmt.Errorf("moneypenny names cannot be empty")
+	}
+	if oldName == newName {
+		return fmt.Errorf("new moneypenny name must differ from %q", oldName)
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin moneypenny rename: %w", err)
+	}
+	defer tx.Rollback()
+	// Existing databases have an ON DELETE CASCADE foreign key without ON
+	// UPDATE CASCADE. Defer its check until both the parent and children move.
+	if _, err := tx.Exec(`PRAGMA defer_foreign_keys = ON`); err != nil {
+		return fmt.Errorf("defer session foreign keys: %w", err)
+	}
+	result, err := tx.Exec(`UPDATE moneypennies SET name = ? WHERE name = ?`, newName, oldName)
+	if err != nil {
+		return fmt.Errorf("rename moneypenny %q to %q: %w", oldName, newName, err)
+	}
+	if count, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("check moneypenny rename: %w", err)
+	} else if count == 0 {
+		return fmt.Errorf("moneypenny %q not found", oldName)
+	}
+	for _, query := range []string{
+		`UPDATE sessions SET moneypenny_name = ? WHERE moneypenny_name = ?`,
+		`UPDATE projects SET moneypenny = ? WHERE moneypenny = ?`,
+		`UPDATE model_cache SET moneypenny = ? WHERE moneypenny = ?`,
+		`UPDATE defaults SET value = ? WHERE key = 'moneypenny' AND value = ?`,
+	} {
+		if _, err := tx.Exec(query, newName, oldName); err != nil {
+			return fmt.Errorf("update moneypenny references: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit moneypenny rename: %w", err)
+	}
+	return nil
+}
+
 // CachedModelEntry pairs a cached model identifier with its display name.
 // Mirrors the moneypenny ModelInfo shape so the cache can round-trip without
 // loss when populated from list_models responses.

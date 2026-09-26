@@ -108,6 +108,21 @@ func (cm *ClientManager) ClearCooldown(mpName string) {
 	delete(cm.cooldowns, mpName)
 }
 
+// Rename keeps the existing transport connection and cooldown state under the
+// registration's new name.
+func (cm *ClientManager) Rename(oldName, newName string) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	if client, ok := cm.clients[oldName]; ok {
+		cm.clients[newName] = client
+		delete(cm.clients, oldName)
+	}
+	if until, ok := cm.cooldowns[oldName]; ok {
+		cm.cooldowns[newName] = until
+		delete(cm.cooldowns, oldName)
+	}
+}
+
 // GetCooldownUntil returns the cooldown expiry time for a moneypenny, or zero if not in cooldown.
 func (cm *ClientManager) GetCooldownUntil(mpName string) time.Time {
 	cm.mu.Lock()

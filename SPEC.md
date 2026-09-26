@@ -398,6 +398,14 @@ Example: `hem add moneypenny -n local --fifo-folder ~/moneypenny-fifo`
 
 `hem ping moneypenny -n NAME` — pings a moneypenny using `get_version`, displays version and round-trip time.
 
+### Rename
+
+`hem rename moneypenny -n OLD_NAME --new-name NEW_NAME` — renames the
+registration on the Hem server without deleting tracked sessions. The default
+selection, project references, model cache, and transport are retained; names
+must be nonempty and unique. Qew's Moneypennies view provides a Rename button
+for the same operation. The daemon's identity and MI6 address are unchanged.
+
 ### Remove / Delete
 
 `hem remove moneypenny -n NAME` or `hem delete moneypenny -n NAME` — removes the reference.

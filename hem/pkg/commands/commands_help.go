@@ -21,6 +21,7 @@ var CommandHelp = map[string]string{
 	"check update":           "Usage: hem check update [-n NAME]\n\nTriggers an immediate update check on the moneypenny (instead of waiting for the next scheduled interval). The check runs asynchronously in the moneypenny.\n\nFlags:\n  -n, --name         Moneypenny name (defaults to default moneypenny)",
 	"force update":           "Usage: hem force update [-n NAME]\n\nForces a verified moneypenny update without waiting for sessions to become idle. The moneypenny restarts after installation.\n\nFlags:\n  -n, --name         Moneypenny name (defaults to default moneypenny)",
 	"delete moneypenny":      "Usage: hem delete moneypenny -n NAME\n\nRemoves a registered moneypenny and its tracked sessions.\n\nFlags:\n  -n, --name         Moneypenny name (required)",
+	"rename moneypenny":      "Usage: hem rename moneypenny -n OLD_NAME --new-name NEW_NAME\n\nRenames a registration on this Hem server, retaining its tracked sessions, project references, default, and cached models. The daemon's own name and MI6 address do not change.",
 	"set-default moneypenny": "Usage: hem set-default moneypenny -n NAME\n\nSets the default moneypenny for session commands.\n\nFlags:\n  -n, --name         Moneypenny name (required)",
 	"set-default agent":      "Usage: hem set-default agent VALUE\n\nSets the default agent for create session (fallback: copilot).",
 	"set-default path":       "Usage: hem set-default path VALUE\n\nSets the default working directory for create session (fallback: .).",

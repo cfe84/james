@@ -17,6 +17,36 @@ func newHierarchyExecutor(t *testing.T) *Executor {
 	return New(s, "")
 }
 
+func TestRenameMoneypennyCommandRetainsDashboardAndTransport(t *testing.T) {
+	e := newHierarchyExecutor(t)
+	if err := e.store.AddMoneypenny(&store.Moneypenny{Name: "old", TransportType: store.TransportFIFO, FIFOIn: "/tmp/in", FIFOOut: "/tmp/out"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.TrackSession("session", "old"); err != nil {
+		t.Fatal(err)
+	}
+	mp, _ := e.store.GetMoneypenny("old")
+	client := e.clientManager.GetClient(mp)
+	e.cacheManager.UpdateMP("old", map[string]mpSessionInfo{"session": {SessionID: "session"}})
+	e.clientManager.SetCooldown("old")
+	if resp := e.Dispatch("rename", "moneypenny", []string{"-n", "old", "--new-name", "new"}); resp.Status != "ok" {
+		t.Fatalf("rename failed: %s", resp.Message)
+	}
+	mp, _ = e.store.GetMoneypenny("new")
+	if e.clientManager.GetClient(mp) != client || !e.clientManager.IsUnavailable("new") || e.clientManager.IsUnavailable("old") {
+		t.Fatal("client or cooldown not transferred")
+	}
+	if _, ok := e.cacheManager.GetSnapshot()["new"]["session"]; !ok {
+		t.Fatal("dashboard cache not transferred")
+	}
+	if _, ok := e.cacheManager.GetSnapshot()["old"]; ok {
+		t.Fatal("old dashboard cache key remains")
+	}
+	if resp := e.Dispatch("rename", "moneypenny", []string{"-n", "old", "--new-name", "other"}); resp.Status != "error" {
+		t.Fatal("renaming an unknown registration succeeded")
+	}
+}
+
 func TestAdoptAndPromoteSession(t *testing.T) {
 	e := newHierarchyExecutor(t)
 	for _, name := range []string{"mp1", "mp2"} {

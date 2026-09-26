@@ -577,6 +577,8 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.ForceUpdate(args)
 	case "delete moneypenny":
 		return e.DeleteMoneypenny(args)
+	case "rename moneypenny":
+		return e.RenameMoneypenny(args)
 	case "enable moneypenny":
 		return e.EnableMoneypenny(args, true)
 	case "disable moneypenny":
@@ -1767,6 +1769,27 @@ func (e *Executor) DeleteMoneypenny(args []string) *protocol.Response {
 	return protocol.OKResponse(TextResult{
 		Message: fmt.Sprintf("Deleted moneypenny %q (and its tracked sessions).", name),
 	})
+}
+
+func (e *Executor) RenameMoneypenny(args []string) *protocol.Response {
+	var oldName, newName string
+	_, err := parseFlagsFromArgs("rename-moneypenny", args, func(fs *flag.FlagSet) {
+		fs.StringVar(&oldName, "n", "", "current moneypenny name")
+		fs.StringVar(&oldName, "name", "", "current moneypenny name")
+		fs.StringVar(&newName, "new-name", "", "new moneypenny name")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if oldName == "" || strings.TrimSpace(newName) == "" {
+		return protocol.ErrResponse("--name and --new-name are required")
+	}
+	if err := e.store.RenameMoneypenny(oldName, newName); err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	e.clientManager.Rename(oldName, newName)
+	e.cacheManager.Rename(oldName, newName)
+	return protocol.OKResponse(TextResult{Message: fmt.Sprintf("Renamed moneypenny %q to %q.", oldName, newName)})
 }
 
 func (e *Executor) EnableMoneypenny(args []string, enabled bool) *protocol.Response {

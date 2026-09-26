@@ -93,6 +93,16 @@ test('create, copy and edit surfaces load and use the reusable controls', () => 
   assert.ok(app.includes("gadgetCapabilities.args('es', s.gadget_capabilities || null)"));
 });
 
+test('Moneypenny management renames registrations through Hem', () => {
+  const app = fs.readFileSync(path.join(__dirname, '../pkg/web/static/app.js'), 'utf8');
+  const list = app.slice(app.indexOf('  async function loadMoneypennies()'), app.indexOf('  async function pingMoneypenny('));
+  const rename = app.slice(app.indexOf('  function showRenameMoneypennyModal('), app.indexOf('  async function toggleMoneypennyEnabled('));
+  assert.match(list, /data-action="rename"/);
+  assert.match(list, /showRenameMoneypennyModal\(mp\)/);
+  assert.match(rename, /apiCall\('rename', 'moneypenny', \['-n', name, '--new-name', newName\]\)/);
+  assert.match(rename, /closeWizard\(\);\s*loadMoneypennies\(\)/);
+});
+
 test('custom compaction threshold is bounded and hidden for agent mode', () => {
   const app = fs.readFileSync(path.join(__dirname, '../pkg/web/static/app.js'), 'utf8');
   const helper = fs.readFileSync(path.join(__dirname, '../pkg/web/static/compaction-threshold.js'), 'utf8');

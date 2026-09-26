@@ -163,6 +163,65 @@ func TestDeleteMoneypenny(t *testing.T) {
 	}
 }
 
+func TestRenameMoneypennyPreservesReferences(t *testing.T) {
+	s := newTestStore(t)
+	old := &Moneypenny{Name: "old", TransportType: TransportMI6, MI6Addr: "relay/session", MI6ServerFingerprint: "SHA256:pin", Enabled: true}
+	if err := s.AddMoneypenny(old); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AddMoneypenny(&Moneypenny{Name: "taken", TransportType: TransportFIFO}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetDefaultMoneypenny("old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetDefault("moneypenny", "old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TrackSession("session", "old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateProject(&Project{ID: "project", Name: "Project", Moneypenny: "old", Paths: "[]"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetCachedModels("old", "opencode", []CachedModelEntry{{Name: "model", Value: "azure/model"}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, names := range [][2]string{{"missing", "new"}, {"old", "taken"}, {"old", " "}, {"old", "old"}} {
+		if err := s.RenameMoneypenny(names[0], names[1]); err == nil {
+			t.Fatalf("rename %q to %q unexpectedly succeeded", names[0], names[1])
+		}
+	}
+	if mp, err := s.GetMoneypenny("old"); err != nil || mp == nil {
+		t.Fatalf("failed renames modified registration: %+v, %v", mp, err)
+	}
+	if err := s.RenameMoneypenny("old", "new"); err != nil {
+		t.Fatal(err)
+	}
+	mp, err := s.GetDefaultMoneypenny()
+	if err != nil || mp == nil || mp.Name != "new" || mp.MI6Addr != old.MI6Addr || mp.MI6ServerFingerprint != old.MI6ServerFingerprint || !mp.Enabled {
+		t.Fatalf("renamed default = %+v, %v", mp, err)
+	}
+	if name, err := s.GetSessionMoneypenny("session"); err != nil || name != "new" {
+		t.Fatalf("tracked session host = %q, %v", name, err)
+	}
+	if p, err := s.GetProject("project"); err != nil || p == nil || p.Moneypenny != "new" {
+		t.Fatalf("project = %+v, %v", p, err)
+	}
+	if models, _, err := s.GetCachedModels("new", "opencode"); err != nil || len(models) != 1 || models[0].Value != "azure/model" {
+		t.Fatalf("renamed models = %+v, %v", models, err)
+	}
+	if value, err := s.GetDefault("moneypenny"); err != nil || value != "new" {
+		t.Fatalf("named default = %q, %v", value, err)
+	}
+	if err := s.DeleteMoneypenny("old"); err != nil {
+		t.Fatal(err)
+	}
+	if name, err := s.GetSessionMoneypenny("session"); err != nil || name != "new" {
+		t.Fatalf("old registration delete cascaded to renamed session: %q, %v", name, err)
+	}
+}
+
 func TestSetAndGetDefault(t *testing.T) {
 	s := newTestStore(t)
 

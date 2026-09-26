@@ -4983,6 +4983,7 @@
             ${!enabled ? '<span class="mgmt-badge danger">disabled</span>' : ''}
             <span class="mgmt-actions">
               <button data-mp="${escapeAttr(name)}" data-action="ping">Ping</button>
+              <button data-mp="${escapeAttr(name)}" data-action="rename">Rename</button>
               <button data-mp="${escapeAttr(name)}" data-action="toggle-enabled">${enabled ? 'Disable' : 'Enable'}</button>
               ${!isDef ? `<button data-mp="${escapeAttr(name)}" data-action="set-default">Set Default</button>` : ''}
               <button data-mp="${escapeAttr(name)}" data-action="delete" class="danger">Delete</button>
@@ -4996,6 +4997,7 @@
           const mp = btn.dataset.mp;
           const action = btn.dataset.action;
           if (action === 'ping') pingMoneypenny(mp);
+          else if (action === 'rename') showRenameMoneypennyModal(mp);
           else if (action === 'toggle-enabled') toggleMoneypennyEnabled(mp);
           else if (action === 'set-default') setDefaultMoneypenny(mp);
           else if (action === 'delete') deleteMoneypenny(mp);
@@ -5015,10 +5017,45 @@
     } catch (e) { alert('Error: ' + e.message); }
   }
 
+  function showRenameMoneypennyModal(name) {
+    renderWizardModal(`
+      <h3>Rename Moneypenny</h3>
+      <label for="mp-new-name">Name *</label>
+      <input id="mp-new-name" type="text" value="${escapeAttr(name)}">
+      <div class="modal-actions">
+        <button class="btn-muted" onclick="window._qewCloseWizard()">Cancel</button>
+        <button class="btn" id="mp-rename-submit">Rename</button>
+      </div>
+    `);
+    document.getElementById('mp-rename-submit').addEventListener('click', async () => {
+      const newName = document.getElementById('mp-new-name').value.trim();
+      if (!newName || newName === name) {
+        alert('Enter a different name');
+        return;
+      }
+      const btn = document.getElementById('mp-rename-submit');
+      btn.disabled = true;
+      try {
+        const resp = await apiCall('rename', 'moneypenny', ['-n', name, '--new-name', newName]);
+        if (resp.status === 'error') {
+          alert('Error: ' + resp.message);
+          return;
+        }
+        closeWizard();
+        loadMoneypennies();
+      } catch (e) {
+        alert('Error: ' + e.message);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
+
   async function toggleMoneypennyEnabled(name) {
     try {
       // Check current state by looking at the button text.
-      const btn = document.querySelector(`button[data-mp="${name}"][data-action="toggle-enabled"]`);
+      const btn = Array.from(document.querySelectorAll('button[data-action="toggle-enabled"]'))
+        .find(button => button.dataset.mp === name);
       const verb = btn && btn.textContent.trim() === 'Disable' ? 'disable' : 'enable';
       const resp = await apiCall(verb, 'moneypenny', ['-n', name]);
       if (resp.status === 'error') alert('Error: ' + resp.message);

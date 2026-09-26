@@ -8,10 +8,10 @@ import (
 // CacheManager manages moneypenny session caching.
 // Dashboard/ListSessions return instantly from this cache while a background refresh runs.
 type CacheManager struct {
-	mpCache      map[string]map[string]mpSessionInfo // mpName → sessionID → info
-	cacheTime    time.Time                           // when the cache was last fully refreshed
-	refreshing   bool                                // true while a background refresh is in progress
-	mu           sync.RWMutex
+	mpCache    map[string]map[string]mpSessionInfo // mpName → sessionID → info
+	cacheTime  time.Time                           // when the cache was last fully refreshed
+	refreshing bool                                // true while a background refresh is in progress
+	mu         sync.RWMutex
 }
 
 // NewCacheManager creates a new CacheManager.
@@ -51,6 +51,16 @@ func (cm *CacheManager) UpdateMP(mpName string, sessions map[string]mpSessionInf
 	defer cm.mu.Unlock()
 	cm.mpCache[mpName] = sessions
 	cm.cacheTime = time.Now()
+}
+
+// Rename retains dashboard session data when a registration name changes.
+func (cm *CacheManager) Rename(oldName, newName string) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	if sessions, ok := cm.mpCache[oldName]; ok {
+		cm.mpCache[newName] = sessions
+		delete(cm.mpCache, oldName)
+	}
 }
 
 // GetCacheTime returns when the cache was last refreshed.

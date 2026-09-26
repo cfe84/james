@@ -854,6 +854,14 @@ atomic swap and `syscall.Exec` path.
 
 The Executor (hem/pkg/commands) has been refactored to follow Single Responsibility Principle by extracting specialized managers:
 
+Renaming a Moneypenny is a Hem-only operation: a single SQLite transaction
+updates the registration and all name-keyed session, project, default, and
+model-cache references. Existing session foreign keys are deferred until the
+transaction commits (older databases lack `ON UPDATE CASCADE`). The Executor
+then moves the in-memory transport/cooldown and dashboard cache entries to the
+new name; Qew invokes the same `rename moneypenny` command. The daemon's MI6
+address and own identity are not changed.
+
 **Manager Components** (`hem/pkg/commands/`):
 
 1. **ClientManager** (`client_manager.go`): Manages transport client lifecycle and circuit breaking
