@@ -131,6 +131,16 @@ func main() {
 		h.SetLogFile(service.DefaultLogFile(*dataDir))
 	}
 
+	// Reset sessions stuck in the working state. Agent processes are tracked in
+	// memory and do not survive a restart, so any session still marked working
+	// is stale; left as-is, the scheduler would queue due prompts behind a
+	// session that never drains its queue.
+	if n, err := st.ResetWorkingSessions(); err != nil {
+		log.Printf("startup: failed to reset working sessions: %v", err)
+	} else if n > 0 {
+		log.Printf("startup: reset %d stale working session(s) to idle", n)
+	}
+
 	if err := h.StartGadgets(); err != nil {
 		log.Fatalf("start gadgets: %v", err)
 	}
@@ -144,16 +154,6 @@ func main() {
 		effectiveLogFile = service.DefaultLogFile(*dataDir)
 	}
 	startLogRotation(ctx, effectiveLogFile, log.Printf)
-
-	// Reset sessions stuck in the working state. Agent processes are tracked in
-	// memory and do not survive a restart, so any session still marked working
-	// is stale; left as-is, the scheduler would queue due prompts behind a
-	// session that never drains its queue.
-	if n, err := st.ResetWorkingSessions(); err != nil {
-		log.Printf("startup: failed to reset working sessions: %v", err)
-	} else if n > 0 {
-		log.Printf("startup: reset %d stale working session(s) to idle", n)
-	}
 
 	// Start the scheduler for timed prompts.
 	h.StartScheduler(ctx)
@@ -173,6 +173,9 @@ func main() {
 			// Windows starts a second process for re-exec. Close SQLite before
 			// that process starts so it cannot race this process's WAL mapping.
 			cancel()
+			if err := h.CloseGadgets(); err != nil {
+				log.Printf("updater: stop gadgets before restart: %v", err)
+			}
 			if err := st.Close(); err != nil {
 				log.Printf("updater: close store before restart: %v", err)
 			}

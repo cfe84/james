@@ -127,6 +127,12 @@ type Handler struct {
 	gadgetsURL           string
 	gadgetsTokens        map[[32]byte]string
 	gadgetsSessionTokens map[string]string
+	jobsMu               sync.Mutex
+	jobs                 map[string]*commandJob
+	jobsWG               sync.WaitGroup
+	jobsClosing          bool
+	jobsCleanupStop      chan struct{}
+	jobsCleanupDone      chan struct{}
 }
 
 type activeRun struct {
@@ -143,6 +149,7 @@ type resultCallback func(sessionID, response string, err error)
 func New(s *store.Store, runner *agent.Runner, version, dataDir string) *Handler {
 	h := &Handler{store: s, runner: runner, version: version, dataDir: dataDir, vlog: func(string, ...interface{}) {}, errorLog: log.Printf}
 	h.activeRuns = make(map[string]*activeRun)
+	h.jobs = make(map[string]*commandJob)
 	h.watches = newWatchRegistry()
 	h.runAgentFunc = runner.Run
 	h.notifyWriter = envelope.NewNotificationWriter(nil)
@@ -189,6 +196,7 @@ func New(s *store.Store, runner *agent.Runner, version, dataDir string) *Handler
 
 // Close stops background handler resources.
 func (h *Handler) Close() {
+	h.stopCommandJobs()
 	if h.watches != nil {
 		h.watches.Close()
 	}
@@ -1142,7 +1150,9 @@ func (h *Handler) runAgentWithContext(ctx context.Context, sessionID string, par
 	sess, err := h.store.GetSession(sessionID)
 	if err != nil {
 		err = fmt.Errorf("load session environment: %w", err)
-	} else if sess != nil {
+	} else if sess == nil {
+		err = fmt.Errorf("session %s no longer exists", sessionID)
+	} else {
 		if params.AgentSessionID == "" && sess.AgentSessionID != "" {
 			params.AgentSessionID = sess.AgentSessionID
 		}
@@ -1642,12 +1652,12 @@ func (h *Handler) deleteSession(_ context.Context, cmd *envelope.Command) *envel
 	if sess == nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, fmt.Sprintf("session not found: %s", data.SessionID))
 	}
+	h.stopSessionCommandJobs(data.SessionID)
 
-	// If working, stop the agent process (ignore error if already gone).
-	if sess.Status == store.StateWorking {
-		h.cancelActiveRun(data.SessionID)
-		_ = h.runner.Stop(data.SessionID)
-	}
+	// A command job can claim an idle session while deletion is waiting for
+	// its process to exit; stop any newly launched callback run as well.
+	h.cancelActiveRun(data.SessionID)
+	_ = h.runner.Stop(data.SessionID)
 
 	if err := h.store.DeleteSession(data.SessionID); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to delete session: %v", err))

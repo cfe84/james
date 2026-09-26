@@ -65,6 +65,42 @@ func TestActivityBufferBoundsSummarySize(t *testing.T) {
 	}
 }
 
+func TestCopilotToolOutputSummaryFormatsGadgetEnvelopes(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   string
+	}{
+		{
+			name:   "memory read",
+			output: `{"success":true,"data":{"path":"native-slow-read","body":"large content"}}`,
+			want:   "Read memory: native-slow-read",
+		},
+		{
+			name:   "agent list",
+			output: `{"success":true,"data":{"agents":[{"name":"one"},{"name":"two"}]}}`,
+			want:   "Listed 2 agents",
+		},
+		{
+			name:   "failure",
+			output: `{"success":false,"error":"permission denied"}`,
+			want:   "Tool failed: permission denied",
+		},
+		{
+			name:   "ordinary json is preserved",
+			output: `{"count":2}`,
+			want:   `{"count":2}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := copilotToolOutputSummary(tt.output); got != tt.want {
+				t.Fatalf("copilotToolOutputSummary(%q) = %q, want %q", tt.output, got, tt.want)
+			}
+		})
+	}
+}
+
 // TestCopilotStreamingPhaseClassifiesReply verifies that when Copilot tags
 // messages with a phase, the reply is exactly the phase=="final_answer"
 // message(s), and phase=="commentary" preambles go to the train of thought —

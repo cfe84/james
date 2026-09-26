@@ -108,6 +108,14 @@ function browser({ stableReconcile = false, reconcileRevision = 1, pushFirst = t
       for (const timer of [...intervals.values()].filter(timer => timer.ms === ms)) await timer.fn();
     },
     timers(ms) { return [...intervals.values()].filter(timer => timer.ms === ms).length; },
+    timeouts(ms) { return [...timeouts.values()].filter(timer => timer.ms === ms).length; },
+    async fireTimeout(ms) {
+      const timers = [...timeouts.entries()].filter(([, timer]) => timer.ms === ms);
+      for (const [id, timer] of timers) {
+        timeouts.delete(id);
+        await timer.fn();
+      }
+    },
     openSocket() {
       context.controls.connectPushStream();
       const socket = sockets.at(-1);
@@ -213,6 +221,22 @@ test('healthy socket is timer-silent and reconnect does not duplicate recovery t
   page.openSocket();
   await page.loadDashboard();
   assert.equal(page.timers(60000), 0);
+});
+
+test('healthy push socket retries an active chat after its authoritative read fails', async () => {
+  const page = browser();
+  page.navigate('session');
+  page.history('initial');
+  const socket = page.openSocket();
+  await page.loadChat();
+  page.failNext();
+  await page.loadChat();
+  assert.equal(socket.readyState, 1);
+  assert.equal(page.timeouts(1000), 1);
+  page.history('recovered');
+  await page.fireTimeout(1000);
+  assert.equal(page.rendered.at(-1).conversation[0].content, 'recovered');
+  assert.equal(page.timeouts(1000), 0);
 });
 
 test('legacy mode keeps frequent polling cadence', async () => {

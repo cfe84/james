@@ -380,6 +380,12 @@ CREATE TABLE IF NOT EXISTS client_operations (
     PRIMARY KEY (session_id, operation_id)
 );
 
+CREATE TABLE IF NOT EXISTS command_job_callbacks (
+    session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+    job_id TEXT NOT NULL,
+    PRIMARY KEY (session_id, job_id)
+);
+
 CREATE TABLE IF NOT EXISTS schedules (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
@@ -1141,6 +1147,54 @@ func (s *Store) QueuePromptChannelFromOperation(sessionID, prompt, model, effort
 		return fmt.Errorf("queue prompt: %w", err)
 	}
 	return nil
+}
+
+// QueueJobCallback atomically enqueues a completion and claims an idle session.
+// A working session drains the prompt normally; an idle one needs a new runner.
+func (s *Store) QueueJobCallback(sessionID, jobID, prompt string) (bool, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`INSERT OR IGNORE INTO command_job_callbacks (session_id, job_id) VALUES (?, ?)`, sessionID, jobID)
+	if err != nil {
+		return false, fmt.Errorf("record job callback: %w", err)
+	}
+	inserted, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if inserted == 0 {
+		return false, nil
+	}
+	res, err = tx.Exec(`INSERT INTO prompt_queue (session_id, prompt, model, effort, context_tier, source, source_session_id, source_name, reply_channel_id, mark_ready, operation_id)
+		SELECT session_id, ?, '', '', '', 'callback', '', 'command', 0, 0, '' FROM sessions WHERE session_id = ?`, prompt, sessionID)
+	if err != nil {
+		return false, fmt.Errorf("queue job callback: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil || n != 1 {
+		return false, fmt.Errorf("job session not found: %s", sessionID)
+	}
+	res, err = tx.Exec(`UPDATE sessions SET status = ?, revision = revision + 1, updated_at = ? WHERE session_id = ? AND status = ?`,
+		StateWorking, time.Now().UTC(), sessionID, StateIdle)
+	if err != nil {
+		return false, fmt.Errorf("claim callback session: %w", err)
+	}
+	claimed, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return claimed == 1, nil
+}
+
+func (s *Store) DeleteJobCallback(sessionID, jobID string) error {
+	_, err := s.db.Exec(`DELETE FROM command_job_callbacks WHERE session_id = ? AND job_id = ?`, sessionID, jobID)
+	return err
 }
 
 func (s *Store) HasQueuedOperation(sessionID, operationID string) (bool, error) {

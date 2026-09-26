@@ -120,6 +120,10 @@ func (h *Handler) StartGadgets() error {
 		ReadTimeout: 10 * time.Second, WriteTimeout: 30 * time.Second,
 		IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10,
 	}
+	h.recoverCommandJobs()
+	h.jobsCleanupStop = make(chan struct{})
+	h.jobsCleanupDone = make(chan struct{})
+	go h.cleanupCommandJobs(h.jobsCleanupStop, h.jobsCleanupDone)
 	server := h.gadgetsServer
 	go func() {
 		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -130,6 +134,7 @@ func (h *Handler) StartGadgets() error {
 }
 
 func (h *Handler) CloseGadgets() error {
+	h.stopCommandJobs()
 	h.gadgetsMu.Lock()
 	server := h.gadgetsServer
 	h.gadgetsServer = nil
@@ -255,6 +260,9 @@ func (h *Handler) prepareGadgets(sessionID string, params *agent.RunParams) erro
 	if caps.Hem {
 		params.SystemPrompt += "Hem administrative proxy: gadgets hem VERB [NOUN] [ARGS...]. This explicit grant allows server-side administrative commands, including mutations and permission changes, independently of other gadget grants. Use only for the user's task. No shell execution, stdin forwarding, interactive/local commands, or transport overrides. Results are JSON; use --async for long-running agent operations. Timeouts do not roll back mutations; inspect state before retrying. Diagnostics: gadgets hem diagnose --name HOST [--session-id ID --scan].\n"
 	}
+	if session.Yolo {
+		params.SystemPrompt += "Background commands: gadgets run-and-callback -- command [args...] returns a job ID and stdout/stderr paths; gadgets run list, gadgets run status ID, gadgets run stop ID. Commands run without a shell in your session directory, output is bounded, and completion queues an exit-code callback to this session. Available only while License to Kill remains enabled.\n"
+	}
 	params.SystemPrompt += "Operator notifications are always available: gadgets notify 'action needed' (or supply text on stdin). This alerts the human operator only. Use it only when human intervention is required for authentication, permissions, credentials, an irreversible decision, or a blocked external dependency. Never use it for progress, completion reports, review results, or messages to another agent; use `gadgets subagents message` for parent/child communication.\n</gadgets>"
 	params.SystemPrompt += notifyUserSystemPromptSuffix
 	return nil
@@ -379,11 +387,20 @@ func (h *Handler) executeGadget(ctx context.Context, sessionID string, request g
 		allowed = caps.Hem
 	case "notify":
 		allowed = true
+	case "run.start", "run.list", "run.status", "run.stop":
+		session, lookupErr := h.store.GetSession(sessionID)
+		if lookupErr != nil {
+			return nil, lookupErr
+		}
+		allowed = session != nil && session.Yolo
 	default:
 		return nil, &gadgetError{"unknown_method", "Unknown gadget method"}
 	}
 	if !allowed {
-		return nil, &gadgetError{"permission_denied", "Capability is disabled for this session"}
+		return nil, &gadgetError{"permission_denied", "Capability is disabled for this session or License to Kill is required"}
+	}
+	if strings.HasPrefix(request.Method, "run.") {
+		return h.runGadget(sessionID, request)
 	}
 	if strings.HasPrefix(request.Method, "memory.") {
 		return h.memoryGadget(sessionID, request)

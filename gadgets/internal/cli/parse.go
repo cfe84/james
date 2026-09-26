@@ -19,6 +19,9 @@ func command(args []string) (string, []string, error) {
 	if args[0] == "hem" {
 		return "hem.command", args[1:], nil
 	}
+	if args[0] == "run-and-callback" {
+		return "run.start", args[1:], nil
+	}
 	if len(args) < 2 {
 		return "", nil, errors.New("expected a subcommand; run gadgets help")
 	}
@@ -28,7 +31,8 @@ func command(args []string) (string, []string, error) {
 		"agents.list", "agents.message", "agents.create", "subagents.list", "subagents.create", "subagents.message",
 		"subagents.edit", "subagents.complete", "subagents.stop", "subagents.delete",
 		"traits.list", "traits.get", "traits.edit", "sessions.edit", "moneypenny.logs",
-		"schedule.list", "schedule.create", "schedule.delete":
+		"schedule.list", "schedule.create", "schedule.delete",
+		"run.list", "run.status", "run.stop":
 		return method, args[2:], nil
 	}
 	return "", nil, fmt.Errorf("unknown command %q; run gadgets help", strings.Join(args[:2], " "))
@@ -44,6 +48,12 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 			return Request{}, errors.New("hem requires a server command; run gadgets help")
 		}
 		return Request{Method: method, Data: map[string]any{"args": rest}}, nil
+	}
+	if method == "run.start" {
+		if len(rest) < 2 || rest[0] != "--" || rest[1] == "" {
+			return Request{}, errors.New("run-and-callback requires -- command [args...]")
+		}
+		return Request{Method: method, Data: map[string]any{"argv": rest[1:]}}, nil
 	}
 	allowed := map[string]bool{}
 	switch method {
@@ -119,6 +129,12 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 		return nil
 	}
 	switch method {
+	case "run.list":
+		err = arity(0, 0)
+	case "run.status", "run.stop":
+		if err = arity(1, 1); err == nil {
+			data["id"] = pos[0]
+		}
 	case "memory.get", "memory.list", "memory.revisions", "memory.set":
 		if err = arity(0, 1); err == nil {
 			data["path"] = ""

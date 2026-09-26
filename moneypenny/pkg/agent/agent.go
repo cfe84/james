@@ -926,7 +926,7 @@ func (r *Runner) runCopilotStreaming(cmd *exec.Cmd, buf *activityBuffer, session
 					// Show the last line of partial output as activity.
 					lines := strings.Split(strings.TrimRight(partial, "\n"), "\n")
 					lastLine := lines[len(lines)-1]
-					buf.add(ActivityEvent{Type: "tool_use", Summary: truncStr(lastLine, 150), Timestamp: now})
+					buf.add(ActivityEvent{Type: "tool_use", Summary: copilotToolOutputSummary(lastLine), Timestamp: now})
 					if r.notifyWriter != nil {
 						_ = r.notifyWriter.SendAsync(envelope.EventChatActivity, sessionID, map[string]interface{}{
 							"events": buf.snapshot(),
@@ -1092,6 +1092,39 @@ func (r *Runner) runCopilotStreaming(cmd *exec.Cmd, buf *activityBuffer, session
 		return nil, fmtAgentErrorFull(fmt.Errorf("reading copilot stream: %w", scanErr), stderrBuf, resultText, lastRawEvent)
 	}
 	return &Result{Text: strings.TrimSpace(resultText)}, nil
+}
+
+// copilotToolOutputSummary reduces standard James gadget envelopes to a useful
+// activity label. Other JSON and ordinary command output remain visible because
+// they may be the intentional result of a tool invocation.
+func copilotToolOutputSummary(output string) string {
+	const limit = 150
+	output = strings.TrimSpace(output)
+	var envelope struct {
+		Success *bool          `json:"success"`
+		Error   string         `json:"error"`
+		Data    map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal([]byte(output), &envelope); err != nil || envelope.Success == nil {
+		return truncStr(output, limit)
+	}
+	if !*envelope.Success {
+		if envelope.Error != "" {
+			return truncStr("Tool failed: "+envelope.Error, limit)
+		}
+		return "Tool failed"
+	}
+	if envelope.Data != nil {
+		if path, ok := envelope.Data["path"].(string); ok && path != "" {
+			return truncStr("Read memory: "+path, limit)
+		}
+		for _, key := range []string{"agents", "sessions", "items", "results"} {
+			if items, ok := envelope.Data[key].([]any); ok {
+				return fmt.Sprintf("Listed %d %s", len(items), key)
+			}
+		}
+	}
+	return "Tool completed successfully"
 }
 
 // copilotToolSummary builds a short description of a copilot tool use.

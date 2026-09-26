@@ -27,6 +27,10 @@ gadgets schedule list
 gadgets schedule create (--cron expr | --at timestamp) --prompt text
 gadgets schedule delete id
 gadgets moneypenny logs [--name registered-host] [--lines N]
+gadgets run-and-callback -- command [args...]
+gadgets run list
+gadgets run status ID
+gadgets run stop ID
 gadgets hem VERB [NOUN] [ARGS...]
 gadgets notify [text]
 gadgets help
@@ -39,6 +43,27 @@ supported. `--recursive=false` explicitly disables recursion. No session,
 endpoint or credential override flags are accepted. Scoped gadgets do not accept
 permission overrides; the separately granted Hem administrative proxy below is
 an explicit exception to scoped command permissions.
+
+### Background command callbacks (License to Kill)
+
+`gadgets run-and-callback -- go test ./...` launches a command without an
+implicit shell in the current session's working directory. It returns a
+session-owned job ID and absolute, private stdout/stderr paths immediately;
+read either file while it runs. `gadgets run list`, `run status ID`, and
+`run stop ID` manage only this session's jobs. The daemon checks the current
+License to Kill setting on *every* request, not just at launch. Each job gets
+one hour, 4 MiB per output stream, and an exit-code/status callback queued to
+the originating session on completion or cancellation. Existing agent work is
+not interrupted. On daemon restart an in-progress job is marked interrupted
+with no known exit code and a callback is queued; it is not resumed.
+
+At most four commands per session, 16 daemon-wide, and 64 retained records per
+session are allowed. Completed records and output files expire after 24 hours
+(checked hourly, on the next job interaction, and on daemon restart); deleting
+the session removes its files. Shell pipelines require an explicit shell
+executable, e.g. `gadgets run-and-callback -- sh -c 'go test ./... | tee result.txt'`.
+The callback contains only the job ID, status, exit code and paths, not stdout
+or stderr contents.
 
 ### Top-level agent creation (opt-in)
 

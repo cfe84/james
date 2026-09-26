@@ -33,6 +33,10 @@ func TestParseCommands(t *testing.T) {
 		{"recursive", []string{"memory", "delete", "project", "--recursive"}, "", "memory.delete", `{"path":"project","recursive":true}`},
 		{"nonrecursive", []string{"memory", "delete", "--recursive=false", "project"}, "", "memory.delete", `{"path":"project","recursive":false}`},
 		{"agents list", []string{"agents", "list"}, "", "agents.list", `{}`},
+		{"run command", []string{"run-and-callback", "--", "go", "test", "./..."}, "", "run.start", `{"argv":["go","test","./..."]}`},
+		{"run list", []string{"run", "list"}, "", "run.list", `{}`},
+		{"run status", []string{"run", "status", "job-id"}, "", "run.status", `{"id":"job-id"}`},
+		{"run stop", []string{"run", "stop", "job-id"}, "", "run.stop", `{"id":"job-id"}`},
 		{"hem diagnostics", []string{"hem", "diagnose", "--name", "chfeval-dev", "--session-id", "id", "--scan"}, "", "hem.command", `{"args":["diagnose","--name","chfeval-dev","--session-id","id","--scan"]}`},
 		{"hem literal arguments", []string{"hem", "create", "session", "--async", "--", "text ; $(echo literal)"}, "not forwarded", "hem.command", `{"args":["create","session","--async","--","text ; $(echo literal)"]}`},
 		{"hem command help", []string{"hem", "list", "sessions", "--help"}, "", "hem.command", `{"args":["list","sessions","--help"]}`},
@@ -123,6 +127,7 @@ func TestCreateTraitsFlag(t *testing.T) {
 func TestParseErrors(t *testing.T) {
 	for _, args := range [][]string{
 		{}, {"hem"}, {"unknown"}, {"memory"}, {"memory", "unknown"}, {"agents", "list", "extra"},
+		{"run-and-callback"}, {"run-and-callback", "echo"}, {"run-and-callback", "--"}, {"run", "status"}, {"run", "stop", "a", "b"},
 		{"memory", "search"}, {"memory", "get", "a", "b"}, {"memory", "set", "--session", "other"},
 		{"memory", "set", "--body"}, {"memory", "set", "--body=x", "--body=y"},
 		{"memory", "delete"}, {"memory", "delete", "a", "--recursive=maybe"},

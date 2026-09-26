@@ -76,6 +76,7 @@
   let qewConnected = false;
   let pushReconnectTimer = null;
   let pushHeartbeatTimer = null;
+  let backendRecoveryTimer = null;
   let pushGeneration = 0;
   let sendInFlight = false;
   let activeWatchID = null;
@@ -361,9 +362,11 @@
       if (resp.status === 'error') {
         showDashboardError(resp.message);
         setConnectionState(false);
+        scheduleBackendRecovery();
         return;
       }
       setConnectionState(true);
+      clearBackendRecovery();
       // Detect WORKING→READY transitions for notifications.
       if (resp.data && resp.data.rows) {
         for (const row of resp.data.rows) {
@@ -383,6 +386,7 @@
     } catch (e) {
       showDashboardError(`Connection error: ${e.message}`);
       setConnectionState(false);
+      scheduleBackendRecovery();
     } finally {
       document.getElementById('dash-loading').style.display = 'none';
     }
@@ -1103,6 +1107,7 @@
       lastActivity = activity;
       if (histResp) mergeRecentHistory(histResp.data);
       setConnectionState(true);
+      clearBackendRecovery();
       renderChat(false);
       if (histResp && histResp.data && Array.isArray(histResp.data.conversation)) {
         acknowledgeRenderedSnapshot(sessAtStart, histResp.data);
@@ -1110,6 +1115,7 @@
     } catch (e) {
       if (currentSession !== sessAtStart || generation !== chatGeneration) return;
       setConnectionState(false);
+      scheduleBackendRecovery();
     }
   }
 
@@ -5603,6 +5609,21 @@
   }
 
   // --- Polling ---
+
+  function clearBackendRecovery() {
+    if (backendRecoveryTimer) {
+      clearTimeout(backendRecoveryTimer);
+      backendRecoveryTimer = null;
+    }
+  }
+
+  function scheduleBackendRecovery() {
+    if (!PUSH_FIRST || backendRecoveryTimer) return;
+    backendRecoveryTimer = setTimeout(() => {
+      backendRecoveryTimer = null;
+      return currentSession ? loadChat() : loadDashboard();
+    }, 1000);
+  }
 
   function connectPushStream() {
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;

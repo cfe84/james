@@ -20,6 +20,37 @@ func newTestStore(t *testing.T) *Store {
 	return s
 }
 
+func TestQueueJobCallbackClaimsIdleAndDeduplicatesAfterDrain(t *testing.T) {
+	s := newTestStore(t)
+	s.db.SetMaxOpenConns(1)
+	if err := s.CreateSession(&Session{SessionID: "job-session", Name: "job", Agent: "copilot"}); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := s.QueueJobCallback("job-session", "job-1", "finished")
+	if err != nil || !claimed {
+		t.Fatalf("claim idle: %v, %v", claimed, err)
+	}
+	claimed, err = s.QueueJobCallback("job-session", "job-2", "also finished")
+	if err != nil || claimed {
+		t.Fatalf("working session claimed twice: %v, %v", claimed, err)
+	}
+	group, err := s.DrainQueueGroup("job-session")
+	if err != nil || len(group) != 2 || group[0].Source != "callback" {
+		t.Fatalf("queued callbacks: %+v, %v", group, err)
+	}
+	if _, err = s.DrainQueueGroup("job-session"); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err = s.QueueJobCallback("job-session", "job-1", "finished")
+	if err != nil || claimed {
+		t.Fatalf("replay of drained callback claimed again: %v, %v", claimed, err)
+	}
+	session, err := s.GetSession("job-session")
+	if err != nil || session.Status != StateIdle {
+		t.Fatalf("duplicate changed idle state: %+v, %v", session, err)
+	}
+}
+
 func TestClientOperationLifecycleAndConflict(t *testing.T) {
 	s := newTestStore(t)
 	s.db.SetMaxOpenConns(1)

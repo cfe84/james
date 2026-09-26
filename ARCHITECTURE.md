@@ -1294,8 +1294,38 @@ The event broker and leased watches remain invalidation-only; they do not
 become a transcript journal. Push-first clients fetch an initial authoritative
 snapshot, reconcile on a hint, and fall back to slow recovery polling only
 when the connection/watch is unavailable, expired, overflowing, or legacy.
-`PUSH_FIRST` in Qew and `pushFirstBehavior` in the Hem TUI are temporary
-compile-time gates defaulting on; each has a complete legacy polling branch.
+Qew additionally retries the active authoritative lane every second after a
+failed backend read, including when its browser WebSocket has already
+reconnected; this prevents a Qew restart from leaving the active conversation
+stuck in a disconnected state while Hem is still reconnecting. `PUSH_FIRST` in
+Qew and `pushFirstBehavior` in the Hem TUI are temporary compile-time gates
+defaulting on; each has a complete legacy polling branch.
+
+Background command gadgets are owned by Moneypenny rather than the agent CLI.
+The session credential binds the request to the session, and each call rechecks
+the session's current License to Kill setting. A no-shell child runs under a
+one-hour timeout in the stored working directory; session-local private output
+files are bounded to 4 MiB per stream. The job metadata is saved under the
+per-session jobs directory, and in-memory cancellation tracks live children.
+The store transaction inserts a completion prompt and conditionally claims an
+idle session atomically; otherwise the active agent drains the callback from
+its ordinary queue. A unique (session ID, job ID) callback receipt in the same
+transaction makes restart retries idempotent even after the queue drains.
+This prevents an idle/draining race and never interrupts the current turn.
+On startup, stale running metadata becomes interrupted and terminal records
+whose callback was missed are retried. Session deletion cancels jobs before removing
+their files; daemon shutdown and the updater stop jobs before the SQLite
+store closes. Startup resets stale working sessions before recovering job
+callbacks, so the callbacks can claim idle sessions. Terminal records are
+cleaned up after 24 hours (hourly, on job interaction, or on restart),
+with a hard 64-record per-session admission bound.
+
+Copilot's streamed partial tool output feeds the shared live activity buffer,
+which both Qew and the TUI render. Before insertion, Moneypenny recognizes only
+the standard `{"success":...,"data":...}` gadget envelope and reduces it to a
+short semantic activity label. This prevents large memory/agent-list payloads
+from appearing as raw JSON while preserving ordinary shell output and
+non-gadget JSON, and retains explicit gadget failure text.
 
 Moneypenny writes a concise error-level record for every agent-run failure
 regardless of verbose logging. It includes only session identity, agent type,

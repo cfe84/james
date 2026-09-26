@@ -990,6 +990,20 @@ back; use `--async` for agent operations and inspect state before retrying.
 | Hem administrative proxy | Off, explicit grant | Execute Hem server commands, including cross-session mutations and permission changes |
 | Scheduling | On, revocable | List/create/delete schedules belonging to this session |
 | Notifications | Always available | Send actionable operator notifications |
+| Background commands | Current License to Kill only | Start, list, inspect, and stop session-owned commands; completion returns to the same agent |
+
+`gadgets run-and-callback -- command [args...]` starts a no-shell process in
+the owning session's working directory and immediately returns a job ID and
+absolute stdout/stderr paths. `gadgets run list|status ID|stop ID` acts only on
+jobs for the authenticated session; current License to Kill is required for
+every operation. Output is limited to 4 MiB per stream, runtime to one hour,
+active jobs to four per session and 16 per daemon, and retained records to 64
+per session. Completion, stop, timeout and failure queue a callback containing
+the status, exit code if known, and output paths; no output contents enter the
+callback. In-progress jobs after a daemon restart are marked interrupted and
+receive a callback with an unavailable exit code. Terminal files expire after
+24 hours, with cleanup hourly, on job interaction, and on daemon restart.
+Session deletion removes their per-session directory.
 
 The Agents grant combines discovery and messaging; it does **not** grant editing,
 deletion, or other management of sessions. Subagents scope does not cover siblings,
@@ -1851,8 +1865,16 @@ Watch-capable healthy Qew and TUI clients use event invalidation and
 revision/generation reconciliation instead of routine chat/history and
 dashboard polling. Initial snapshots, explicit refreshes, reconnect/resync,
 overflow, unavailable/expired/legacy watch paths, and bounded recovery polling
-remain authoritative. The temporary `PUSH_FIRST`/`pushFirstBehavior` gates
-default to true and must be removed only after legacy watch clients are retired.
+remain authoritative. If Qew's WebSocket reconnects before its backend can
+serve an authoritative request, it retries the active chat or dashboard every
+second until one succeeds; an open WebSocket alone never suppresses this
+backend recovery. The temporary `PUSH_FIRST`/`pushFirstBehavior` gates default
+to true and must be removed only after legacy watch clients are retired.
+
+Copilot tool activity shows readable summaries rather than raw successful James
+gadget JSON envelopes: memory reads identify the node, list responses identify
+their item count and kind, and failures retain their error. Ordinary shell
+output and non-gadget JSON remain unchanged.
 
 Prompt/continue accepts an optional caller-owned `operation_id` (1-128 ASCII
 characters matching `[A-Za-z0-9][A-Za-z0-9._:-]*`). Moneypenny persists a

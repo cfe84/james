@@ -49,6 +49,8 @@ Usage:
   gadgets schedule create (--cron expr | --at timestamp) --prompt text
   gadgets schedule delete id
   gadgets moneypenny logs [--name registered-host] [--lines N]
+  gadgets run-and-callback -- command [args...]  (License to Kill required)
+  gadgets run list | status ID | stop ID
   gadgets hem VERB [NOUN] [ARGS...]
   gadgets notify [text]                      (otherwise reads stdin)
   gadgets help
@@ -76,6 +78,13 @@ Moneypenny logs require separate opt-in permission (default: false), allowing
 read-only log access on any registered host. Host defaults to your Moneypenny;
 lines defaults to 100 (1-10000), with at most the final 2 MiB read per request.
 Logs may include other sessions' data. No file path or relay override is accepted.
+Background commands run without a shell in the session working directory.
+They return a job ID and private stdout/stderr paths immediately. Each output
+file is limited to 4 MiB, runtime to one hour, and completion queues a callback
+with exit status and paths to the same session. At most 64 job records are
+retained per session; completed records expire after 24 hours on the next job
+interaction or daemon restart. Jobs stopped or interrupted by a daemon restart
+report cancellation/interruption, not successful completion.
 Hem proxy requires the separate hem permission (default: false). This is full
 administrative access to server commands, including mutations and permission
 changes, regardless of other gadget grants. Arguments are forwarded as an array,
