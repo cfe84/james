@@ -515,6 +515,11 @@ Schema (`model_cache` table):
 
 Forces a moneypenny query and overwrites the cache. Returns a short confirmation (`Refreshed model cache for MP/AGENT: N models`) — call `hem list-models --refresh -o json` if you need the full list. Unlike the cache-miss path of `list-models`, this verb writes the result even when empty, so users can recover from a permanently revoked source.
 
+In Qew's Moneypennies view, **Refresh Models** runs this command for both
+OpenCode and Copilot on the selected registration. The button shows progress
+while refreshing and reports each agent's result separately, including partial
+failures; other Moneypennies' caches are unchanged.
+
 ### Background warmup
 
 Every successful session-creation verb (`create session`, `create subsession`, `copy session`) kicks off an asynchronous `asyncRefreshModelCache(mp, agent)` after the moneypenny accepts the create. This keeps the cache warm without paying the latency on the user's critical path. `continue session` does NOT warm the cache (it doesn't know the agent from the session ID alone); users who only continue sessions for an extended period will still pay the cold-query cost the next time they open the wizard.

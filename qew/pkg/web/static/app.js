@@ -4983,6 +4983,7 @@
             ${!enabled ? '<span class="mgmt-badge danger">disabled</span>' : ''}
             <span class="mgmt-actions">
               <button data-mp="${escapeAttr(name)}" data-action="ping">Ping</button>
+              <button data-mp="${escapeAttr(name)}" data-action="refresh-models">Refresh Models</button>
               <button data-mp="${escapeAttr(name)}" data-action="rename">Rename</button>
               <button data-mp="${escapeAttr(name)}" data-action="toggle-enabled">${enabled ? 'Disable' : 'Enable'}</button>
               ${!isDef ? `<button data-mp="${escapeAttr(name)}" data-action="set-default">Set Default</button>` : ''}
@@ -4997,6 +4998,7 @@
           const mp = btn.dataset.mp;
           const action = btn.dataset.action;
           if (action === 'ping') pingMoneypenny(mp);
+          else if (action === 'refresh-models') refreshMoneypennyModels(mp, btn);
           else if (action === 'rename') showRenameMoneypennyModal(mp);
           else if (action === 'toggle-enabled') toggleMoneypennyEnabled(mp);
           else if (action === 'set-default') setDefaultMoneypenny(mp);
@@ -5015,6 +5017,27 @@
       if (resp.status === 'error') alert('Ping failed: ' + resp.message);
       else alert('Ping OK: ' + (resp.data && resp.data.message ? resp.data.message : 'success'));
     } catch (e) { alert('Error: ' + e.message); }
+  }
+
+  async function refreshMoneypennyModels(name, button) {
+    button.disabled = true;
+    button.textContent = 'Refreshing…';
+    const agents = ['opencode', 'copilot'];
+    try {
+      const results = await Promise.allSettled(agents.map(async agent => {
+        const resp = await apiCall('refresh-models', '', ['-m', name, '--agent', agent]);
+        if (resp.status !== 'ok' || typeof resp.data?.message !== 'string') {
+          throw new Error(resp.message || 'Invalid refresh response');
+        }
+        return resp.data.message;
+      }));
+      alert(results.map((result, i) => result.status === 'fulfilled'
+        ? result.value
+        : `${agents[i]} refresh failed: ${result.reason.message}`).join('\n'));
+    } finally {
+      button.disabled = false;
+      button.textContent = 'Refresh Models';
+    }
   }
 
   function showRenameMoneypennyModal(name) {

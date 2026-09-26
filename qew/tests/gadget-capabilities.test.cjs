@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 const controls = require('../pkg/web/static/gadget-capabilities.js');
 const thresholds = require('../pkg/web/static/compaction-threshold.js');
 
@@ -101,6 +102,50 @@ test('Moneypenny management renames registrations through Hem', () => {
   assert.match(list, /showRenameMoneypennyModal\(mp\)/);
   assert.match(rename, /apiCall\('rename', 'moneypenny', \['-n', name, '--new-name', newName\]\)/);
   assert.match(rename, /closeWizard\(\);\s*loadMoneypennies\(\)/);
+});
+
+test('Moneypenny model refresh requests both agents and reports partial failure', async () => {
+  const app = fs.readFileSync(path.join(__dirname, '../pkg/web/static/app.js'), 'utf8');
+  const list = app.slice(app.indexOf('  async function loadMoneypennies()'), app.indexOf('  async function pingMoneypenny('));
+  assert.match(list, /data-action="refresh-models"/);
+  assert.match(list, /refreshMoneypennyModels\(mp, btn\)/);
+
+  const calls = [];
+  const alerts = [];
+  let releaseCopilot;
+  const context = vm.createContext({
+    apiCall: (verb, noun, args) => {
+      calls.push([verb, noun, ...args]);
+      if (args.at(-1) === 'copilot') {
+        return new Promise(resolve => { releaseCopilot = resolve; });
+      }
+      return Promise.resolve({ status: 'ok', data: { message: 'Refreshed model cache for personal/opencode: 2 models' } });
+    },
+    alert: message => alerts.push(message),
+  });
+  const refresh = app.slice(app.indexOf('  async function refreshMoneypennyModels('), app.indexOf('  function showRenameMoneypennyModal('));
+  vm.runInContext(`${refresh}\nglobalThis.refresh = refreshMoneypennyModels;`, context);
+
+  const button = { disabled: false, textContent: 'Refresh Models' };
+  const pending = context.refresh('personal', button);
+  assert.equal(button.disabled, true);
+  assert.equal(button.textContent, 'Refreshing…');
+  assert.deepEqual(calls, [
+    ['refresh-models', '', '-m', 'personal', '--agent', 'opencode'],
+    ['refresh-models', '', '-m', 'personal', '--agent', 'copilot'],
+  ]);
+  releaseCopilot({ status: 'error', message: 'copilot not installed' });
+  await pending;
+  assert.equal(button.disabled, false);
+  assert.equal(button.textContent, 'Refresh Models');
+  assert.equal(alerts[0], 'Refreshed model cache for personal/opencode: 2 models\ncopilot refresh failed: copilot not installed');
+
+  const second = context.refresh('personal', button);
+  releaseCopilot({ status: 'ok', data: { message: 'Refreshed model cache for personal/copilot: 3 models' } });
+  await second;
+  assert.equal(button.disabled, false);
+  assert.equal(calls.length, 4);
+  assert.equal(alerts[1], 'Refreshed model cache for personal/opencode: 2 models\nRefreshed model cache for personal/copilot: 3 models');
 });
 
 test('custom compaction threshold is bounded and hidden for agent mode', () => {

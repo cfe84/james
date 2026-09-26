@@ -862,6 +862,12 @@ then moves the in-memory transport/cooldown and dashboard cache entries to the
 new name; Qew invokes the same `rename moneypenny` command. The daemon's MI6
 address and own identity are not changed.
 
+Qew's per-Moneypenny **Refresh Models** action reuses Hem's existing
+`refresh-models -m NAME --agent AGENT` command for OpenCode and Copilot in
+parallel. It disables the clicked button until both requests finish and
+displays each result independently, so a failure for one agent does not hide
+the other's successful refresh.
+
 **Manager Components** (`hem/pkg/commands/`):
 
 1. **ClientManager** (`client_manager.go`): Manages transport client lifecycle and circuit breaking
