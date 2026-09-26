@@ -283,18 +283,28 @@
     return opts;
   }
 
-  // loadModels fetches the model list for a moneypenny+agent via `list-models`.
-  // Returns model value strings (no leading blank). Returns [] on any error so
-  // callers fall back to a default-only dropdown.
+  // Hem returns an empty list immediately on a cold cache miss while warming
+  // it in the background. Fetch synchronously on that first miss so the
+  // picker is populated without requiring the user to reopen it.
   async function loadModels(moneypenny, agent) {
-    try {
-      const args = [];
-      if (moneypenny) args.push('-m', moneypenny);
-      if (agent) args.push('--agent', agent);
-      const resp = await apiCall('list-models', '', args);
-      if (resp.status !== 'ok' || !resp.data || !Array.isArray(resp.data.models)) return [];
-      return resp.data.models.map(m => m.value || m.name).filter(Boolean);
-    } catch (e) { return []; }
+    const args = [];
+    if (moneypenny) args.push('-m', moneypenny);
+    if (agent) args.push('--agent', agent);
+    let resp = await apiCall('list-models', '', args);
+    if (resp.status === 'ok' && Array.isArray(resp.data?.models) && !resp.data.models.length) {
+      resp = await apiCall('list-models', '', [...args, '--refresh']);
+    }
+    if (resp.status !== 'ok' || !Array.isArray(resp.data?.models)) {
+      throw new Error(resp.message || 'Model discovery returned an invalid response');
+    }
+    if (!resp.data.models.length) {
+      throw new Error('Model discovery returned no models');
+    }
+    return resp.data.models.map(m => m.value || m.name).filter(Boolean);
+  }
+
+  function modelLoadErrorOption(error) {
+    return `<option disabled>${escapeHtml(`Could not load models: ${error.message}`)}</option>`;
   }
 
   // populateOverrideSelects fills the chat header model/effort dropdowns based on
@@ -331,7 +341,13 @@
     }
     // Model options (default entry first).
     const sessAtStart = currentSession;
-    const models = await loadModels(currentSessionMP, agent);
+    let models = [];
+    let modelError = '';
+    try {
+      models = await loadModels(currentSessionMP, agent);
+    } catch (error) {
+      modelError = modelLoadErrorOption(error);
+    }
     if (currentSession !== sessAtStart) return;
     let opts = `<option value="">Default (${escapeHtml(sessionDefaultModel || 'agent default')})</option>`;
     let found = !overrideModel;
@@ -342,7 +358,7 @@
     if (overrideModel && !found) {
       opts += `<option value="${escapeAttr(overrideModel)}" selected>${escapeHtml(overrideModel)}</option>`;
     }
-    modelSel.innerHTML = opts;
+    modelSel.innerHTML = opts + modelError;
   }
 
   // --- Dashboard ---
@@ -2191,14 +2207,20 @@
     if (modelSel) {
       const cur = modelSel.value;
       modelSel.innerHTML = '<option value="">(loading…)</option>';
-      const models = await loadModels(wizardState.selectedMP, agent);
+      let models = [];
+      let modelError = '';
+      try {
+        models = await loadModels(wizardState.selectedMP, agent);
+      } catch (error) {
+        modelError = modelLoadErrorOption(error);
+      }
       // Guard against a stale fetch if the agent changed again meanwhile.
       if (agentSel.value !== agent) return;
       // Drop a previously-picked model that isn't valid for the new agent so
       // we never submit e.g. a copilot model with --agent claude. (Unlike the
       // edit dialog, there's no pre-existing session model worth preserving.)
       const keep = models.includes(cur) ? cur : '';
-      modelSel.innerHTML = modelOptionsHtml(models, keep);
+      modelSel.innerHTML = modelOptionsHtml(models, keep) + modelError;
     }
   }
 
@@ -3444,7 +3466,13 @@
         </div>
       `);
       const sessAtStart = currentSession;
-      const models = await loadModels(currentSessionMP, currentSessionAgent);
+      let models;
+      try {
+        models = await loadModels(currentSessionMP, currentSessionAgent);
+      } catch (error) {
+        renderWizardModal(`<h3>Model Override</h3><div class="empty-state">${escapeHtml(`Could not load models: ${error.message}`)}</div>`);
+        return;
+      }
       if (currentSession !== sessAtStart) return;
       options = [{ value: '', label: `Default (${sessionDefaultModel || 'agent default'})` }]
         .concat(models.map(m => ({ value: m, label: m })));
@@ -4723,9 +4751,15 @@
       // Populate the model dropdown asynchronously from the session's
       // moneypenny + agent, preserving the session's current model.
       (async () => {
-        const models = await loadModels(s.moneypenny, s.agent);
+        let models = [];
+        let modelError = '';
+        try {
+          models = await loadModels(s.moneypenny, s.agent);
+        } catch (error) {
+          modelError = modelLoadErrorOption(error);
+        }
         const sel = document.getElementById('es-model');
-        if (sel) sel.innerHTML = modelOptionsHtml(models, s.model || '');
+        if (sel) sel.innerHTML = modelOptionsHtml(models, s.model || '') + modelError;
       })();
 
       document.getElementById('es-submit').addEventListener('click', async () => {

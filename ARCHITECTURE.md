@@ -1132,6 +1132,12 @@ session ID; the runner extracts that ID from the stream and persists it in
 compaction. New OpenCode runs therefore omit `--session`, while resumed runs
 pass the stored ID with `--session`.
 
+Qew first reads Hem's cached model list and, on an empty cold-cache response,
+requests a synchronous `list-models --refresh`; this fills its create, edit,
+and chat pickers on the first open rather than requiring another visit after
+the asynchronous warmup. Failures are surfaced in the picker without
+discarding a session's existing model.
+
 OpenCode model identifiers retain the CLI's `provider/model` form and are
 discovered with `opencode models`. James maps effort to OpenCode's
 provider-specific `--variant`, yolo to `--auto`, and uploads to repeated

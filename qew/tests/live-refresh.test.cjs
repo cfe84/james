@@ -8,6 +8,34 @@ const thresholds = require('../pkg/web/static/compaction-threshold.js');
 const app = fs.readFileSync(process.env.QEW_APP_SOURCE ||
   path.join(__dirname, '../pkg/web/static/app.js'), 'utf8');
 
+test('model picker refreshes a cold cache and surfaces discovery failures', async () => {
+  const calls = [];
+  const responses = [
+    { status: 'ok', data: { models: [] } },
+    { status: 'ok', data: { models: [{ name: 'Azure Luna', value: 'azure/GPT-5.6-luna' }] } },
+    { status: 'ok', data: { models: [{ name: 'Cached', value: 'azure/cached' }] } },
+    { status: 'ok', data: { models: [] } },
+    { status: 'error', message: 'opencode model discovery returned no models' },
+  ];
+  const context = vm.createContext({
+    apiCall: async (verb, noun, args) => {
+      calls.push({ verb, noun, args: Array.from(args) });
+      return responses.shift();
+    },
+    escapeHtml: value => value,
+  });
+  const source = app.slice(app.indexOf('  // Hem returns an empty list immediately'), app.indexOf('  // populateOverrideSelects'));
+  vm.runInContext(`${source}\nglobalThis.loadModels = loadModels;`, context);
+  assert.deepEqual(Array.from(await context.loadModels('personal', 'opencode')), ['azure/GPT-5.6-luna']);
+  assert.deepEqual(calls.map(call => call.args), [
+    ['-m', 'personal', '--agent', 'opencode'],
+    ['-m', 'personal', '--agent', 'opencode', '--refresh'],
+  ]);
+  assert.deepEqual(Array.from(await context.loadModels('personal', 'opencode')), ['azure/cached']);
+  assert.deepEqual(calls[2].args, ['-m', 'personal', '--agent', 'opencode']);
+  await assert.rejects(context.loadModels('personal', 'opencode'), /opencode model discovery returned no models/);
+});
+
 // Run the application's refresh and socket handlers, substituting only browser
 // services, API responses and rendering so timer behavior is deterministic.
 function browser({ stableReconcile = false, reconcileRevision = 1, pushFirst = true } = {}) {
