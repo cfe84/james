@@ -7,6 +7,8 @@ if [ -z "$MP_MI6_ADDRESS" ]; then
   exit 1
 fi
 : "${MI6_SERVER_FINGERPRINT:?MI6_SERVER_FINGERPRINT environment variable is required}"
+: "${AZURE_API_KEY:?AZURE_API_KEY environment variable is required}"
+: "${AZURE_RESOURCE_NAME:?AZURE_RESOURCE_NAME environment variable is required}"
 
 # Ensure mounted volumes are owned by the mp user (volumes from the host
 # may be owned by a different UID).
@@ -23,6 +25,36 @@ touch /data/claude.json
 chown mp:mp /data/claude.json
 ln -sfn /data/claude.json /home/mp/.claude.json
 chown -h mp:mp /home/mp/.claude.json
+
+# Keep OpenCode sessions across container replacements. Configuration is
+# regenerated at startup rather than persisted with the API key.
+mkdir -p /data/opencode /home/mp/.local/share /home/mp/.config/opencode
+chown -R mp:mp /data/opencode /home/mp/.local /home/mp/.config
+ln -sfn /data/opencode /home/mp/.local/share/opencode
+chown -h mp:mp /home/mp/.local/share/opencode
+
+umask 077
+node - /home/mp/.config/opencode/opencode.json <<'JS'
+const fs = require('node:fs');
+const model = 'azure/GPT-5.6-luna';
+const config = {
+  $schema: 'https://opencode.ai/config.json',
+  provider: {
+    azure: {
+      options: {
+        apiKey: process.env.AZURE_API_KEY,
+        resourceName: process.env.AZURE_RESOURCE_NAME,
+      },
+      models: { 'GPT-5.6-luna': { name: 'GPT-5.6-luna' } },
+    },
+  },
+  model,
+  small_model: model,
+};
+fs.writeFileSync(process.argv[2], JSON.stringify(config, null, 2) + '\n', { mode: 0o600 });
+JS
+chown mp:mp /home/mp/.config/opencode/opencode.json
+chmod 600 /home/mp/.config/opencode/opencode.json
 
 # Build moneypenny args.
 MP_ARGS="--mi6 $MP_MI6_ADDRESS --mi6-server-fingerprint $MI6_SERVER_FINGERPRINT --data-dir /data"

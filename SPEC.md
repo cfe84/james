@@ -1763,6 +1763,20 @@ Qew comparisons, not a claim that the memory amplification has been fixed.
 ### Moneypenny `check_agents` command:
 Cross-platform agent binary detection using Go's `exec.LookPath()` (works on Windows, macOS, Linux). Returns availability and resolved path for known agents (claude, copilot, opencode).
 
+### Moneypenny Docker agent configuration
+
+The Moneypenny image installs OpenCode alongside Claude Code so existing Claude
+sessions remain runnable. Startup requires `AZURE_API_KEY` and
+`AZURE_RESOURCE_NAME` as well as `MP_MI6_ADDRESS` and
+`MI6_SERVER_FINGERPRINT`. It generates an owner-only OpenCode configuration
+using the Azure provider and `azure/GPT-5.6-luna` as both model and small model.
+OpenCode session data persists under `/data/opencode`, while the generated
+API-key-bearing configuration is recreated inside the container on every start.
+The deployment script forwards all four required environment variables.
+Hem still owns agent selection: `hem set-default agent opencode` changes the
+server-wide default for new sessions; `--agent opencode` overrides it per
+session, and Qew's creation wizard requires explicit selection.
+
 ### Bounded session reads
 Schedule list reads default to pending schedules and a maximum page of 50 (never
 more than 100), with a status filter and total count. Schedule editing uses

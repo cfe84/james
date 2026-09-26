@@ -1113,6 +1113,17 @@ Update status remains available for manual cycles when the timer is disabled.
 
 ## OpenCode Agent Integration
 
+The Moneypenny Docker image installs both OpenCode and Claude Code. Its
+entrypoint generates OpenCode's Azure configuration from `AZURE_API_KEY` and
+`AZURE_RESOURCE_NAME` with owner-only permissions, selecting
+`azure/GPT-5.6-luna` as the primary and small model. The config is ephemeral
+and regenerated on restart; the `/data/opencode` directory is linked to
+OpenCode's user data directory so session IDs can be resumed after an image
+replacement. The deployment script forwards the Azure variables and the
+required MI6 server fingerprint. Hem, not the image, selects the agent for
+new sessions: its server-wide default can be set to `opencode`, or sessions can
+explicitly select it; existing Claude sessions continue to use Claude.
+
 OpenCode is a third Moneypenny agent backend alongside Claude Code and GitHub
 Copilot. It runs as `opencode run --format json` and emits NDJSON activity
 events. Unlike the other backends, OpenCode generates its own `ses_...`

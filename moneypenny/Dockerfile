@@ -26,7 +26,7 @@ WORKDIR /build
 COPY gadgets/ .
 RUN CGO_ENABLED=0 go build -ldflags "-X main.Version=${VERSION}" -o gadgets ./cmd/gadgets/
 
-# Final image with Node.js (for Claude Code) + moneypenny + mi6-client + gadgets
+# Final image with Node.js for OpenCode and Claude Code
 FROM node:20-alpine
 
 # System dependencies: ca-certificates for HTTPS, tzdata for time zones,
@@ -34,15 +34,16 @@ FROM node:20-alpine
 # su-exec for dropping privileges from root entrypoint to the mp user.
 RUN apk add --no-cache ca-certificates tzdata git openssh-client bash su-exec
 
-# Install Claude Code globally via npm
-RUN npm install -g @anthropic-ai/claude-code
+# Keep Claude Code available for existing sessions; OpenCode is the configured
+# agent for new Docker deployments.
+RUN npm install -g opencode-ai @anthropic-ai/claude-code
 
 # Install moneypenny + mi6-client
 COPY --from=moneypenny-builder /build/moneypenny /usr/local/bin/moneypenny
 COPY --from=mi6-builder /build/mi6-client /usr/local/bin/mi6-client
 COPY --from=gadgets-builder /build/gadgets /usr/local/bin/gadgets
 
-# Create non-root user for running moneypenny + claude (Claude Code refuses
+# Create non-root user for running moneypenny + agents (Claude Code refuses
 # to run as root in YOLO mode). UID/GID 1001 because node:20-alpine already
 # uses 1000 for its built-in `node` user.
 RUN addgroup -g 1001 mp && adduser -D -u 1001 -G mp -s /bin/bash mp
@@ -60,7 +61,9 @@ RUN chmod +x /entrypoint.sh
 #   /data            - Moneypenny data (SQLite, keys, logs).
 #                      Claude's auth file lives at /data/claude.json and is
 #                      symlinked from /home/mp/.claude.json by the entrypoint
-#                      (avoids fragile single-file bind mounts).
+#                      (avoids fragile single-file bind mounts). OpenCode's
+#                      session data lives at /data/opencode and is symlinked
+#                      from /home/mp/.local/share/opencode.
 VOLUME ["/home/mp/.ssh", "/home/mp/.claude", "/data"]
 
 # Configuration via environment variables.

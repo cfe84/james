@@ -1,6 +1,11 @@
 #!/bin/bash
 set -euo pipefail
 
+: "${AZURE_API_KEY:?AZURE_API_KEY is required}"
+: "${AZURE_RESOURCE_NAME:?AZURE_RESOURCE_NAME is required}"
+: "${MI6_SERVER_FINGERPRINT:?MI6_SERVER_FINGERPRINT is required}"
+: "${MP_MI6_ADDRESS:?MP_MI6_ADDRESS is required}"
+
 CONTAINER_NAME="moneypenny"
 
 echo "Stopping existing ${CONTAINER_NAME} container..."
@@ -12,6 +17,9 @@ docker create \
     --name "${CONTAINER_NAME}" \
     --restart unless-stopped \
     -e MP_MI6_ADDRESS="${MP_MI6_ADDRESS}" \
+    -e MI6_SERVER_FINGERPRINT="${MI6_SERVER_FINGERPRINT}" \
+    -e AZURE_API_KEY \
+    -e AZURE_RESOURCE_NAME="${AZURE_RESOURCE_NAME}" \
     ${MP_AUTO_UPDATE:+-e MP_AUTO_UPDATE="${MP_AUTO_UPDATE}"} \
     ${MP_UPDATE_INTERVAL:+-e MP_UPDATE_INTERVAL="${MP_UPDATE_INTERVAL}"} \
     ${MP_VERBOSE:+-e MP_VERBOSE="${MP_VERBOSE}"} \

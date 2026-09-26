@@ -94,6 +94,23 @@ Moneypenny and Hem/Qew Docker images. Agents invoke it using the session-scoped
 endpoint and bearer token injected by Moneypenny; there are no session override
 flags. Run `gadgets help` for commands, or see the [CLI contract](gadgets/README.md).
 
+## Moneypenny Docker with OpenCode
+
+The Moneypenny image installs OpenCode and configures its Azure provider on
+startup using `AZURE_API_KEY` and `AZURE_RESOURCE_NAME`. It selects
+`azure/GPT-5.6-luna` for both the primary and small model. Set these variables,
+`MP_MI6_ADDRESS`, and `MI6_SERVER_FINGERPRINT` when deploying with
+`.build/moneypenny-deploy.sh`. OpenCode session state persists in the `/data`
+volume; the generated API-key-bearing configuration stays inside the container.
+Claude Code remains installed for existing sessions.
+
+Hem chooses the agent before sending a session to Moneypenny. To make new
+sessions use OpenCode by default, run `hem set-default agent opencode` against
+the Hem server that manages this Docker Moneypenny, or specify
+`--agent opencode` when creating a session. The Hem default is server-wide;
+setting it changes the default for other Moneypennies on that server too.
+In Qew's create wizard, choose OpenCode from the Agent dropdown.
+
 ## License
 
 MIT
