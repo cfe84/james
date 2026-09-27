@@ -1371,6 +1371,14 @@ recovery without parsing the provider's raw message from logs. OpenCode stderr
 is bounded and captured without forwarding to daemon stderr; its command
 arguments and malformed event lines are likewise omitted from verbose logs.
 
+The `.build/moneypenny.ini` main-branch filter includes `VERSION` as well as
+`moneypenny/`, `mi6/`, `gadgets/`, and its own build/deploy configuration.
+The Docker image embeds the VERSION build argument and builds all three
+components, so each of those inputs must trigger an image rebuild and container
+replacement. Tag events are excluded; Gitomatic's second-resolution event
+names can collide when multiple refs are pushed together, so publish main and
+tags in separate events.
+
 Moneypenny's `client_operations` table is the durable idempotency boundary for
 prompt/continue. The session and operation ID are the key, and a SHA-256
 digest over prompt/attachments/model/effort/context prevents materially
