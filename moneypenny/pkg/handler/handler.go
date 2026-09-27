@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -942,6 +943,10 @@ func isSessionNotFoundErr(err error) bool {
 	if err == nil {
 		return false
 	}
+	var openCodeErr *agent.OpenCodeFailure
+	if errors.As(err, &openCodeErr) {
+		return openCodeErr.Category == "session_not_found"
+	}
 	s := err.Error()
 	for _, needle := range []string{
 		"No conversation found with session ID",
@@ -1306,6 +1311,11 @@ func (h *Handler) runAgentWithContext(ctx context.Context, sessionID string, par
 
 func (h *Handler) logAgentFailure(sessionID, agentName string, err error) {
 	if h.errorLog == nil {
+		return
+	}
+	var openCodeErr *agent.OpenCodeFailure
+	if errors.As(err, &openCodeErr) {
+		h.errorLog("agent run failed: session=%s agent=%s %s", sessionID, agentName, openCodeErr)
 		return
 	}
 	message := strings.SplitN(err.Error(), "\n", 2)[0]

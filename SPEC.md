@@ -188,7 +188,12 @@ Moneypenny is a client deployed on each host, which handles agent sessions. It i
 - Agent-run failures always write a concise operational record to the daemon
   error log, even without `-v`. The record contains the James session ID,
   agent type, and first error line only; prompts, attachments, provider output,
-  raw stream events, and stderr payloads are excluded.
+  raw stream events, and stderr payloads are excluded. For OpenCode failures,
+  the record additionally reports the process exit cause, classified provider
+  error category, recognized error name, HTTP status (when available), stream
+  event count and last event type, captured stderr byte count, and whether the
+  run resumed and emitted an agent-side session ID. Raw provider messages and
+  OpenCode stderr are not logged, including in verbose mode.
 - Moneypenny can either interface directly on stdio (for local use), or open a connection to an mi6-server. `moneypenny --mi6 mi6.servername.com/this_hosts_name` ; using host name as the session id.
 - Moneypenny has a local store based on sqlite, to keep track of everything it needs (sessions, conversation history, parameters).
 - When integrating through mi6, moneypenny creates an ECDSA ssh-key, stores it locally, and uses that to authenticate with mi6. Use `moneypenny --show-public-key` to output the public key for adding to an mi6-server's authorized_keys.

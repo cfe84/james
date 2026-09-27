@@ -1361,7 +1361,15 @@ non-gadget JSON, and retains explicit gadget failure text.
 Moneypenny writes a concise error-level record for every agent-run failure
 regardless of verbose logging. It includes only session identity, agent type,
 and the first error line; raw stderr, provider output, prompts, attachments,
-and streamed events are deliberately excluded from logs.
+and streamed events are deliberately excluded from logs. OpenCode's JSON error
+events can carry a reason in `error.data.message`, which is classified in
+memory rather than written verbatim. A typed, content-free failure includes
+the process exit cause, category, allowlisted error name, HTTP status, stream
+event count and last known type, stderr byte count, resume flag, and presence
+of an agent-side session ID. This also preserves typed session-not-found
+recovery without parsing the provider's raw message from logs. OpenCode stderr
+is bounded and captured without forwarding to daemon stderr; its command
+arguments and malformed event lines are likewise omitted from verbose logs.
 
 Moneypenny's `client_operations` table is the durable idempotency boundary for
 prompt/continue. The session and operation ID are the key, and a SHA-256
