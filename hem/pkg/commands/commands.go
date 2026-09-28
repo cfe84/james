@@ -56,6 +56,7 @@ type mpSessionInfo struct {
 	Status          string `json:"status"`
 	Name            string `json:"name"`
 	Agent           string `json:"agent"`
+	Model           string `json:"model"`
 	SessionID       string `json:"session_id"`
 	CreatedAt       string `json:"created_at"`
 	LastAccessed    string `json:"last_accessed"`
@@ -5917,6 +5918,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 		Name            string
 		Project         string
 		Agent           string
+		Model           string
 		MPStatus        string // moneypenny status (idle/working)
 		HemStatus       string // active/completed
 		Moneypenny      string
@@ -5994,7 +5996,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 	var entries []dashboardEntry
 
 	for _, sess := range filteredSessions {
-		var mpStatus, sessionName, createdAt, lastAccessed, agentName string
+		var mpStatus, sessionName, createdAt, lastAccessed, agentName, modelName string
 
 		if mpSessions, ok := mpData[sess.MoneypennyName]; ok {
 			if info, found := mpSessions[sess.SessionID]; found {
@@ -6003,6 +6005,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 				createdAt = info.CreatedAt
 				lastAccessed = info.LastAccessed
 				agentName = info.Agent
+				modelName = info.Model
 			} else {
 				mpStatus = "unknown"
 				log.Printf("dashboard: session %s not found on moneypenny %q (mp has %d sessions)",
@@ -6081,6 +6084,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 			Name:          displayName,
 			Project:       projectName,
 			Agent:         agentName,
+			Model:         modelName,
 			MPStatus:      displayStatus,
 			HemStatus:     sess.HemStatus,
 			Moneypenny:    sess.MoneypennyName,
@@ -6097,7 +6101,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 			if sub.HemStatus == "completed" && !showSubs {
 				continue
 			}
-			var subMPStatus, subName, subCreated, subLastAccessed, subAgent string
+			var subMPStatus, subName, subCreated, subLastAccessed, subAgent, subModel string
 			subMPStatus = "offline"
 			if mpSessions, ok := mpData[sub.MoneypennyName]; ok {
 				subMPStatus = "unknown"
@@ -6107,6 +6111,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 					subCreated = info.CreatedAt
 					subLastAccessed = info.LastAccessed
 					subAgent = info.Agent
+					subModel = info.Model
 				}
 			}
 			if e.clientManager.IsUnavailable(sub.MoneypennyName) {
@@ -6128,6 +6133,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 				Name:            "↳ " + subName,
 				Project:         projectName,
 				Agent:           subAgent,
+				Model:           subModel,
 				MPStatus:        subDisplayStatus,
 				HemStatus:       sub.HemStatus,
 				Moneypenny:      sub.MoneypennyName,
@@ -6196,7 +6202,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 	}
 
 	result := TableResult{
-		Headers: []string{"SessionID", "Name", "Project", "Status", "Moneypenny", "Created", "Last Activity", "ParentSessionID", "Agent", "Nick"},
+		Headers: []string{"SessionID", "Name", "Project", "Status", "Moneypenny", "Created", "Last Activity", "ParentSessionID", "Agent", "Nick", "Model"},
 	}
 	for _, entry := range entries {
 		status := entry.MPStatus + " (" + entry.HemStatus + ")"
@@ -6232,7 +6238,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 		}
 
 		result.Rows = append(result.Rows, []string{
-			entry.SessionID, entry.Name, entry.Project, status, entry.Moneypenny, entry.CreatedAt, entry.LastActive, entry.ParentSessionID, entry.Agent, entry.Nick,
+			entry.SessionID, entry.Name, entry.Project, status, entry.Moneypenny, entry.CreatedAt, entry.LastActive, entry.ParentSessionID, entry.Agent, entry.Nick, entry.Model,
 		})
 	}
 

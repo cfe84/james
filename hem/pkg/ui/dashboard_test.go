@@ -1,8 +1,26 @@
 package ui
 
 import (
+	"strings"
 	"testing"
 )
+
+func TestDashboardDisplaysSelectedModel(t *testing.T) {
+	for _, tc := range []struct {
+		model, want string
+	}{
+		{"azure/gpt-6-luna", "opencode · azure/gpt-6-luna"},
+		{"", "opencode"},
+	} {
+		m := dashboardModel{entries: []dashboardEntry{{
+			SessionID: "session", Name: "session", Agent: "opencode", Model: tc.model,
+			MPStatus: "idle", Category: 2,
+		}}, width: 120}
+		if got := m.View(); !strings.Contains(got, tc.want) {
+			t.Fatalf("model %q missing from dashboard: %q", tc.model, got)
+		}
+	}
+}
 
 func TestUnifySubagentCategories(t *testing.T) {
 	tests := []struct {

@@ -53,7 +53,7 @@ func TestDashboardUnavailablePreservesCachedMetadata(t *testing.T) {
 			t.Fatal(err)
 		}
 		cached[id] = mpSessionInfo{
-			SessionID: id, Name: "Name " + id, Agent: "copilot", Status: "idle",
+			SessionID: id, Name: "Name " + id, Agent: "copilot", Model: "gpt-6-sol", Status: "idle",
 			CreatedAt: "2026-09-01T12:00:00Z", LastAccessed: "2026-09-09T12:00:00Z",
 		}
 	}
@@ -77,7 +77,7 @@ func TestDashboardUnavailablePreservesCachedMetadata(t *testing.T) {
 	}
 	for id, info := range cached {
 		row := rows[id]
-		if strings.TrimPrefix(row[1], "↳ ") != info.Name || row[8] != info.Agent ||
+		if len(row) != 11 || strings.TrimPrefix(row[1], "↳ ") != info.Name || row[8] != info.Agent || row[10] != info.Model ||
 			row[5] != info.CreatedAt || row[6] != info.LastAccessed {
 			t.Errorf("lost metadata for %s: %v", id, row)
 		}

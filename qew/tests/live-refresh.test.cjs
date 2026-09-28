@@ -8,6 +8,44 @@ const thresholds = require('../pkg/web/static/compaction-threshold.js');
 const app = fs.readFileSync(process.env.QEW_APP_SOURCE ||
   path.join(__dirname, '../pkg/web/static/app.js'), 'utf8');
 
+test('dashboard shows the selected model and refreshes the row when it changes', () => {
+  const rowElement = {
+    dataset: { sessionId: 'session' },
+    setAttribute() {},
+    addEventListener() {},
+  };
+  const container = {
+    innerHTML: '',
+    querySelector() { return this.innerHTML.includes('session-row') ? rowElement : null; },
+    querySelectorAll() { return [rowElement]; },
+  };
+  const context = vm.createContext({
+    document: { getElementById: () => container },
+    escapeAttr: value => String(value).replaceAll('"', '&quot;'),
+    escapeHtml: value => String(value).replaceAll('<', '&lt;'),
+    relativeTime: () => '',
+    fuzzyMatch: () => true,
+    applyDashSelection() {},
+    dashFilter: '',
+    dashSelectedId: '',
+    dashEntries: [],
+    dashRowSigs: {},
+    lastDashRenderSig: null,
+  });
+  const source = app.slice(app.indexOf('  function renderDashboard(data)'), app.indexOf('  // Open a dashboard entry'));
+  vm.runInContext(`${source}\nglobalThis.render = renderDashboard;`, context);
+  const data = model => ({ rows: [['session', 'Arnold', '', 'idle', 'mac', '', '', '', 'opencode', '', model]] });
+  context.render(data('azure/gpt-6-luna'));
+  assert.match(container.innerHTML, /opencode · azure\/gpt-6-luna/);
+  context.render(data('azure/gpt-6-sol'));
+  assert.match(rowElement.innerHTML, /opencode · azure\/gpt-6-sol/);
+  context.render(data(''));
+  assert.match(rowElement.innerHTML, />opencode<\/span>/);
+  assert.doesNotMatch(rowElement.innerHTML, /opencode ·/);
+  context.render(data('<unsafe>'));
+  assert.match(rowElement.innerHTML, /&lt;unsafe>/);
+});
+
 test('model picker refreshes a cold cache and surfaces discovery failures', async () => {
   const calls = [];
   const responses = [

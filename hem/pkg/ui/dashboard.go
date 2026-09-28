@@ -71,6 +71,7 @@ type dashboardEntry struct {
 	Name            string
 	Project         string
 	Agent           string
+	Model           string
 	MPStatus        string // ready/idle/working/offline
 	HemStatus       string // active/completed
 	SubInfo         string // e.g. "[3 subs, 1 ready]"
@@ -193,6 +194,9 @@ func (m dashboardModel) loadDashboard() tea.Cmd {
 			}
 			if len(row) > 9 {
 				e.Nick = row[9]
+			}
+			if len(row) > 10 {
+				e.Model = row[10]
 			}
 
 			// Determine category from parsed status.
@@ -560,6 +564,13 @@ func (m dashboardModel) shouldRefreshOnBroadcast(resp *protocol.Response) bool {
 	return false
 }
 
+func sessionAgentLabel(e dashboardEntry) string {
+	if e.Model == "" {
+		return e.Agent
+	}
+	return e.Agent + " · " + e.Model
+}
+
 func (m dashboardModel) View() string {
 	if m.loading {
 		return "\n  Loading dashboard..."
@@ -651,7 +662,10 @@ func (m dashboardModel) View() string {
 	if w < 80 {
 		w = 80
 	}
-	agentWidth := 9                                     // "copilot" + gap
+	agentWidth := 9
+	for _, e := range entries {
+		agentWidth = max(agentWidth, min(36, len(sessionAgentLabel(e))+1))
+	}
 	fixedWidth := 2 + statusWidth + 14 + 8 + agentWidth // indent + status + lastActive + gaps + agent
 	if showProject {
 		fixedWidth += 14 // project column + gap
@@ -703,7 +717,7 @@ func (m dashboardModel) View() string {
 		nameFmt := fmt.Sprintf("%%-%ds", nameWidth+2)
 		mpFmt := fmt.Sprintf("%%-%ds", mpWidth+2)
 		agentFmt := fmt.Sprintf("%%-%ds", agentWidth)
-		agentLabel := truncate(e.Agent, agentWidth-1)
+		agentLabel := truncate(sessionAgentLabel(e), agentWidth-1)
 		statusText := statusPlain(e.MPStatus)
 		if e.SubInfo != "" {
 			statusText += " " + e.SubInfo
@@ -737,7 +751,7 @@ func (m dashboardModel) View() string {
 				status += " " + lipgloss.NewStyle().Foreground(colorMuted).Render(e.SubInfo)
 			}
 			statusPad := padRight(status, statusWidth)
-			agentPad := padRight(agentBadge(agentLabel), agentWidth)
+			agentPad := padRight(lipgloss.NewStyle().Foreground(agentColor(e.Agent)).Render(agentPlain(agentLabel)), agentWidth)
 			if showProject {
 				project := truncate(e.Project, projWidth)
 				if project == "" {

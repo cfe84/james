@@ -437,12 +437,13 @@
         statusRaw: row[3] || '',
         moneypenny: row[4] || '',
         // Dashboard rows are [id, name, project, status, moneypenny, created,
-        // last activity, parent, agent, nick]. Recency must follow the latest
+        // last activity, parent, agent, nick, model]. Recency must follow the latest
         // conversation turn, not session creation.
         lastActive: row[6] || '',
         parentSessionId: row[7] || '',
         agent: row[8] || '',
         nick: row[9] || '',
+        model: row[10] || '',
       };
       e.mpStatus = e.statusRaw;
       e.hemStatus = 'active';
@@ -463,9 +464,9 @@
 
     // Server sends entries pre-sorted with subagents after their parents.
 
-    // Apply the fuzzy filter (if any) against name/project/agent/moneypenny/id.
+    // Apply the fuzzy filter (if any) against name/project/agent/model/moneypenny/id.
     const filtered = dashFilter
-      ? entries.filter(e => fuzzyMatch(dashFilter, `${e.nick} ${e.name} ${e.project} ${e.agent} ${e.moneypenny} ${e.sessionId}`))
+      ? entries.filter(e => fuzzyMatch(dashFilter, `${e.nick} ${e.name} ${e.project} ${e.agent} ${e.model} ${e.moneypenny} ${e.sessionId}`))
       : entries;
 
     if (filtered.length === 0) {
@@ -484,7 +485,7 @@
 
     // Per-row content signature: everything the row's inner HTML depends on.
     const rowSig = e => e.name + '\x1f' + e.nick + '\x1f' + e.project + '\x1f' +
-      e.mpStatus + '\x1f' + e.subInfo + '\x1f' + e.agent + '\x1f' +
+      e.mpStatus + '\x1f' + e.subInfo + '\x1f' + e.agent + '\x1f' + e.model + '\x1f' +
       e.moneypenny + '\x1f' + relativeTime(e.lastActive || '') + '\x1f' + (e.lastActive ? '1' : '0');
 
     // Update the shared navigation state (cheap; order matches the DOM either path).
@@ -559,7 +560,7 @@
           <span class="session-name">${nickPrefix}${escapeHtml(displayName)}</span>
           ${e.project ? `<span class="session-project">${escapeHtml(e.project)}</span>` : ''}
           <span class="session-status ${statusCls}">${escapeHtml(e.mpStatus)}${e.subInfo ? ' <span style="opacity:0.7">' + escapeHtml(e.subInfo) + '</span>' : ''}</span>
-          ${e.agent ? `<span class="session-agent agent-${escapeAttr(e.agent)}">${escapeHtml(e.agent)}</span>` : ''}
+          ${e.agent ? `<span class="session-agent agent-${escapeAttr(e.agent)}">${escapeHtml(e.agent)}${e.model ? ` · ${escapeHtml(e.model)}` : ''}</span>` : ''}
           <span class="session-mp">${escapeHtml(e.moneypenny)}</span>
           ${e.lastActive ? `<span class="session-time">${escapeHtml(relativeTime(e.lastActive))}</span>` : ''}`;
   }

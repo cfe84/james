@@ -1,10 +1,44 @@
 package handler
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"james/moneypenny/pkg/agent"
+	"james/moneypenny/pkg/envelope"
+	"james/moneypenny/pkg/store"
 )
+
+func TestListSessionsIncludesSelectedModel(t *testing.T) {
+	st, err := store.New(filepath.Join(t.TempDir(), "sessions.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	for _, session := range []*store.Session{
+		{SessionID: "selected", Agent: "opencode", Model: "azure/gpt-6-luna"},
+		{SessionID: "default", Agent: "copilot"},
+	} {
+		if err := st.CreateSession(session); err != nil {
+			t.Fatal(err)
+		}
+	}
+	h := New(st, agent.New(nil), "test", t.TempDir())
+	resp := h.listSessions(context.Background(), &envelope.Command{RequestID: "list"})
+	if resp.Status != envelope.StatusSuccess {
+		t.Fatalf("list sessions failed: %v", resp)
+	}
+	infos := resp.Data.([]envelope.SessionInfo)
+	models := make(map[string]string)
+	for _, info := range infos {
+		models[info.SessionID] = info.Model
+	}
+	if len(models) != 2 || models["selected"] != "azure/gpt-6-luna" || models["default"] != "" {
+		t.Fatalf("unexpected session models: %v", models)
+	}
+}
 
 func TestParseCopilotModelLog(t *testing.T) {
 	dir := t.TempDir()

@@ -1293,6 +1293,13 @@ lifecycle cleanup, not durable state: watch leases remain optional hints and
 never own agent, scheduler, SQLite, or persisted-output lifetime.
 ### Qew dashboard failure handling
 
+Moneypenny's `list_sessions` metadata includes the configured model alongside
+the agent. Hem carries both through its cached dashboard rows, appending the
+model after the existing columns so older row consumers retain their indexes.
+The TUI and Qew render the stored model beside the agent only when set. Qew's
+row content signature includes the model so editing a session updates its
+existing dashboard row without rebuilding the entire list.
+
 The Qew dashboard treats its last successful response as the visible snapshot.
 Transient HTTP or transport failures do not replace that snapshot with an error
 view; the shared connection indicator communicates the degraded state. An error

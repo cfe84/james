@@ -1457,6 +1457,7 @@ func (h *Handler) listSessions(_ context.Context, cmd *envelope.Command) *envelo
 			Name:      s.Name,
 			Status:    s.Status,
 			Agent:     s.Agent,
+			Model:     s.Model,
 			CreatedAt: s.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 			Revision:  s.Revision, Generation: s.Generation,
 		}

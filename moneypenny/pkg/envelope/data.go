@@ -154,6 +154,7 @@ type SessionInfo struct {
 	Name         string `json:"name"`
 	Status       string `json:"status"`
 	Agent        string `json:"agent,omitempty"`
+	Model        string `json:"model,omitempty"`
 	CreatedAt    string `json:"created_at,omitempty"`
 	LastAccessed string `json:"last_accessed,omitempty"`
 	// ScheduleReadyAt is set when a schedule configured to mark its result
