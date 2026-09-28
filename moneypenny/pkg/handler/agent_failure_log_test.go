@@ -43,11 +43,13 @@ func TestOpenCodeFailureLogsCategoryWithoutProviderContent(t *testing.T) {
 	h.errorLog = func(format string, args ...interface{}) {
 		fmt.Fprintf(&logs, format, args...)
 	}
+
 	failure := &agent.OpenCodeFailure{
 		Cause: errors.New("exit status 1"), Category: "rate_limit", ErrorName: "APIError",
 		StatusCode: 429, Events: 3, StderrBytes: 42, Resumed: true,
 		HasSessionID: true, LastEventType: "error",
 	}
+
 	h.runAgentFunc = func(context.Context, agent.RunParams) (*agent.Result, error) {
 		return nil, failure
 	}
@@ -63,5 +65,25 @@ func TestOpenCodeFailureLogsCategoryWithoutProviderContent(t *testing.T) {
 	}
 	if !isSessionNotFoundErr(&agent.OpenCodeFailure{Cause: errors.New("exit status 1"), Category: "session_not_found"}) {
 		t.Fatal("lost OpenCode session-not-found recovery")
+	}
+}
+
+func TestOpenCodeRecoveredReplyIsPersistedAndLoggedSafely(t *testing.T) {
+	h, s, sessionID := newOperationRepairHandler(t)
+	var logs strings.Builder
+	h.errorLog = func(format string, args ...interface{}) {
+		fmt.Fprintf(&logs, format, args...)
+	}
+	h.runAgentFunc = func(context.Context, agent.RunParams) (*agent.Result, error) {
+		return &agent.Result{Text: "Recovered answer", OpenCodeRecovery: "session_export"}, nil
+	}
+	h.runAgent(sessionID, agent.RunParams{SessionID: sessionID, Agent: "opencode", Prompt: "secret prompt"})
+	turns, err := s.GetConversation(sessionID)
+	if err != nil || len(turns) != 1 || turns[0].Role != "assistant" || turns[0].Content != "Recovered answer" {
+		t.Fatalf("recovered answer not saved: turns=%v err=%v", turns, err)
+	}
+	if got := logs.String(); !strings.Contains(got, "source=session_export") ||
+		!strings.Contains(got, "session="+sessionID) || strings.Contains(got, "secret") || strings.Contains(got, "Recovered answer") {
+		t.Fatalf("recovery log must contain only safe metadata: %q", got)
 	}
 }

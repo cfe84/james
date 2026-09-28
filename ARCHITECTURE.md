@@ -1144,7 +1144,15 @@ events. Unlike the other backends, OpenCode generates its own `ses_...`
 session ID; the runner extracts that ID from the stream and persists it in
 `sessions.agent_session_id` before a subsequent continuation or custom
 compaction. New OpenCode runs therefore omit `--session`, while resumed runs
-pass the stored ID with `--session`.
+pass the stored ID with `--session`. On resume, the runner queries only that
+session's `directory` field through `opencode db` and passes it explicitly
+as `--dir`. OpenCode can otherwise persist a completed answer while its CLI
+event subscription emits nothing and never exits when the James working path
+differs from the directory bound to the original session. A missing session
+enters the existing lost-session recovery; lookup errors fail explicitly.
+Resumption retains the OpenCode session's original directory even if the
+James session path was later edited; migrating work to a different directory
+requires a fresh agent-side session.
 
 Qew first reads Hem's cached model list and, on an empty cold-cache response,
 requests a synchronous `list-models --refresh`; this fills its create, edit,
@@ -1160,6 +1168,23 @@ the configured system instructions. Memory access and injection are controlled
 by the session's Memory capability, not yolo mode. It uses the same local
 gadgets/SQLite path as the other adapters; OpenCode's native permission and deny
 rules still determine whether it can execute the client.
+OpenCode's noninteractive CLI emits finished text/tool parts, not partial
+updates; `--thinking` includes completed reasoning, and a `step_start`
+activity marker plus a periodic waiting indicator make silent runs visible.
+The CLI can hang after emitting a terminal `step_finish` while awaiting a
+separate idle event. Moneypenny gives it five seconds to exit normally, then
+ends only that process and accepts the already-emitted terminal reply. When
+a run has no output for 30 seconds, it attempts `opencode export` with a
+10-second timeout and an 8 MiB output limit. Only an assistant message
+linked to a user message created during this invocation and marked finished
+with reason `stop` qualifies as a completed reply, provided no later assistant
+message for that user is still in progress; the same check handles
+successful CLI exits that lost their final text event. Incomplete tool work
+and old replies cannot trigger recovery. The export stays in memory, and
+the daemon logs only the recovery source, never transcript contents. OpenCode
+1.18.31 can truncate large exports to 64 KiB, so this is a best-effort fallback,
+not a substitute for correctly routing the live event stream. A
+normally completed OpenCode run with no reply is an explicit failure.
 Each `step_finish.part.cost` is accumulated in Moneypenny's SQLite session row
 and returned as `opencode_cost` in session details for Qew's conversation
 header. The stored value is provider-reported USD, not an estimate.

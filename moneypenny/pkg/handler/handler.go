@@ -1248,6 +1248,9 @@ func (h *Handler) runAgentWithContext(ctx context.Context, sessionID string, par
 		}
 		return
 	}
+	if result.OpenCodeRecovery != "" && h.errorLog != nil {
+		h.errorLog("opencode run recovered: session=%s source=%s", sessionID, result.OpenCodeRecovery)
+	}
 	// Parse and create any <schedule> tags from agent output.
 	responseText := h.parseAndCreateSchedules(sessionID, result.Text)
 

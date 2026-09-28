@@ -194,6 +194,18 @@ Moneypenny is a client deployed on each host, which handles agent sessions. It i
   event count and last event type, captured stderr byte count, and whether the
   run resumed and emitted an agent-side session ID. Raw provider messages and
   OpenCode stderr are not logged, including in verbose mode.
+- OpenCode streams completed reasoning (`--thinking`) and step-start activity
+  so long-running tasks show progress. If `opencode run` remains alive after
+  its terminal `step_finish` event, Moneypenny closes that CLI process after
+  a short grace period and returns the streamed reply. If a resumed CLI run
+  stops emitting events, Moneypenny checks a bounded, read-only session export
+  for a completed reply to the current prompt before recovering it. Resume
+  uses the original OpenCode session directory (`--dir`) obtained from its
+  session metadata, preventing silent streams when James's working path has
+  changed; a missing session triggers lost-session recovery instead. A process
+  that exits successfully without a reply is checked the same way; if no reply
+  exists, the run fails explicitly rather than silently finishing empty.
+  Exported prompts, tools, and answers are never written to daemon logs.
 - The Moneypenny Docker deployment pipeline runs on main when its source,
   shared MI6 client or gadgets source, image build/deploy scripts, pipeline
   definition, or `VERSION` changes. Tag pushes do not redeploy it.
