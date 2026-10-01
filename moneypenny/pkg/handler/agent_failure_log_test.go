@@ -37,6 +37,25 @@ func TestRunAgentLogsSafeFailureSummaryWithoutVerboseLogging(t *testing.T) {
 	}
 }
 
+func TestRunAgentDoesNotMislabelAgentErrorsAsMemoryPreparation(t *testing.T) {
+	for _, tc := range []struct{ name, message string }{
+		{"model error", "agent process failed: exit status 1\nstderr:\nError: Model luna is not available. Check memory."},
+		{"read error", "agent process failed: could not read agent output"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, s, sessionID := newOperationRepairHandler(t)
+			h.runAgentFunc = func(context.Context, agent.RunParams) (*agent.Result, error) {
+				return nil, errors.New(tc.message)
+			}
+			h.runAgent(sessionID, agent.RunParams{SessionID: sessionID, Agent: "copilot"})
+			turns, err := s.GetConversation(sessionID)
+			if err != nil || len(turns) != 1 || turns[0].Content != "agent_run_failed" {
+				t.Fatalf("incorrect failure label: turns=%v err=%v", turns, err)
+			}
+		})
+	}
+}
+
 func TestOpenCodeFailureLogsCategoryWithoutProviderContent(t *testing.T) {
 	h, _, sessionID := newOperationRepairHandler(t)
 	var logs strings.Builder
@@ -68,6 +87,25 @@ func TestOpenCodeFailureLogsCategoryWithoutProviderContent(t *testing.T) {
 	}
 }
 
+func TestLostOpenCodeSessionPersistsReplacementID(t *testing.T) {
+	h, s, sessionID := newOperationRepairHandler(t)
+	calls := 0
+	h.runAgentFunc = func(_ context.Context, params agent.RunParams) (*agent.Result, error) {
+		calls++
+		if calls == 1 {
+			return nil, &agent.OpenCodeFailure{Cause: errors.New("missing session"), Category: "session_not_found"}
+		}
+		if params.Resume || params.AgentSessionID != "" {
+			t.Fatalf("replacement must be a fresh OpenCode run: resume=%t id=%q", params.Resume, params.AgentSessionID)
+		}
+		return &agent.Result{Text: "Recovered", AgentSessionID: "ses_replacement"}, nil
+	}
+	h.runAgent(sessionID, agent.RunParams{SessionID: sessionID, Agent: "opencode", Resume: true, Prompt: "continue"})
+	got, err := s.GetSession(sessionID)
+	if err != nil || calls != 2 || got.AgentSessionID != "ses_replacement" || got.Status != store.StateIdle {
+		t.Fatalf("replacement ID not persisted: calls=%d session=%+v err=%v", calls, got, err)
+	}
+}
 func TestOpenCodeRecoveredReplyIsPersistedAndLoggedSafely(t *testing.T) {
 	h, s, sessionID := newOperationRepairHandler(t)
 	var logs strings.Builder

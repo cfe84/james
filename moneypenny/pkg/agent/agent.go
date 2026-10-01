@@ -483,6 +483,9 @@ func (r *Runner) Run(ctx context.Context, params RunParams) (*Result, error) {
 	env = PrependToPath(env, agentDir)
 	env = append(env, "HEM_SESSION_ID="+params.SessionID)
 	env = append(env, inv.env...)
+	if params.Agent == "opencode" && params.Resume && params.AgentSessionID == "" {
+		return nil, &OpenCodeFailure{Cause: errOpenCodeSessionMissing, Category: "session_not_found", ErrorName: "none", Resumed: true, LastEventType: "none"}
+	}
 	if params.Agent == "opencode" && params.Resume && params.AgentSessionID != "" {
 		lookupCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		directory, lookupErr := openCodeSessionDirectory(lookupCtx, agentPath, params.AgentSessionID, params.Path, env)

@@ -1400,11 +1400,11 @@
 
       let roleLabel;
       switch (turn.role) {
-        case 'user':       roleLabel = '🧑‍💻 ' + escapeHtml(turn.source_name || userLabel); break;
+        case 'user':       roleLabel = (turn.source_session_id ? '🕴️ ' : '🧑‍💻 ') + escapeHtml(turn.source_name || userLabel); break;
         case 'assistant':  roleLabel = '🕴️ ' + escapeHtml(agentName); break;
         default:           roleLabel = turn.role;
       }
-      const roleClass = turn.role;
+      const roleClass = turn.role === 'user' && turn.source_session_id ? 'agent-user' : turn.role;
       html += `
         <div class="msg">
           <div class="msg-role ${roleClass}">${roleLabel}${turn.created_at ? ` <span style="color:var(--muted);font-weight:normal">${escapeHtml(formatTurnTime(turn.created_at))}</span>` : ''}</div>

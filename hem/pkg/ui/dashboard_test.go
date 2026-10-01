@@ -5,6 +5,26 @@ import (
 	"testing"
 )
 
+func TestChatDistinguishesAgentMessagesFromHumanMessages(t *testing.T) {
+	m := chatModel{
+		sessionName: "receiver", width: 100, height: 30,
+		conversation: []conversationTurn{
+			{Role: "user", Content: "from agent", SourceSessionID: "sender", SourceName: "cecil"},
+			{Role: "user", Content: "from human"},
+			{Role: "assistant", Content: "reply"},
+		},
+	}
+	got := m.View()
+	for _, label := range []string{"🕴️ cecil", "🧑‍💻 you", "🕴️ receiver"} {
+		if !strings.Contains(got, label) {
+			t.Errorf("chat missing %q: %q", label, got)
+		}
+	}
+	if !strings.Contains(got, agentUserMsgStyle.Render("🕴️ cecil")) {
+		t.Fatal("agent-sourced message header lost red styling")
+	}
+}
+
 func TestDashboardDisplaysSelectedModel(t *testing.T) {
 	for _, tc := range []struct {
 		model, want string

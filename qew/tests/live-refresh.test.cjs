@@ -8,6 +8,33 @@ const thresholds = require('../pkg/web/static/compaction-threshold.js');
 const app = fs.readFileSync(process.env.QEW_APP_SOURCE ||
   path.join(__dirname, '../pkg/web/static/app.js'), 'utf8');
 
+test('agent-authored messages have their own icon and red role style', () => {
+  const container = { innerHTML: '', scrollHeight: 0, scrollTop: 0, clientHeight: 0 };
+  const context = vm.createContext({
+    document: { getElementById: () => container },
+    chatConversation: [
+      { role: 'user', content: 'agent prompt', source_session_id: 'sender', source_name: 'cecil' },
+      { role: 'user', content: 'human prompt' },
+      { role: 'assistant', content: 'reply' },
+    ],
+    lastSubagents: [], lastActivity: [], queuedMessages: [], chatTotal: 3,
+    currentSessionNick: '', currentSessionName: 'receiver', currentSessionStatus: 'idle',
+    showThoughts: false, expandedActivity: false, userLabel: 'you',
+    lastChatHTML: '', chatForceScrollBottom: false,
+    collapseSupersededActivityTurns: turns => turns,
+    formatContent: text => text,
+    escapeHtml: text => text,
+    ensureChatScrollable() {},
+  });
+  const source = app.slice(app.indexOf('  function renderChat(prepend)'), app.indexOf('  // --- Attachments ---'));
+  vm.runInContext(`${source}\nrenderChat(false);`, context);
+  assert.match(container.innerHTML, /msg-role agent-user">🕴️ cecil/);
+  assert.match(container.innerHTML, /msg-role user">🧑‍💻 you/);
+  assert.match(container.innerHTML, /msg-role assistant">🕴️ receiver/);
+  const css = fs.readFileSync(path.join(__dirname, '../pkg/web/static/index.html'), 'utf8');
+  assert.match(css, /\.msg-role\.agent-user\s*\{\s*color:\s*var\(--danger\)/);
+});
+
 test('dashboard shows the selected model and refreshes the row when it changes', () => {
   const rowElement = {
     dataset: { sessionId: 'session' },

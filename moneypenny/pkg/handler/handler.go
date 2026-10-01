@@ -1212,6 +1212,11 @@ func (h *Handler) runAgentWithContext(ctx context.Context, sessionID string, par
 			params.SystemPrompt += "\n\n<prior-session-summary>\n" + summary + "\n</prior-session-summary>"
 		}
 		result, err = h.runAuxiliary(ctx, params)
+		if ctx.Err() == nil && result != nil && result.AgentSessionID != "" {
+			if persistErr := h.store.SetAgentSessionID(sessionID, result.AgentSessionID); persistErr != nil {
+				h.vlog("failed to persist recovered agent session id for session %s: %v", sessionID, persistErr)
+			}
+		}
 	}
 	if ctx.Err() != nil {
 		h.vlog("discarding canceled agent run for session %s", sessionID)
@@ -1222,8 +1227,7 @@ func (h *Handler) runAgentWithContext(ctx context.Context, sessionID string, par
 		h.logAgentFailure(sessionID, params.Agent, err)
 		// Surface the error as a conversation turn so the user can see it.
 		errMsg := "agent_run_failed"
-		if strings.Contains(strings.ToLower(err.Error()), "memory") ||
-			strings.Contains(strings.ToLower(err.Error()), "read") {
+		if errors.Is(err, errMemoryPreparation) {
 			errMsg = "agent_run_failed_memory_preparation"
 		}
 

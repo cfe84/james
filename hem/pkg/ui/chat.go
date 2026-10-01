@@ -1885,6 +1885,8 @@ func (m chatModel) View() string {
 			}
 			if turn.Queued {
 				prefix = userMsgStyle.Render("⏳ you") + " " + lipgloss.NewStyle().Foreground(colorMuted).Render("[Queued]")
+			} else if turn.SourceSessionID != "" {
+				prefix = agentUserMsgStyle.Render("🕴️ " + userLabel)
 			} else {
 				prefix = userMsgStyle.Render("🧑‍💻 " + userLabel)
 			}

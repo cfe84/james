@@ -57,6 +57,10 @@ var (
 			Foreground(lipgloss.Color("#60A5FA")).
 			Bold(true)
 
+	agentUserMsgStyle = lipgloss.NewStyle().
+				Foreground(colorDanger).
+				Bold(true)
+
 	assistantMsgStyle = lipgloss.NewStyle().
 				Foreground(colorPrimary).
 				Bold(true)

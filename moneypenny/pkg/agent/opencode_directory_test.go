@@ -99,4 +99,12 @@ printf '%s\n' '{"type":"text","sessionID":"ses_existing","part":{"text":"answer"
 	if result.Text != "answer" || result.AgentSessionID != "ses_existing" {
 		t.Fatalf("unexpected result: text length=%d session ID=%q", len(result.Text), result.AgentSessionID)
 	}
+	_, err = runner.Run(context.Background(), RunParams{
+		Agent: "opencode", SessionID: "test-session", Resume: true,
+		Path: t.TempDir(), Prompt: "do not silently restart",
+	})
+	var failure *OpenCodeFailure
+	if !errors.As(err, &failure) || failure.Category != "session_not_found" {
+		t.Fatalf("unresolved resume did not request history recovery: %v", err)
+	}
 }

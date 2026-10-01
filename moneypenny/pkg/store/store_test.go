@@ -20,6 +20,54 @@ func newTestStore(t *testing.T) *Store {
 	return s
 }
 
+func TestOpenCodeSessionIDRemainsUnresolvedUntilCaptured(t *testing.T) {
+	s := newTestStore(t)
+	for _, agentName := range []string{"opencode", "copilot"} {
+		id := agentName + "-session"
+		if err := s.CreateSession(&Session{SessionID: id, Agent: agentName}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check := func() {
+		t.Helper()
+		sessions, err := s.ListSessions()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, listed := range sessions {
+			got, err := s.GetSession(listed.SessionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := listed.SessionID
+			if listed.Agent == "opencode" {
+				want = ""
+			}
+			if got.AgentSessionID != want || listed.AgentSessionID != want {
+				t.Fatalf("%s session ID: detail=%q list=%q want=%q", listed.Agent, got.AgentSessionID, listed.AgentSessionID, want)
+			}
+		}
+	}
+	check()
+	if err := s.SetAgentSessionID("opencode-session", "opencode-session"); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate(s.db); err != nil {
+		t.Fatal(err)
+	}
+	check()
+	if err := s.SetAgentSessionID("opencode-session", "ses_captured"); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate(s.db); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetSession("opencode-session")
+	if err != nil || got.AgentSessionID != "ses_captured" {
+		t.Fatalf("captured OpenCode ID lost: %+v %v", got, err)
+	}
+}
+
 func TestQueueJobCallbackClaimsIdleAndDeduplicatesAfterDrain(t *testing.T) {
 	s := newTestStore(t)
 	s.db.SetMaxOpenConns(1)

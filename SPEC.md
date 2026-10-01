@@ -194,6 +194,9 @@ Moneypenny is a client deployed on each host, which handles agent sessions. It i
   event count and last event type, captured stderr byte count, and whether the
   run resumed and emitted an agent-side session ID. Raw provider messages and
   OpenCode stderr are not logged, including in verbose mode.
+  A failed agent run adds `agent_run_failed` to the conversation; only an
+  actual memory-instruction preparation failure uses
+  `agent_run_failed_memory_preparation`, regardless of words in CLI stderr.
 - OpenCode streams completed reasoning (`--thinking`) and step-start activity
   so long-running tasks show progress. If `opencode run` remains alive after
   its terminal `step_finish` event, Moneypenny closes that CLI process after
@@ -206,6 +209,9 @@ Moneypenny is a client deployed on each host, which handles agent sessions. It i
   that exits successfully without a reply is checked the same way; if no reply
   exists, the run fails explicitly rather than silently finishing empty.
   Exported prompts, tools, and answers are never written to daemon logs.
+  If an initial OpenCode run is stopped before its generated session ID is
+  captured, continuation uses lost-session recovery instead of attempting to
+  resume with the James UUID. The replacement OpenCode ID is persisted.
 - The Moneypenny Docker deployment pipeline runs on main when its source,
   shared MI6 client or gadgets source, image build/deploy scripts, pipeline
   definition, or `VERSION` changes. Tag pushes do not redeploy it.
@@ -1420,7 +1426,7 @@ Nicknames are a hem-level concept (like projects and traits); moneypenny is unaw
 
 ### Agent-to-agent attribution
 
-Agents message through `gadgets agents message` (global grant) or `gadgets subagents message` (direct parent/child scope). Moneypenny derives source identity from the session credential, and Hem resolves its preferred display name (nick, then session name). Moneypenny persists source ID and display name with the destination conversation turn, including queued delivery when busy. Parent replies use the callback role. Qew and the TUI show the source label instead of `you`; ordinary human prompts retain their human label. Qew's **person** button lets each browser choose its local human display name.
+Agents message through `gadgets agents message` (global grant) or `gadgets subagents message` (direct parent/child scope). Moneypenny derives source identity from the session credential, and Hem resolves its preferred display name (nick, then session name). Moneypenny persists source ID and display name with the destination conversation turn, including queued delivery when busy. Parent replies use the callback role. Qew and the TUI show agent-authored prompts with a red `🕴️` source label; ordinary human prompts keep the blue `🧑‍💻` label. Qew's **person** button lets each browser choose its local human display name.
 
 ### Setting / clearing a nick
 

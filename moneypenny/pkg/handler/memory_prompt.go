@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -12,6 +13,8 @@ import (
 const memoryNodeMaxCharacters = memory.MaxBodyChars
 const memoryRootTargetCharacters = memory.RootTargetChars
 const memoryOversizedWarningCharacters = 2000
+
+var errMemoryPreparation = errors.New("memory preparation failed")
 
 const rootReadmeTemplate = `# Session Memory
 
@@ -123,7 +126,7 @@ func (h *Handler) prepareRunInstructions(sessionID string, params *agent.RunPara
 	}
 	capabilities, err := h.gadgetCapabilities(sessionID)
 	if err != nil {
-		return fmt.Errorf("prepare memory capabilities: %w", err)
+		return fmt.Errorf("%w: load capabilities: %w", errMemoryPreparation, err)
 	}
 	if !capabilities.Memory {
 		params.SystemPrompt += "\n\nPersistent session memory is disabled. Do not read or write session memory through gadgets, native file tools, or direct database access, even if earlier instructions mention memory."
@@ -131,11 +134,11 @@ func (h *Handler) prepareRunInstructions(sessionID string, params *agent.RunPara
 	}
 	memDir := h.memoryDir(sessionID)
 	if memDir == "" {
-		return fmt.Errorf("prepare memory: session memory directory unavailable")
+		return fmt.Errorf("%w: session memory directory unavailable", errMemoryPreparation)
 	}
 	prompt, err := memorySystemPrompt(memDir)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w: %w", errMemoryPreparation, err)
 	}
 	params.SystemPrompt += prompt
 	return nil
