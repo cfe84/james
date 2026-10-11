@@ -342,7 +342,7 @@ func TestCompactionPostCommitContinuationFailureKeepsNewID(t *testing.T) {
 	turns, _ := st.GetConversation(sid)
 	found := false
 	for _, turn := range turns {
-		if turn.Content == "agent_run_failed" {
+		if turn.Role == "system" && strings.HasPrefix(turn.Content, "Agent failed") {
 			found = true
 		}
 	}

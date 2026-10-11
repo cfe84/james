@@ -1226,10 +1226,7 @@ func (h *Handler) runAgentWithContext(ctx context.Context, sessionID string, par
 		h.vlog("agent error for session %s: %v", sessionID, err)
 		h.logAgentFailure(sessionID, params.Agent, err)
 		// Surface the error as a conversation turn so the user can see it.
-		errMsg := "agent_run_failed"
-		if errors.Is(err, errMemoryPreparation) {
-			errMsg = "agent_run_failed_memory_preparation"
-		}
+		errMsg := agentFailureMessage(params, err)
 
 		_ = h.store.AddConversationTurn(sessionID, "system", errMsg)
 		_ = h.store.UpdateSessionStatus(sessionID, store.StateIdle)

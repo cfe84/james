@@ -49,7 +49,8 @@ func TestRunAgentDoesNotMislabelAgentErrorsAsMemoryPreparation(t *testing.T) {
 			}
 			h.runAgent(sessionID, agent.RunParams{SessionID: sessionID, Agent: "copilot"})
 			turns, err := s.GetConversation(sessionID)
-			if err != nil || len(turns) != 1 || turns[0].Content != "agent_run_failed" {
+			if err != nil || len(turns) != 1 || !strings.HasPrefix(turns[0].Content, "Agent failed\n") ||
+				strings.Contains(turns[0].Content, "memory preparation") || strings.Contains(turns[0].Content, tc.message) {
 				t.Fatalf("incorrect failure label: turns=%v err=%v", turns, err)
 			}
 		})
@@ -57,7 +58,7 @@ func TestRunAgentDoesNotMislabelAgentErrorsAsMemoryPreparation(t *testing.T) {
 }
 
 func TestOpenCodeFailureLogsCategoryWithoutProviderContent(t *testing.T) {
-	h, _, sessionID := newOperationRepairHandler(t)
+	h, s, sessionID := newOperationRepairHandler(t)
 	var logs strings.Builder
 	h.errorLog = func(format string, args ...interface{}) {
 		fmt.Fprintf(&logs, format, args...)
@@ -72,7 +73,7 @@ func TestOpenCodeFailureLogsCategoryWithoutProviderContent(t *testing.T) {
 	h.runAgentFunc = func(context.Context, agent.RunParams) (*agent.Result, error) {
 		return nil, failure
 	}
-	h.runAgent(sessionID, agent.RunParams{SessionID: sessionID, Agent: "opencode", Prompt: "secret prompt content"})
+	h.runAgent(sessionID, agent.RunParams{SessionID: sessionID, Agent: "opencode", Model: "openai/gpt-6-luna", Prompt: "secret prompt content"})
 	got := logs.String()
 	for _, field := range []string{"session=" + sessionID, "category=rate_limit", "status=429", "resumed=true", "events=3", "stderr_bytes=42", "last_event=error"} {
 		if !strings.Contains(got, field) {
@@ -82,8 +83,47 @@ func TestOpenCodeFailureLogsCategoryWithoutProviderContent(t *testing.T) {
 	if strings.Contains(got, "secret prompt content") {
 		t.Fatalf("failure log leaked content: %q", got)
 	}
+	turns, err := s.GetConversation(sessionID)
+	if err != nil || len(turns) != 1 || turns[0].Role != "system" {
+		t.Fatalf("missing conversation failure: turns=%v err=%v", turns, err)
+	}
+	for _, text := range []string{"Agent failed: rate limit (HTTP 429)", "Agent: opencode", "Model: openai/gpt-6-luna", "Wait before retrying"} {
+		if !strings.Contains(turns[0].Content, text) {
+			t.Errorf("conversation failure missing %q: %q", text, turns[0].Content)
+		}
+	}
 	if !isSessionNotFoundErr(&agent.OpenCodeFailure{Cause: errors.New("exit status 1"), Category: "session_not_found"}) {
 		t.Fatal("lost OpenCode session-not-found recovery")
+	}
+}
+
+func TestAgentFailureMessageUsesOnlySafeMetadata(t *testing.T) {
+	for _, tc := range []struct {
+		category string
+		status   int
+		title    string
+		action   string
+	}{
+		{"authentication", 401, "authentication (HTTP 401)", "credentials"},
+		{"authentication", 403, "authentication (HTTP 403)", "credentials"},
+		{"context_limit", 0, "context limit", "Compact"},
+		{"provider_unavailable", 503, "provider unavailable (HTTP 503)", "Retry later"},
+		{"network", 0, "network error", "connectivity"},
+		{"model_unavailable", 0, "model unavailable", "provider/model ID"},
+		{"session_not_found", 0, "agent session unavailable", "recovery"},
+		{"secret provider message", 0, "Agent failed\n", "diagnostics"},
+	} {
+		t.Run(tc.category+fmt.Sprint(tc.status), func(t *testing.T) {
+			failure := &agent.OpenCodeFailure{
+				Cause:    errors.New("secret credentials and provider response"),
+				Category: tc.category, StatusCode: tc.status, ErrorName: "secret error name",
+			}
+			message := agentFailureMessage(agent.RunParams{Agent: "opencode", Model: "openai/gpt-6-luna"}, failure)
+			if !strings.Contains(message, tc.title) || !strings.Contains(message, tc.action) ||
+				strings.Contains(message, "secret") {
+				t.Fatalf("unsafe or incomplete message: %q", message)
+			}
+		})
 	}
 }
 

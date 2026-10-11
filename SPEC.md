@@ -194,9 +194,15 @@ Moneypenny is a client deployed on each host, which handles agent sessions. It i
   event count and last event type, captured stderr byte count, and whether the
   run resumed and emitted an agent-side session ID. Raw provider messages and
   OpenCode stderr are not logged, including in verbose mode.
-  A failed agent run adds `agent_run_failed` to the conversation; only an
-  actual memory-instruction preparation failure uses
-  `agent_run_failed_memory_preparation`, regardless of words in CLI stderr.
+  Failed agent runs add a readable system note directly to the conversation,
+  including the agent, selected model (when explicit), process exit code when
+  available, and a suggested next action. OpenCode notes include the classified
+  failure reason and HTTP status when available (for example, authentication,
+  HTTP 401, and advice to check provider credentials or select another provider).
+  Unknown errors remain explicit generic failures; raw exception/provider
+  messages and stderr are never copied into the note. Only an actual
+  memory-instruction preparation failure is labeled memory preparation,
+  regardless of words in CLI stderr. Existing historical markers are unchanged.
 - OpenCode streams completed reasoning (`--thinking`) and step-start activity
   so long-running tasks show progress. If `opencode run` remains alive after
   its terminal `step_finish` event, Moneypenny closes that CLI process after
