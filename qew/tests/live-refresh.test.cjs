@@ -8,6 +8,27 @@ const thresholds = require('../pkg/web/static/compaction-threshold.js');
 const app = fs.readFileSync(process.env.QEW_APP_SOURCE ||
   path.join(__dirname, '../pkg/web/static/app.js'), 'utf8');
 
+test('dashboard completion selects the next visible session before the request', () => {
+  for (const [ids, selected, expected] of [
+    [['a', 'b', 'c'], 'b', 'c'],
+    [['a', 'b'], 'b', 'a'],
+    [['a'], 'a', ''],
+    [['a', 'c'], 'a', 'c'],
+  ]) {
+    const calls = [];
+    const context = vm.createContext({
+      dashEntries: ids.map(sessionId => ({ sessionId })),
+      dashSelectedId: selected,
+      applyDashSelection() { calls.push(['selection', context.dashSelectedId]); },
+      completeSession(id) { calls.push(['complete', id, context.dashSelectedId]); },
+    });
+    const source = app.slice(app.indexOf('  function dashAction(cmd)'), app.indexOf('  // --- Dashboard fuzzy filter'));
+    vm.runInContext(`${source}\ndashAction('complete');`, context);
+    assert.deepEqual(calls, [['selection', expected], ['complete', selected, expected]]);
+  }
+  assert.match(app, /case 'c': case 'C': e\.preventDefault\(\); dashAction\('complete'\)/);
+});
+
 test('agent-authored messages have their own icon and red role style', () => {
   const container = { innerHTML: '', scrollHeight: 0, scrollTop: 0, clientHeight: 0 };
   const context = vm.createContext({

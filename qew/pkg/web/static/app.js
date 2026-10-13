@@ -612,7 +612,13 @@
   function dashAction(cmd) {
     const e = dashEntries.find(x => x.sessionId === dashSelectedId);
     if (!e) return;
-    if (cmd === 'complete') completeSession(e.sessionId);
+    if (cmd === 'complete') {
+      const idx = dashEntries.findIndex(x => x.sessionId === e.sessionId);
+      const next = dashEntries[idx + 1] || dashEntries[idx - 1];
+      dashSelectedId = next ? next.sessionId : '';
+      applyDashSelection();
+      completeSession(e.sessionId);
+    }
     else if (cmd === 'markready') markReady(e.sessionId);
     else if (cmd === 'delete') deleteSession(e.sessionId, e.name);
     else if (cmd === 'edit') showEditSessionModal(e.sessionId);
@@ -6572,7 +6578,7 @@
       case 'p': e.preventDefault(); showProjectsView(); break;
       case 'o': e.preventDefault(); openOmnibar(); break;
       case 't': e.preventDefault(); showTraitsView(); break;
-      case 'c': e.preventDefault(); dashAction('complete'); break;
+      case 'c': case 'C': e.preventDefault(); dashAction('complete'); break;
       case 'u': e.preventDefault(); dashAction('markready'); break;
       case 'd': e.preventDefault(); dashAction('delete'); break;
       case 'e': e.preventDefault(); dashAction('edit'); break;

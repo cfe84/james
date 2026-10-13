@@ -1134,6 +1134,13 @@ Update status remains available for manual cycles when the timer is disabled.
    The helper defaults omitted `restart` fields to true for plans written by
    older daemons, preserving automatic restarts during upgrade to this release.
 
+Qew dashboard completion captures the original target, then advances selection
+using the current visible `dashEntries` order before sending the mutation.
+Selection is stored by session ID, so completion-driven regrouping does not
+keep focus on the completed row or substitute the row at its old index.
+The last row falls back to its predecessor; a sole row clears selection.
+The existing completion and rendering paths are reused.
+
 ## OpenCode Agent Integration
 
 The Moneypenny Docker image installs both OpenCode and Claude Code. Its
