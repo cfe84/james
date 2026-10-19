@@ -422,6 +422,31 @@ Hem has a list of moneypennies it can use. Each instance has a unique name and a
 
 Example: `hem add moneypenny -n local --fifo-folder ~/moneypenny-fifo`
 
+### Guided remote setup in Qew
+
+The existing Add Moneypenny dialog's MI6 section generates one copyable target
+command for macOS Apple Silicon (Terminal) or Windows x64 (PowerShell).
+`hem setup moneypenny` obtains the latest release metadata and verifies its
+signed manifest using Moneypenny's updater trust root. Qew embeds the verified
+archive URL and SHA256 in the command. The target verifies the download before
+extracting/running it, installs binaries in a new user-owned directory, creates
+or reuses the existing Moneypenny key, and installs/starts a user-level,
+auto-updating service using the supplied relay session and fingerprint.
+Existing service replacement is explicit; data and keys are preserved.
+Agent CLI installation and provider authentication are separate prerequisites.
+Intel Macs are not supported by current release archives.
+
+An optional SSH public-key line authorizes the target through Hem's existing
+`add mi6-key` command before registration. Exactly one public key without
+authorized_keys options is accepted; private keys and multiple entries are
+rejected. Authorization requires Hem's relay identity to have admin permission.
+Empty key input leaves trust unchanged, including for existing local/FIFO
+registration. The dialog displays trust, registration, and connectivity results
+without hiding failures. Registration reuses Add's existing connectivity
+validation and rollback of an unreachable registration; authorized keys are
+never revoked on later failure. Relay-default lookup, release verification,
+download, and authorization failures are surfaced explicitly.
+
 ### List
 
 `hem list moneypennies` — lists all moneypennies with name, type (fifo/mi6), and connection info.
@@ -1344,10 +1369,26 @@ Subagents report results back to their parent as **callbacks**, which render as 
 
 ### UI
 
+- Qew's **Add subagent** action opens the same three-step create-agent wizard
+  (Moneypenny, path browser, session details), prefilled with the parent's host,
+  path, and project. Submission uses `create subsession` with the captured parent
+  ID and opens the new child conversation; cancel does not create a session.
+  The shared model, effort, context, prompt, nickname, environment, permission,
+  trait, and compaction controls work for subagents too. Permission bypass is an
+  explicit checkbox, not automatically forced by Add subagent; an unchecked
+  checkbox overrides parent bypass. CLI callers omitting `--yolo` still inherit
+  the parent's setting. An omitted subagent project inherits the parent's project.
 - The live TUI and Qew chat views show only non-completed subagents, keeping finished work from crowding active conversations and numbered quick navigation. The dashboard/session list likewise shows every non-completed subagent directly beneath its parent, including reviewed idle children; completed children remain hidden unless explicitly requested.
 - Both clients provide an **All subagents** view that includes completed work: Hem's `Esc` → `a` picker and Qew's command-palette `l` shortcut. Entries can be opened from either view. Qew opens the `l` modal immediately with a loading state and performs a dedicated authoritative `list subsession` request, so a slow optional chat-panel refresh cannot leave the list empty until the next poll. Qew's modal supports `j`/`k` and `↓`/`↑` selection (clamped at the ends), `Enter` to open the selected agent, and `Escape` to close.
 - Runtime gadget instructions expose only permitted tools. The combined agents capability grants list/message across tracked agents, not editing or deletion. Subagent creation is bound to the authenticated parent and inherits its current capabilities without accepting permission overrides.
 - Gadget session editing is separately permissioned: `edit-own-session` permits `gadgets sessions edit` for the authenticated session, while `edit-sessions` permits editing any tracked session. `edit-own-subagents` permits a parent to edit, complete, stop, or delete its direct-child subagents. Hem TUI and Qew create/copy/edit forms expose all three controls. All three exclude gadget permissions and trusted routing. Replying to a parent with `gadgets subagents message` is always available; managing children remains opt-in.
+
+Conversation keyboard shortcuts remain active while the Session Commands help
+palette is open: single-key commands and numbered subagents, `Ctrl+P` compose
+mode, `i` input focus, `Ctrl+J`/`Ctrl+K` transcript navigation, and
+`Ctrl`/`Cmd+U`/`D` half-page scrolling. Compose/input-focus actions dismiss help;
+half-page scrolling leaves it open. Other modals retain their own keyboard
+handling and do not trigger underlying conversation shortcuts.
 
 ### Qew Omnibar Recency
 

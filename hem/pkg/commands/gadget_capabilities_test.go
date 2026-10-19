@@ -187,12 +187,13 @@ func TestGadgetCapabilitiesCommandForwarding(t *testing.T) {
 	}
 	defer out.Close()
 	writes := make(chan json.RawMessage, 16)
+	creates := make(chan map[string]json.RawMessage, 16)
 	original := envelope.GadgetCapabilities{Memory: false, Subagents: true, Agents: true, Traits: true, Scheduling: false}
 	defer func() { _, _ = in.WriteString("\n") }()
 	go func() {
 		source := map[string]interface{}{
 			"session_id": "source", "name": "source", "agent": "copilot",
-			"path": ".", "gadget_capabilities": original,
+			"path": ".", "yolo": true, "gadget_capabilities": original,
 		}
 		scanner := bufio.NewScanner(in)
 		for scanner.Scan() {
@@ -213,6 +214,7 @@ func TestGadgetCapabilitiesCommandForwarding(t *testing.T) {
 				}
 				writes <- command.Data["gadget_capabilities"]
 			case "create_session":
+				creates <- command.Data
 				writes <- command.Data["gadget_capabilities"]
 			case "summarize_session":
 				data = map[string]interface{}{"summary": "source summary", "turn_count": 1}
@@ -227,6 +229,14 @@ func TestGadgetCapabilitiesCommandForwarding(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := e.store.TrackSession("source", "mp"); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"parent-project", "selected-project"} {
+		if err := e.store.CreateProject(&store.Project{ID: id, Name: id, Status: "active", Paths: "[]"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := e.store.SetSessionProject("source", "parent-project"); err != nil {
 		t.Fatal(err)
 	}
 	if err := e.store.SetCachedModels("mp", "copilot", []store.CachedModelEntry{{Name: "model", Value: "model"}}); err != nil {
@@ -249,8 +259,43 @@ func TestGadgetCapabilitiesCommandForwarding(t *testing.T) {
 	}
 	check(e.CreateSession([]string{"-m", "mp", "--agent", "copilot", "--async", "--gadget-memory=false", "--gadget-traits=true", "hello"}),
 		envelope.GadgetCapabilities{Subagents: true, Traits: true, Scheduling: true})
-	check(e.CreateSubSession([]string{"source", "--async", "--gadget-scheduling=false", "hello"}),
+	<-creates
+	subResponse := e.CreateSubSession([]string{"source", "--async", "--gadget-scheduling=false",
+		"--nick", "child", "--env", "SETTING=value", "--compaction", "custom",
+		"--compaction-threshold-tokens", "123456", "--yolo=false", "--project", "selected-project", "hello"})
+	check(subResponse,
 		envelope.GadgetCapabilities{Memory: true, Subagents: true})
+	created := <-creates
+	var child envelope.CreateSessionData
+	raw, err := json.Marshal(created)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &child); err != nil {
+		t.Fatal(err)
+	}
+	if child.Yolo || child.CompactionMode != "custom" || child.CompactionThresholdTokens == nil || *child.CompactionThresholdTokens != 123456 ||
+		child.Environment["SETTING"] != "value" || !strings.Contains(child.SystemPrompt, "Your name is Child") {
+		t.Fatalf("shared wizard options were not forwarded: %s", raw)
+	}
+	tracked, err := e.store.GetSessionByNick("child")
+	if err != nil || tracked == nil || tracked.ParentSessionID != "source" || tracked.ProjectID != "selected-project" {
+		t.Fatalf("subagent nickname/parent not retained: %+v, %v", tracked, err)
+	}
+	check(e.CreateSubSession([]string{"source", "--async", "--gadget-scheduling=false", "inherit"}),
+		envelope.GadgetCapabilities{Memory: true, Subagents: true})
+	inherited := <-creates
+	if string(inherited["yolo"]) != "true" {
+		t.Fatalf("omitted yolo flag did not inherit parent bypass: %s", inherited["yolo"])
+	}
+	var inheritedID string
+	if err := json.Unmarshal(inherited["session_id"], &inheritedID); err != nil {
+		t.Fatal(err)
+	}
+	inheritedSession, err := e.store.GetSession(inheritedID)
+	if err != nil || inheritedSession == nil || inheritedSession.ProjectID != "parent-project" {
+		t.Fatalf("omitted project did not inherit: %+v, %v", inheritedSession, err)
+	}
 	updated := original
 	updated.Subagents = false
 	check(e.UpdateSession([]string{"source", "--gadget-subagents=false"}), updated)

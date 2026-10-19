@@ -16,6 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/crypto/ssh"
+
 	"james/hem/pkg/protocol"
 	"james/hem/pkg/store"
 	"james/hem/pkg/transport"
@@ -634,6 +636,8 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.MI6ListKeys(args)
 	case "add mi6-key":
 		return e.MI6AddKey(args)
+	case "setup moneypenny":
+		return e.MoneypennySetup(args)
 	case "delete mi6-key":
 		return e.MI6DeleteKey(args)
 
@@ -6377,6 +6381,9 @@ func (e *Executor) MI6AddKey(args []string) *protocol.Response {
 	if keyLine == "" {
 		return protocol.ErrResponse("key is required (e.g. 'hem add mi6-key \"ecdsa-sha2-nistp256 AAAA... comment\"')")
 	}
+	if _, _, options, rest, err := ssh.ParseAuthorizedKey([]byte(keyLine)); err != nil || len(options) != 0 || len(strings.TrimSpace(string(rest))) != 0 || strings.ContainsAny(strings.TrimSpace(keyLine), "\r\n") {
+		return protocol.ErrResponse("provide exactly one SSH public key without authorized_keys options")
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
@@ -6925,6 +6932,9 @@ func (e *Executor) ActivitySession(args []string) *protocol.Response {
 func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 	var mpName, sessionName, systemPrompt, pathArg, agentName, parentSessionID, modelName, effortName, contextTierName, callbackPrompt, fromID string
 	var traitsSpec string
+	var projectNameOrID string
+	params := &sessionParams{}
+	var compactionThresholdTokens int
 	var yolo, async, gadgets bool
 	var capabilityFlags gadgetCapabilityFlags
 
@@ -6939,6 +6949,11 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 		fs.StringVar(&effortName, "effort", "", "reasoning effort level (e.g. low, medium, high)")
 		fs.StringVar(&contextTierName, "context", "", "copilot context tier: default or long_context")
 		fs.StringVar(&sessionName, "name", "", "sub-session name")
+		fs.StringVar(&params.Nick, "nick", "", "optional short nickname/alias for the session")
+		fs.StringVar(&projectNameOrID, "project", "", "project name or ID")
+		fs.Var(&params.Environment, "env", "agent environment variable NAME=VALUE (repeatable)")
+		fs.StringVar(&params.CompactionMode, "compaction", "", "compaction mode: agent or custom")
+		fs.IntVar(&compactionThresholdTokens, "compaction-threshold-tokens", 0, "custom compaction threshold in tokens (10000-900000)")
 		fs.StringVar(&systemPrompt, "system-prompt", "", "system prompt")
 		fs.BoolVar(&yolo, "yolo", false, "enable yolo mode")
 		fs.StringVar(&callbackPrompt, "callback", "", "prompt to queue to parent when subagent completes")
@@ -6949,6 +6964,30 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
+	}
+	if flagSeenIn(args, "compaction-threshold-tokens") {
+		if err := envelope.ValidateCompactionThresholdTokens(compactionThresholdTokens); err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		params.CompactionThresholdTokens = &compactionThresholdTokens
+	}
+	if projectNameOrID != "" {
+		project, err := e.store.GetProject(projectNameOrID)
+		if err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		if project == nil {
+			return protocol.ErrResponse(fmt.Sprintf("project %q not found", projectNameOrID))
+		}
+		params.ProjectID = project.ID
+	}
+	params.Nick = strings.TrimSpace(params.Nick)
+	if params.Nick != "" {
+		if existing, err := e.store.GetSessionByNick(params.Nick); err != nil {
+			return protocol.ErrResponse(err.Error())
+		} else if existing != nil {
+			return protocol.ErrResponse(fmt.Sprintf("nick %q is already used by another session", params.Nick))
+		}
 	}
 
 	if parentSessionID == "" {
@@ -7030,7 +7069,7 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 	}
 
 	// Inherit yolo from parent if not explicitly set.
-	if !yolo && parentYolo {
+	if !flagSeenIn(args, "yolo") && parentYolo {
 		yolo = true
 	}
 
@@ -7048,35 +7087,22 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 	}
 	// Memory instructions are injected by the moneypenny at runtime.
 
-	cmdData := map[string]interface{}{
-		"agent":      agentName,
-		"session_id": sessionID,
-		"name":       sessionName,
-		"prompt":     prompt,
-		"path":       pathArg,
+	params.Agent, params.SessionName, params.Path = agentName, sessionName, pathArg
+	params.SystemPrompt = systemPrompt
+	if params.Nick != "" {
+		params.SystemPrompt = applyNickBlock(params.SystemPrompt, params.Nick)
 	}
-	cmdData["environment"] = e.addGadgetEnvironment(nil)
-	if capabilities := capabilityFlags.apply(nil); capabilities != nil {
-		cmdData["gadget_capabilities"] = capabilities
+	params.Model, params.Effort, params.ContextTier = modelName, effortName, contextTierName
+	params.Yolo = yolo
+	params.GadgetCapabilities = capabilityFlags.apply(nil)
+	e.addGadgetEnvironmentValues(&params.Environment)
+	cmdData, err := buildCreateSessionData(params, sessionID, prompt)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
 	}
 	if fromID != "" {
 		cmdData["source_session_id"] = fromID
 		cmdData["source_name"] = e.agentOriginLabel(fromID)
-	}
-	if systemPrompt != "" {
-		cmdData["system_prompt"] = systemPrompt
-	}
-	if modelName != "" {
-		cmdData["model"] = modelName
-	}
-	if effortName != "" {
-		cmdData["effort"] = effortName
-	}
-	if contextTierName != "" {
-		cmdData["context_tier"] = contextTierName
-	}
-	if yolo {
-		cmdData["yolo"] = true
 	}
 
 	// Get parent's project.
@@ -7084,6 +7110,9 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 	projectID := ""
 	if parentSess != nil {
 		projectID = parentSess.ProjectID
+	}
+	if params.ProjectID != "" {
+		projectID = params.ProjectID
 	}
 
 	// Track as sub-session.
@@ -7112,6 +7141,11 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 	e.invalidateMPCache(mp.Name)
 	e.asyncRefreshModelCache(mp, agentName)
 
+	if params.Nick != "" {
+		if err := e.store.SetSessionNick(sessionID, params.Nick); err != nil {
+			return protocol.ErrResponse(fmt.Sprintf("persisting session nick: %v", err))
+		}
+	}
 	if len(traitIDs) > 0 {
 		if err := e.store.SetSessionTraits(sessionID, traitIDs); err != nil {
 			return protocol.ErrResponse(fmt.Sprintf("persisting session traits: %v", err))

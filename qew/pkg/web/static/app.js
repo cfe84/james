@@ -1645,9 +1645,7 @@
 
   let wizardState = { step: 1, moneypennies: [], selectedMP: '', currentPath: '', projects: [], copy: false, source: null, sourceId: '', thresholdDefaultDerived: true };
 
-  // wizardTitle reflects whether the wizard is creating a fresh agent or
-  // duplicating an existing session.
-  function wizardTitle() { return wizardState.copy ? 'Duplicate Agent' : 'New Agent'; }
+  function wizardTitle() { return wizardState.copy ? 'Duplicate Agent' : wizardState.parentId ? 'New Subagent' : 'New Agent'; }
 
   async function openCreateWizard() {
     wizardState = { step: 1, moneypennies: [], selectedMP: '', currentPath: '', projects: projectsCache, copy: false, source: null, sourceId: '', thresholdDefaultDerived: true };
@@ -1960,11 +1958,10 @@
       return;
     }
 
-    // Auto-select default — but in copy mode prefer the source's moneypenny
-    // when it's still registered, so the duplicate lands on the same host.
-    if (wizardState.copy && wizardState.selectedMP &&
+    // Prefer the source/parent host when creating a related session.
+    if ((wizardState.copy || wizardState.parentId) && wizardState.selectedMP &&
         wizardState.moneypennies.find(m => m.name === wizardState.selectedMP)) {
-      // keep source moneypenny
+      // keep source/parent moneypenny
     } else {
       const def = wizardState.moneypennies.find(m => m.isDefault);
       if (def) wizardState.selectedMP = def.name;
@@ -2083,7 +2080,7 @@
   function showWizardStep3() {
     const copy = wizardState.copy;
     const src = copy ? (wizardState.source || {}) : {};
-    const srcProject = copy ? (src.project || '') : '';
+    const srcProject = copy ? (src.project || '') : (wizardState.parentProject || '');
     let projectOpts = wizardState.projects.filter(p => p.status !== 'done')
       .map(p => `<option value="${escapeAttr(p.name)}"${p.name === srcProject ? ' selected' : ''}>${escapeHtml(p.name)}</option>`).join('');
     // Ensure the source's project is selectable even if it's done/archived.
@@ -2103,7 +2100,7 @@
       : COMPACTION_THRESHOLD_DEFAULT;
     const promptLabel = copy ? 'Prompt (optional)' : 'Prompt *';
     const promptPlaceholder = copy ? 'Leave blank to acknowledge summary' : 'What should the agent do?';
-    const submitLabel = copy ? 'Duplicate Agent' : 'Deploy Agent';
+    const submitLabel = copy ? 'Duplicate Agent' : wizardState.parentId ? 'Deploy Subagent' : 'Deploy Agent';
     // Seed the model dropdown with the source model so syncWizardAgentDeps
     // preserves it (it only keeps the prior selection if still valid for the
     // chosen agent).
@@ -2124,7 +2121,7 @@
       <label for="wiz-nick">Nick (optional)</label>
       <input id="wiz-nick" type="text" placeholder="short alias">
       <label for="wiz-project">Project</label>
-      <select id="wiz-project"><option value="">(none)</option>${projectOpts}</select>
+      <select id="wiz-project"><option value="">${wizardState.parentId ? '(inherit parent)' : '(none)'}</option>${projectOpts}</select>
       <label for="wiz-agent">Agent</label>
       <select id="wiz-agent">${agentOpts}</select>
       <label for="wiz-model">Model</label>
@@ -2168,7 +2165,7 @@
 
     // If a project is pre-selected from the filter, select it — but in copy
     // mode the source's project takes precedence.
-    if (projectFilter && !copy) {
+    if (projectFilter && !copy && !wizardState.parentId) {
       document.getElementById('wiz-project').value = projectFilter;
     }
 
@@ -2233,7 +2230,7 @@
 
   async function submitCreateSession() {
     const copy = wizardState.copy;
-    const submitLabel = copy ? 'Duplicate Agent' : 'Deploy Agent';
+    const submitLabel = copy ? 'Duplicate Agent' : wizardState.parentId ? 'Deploy Subagent' : 'Deploy Agent';
     const prompt = document.getElementById('wiz-prompt').value.trim();
     if (!copy && !prompt) {
       alert('Prompt is required');
@@ -2242,7 +2239,8 @@
 
     // Copy mode leads with the source session ID (a positional arg the
     // `copy session` verb expects); create mode has no positional source.
-    const args = copy ? [wizardState.sourceId] : [];
+    const parentId = wizardState.parentId;
+    const args = copy ? [wizardState.sourceId] : parentId ? [parentId] : [];
     args.push('-m', wizardState.selectedMP, '--path', wizardState.currentPath, '--async');
     const name = document.getElementById('wiz-name').value.trim();
     if (name) args.push('--name', name);
@@ -2282,8 +2280,8 @@
       // Emit an explicit boolean so unchecking genuinely disables a yolo
       // source (omitting --yolo would inherit the source's value).
       args.push('--yolo=' + (yolo ? 'true' : 'false'));
-    } else if (yolo) {
-      args.push('--yolo');
+    } else if (parentId || yolo) {
+      args.push('--yolo=' + (yolo ? 'true' : 'false'));
     }
     if (document.getElementById('wiz-gadgets').checked) args.push('--gadgets');
     args.push(...gadgetCapabilities.args('wiz'));
@@ -2317,7 +2315,7 @@
     btn.textContent = copy ? 'Duplicating...' : 'Creating...';
 
     try {
-      const resp = await apiCall(copy ? 'copy' : 'create', 'session', args);
+      const resp = await apiCall(copy ? 'copy' : 'create', parentId ? 'subsession' : 'session', args);
       if (resp.status === 'error') {
         alert('Error: ' + resp.message);
         btn.disabled = false;
@@ -2325,7 +2323,17 @@
         return;
       }
       closeWizard();
-      await loadDashboard();
+      if (parentId) {
+        const sid = resp.data && resp.data.session_id;
+        if (sid) {
+          window._openSubagent(sid, name || sid.substring(0, 12));
+        } else {
+          lastChatHTML = '';
+          await loadChat();
+        }
+      } else {
+        await loadDashboard();
+      }
     } catch (e) {
       alert('Error: ' + e.message);
       btn.disabled = false;
@@ -3985,25 +3993,24 @@
 
   async function createNewSubagent() {
     if (!currentSession) return;
-    const prompt = window.prompt('Subagent prompt:');
-    if (!prompt) return;
+    const parentId = currentSession;
+    renderWizardModal('<h3>New Subagent</h3><div class="loading">Loading...</div>');
     try {
-      const resp = await apiCall('create', 'subsession', [currentSession, '--async', '--yolo', prompt]);
+      const resp = await apiCall('show', 'session', [parentId]);
       if (resp.status === 'error') {
-        alert('Error: ' + resp.message);
-        return;
+        throw new Error(resp.message);
       }
-      // Open the new subagent chat.
-      const sid = resp.data && resp.data.session_id;
-      const name = resp.data && resp.data.name;
-      if (sid) {
-        window._openSubagent(sid, name || sid.substring(0, 12));
-      } else {
-        lastChatHTML = '';
-        await loadChat();
-      }
+      const parent = resp.data || {};
+      wizardState = {
+        step: 1, moneypennies: [], selectedMP: parent.moneypenny || '',
+        currentPath: parent.path || '~', projects: projectsCache,
+        copy: false, source: null, sourceId: '', parentId, parentProject: parent.project || '', thresholdDefaultDerived: true,
+      };
+      if (traitsCache.length === 0) await loadTraitsCache();
+      await showWizardStep1();
     } catch (e) {
-      alert('Error: ' + e.message);
+      renderWizardModal(`<h3>New Subagent</h3><div class="empty-state">Error: ${escapeHtml(e.message)}</div>
+        <div class="modal-actions"><button class="btn-muted" onclick="window._qewCloseWizard()">Close</button></div>`);
     }
   }
 
@@ -5110,6 +5117,52 @@
     } catch (e) { alert('Error: ' + e.message); }
   }
 
+  function moneypennySetupCommand(platform, artifact, address, fingerprint, replace) {
+    if (!artifact || !/^https:\/\/github\.com\/cfe84\/james\/releases\/download\/[^/\s]+\/james-(darwin-arm64\.tar\.gz|windows-amd64\.zip)$/.test(artifact.url) ||
+        !/^[a-f0-9]{64}$/.test(artifact.sha256)) throw new Error('Invalid verified release metadata');
+    if (!artifact.url.endsWith(platform === 'mac' ? '/james-darwin-arm64.tar.gz' : '/james-windows-amd64.zip')) throw new Error('Release does not match setup platform');
+    if (!/^[^/\s]+\/[A-Za-z0-9._-]+$/.test(address)) throw new Error('Use a relay address and a unique session ID: host:port/my-computer');
+    if (!/^SHA256:[A-Za-z0-9+/]{43}=?$/.test(fingerprint)) throw new Error('A valid MI6 server SHA256 fingerprint is required');
+    if (platform === 'mac') {
+      const quote = text => "'" + text.replaceAll("'", "'\\''") + "'";
+      const script = [
+        'set -eu',
+        '[ "$(uname -s)" = Darwin ] && [ "$(uname -m)" = arm64 ] || { echo "This release requires an Apple Silicon Mac" >&2; exit 1; }',
+        'work=$(mktemp -d)',
+        'trap \'rm -f "$work/release.tar.gz" && rmdir "$work" || echo "Warning: could not clean up setup download directory: $work" >&2\' EXIT',
+        `curl --fail --location --proto '=https' --tlsv1.2 ${quote(artifact.url)} -o "$work/release.tar.gz"`,
+        `echo ${quote(artifact.sha256 + '  ')}"$work/release.tar.gz" | shasum -a 256 -c -`,
+        'mkdir -p "$HOME/.local/share/james"',
+        'dest=$(mktemp -d "$HOME/.local/share/james/moneypenny.XXXXXX")',
+        'tar -xzf "$work/release.tar.gz" -C "$dest" --strip-components=1',
+        '"$dest/moneypenny" --show-public-key',
+        `"$dest/moneypenny" install --non-interactive --user --auto-update --mi6 ${quote(address)} --mi6-server-fingerprint ${quote(fingerprint)}${replace ? ' --force' : ''}`,
+        'echo "Paste this public key into Qew, then add and check connectivity. Agent CLIs and provider sign-in are separate."',
+        '"$dest/moneypenny" --show-public-key',
+      ].join('; ');
+      return '/bin/bash -c ' + quote(script);
+    }
+    if (platform !== 'windows') throw new Error('Unsupported setup platform');
+    const quote = text => "'" + text.replaceAll("'", "''") + "'";
+    return '& { ' + [
+      "$ErrorActionPreference = 'Stop'",
+      "if (-not [Environment]::Is64BitOperatingSystem) { throw 'Windows x64 is required' }",
+      "$archive = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString() + '.zip')",
+      'try {',
+      `Invoke-WebRequest -UseBasicParsing -Uri ${quote(artifact.url)} -OutFile $archive`,
+      `if ((Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant() -ne ${quote(artifact.sha256)}) { throw 'Release checksum mismatch' }`,
+      "$dest = Join-Path $env:LOCALAPPDATA ('james\\moneypenny-' + [guid]::NewGuid().ToString())",
+      'Expand-Archive -Path $archive -DestinationPath $dest',
+      "$bin = Join-Path $dest 'james-windows-amd64\\moneypenny.exe'",
+      "& $bin --show-public-key; if ($LASTEXITCODE -ne 0) { throw 'Public key generation failed' }",
+      `& $bin install --non-interactive --user --auto-update --mi6 ${quote(address)} --mi6-server-fingerprint ${quote(fingerprint)}${replace ? ' --force' : ''}`,
+      "if ($LASTEXITCODE -ne 0) { throw 'Service installation failed' }",
+      "Write-Host 'Paste this public key into Qew, then add and check connectivity. Agent CLIs and provider sign-in are separate.'",
+      "& $bin --show-public-key; if ($LASTEXITCODE -ne 0) { throw 'Reading public key failed' }",
+      '} finally { if (Test-Path -LiteralPath $archive) { try { Remove-Item -LiteralPath $archive -ErrorAction Stop } catch { Write-Warning ("Could not remove setup download: " + $_.Exception.Message) } } }',
+    ].join('\n') + '\n}';
+  }
+
   async function showAddMoneypennyModal() {
     renderWizardModal(`
       <h3>Add Moneypenny</h3>
@@ -5130,14 +5183,74 @@
         <input id="mp-mi6-addr" type="text" placeholder="host:port/session_id">
         <label for="mp-mi6-server-fingerprint">MI6 Server Fingerprint</label>
         <input id="mp-mi6-server-fingerprint" type="text" placeholder="SHA256:...">
+        <label for="mp-platform">Set up a target computer</label>
+        <select id="mp-platform">
+          <option value="mac">macOS (Apple Silicon, Terminal)</option>
+          <option value="windows">Windows x64 (PowerShell)</option>
+        </select>
+        <label><input id="mp-replace" type="checkbox" style="width:auto"> Replace an existing user-level Moneypenny service</label>
+        <button class="btn-muted" id="mp-setup" type="button">Generate setup command</button>
+        <textarea id="mp-setup-command" readonly aria-label="Target computer setup command" style="display:none"></textarea>
+        <button class="btn-muted" id="mp-copy-setup" type="button" style="display:none">Copy command</button>
+        <p>Run once as your normal user, not an administrator. Installs a user-level service with automatic updates.
+        Existing keys and session data are preserved. Agent CLIs and provider credentials must be set up separately.</p>
+        <label for="mp-public-key">Moneypenny public key (optional)</label>
+        <textarea id="mp-public-key" placeholder="ecdsa-sha2-nistp256 AAAA..."></textarea>
+        <p>Paste only the public key printed by setup, never a private key.
+        Authorizing it requires Hem's MI6 identity to be a relay administrator.
+        The server fingerprint above pins the relay; this key authorizes the target computer.</p>
       </div>
+      <p id="mp-onboarding-status" role="status" aria-live="polite"></p>
       <div class="modal-actions">
-        <button class="btn-muted" onclick="window._qewCloseWizard()">Cancel</button>
+        <button class="btn-muted" id="mp-close" onclick="window._qewCloseWizard()">Cancel</button>
         <button class="btn" id="mp-submit">Add</button>
       </div>
     `);
 
     const typeSelect = document.getElementById('mp-type');
+    const setupCommand = document.getElementById('mp-setup-command');
+    const setupStatus = document.getElementById('mp-onboarding-status');
+    const clearSetup = () => {
+      setupCommand.value = '';
+      setupCommand.style.display = 'none';
+      document.getElementById('mp-copy-setup').style.display = 'none';
+    };
+    for (const id of ['mp-platform', 'mp-replace', 'mp-mi6-addr', 'mp-mi6-server-fingerprint']) {
+      document.getElementById(id).addEventListener('input', clearSetup);
+    }
+    document.getElementById('mp-setup').addEventListener('click', async () => {
+      clearSetup();
+      const button = document.getElementById('mp-setup');
+      button.disabled = true;
+      setupStatus.textContent = 'Verifying latest release manifest...';
+      try {
+        const resp = await apiCall('setup', 'moneypenny', []);
+        if (resp.status === 'error') throw new Error(resp.message);
+        const platform = document.getElementById('mp-platform').value;
+        const artifactName = platform === 'mac' ? 'james-darwin-arm64.tar.gz' : 'james-windows-amd64.zip';
+        setupCommand.value = moneypennySetupCommand(platform, resp.data.artifacts[artifactName],
+          document.getElementById('mp-mi6-addr').value.trim(),
+          document.getElementById('mp-mi6-server-fingerprint').value.trim(),
+          document.getElementById('mp-replace').checked);
+        setupCommand.style.display = 'block';
+        document.getElementById('mp-copy-setup').style.display = 'inline-block';
+        setupStatus.textContent = 'Run the command on the target, then paste its public key below. No registration or trust changes have been made yet.';
+      } catch (e) {
+        setupStatus.textContent = 'Setup command failed: ' + e.message;
+      } finally {
+        button.disabled = false;
+      }
+    });
+    document.getElementById('mp-copy-setup').addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(setupCommand.value);
+        setupStatus.textContent = 'Setup command copied.';
+      } catch (e) {
+        setupCommand.focus();
+        setupCommand.select();
+        setupStatus.textContent = 'Clipboard unavailable. Copy the selected command manually.';
+      }
+    });
     typeSelect.addEventListener('change', () => {
       document.getElementById('mp-fifo-fields').style.display = typeSelect.value === 'fifo' ? 'block' : 'none';
       document.getElementById('mp-mi6-fields').style.display = typeSelect.value === 'mi6' ? 'block' : 'none';
@@ -5145,6 +5258,7 @@
 
     try {
       const resp = await apiCall('diagnose', '', []);
+      if (resp.status === 'error') throw new Error(resp.message);
       if (resp.status === 'ok' && resp.data) {
         const control = resp.data.mi6_control || '';
         const fingerprint = resp.data.mi6_server_fingerprint || '';
@@ -5159,13 +5273,15 @@
         if (pin && fingerprint) pin.value = fingerprint;
       }
     } catch (e) {
-      // The fields remain blank if the connected Hem does not expose MI6 settings.
+      setupStatus.textContent = 'Could not load relay defaults: ' + e.message + '. Enter the relay address and fingerprint manually.';
     }
 
     document.getElementById('mp-submit').addEventListener('click', async () => {
       const name = document.getElementById('mp-name').value.trim();
       if (!name) { alert('Name is required'); return; }
       const type = typeSelect.value;
+      const mi6Address = document.getElementById('mp-mi6-addr').value.trim();
+      const mi6Fingerprint = document.getElementById('mp-mi6-server-fingerprint').value.trim();
       const args = ['-n', name];
       if (type === 'local') args.push('--local');
       else if (type === 'fifo') {
@@ -5173,29 +5289,42 @@
         if (!folder) { alert('FIFO folder is required'); return; }
         args.push('--fifo-folder', folder);
       } else if (type === 'mi6') {
-        const addr = document.getElementById('mp-mi6-addr').value.trim();
-        if (!addr) { alert('MI6 address is required'); return; }
-        const fingerprint = document.getElementById('mp-mi6-server-fingerprint').value.trim();
-        if (!fingerprint) { alert('MI6 server fingerprint is required'); return; }
-        args.push('--mi6', addr);
-        args.push('--mi6-server-fingerprint', fingerprint);
+        if (!/^[^/\s]+\/[A-Za-z0-9._-]+$/.test(mi6Address)) { alert('MI6 address must include a unique session ID: host:port/my-computer'); return; }
+        if (!mi6Fingerprint) { alert('MI6 server fingerprint is required'); return; }
+        args.push('--mi6', mi6Address);
+        args.push('--mi6-server-fingerprint', mi6Fingerprint);
       }
 
       const btn = document.getElementById('mp-submit');
       btn.disabled = true;
       btn.textContent = 'Adding...';
+      let trusted = false;
       try {
+        if (type === 'mi6') {
+          const key = document.getElementById('mp-public-key').value.trim();
+          if (key) {
+            if (!/^(ecdsa-sha2-nistp256|ssh-ed25519|ssh-rsa) [A-Za-z0-9+/=]+(?: [^\r\n]*)?$/.test(key)) {
+              throw new Error('Paste one SSH public key line, not a private key or fingerprint.');
+            }
+            setupStatus.textContent = 'Authorizing target public key on MI6...';
+            const trust = await apiCall('add', 'mi6-key', [key, '--mi6', mi6Address.substring(0, mi6Address.indexOf('/')),
+              '--mi6-server-fingerprint', mi6Fingerprint]);
+            if (trust.status === 'error') throw new Error('Trust failed; registration not attempted: ' + trust.message);
+            trusted = true;
+          }
+        }
+        setupStatus.textContent = (trusted ? 'Public key authorized. ' : '') + 'Registering Moneypenny and checking connectivity...';
         const resp = await apiCall('add', 'moneypenny', args);
         if (resp.status === 'error') {
-          alert('Error: ' + resp.message);
-          btn.disabled = false;
-          btn.textContent = 'Add';
-          return;
+          throw new Error(resp.message);
         }
-        closeWizard();
-        loadMoneypennies();
+        setupStatus.textContent = (trusted ? 'Trust: authorized. ' : 'Trust: unchanged. ') + 'Registration: added. Connectivity: reachable.';
+        btn.textContent = 'Added';
+        document.getElementById('mp-close').textContent = 'Close';
+        await loadMoneypennies();
       } catch (e) {
-        alert('Error: ' + e.message);
+        setupStatus.textContent = (trusted ? 'Public key remains authorized. ' : '') +
+          e.message;
         btn.disabled = false;
         btn.textContent = 'Add';
       }
@@ -6382,15 +6511,40 @@
     // Ignore IME composition and auto-repeat for shortcut handling.
     if (e.isComposing) return;
 
+    const chatActive = currentSession &&
+      document.getElementById('chat-view').style.display !== 'none';
+    const conversationCommandsOpen = cmdPaletteOpen &&
+      document.querySelector('.cmd-palette[aria-label="Session commands"]');
+    if (chatActive && (conversationCommandsOpen || !document.querySelector('.modal-overlay'))) {
+      if (e.ctrlKey && !e.metaKey && !e.altKey && !e.repeat && e.key.toLowerCase() === 'p') {
+        e.preventDefault();
+        if (conversationCommandsOpen) closeCmdPalette(false);
+        toggleComposeMode();
+        return;
+      }
+      if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.repeat &&
+          e.key.toLowerCase() === 'i' && document.activeElement !== document.getElementById('chat-input')) {
+        e.preventDefault();
+        if (conversationCommandsOpen) closeCmdPalette(false);
+        exitChatNavMode(true);
+        return;
+      }
+      if (e.ctrlKey && !e.metaKey && !e.altKey && ['j', 'k'].includes(e.key.toLowerCase())) {
+        e.preventDefault();
+        enterChatNavMode();
+        chatScrollLine(e.key.toLowerCase() === 'j' ? 1 : -1);
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && ['d', 'u'].includes(e.key.toLowerCase())) {
+        e.preventDefault();
+        chatScroll(e.key.toLowerCase() === 'd' ? 1 : -1);
+        return;
+      }
+    }
+
     // The in-conversation command palette captures single-key actions while open.
-    if (cmdPaletteOpen && document.querySelector('.cmd-palette')) {
+    if (conversationCommandsOpen) {
       if (e.key === 'Escape') { e.preventDefault(); closeCmdPalette(true); return; }
-      if (e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'j') {
-        e.preventDefault(); enterChatNavMode(); chatScrollLine(1); return;
-      }
-      if (e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'k') {
-        e.preventDefault(); enterChatNavMode(); chatScrollLine(-1); return;
-      }
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       // j/k (or arrows) leave the palette and enter keyboard nav mode, scrolling
       // the transcript with the input blurred.
@@ -6444,33 +6598,7 @@
       return;
     }
 
-    const chatActive = currentSession &&
-      document.getElementById('chat-view').style.display !== 'none';
-
     if (chatActive) {
-      if (e.ctrlKey && !e.metaKey && !e.altKey && !e.repeat && e.key.toLowerCase() === 'p') {
-        e.preventDefault();
-        toggleComposeMode();
-        return;
-      }
-      if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.repeat &&
-          e.key.toLowerCase() === 'i' && document.activeElement !== document.getElementById('chat-input')) {
-        e.preventDefault();
-        exitChatNavMode(true);
-        return;
-      }
-      if (e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'j') {
-        e.preventDefault();
-        enterChatNavMode();
-        chatScrollLine(1);
-        return;
-      }
-      if (e.ctrlKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === 'k') {
-        e.preventDefault();
-        enterChatNavMode();
-        chatScrollLine(-1);
-        return;
-      }
       // Keyboard nav mode: input is blurred; j/k (or arrows) scroll the
       // transcript, Escape returns to the input.
       if (chatNavMode) {
@@ -6481,12 +6609,6 @@
         }
       }
       if (e.key === 'Escape') { e.preventDefault(); openCmdPalette(); return; }
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D')) {
-        e.preventDefault(); chatScroll(1); return;
-      }
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'u' || e.key === 'U')) {
-        e.preventDefault(); chatScroll(-1); return;
-      }
       return;
     }
 

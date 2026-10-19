@@ -10,6 +10,8 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,6 +19,63 @@ import (
 	"testing"
 	"time"
 )
+
+func TestBootstrapArtifacts(t *testing.T) {
+	pub, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const mac = "james-darwin-arm64.tar.gz"
+	const windows = "james-windows-amd64.zip"
+	for _, scenario := range []string{"verified", "bad-signature", "bad-digest", "missing-archive", "unexpected-url"} {
+		t.Run(scenario, func(t *testing.T) {
+			digest := strings.Repeat("a", 64)
+			manifest := releaseManifest{Version: "1.2.3", Artifacts: map[string]string{mac: digest, windows: digest}}
+			if scenario == "bad-digest" {
+				manifest.Artifacts[mac] = strings.Repeat("x", 64)
+			}
+			body, err := json.Marshal(manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			signature := ed25519.Sign(private, body)
+			if scenario == "bad-signature" {
+				signature[0] ^= 1
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/signature" {
+					w.Write(signature)
+				} else {
+					w.Write(body)
+				}
+			}))
+			defer server.Close()
+			prefix := "https://github.com/cfe84/james/releases/download/v1.2.3/"
+			rel := &gitHubRelease{TagName: "v1.2.3", Assets: []releaseAsset{
+				{Name: "james-manifest.json", BrowserDownloadURL: server.URL + "/manifest"},
+				{Name: "james-manifest.json.sig", BrowserDownloadURL: server.URL + "/signature"},
+				{Name: mac, BrowserDownloadURL: prefix + mac},
+				{Name: windows, BrowserDownloadURL: prefix + windows},
+			}}
+			if scenario == "missing-archive" {
+				rel.Assets = rel.Assets[:3]
+			}
+			if scenario == "unexpected-url" {
+				rel.Assets[2].BrowserDownloadURL = "http://example.invalid/archive"
+			}
+			version, artifacts, err := bootstrapArtifacts(context.Background(), rel, base64.StdEncoding.EncodeToString(pub))
+			if scenario != "verified" {
+				if err == nil || artifacts != nil {
+					t.Fatalf("unverified bootstrap metadata accepted: %v", artifacts)
+				}
+				return
+			}
+			if err != nil || version != manifest.Version || len(artifacts) != 2 || artifacts[mac].SHA256 != digest || artifacts[windows].URL != prefix+windows {
+				t.Fatalf("bootstrap metadata = %s %v, %v", version, artifacts, err)
+			}
+		})
+	}
+}
 
 func TestForceCheckEscalatesActiveCycle(t *testing.T) {
 	for _, phase := range []string{StatusDownloading, StatusWaitingIdle} {

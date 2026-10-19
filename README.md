@@ -38,6 +38,32 @@ Invoke-WebRequest https://github.com/cfe84/james/releases/latest/download/james-
 
 To make it permanent, add `%LOCALAPPDATA%\james\james-windows-amd64` to your PATH.
 
+### Set up a remote Moneypenny from Qew
+
+In **Moneypennies > Add Moneypenny**, select **MI6 (remote)**. Enter a name and
+a unique relay session address (`relay:port/my-computer`); the relay endpoint
+and server fingerprint are prefilled from Hem when available. Select macOS
+(Apple Silicon) or Windows x64, then **Generate setup command** and copy it to
+Terminal or PowerShell on that computer. Run as your normal login user.
+
+Hem verifies the latest release's signed manifest; the generated command
+downloads that specific release and checks its SHA256 before executing it.
+It installs the bundled binaries in a new user-owned directory and uses
+`moneypenny install --non-interactive --user --auto-update` to start a login
+service. Existing data and keys are kept. Replacing an existing user-level
+service requires selecting the explicit replacement checkbox. Intel Macs
+are not included in current release assets.
+
+Paste the printed **public key** into the optional field and click **Add**.
+Hem's MI6 identity must be in the relay's `admin_keys` to authorize the target;
+leaving the field blank keeps existing trust unchanged. The dialog reports
+trust, registration, and connectivity. If registration or its connectivity
+check fails after authorization, the key remains authorized; no trust rollback
+is performed. Retry Add after fixing the reported error.
+
+Agent CLIs (Copilot, Claude Code, or OpenCode) and provider authentication must
+be installed/configured separately and available to the service user.
+
 ## Quick Start
 
 ```bash

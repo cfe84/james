@@ -1,10 +1,38 @@
 package commands
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
+	"strings"
 	"testing"
+
+	"golang.org/x/crypto/ssh"
 
 	"james/moneypenny/pkg/envelope"
 )
+
+func TestMI6AddKeyRejectsInvalidPublicKeyBeforeConnecting(t *testing.T) {
+	_, private, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer, err := ssh.NewSignerFromKey(private)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey())))
+	for _, input := range []string{
+		"-----BEGIN OPENSSH PRIVATE KEY-----",
+		"ssh-ed25519 malformed",
+		key + "\n" + key,
+		"command=\"echo restricted\" " + key,
+	} {
+		resp := (&Executor{}).MI6AddKey([]string{input, "--mi6", "relay:443", "--mi6-server-fingerprint", "SHA256:pin"})
+		if resp.Status != "error" || !(strings.Contains(resp.Message, "exactly one SSH public key") || strings.Contains(resp.Message, "bad flag syntax")) {
+			t.Fatalf("invalid key reached MI6: %+v", resp)
+		}
+	}
+}
 
 func TestParseCompactionThresholdTokensResponseTrustBoundary(t *testing.T) {
 	for _, test := range []struct {

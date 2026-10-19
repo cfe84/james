@@ -107,6 +107,7 @@ mi6/
 15. **Non-interactive service provisioning**: `moneypenny install --non-interactive` uses the same platform service backends as the interactive wizard but validates all provisioning choices from explicit flags. It requires a selected service level and transport, requires a MI6 relay fingerprint for remote transports, and refuses to replace an existing service unless `--force` is explicit.
 16. **macOS launchd provisioning**: Darwin service installation writes a LaunchAgent or LaunchDaemon plist with native `ProgramArguments` entries, explicitly enables its fully qualified label, bootstraps it into the `gui/<uid>` or `system` domain, and verifies registration with `launchctl print`. User-level installation rejects `sudo` so the LaunchAgent remains owned by its login user and can join that user's GUI domain; system-level installation uses the system domain. Uninstall uses the matching `bootout` operation and surfaces failures that are not caused by an already-absent service; the documented `No such process`/missing-service response is tolerated during replacement. This avoids shell quoting issues and the deprecated `load`/`unload` behavior that can report a misleading success after launchd rejects a service.
 17. **Qew MI6 registration defaults**: Hem's authenticated `diagnose` response includes its configured MI6 control address and relay fingerprint. Qew reads these values when opening the Add Moneypenny modal, pre-filling the relay endpoint (but not Hem's control-session ID) and fingerprint. This avoids duplicated relay configuration and prevents session collisions while preserving editable inputs.
+18. **Guided remote Moneypenny setup**: Qew extends the existing Add Moneypenny modal rather than introducing a parallel provisioning component. Hem's `setup moneypenny` command uses the Moneypenny updater's release API, signature verification, and embedded public key to return authenticated archive URLs and SHA256 digests (20-second overall timeout). Qew builds shell-quoted macOS Apple Silicon or PowerShell Windows x64 commands; the target checks the pinned digest before extraction/execution and delegates service configuration to the existing non-interactive user installer. Binaries go into a fresh user-owned directory, preserving existing installations, data, and keys; only an explicit replacement checkbox emits `--force`. No downloaded bootstrap script is evaluated and no relay credentials/private keys are embedded. Optional public-key authorization delegates to `add mi6-key` using Hem's admin identity and the supplied relay pin, then invokes normal Add with its existing connectivity validation and failed-registration rollback. Trust is retained on later failure rather than revoking a possibly shared key. The modal stays open to show results, and blank keys preserve existing trust. Agent CLI/provider setup remains external.
 
 ### Auth Flow
 
@@ -1040,6 +1041,23 @@ moneypenny/pkg/handler/channels.go  # ChannelManager (poll/forward/drain) + CRUD
    activity is simply picked up on a later tick.
 
 ## Qew - Web UI for Remote Access
+
+The document keyboard router shares conversation compose, input-focus, and
+scroll handlers between normal chat and the Session Commands palette, before
+the generic modal guard. Only that specifically labelled palette permits
+underlying conversation shortcuts; edit forms and picker dialogs remain
+isolated. Palette-specific action keys still dispatch through `runCmd`.
+
+Qew's Add subagent action reuses the create-agent wizard and submission handler,
+with `wizardState.parentId` capturing the parent before asynchronous loading.
+Parent host/path/project seed the existing selectors; successful submission
+routes to `create subsession` and existing child-chat navigation. Fresh-agent and
+duplicate wizard initialization clear parent state. Hem's subagent command uses
+the same `sessionParams`/`buildCreateSessionData` payload builder as ordinary
+creation for environment, model/context, permissions, and compaction, with
+nickname validation/persistence and explicit project selection. Omitted project
+and permission-bypass flags retain CLI inheritance; Qew emits `--yolo=false`
+when the shared permission checkbox is unchecked.
 
 The Qew conversation header owns schedule visibility rather than the message
 stream. Its schedule toggle opens the existing schedule modal, and a DOM-local
