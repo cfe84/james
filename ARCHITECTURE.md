@@ -135,6 +135,11 @@ Client                              Server
 
 ## Moneypenny - Agent Session Manager
 
+OpenCode's streaming argument builder terminates options with `--` before the
+prompt. Its `--file` option is array-valued and otherwise consumes the trailing
+prompt as a filename, exiting before producing JSON events. This boundary is
+shared by fresh and resumed runs.
+
 ### Gadgets platform and capability boundary (v1.78.0)
 
 `gadgets/` is a standalone dependency-free Go module with
@@ -1041,6 +1046,13 @@ moneypenny/pkg/handler/channels.go  # ChannelManager (poll/forward/drain) + CRUD
    activity is simply picked up on a later tick.
 
 ## Qew - Web UI for Remote Access
+
+Qew's lightweight Markdown renderer extracts HTML-escaped fenced and inline
+code into opaque placeholders before applying prose formatting. It restores
+code after prose newline conversion, preserving literal source and preventing
+heading/link/emphasis rules from modifying code. Input NULs are encoded before
+placeholder creation to avoid collisions. Inline code matching is line-local
+so PowerShell continuation backticks cannot consume adjacent command lines.
 
 The document keyboard router shares conversation compose, input-focus, and
 scroll handlers between normal chat and the Session Commands palette, before

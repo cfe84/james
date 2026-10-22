@@ -6096,9 +6096,18 @@
     // All content is HTML-escaped first, then structural markdown is applied.
     // Since escapeHtml runs first, all user content is safe — regexes only
     // wrap already-escaped text in HTML tags.
-    let html = escapeHtml(text);
-    // Code blocks: ```...``` (must come first to protect contents from other rules)
-    html = html.replace(/```(\w*)\n([\s\S]*?)```/g, '<pre><code>$2</code></pre>');
+    let html = escapeHtml(text).replace(/\0/g, '&#0;');
+    const code = [];
+    const protectCode = content => {
+      code.push(content);
+      return '\0' + (code.length - 1) + '\0';
+    };
+    // Keep code out of every later Markdown rule, including newline conversion.
+    html = html.replace(/^ {0,3}(`{3,}|~{3,})[^\r\n]*\r?\n([\s\S]*?)(?:^ {0,3}\1[ \t]*(?=\r?$)|(?![\s\S]))/gm,
+      (match, fence, content) => protectCode('<pre><code>' + content + '</code></pre>'));
+    // Line-ending PowerShell backticks are literal, not multiline code delimiters.
+    html = html.replace(/(^|[^`])(`+)(?!`)([^\r\n]*?)\2(?!`)/g,
+      (match, prefix, delimiter, content) => prefix + protectCode('<code>' + content + '</code>'));
     // Headings: # ## ### #### (must be at start of line)
     html = html.replace(/(^|\n)####\s+(.+)/g, '$1<h4>$2</h4>');
     html = html.replace(/(^|\n)###\s+(.+)/g, '$1<h3>$2</h3>');
@@ -6133,8 +6142,6 @@
       out += '</table>';
       return prefix + out;
     });
-    // Inline code: `...`
-    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
     // Bold: **...**
     html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
     // Italic: *...* or _..._ (after bold so ** is already consumed). Requires
@@ -6155,7 +6162,7 @@
     // CSS pre-wrap displays source newlines but does not represent them in the
     // HTML clipboard payload. Use explicit breaks so applications such as Teams
     // retain the intended paragraphs when a rendered message is pasted.
-    return html.replace(/\n/g, '<br>');
+    return html.replace(/\n/g, '<br>').replace(/\0(\d+)\0/g, (match, index) => code[Number(index)]);
   }
 
   // --- Auto-resize textarea ---

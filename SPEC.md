@@ -403,6 +403,10 @@ Line-delimited JSON, one request/response per connection:
 
 ## Moneypenny management
 
+OpenCode invocations separate the positional prompt from CLI options with `--`.
+This prevents its array-valued `--file` option from interpreting the prompt as
+another attachment and preserves prompts that start with a dash.
+
 Hem has a list of moneypennies it can use. Each instance has a unique name and a transport reference (FIFO or MI6).
 
 ### Add
@@ -1389,6 +1393,13 @@ mode, `i` input focus, `Ctrl+J`/`Ctrl+K` transcript navigation, and
 `Ctrl`/`Cmd+U`/`D` half-page scrolling. Compose/input-focus actions dismiss help;
 half-page scrolling leaves it open. Other modals retain their own keyboard
 handling and do not trigger underlying conversation shortcuts.
+
+Qew renders fenced and inline code literally: headings, emphasis, links,
+tables, and backticks inside fenced blocks are not interpreted as Markdown.
+Code remains HTML-escaped and preserves source newlines. Unclosed fenced
+blocks are rendered as code while an answer streams. Inline code delimiters
+do not span lines, preserving PowerShell line-continuation backticks in
+unfenced commands too.
 
 ### Qew Omnibar Recency
 

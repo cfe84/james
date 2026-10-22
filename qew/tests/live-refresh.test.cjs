@@ -8,6 +8,37 @@ const thresholds = require('../pkg/web/static/compaction-threshold.js');
 const app = fs.readFileSync(process.env.QEW_APP_SOURCE ||
   path.join(__dirname, '../pkg/web/static/app.js'), 'utf8');
 
+test('Markdown preserves literal code and PowerShell continuation backticks', () => {
+  const escapeHtml = text => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+  const context = vm.createContext({ escapeHtml, safeLinkHref: url => url });
+  vm.runInContext(app.slice(app.indexOf('  function formatContent('), app.indexOf('  // --- Auto-resize textarea ---')), context);
+  const command = [
+    'python .\\scripts\\analyze_all_recordings.py `',
+    '  "C:\\Users\\charlesfeval\\OneDrive - Microsoft\\20-Current\\video-sharing\\quality-study\\runs\\2026-10-19" `',
+    '  --fidelity `',
+    '  --ignore-audio `',
+    '  --fidelity-starts 40 160 280 400 520 `',
+    '  --fidelity-duration 10',
+  ].join('\n');
+  const literal = '# header\n## nested\n**bold** _italic_ `tick`\n> quote\n| a | b |\n| - | - |\nhttps://example.com [link](https://example.com)\n<script>alert("x")</script>\n' + command;
+  for (const fence of ['```powershell', '~~~~text', '````language-with-dashes']) {
+    const delimiter = fence.match(/^[`~]+/)[0];
+    assert.equal(context.formatContent(fence + '\n' + literal + '\n' + delimiter),
+      '<pre><code>' + escapeHtml(literal) + '\n</code></pre>');
+  }
+  assert.equal(context.formatContent('```powershell\n' + command), '<pre><code>' + command + '</code></pre>');
+  assert.equal(context.formatContent(command), command.replaceAll('\n', '<br>'));
+  assert.equal(context.formatContent('`# header **literal** https://example.com <tag>`'),
+    '<code># header **literal** https://example.com &lt;tag&gt;</code>');
+  assert.equal(context.formatContent('``literal `backticks` here``'),
+    '<code>literal `backticks` here</code>');
+  assert.equal(context.formatContent('# Heading\n**bold** and `code`\nplain'),
+    '<h1>Heading</h1><br><strong>bold</strong> and <code>code</code><br>plain');
+  assert.equal(context.formatContent('```ps1\r\n# literal\r\n```'),
+    '<pre><code># literal\r\n</code></pre>');
+  assert.equal(context.formatContent('\0' + '0\0 `safe`'), '&#0;0&#0; <code>safe</code>');
+});
+
 test('conversation help retains action, compose, focus and scrolling shortcuts', () => {
   const source = app.slice(app.indexOf("  document.addEventListener('keydown', (e) => {"), app.indexOf('  // --- Routing ---'));
   const actions = {

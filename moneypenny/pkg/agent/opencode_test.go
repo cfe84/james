@@ -250,6 +250,7 @@ func TestBuildOpenCodeArgs(t *testing.T) {
 		"run", "--format", "json", "--thinking", "--session", "ses_existing",
 		"--model", "azure/gpt-5.4", "--variant", "high", "--auto",
 		"--file", "/tmp/one.txt", "--file", "/tmp/two.png",
+		"--",
 		"Instructions for this task:\nBe concise.\n\n---\n\nInspect this.",
 	}
 	if !reflect.DeepEqual(inv.args, want) {
@@ -270,6 +271,9 @@ func TestBuildOpenCodeArgsCreatesWithoutSession(t *testing.T) {
 	}
 	if got := inv.args[len(inv.args)-1]; got != "Hello" {
 		t.Errorf("prompt = %q, want Hello", got)
+	}
+	if inv.args[len(inv.args)-2] != "--" {
+		t.Errorf("prompt must be separated from options even without attachments: %v", inv.args)
 	}
 }
 

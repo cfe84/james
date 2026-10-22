@@ -1642,6 +1642,7 @@ func buildOpenCodeArgs(params RunParams) agentInvocation {
 	for _, path := range params.Attachments {
 		args = append(args, "--file", path)
 	}
+	args = append(args, "--")
 	args = append(args, withOpenCodeSystemPrompt(params))
 	return agentInvocation{args: args}
 }
