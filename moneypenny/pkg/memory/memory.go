@@ -17,11 +17,12 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	_ "github.com/mattn/go-sqlite3"
+	"github.com/mattn/go-sqlite3"
 )
 
 const (
 	MaxPathSegmentLen = 64
+	MaxPathChars      = 1024
 	MaxBodyChars      = 4000
 	RootTargetChars   = 2000
 	outlineMaxLen     = 4000
@@ -31,6 +32,14 @@ const (
 
 var connections = make(chan struct{}, maxOpenDatabases)
 var databaseLocks [64]sync.Mutex
+
+func init() {
+	sql.Register("james-memory", &sqlite3.SQLiteDriver{ConnectHook: func(conn *sqlite3.SQLiteConn) error {
+		return conn.RegisterFunc("memory_contains", func(text, query string) bool {
+			return strings.Contains(strings.ToLower(text), strings.ToLower(query))
+		}, true)
+	}})
+}
 
 // Node is a hierarchical note. Revision increases on each committed replacement.
 // Title and Description preserve legacy metadata; absent descriptions are derived.
@@ -140,8 +149,8 @@ func open(root string) (_ *database, err error) {
 		uriPath = "/" + uriPath
 	}
 	u := url.URL{Scheme: "file", Path: uriPath}
-	u.RawQuery = "_busy_timeout=5000&_journal_mode=WAL&_synchronous=FULL&_txlock=immediate"
-	db, err = sql.Open("sqlite3", u.String())
+	u.RawQuery = "_busy_timeout=5000&_journal_mode=WAL&_synchronous=FULL&_txlock=immediate&_foreign_keys=on"
+	db, err = sql.Open("james-memory", u.String())
 	if err != nil {
 		return nil, err
 	}
@@ -154,7 +163,30 @@ func open(root string) (_ *database, err error) {
 			description TEXT NOT NULL DEFAULT '',
 			body TEXT NOT NULL DEFAULT '',
 			revision INTEGER NOT NULL DEFAULT 1
-		);`)
+		);
+		CREATE TABLE IF NOT EXISTS memory_claims (
+			id TEXT PRIMARY KEY,
+			path TEXT NOT NULL REFERENCES memory_nodes(path) ON DELETE RESTRICT,
+			title TEXT NOT NULL,
+			body TEXT NOT NULL,
+			kind TEXT NOT NULL,
+			status TEXT NOT NULL,
+			confidence TEXT NOT NULL,
+			importance TEXT NOT NULL,
+			recorded_at TEXT NOT NULL,
+			verified_at TEXT NOT NULL,
+			review_after TEXT NOT NULL,
+			provenance TEXT NOT NULL,
+			revision INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS memory_claims_path ON memory_claims(path,id);
+		CREATE TABLE IF NOT EXISTS memory_links (
+			source TEXT NOT NULL REFERENCES memory_claims(id) ON DELETE CASCADE,
+			target TEXT NOT NULL REFERENCES memory_claims(id) ON DELETE CASCADE,
+			relation TEXT NOT NULL,
+			PRIMARY KEY(source,target,relation)
+		);
+		CREATE INDEX IF NOT EXISTS memory_links_target ON memory_links(target,source);`)
 	if err != nil {
 		return nil, fmt.Errorf("initialize memory database: %w", err)
 	}
@@ -262,6 +294,9 @@ func normalizeNodes(nodes []*Node, enforceLimit bool) ([]*Node, error) {
 			return nil, fmt.Errorf("memory batch contains duplicate path %q", n.Path)
 		}
 		seen[n.Path] = true
+		if enforceLimit && utf8.RuneCountInString(n.Path) > MaxPathChars {
+			return nil, fmt.Errorf("memory topic path must be at most %d Unicode characters", MaxPathChars)
+		}
 		if enforceLimit && (!utf8.ValidString(n.Body) || utf8.RuneCountInString(n.Body) > MaxBodyChars) {
 			return nil, fmt.Errorf("memory node %q body must be valid UTF-8 and at most %d Unicode characters (root target %d)", n.Path, MaxBodyChars, RootTargetChars)
 		}
@@ -356,6 +391,13 @@ func Delete(root, path string, recursive bool) (int, error) {
 	}
 	if count > 1 && !recursive {
 		return 0, fmt.Errorf("node %q has child nodes; pass --recursive to delete the subtree", norm)
+	}
+	var claims int
+	if err := tx.QueryRow("SELECT count(*) FROM memory_claims WHERE "+match, norm, prefix, prefix).Scan(&claims); err != nil {
+		return 0, err
+	}
+	if claims > 0 {
+		return 0, fmt.Errorf("node %q contains structured claims; move or explicitly delete them before deleting the topic", norm)
 	}
 	if _, err := tx.Exec("DELETE FROM memory_nodes WHERE "+match, norm, prefix, prefix); err != nil {
 		return 0, err
@@ -467,16 +509,16 @@ func IsEmptyWithError(root string) (bool, error) {
 	}
 	defer db.close()
 	var count int
-	err = db.QueryRow("SELECT count(*) FROM memory_nodes WHERE body != '' OR title != '' OR description != ''").Scan(&count)
+	err = db.QueryRow("SELECT (SELECT count(*) FROM memory_nodes WHERE body != '' OR title != '' OR description != '') + (SELECT count(*) FROM memory_claims)").Scan(&count)
 	return count == 0, err
 }
 
 // CopyTree atomically merges an authoritative snapshot into dst, preserving
 // oversized imported bodies. It never copies or consults backup README files.
 func CopyTree(src, dst string) error {
-	nodes, err := List(src)
+	nodes, claims, err := memorySnapshot(src)
 	if err != nil {
 		return err
 	}
-	return setNodes(dst, nodes)
+	return copyMemory(dst, nodes, claims)
 }

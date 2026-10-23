@@ -276,15 +276,19 @@ Per-operation connections are closed promptly, with at most 16 databases open
 concurrently and one SQL connection per handle. A fixed 64-lock stripe array
 serializes operations per database without unbounded per-session bookkeeping,
 avoiding SQLite journal/schema initialization races.
-Gadget reads use Unicode-offset SQL slices of at most 64,000 characters, returning
-the total size and optional next offset, so arbitrarily large imported notes
-remain accessible despite the response cap. Runtime prompt inspection reads
+Gadget note reads use Unicode-offset SQL slices (requested limit at most 64,000),
+then shrink the body to fit a 16,000 serialized-Unicode-character response budget,
+including JSON escaping, metadata and envelope allowance. Total size and next
+offset preserve access to large imported notes without changing stored content.
+Runtime prompt inspection reads
 only the bounded root slice and oversized-path/size metadata, not descendant bodies.
 
 The empty path (`""`) is root; whole-tree listing returns root first, then
 case-sensitive path order. `Children` selects immediate children. The logical
 path normalizer rejects traversal segments, controls, invalid UTF-8, and
-segments longer than 64 Unicode code points. Descriptions are retained when
+segments longer than 64 Unicode code points. Ordinary note writes additionally
+cap total path length at 1,024 characters; copying preserves imported keys.
+Descriptions are retained when
 present or derived from the first non-empty body heading/line. Search is
 Unicode case-insensitive substring ranking over paths, body, and metadata,
 not FTS or a vector index.
@@ -296,8 +300,39 @@ missing ancestor creation commit together. Each successful replacement
 increments that node's **current** revision in SQL; caller-supplied revisions
 are ignored. `memory.revisions` returns only `{path,revision}`. There is no
 historical body store, historical revision replay, or optimistic
-compare-and-swap API. Root deletion is refused; descendant checks and recursive
-deletion happen in one transaction.
+compare-and-swap API for notes. Root deletion is refused; descendant checks and recursive
+deletion happen in one transaction. Topics/subtrees containing structured claims
+must have those claims moved or explicitly erased before topic deletion.
+
+Structured records live alongside notes in `memory_claims`, with stable random
+128-bit IDs, topic path, title/body, kind/status, categorical confidence/importance,
+recorded/verified/review timestamps, JSON provenance and current revision.
+Its topic foreign key restricts deletion of referenced notes.
+`memory_links` stores directed typed edges with cascading foreign keys for
+permanent erasure; FK enforcement is enabled on every connection. Replacements
+check current revision and atomically validate the topic and replace outgoing
+links. Corrections use retained disproven/superseded records rather than deletion;
+there is no historical version log. Freshness derives from `review_after`, not
+automatic probability decay. Existing notes are neither rewritten nor assigned
+fabricated metadata. The stable claim IDs also survive topic moves and duplication.
+
+`query.go` implements count- and serialized-size-bounded deterministic retrieval.
+Claims use indexed ID ordering, subtree and category filters, JSON evidence
+filters, and bidirectional typed-link exploration. A connection-local SQLite
+function reuses Go's Unicode lowercase/substring semantics for text matching,
+without FTS/vector dependencies. Note gadget searches/listings select bounded
+metadata summaries directly rather than materializing the whole note tree.
+Pages default to 10, cap at 50, and include a query-bound keyset cursor/has_more.
+Cursors are continuations, not cross-request snapshots. Claims return qualified
+240-character previews; full get includes provenance and up to 16 titles in
+each link direction (plus an incoming-more marker), never recursive bodies.
+Encoded claim validation reserves space for those derived titles so complete
+records remain retrievable within the 16,000-character budget.
+The memory gadget permission gate and session-bound credentials cover every
+claim/query operation, including live revocation. Shared prompts teach search
+plus hierarchy, source attribution, retained corrections and bounded unresolved
+questions/negative results; compaction/distillation preserve the same distinctions.
+Ponsonby/shared stores remain deferred.
 
 All existing Hem/TUI/Qew memory operations still use
 `show/list/search/update/delete_memory`, whose handlers now delegate to these
@@ -307,7 +342,10 @@ The existing tree browser, single-note editor, search, and synthetic root row
 are reused. The Markdown note field no longer implies direct README file access;
 the TUI accepts the empty root path when saving an existing root note.
 Same-host duplication calls `CopyTree` on the authoritative snapshot, never
-backup files. Migration and copying preserve imported oversized bodies; ordinary
+backup files. The source snapshot reads notes, claims and links in one transaction;
+the destination copies them atomically and rejects claim-ID collisions rather
+than overwriting. Existing operator editors still manage notes only; claim CRUD
+and deterministic queries are exposed through gadgets. Migration and copying preserve imported oversized bodies; ordinary
 replacement writes must meet the limit.
 
 ### Legacy memory backups

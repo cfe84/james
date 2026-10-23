@@ -363,7 +363,8 @@ func (h *Handler) executeGadget(ctx context.Context, sessionID string, request g
 	}
 	allowed := false
 	switch request.Method {
-	case "memory.get", "memory.list", "memory.search", "memory.set", "memory.batch", "memory.delete", "memory.revisions":
+	case "memory.get", "memory.list", "memory.search", "memory.set", "memory.batch", "memory.delete", "memory.revisions",
+		"memory.query", "memory.claim-set", "memory.claim-get", "memory.claim-delete":
 		allowed = caps.Memory
 	case "agents.list", "agents.message":
 		allowed = caps.Agents
@@ -441,32 +442,57 @@ func (h *Handler) executeGadget(ctx context.Context, sessionID string, request g
 func (h *Handler) memoryGadget(sessionID string, request gadgetRequest) (any, error) {
 	root := h.memoryDir(sessionID)
 	switch request.Method {
+	case "memory.query":
+		var data memory.Query
+		if err := decodeGadget(request.Data, &data); err != nil {
+			return nil, err
+		}
+		return memory.QueryClaims(root, data)
+	case "memory.claim-set":
+		var data memory.Claim
+		if err := decodeGadget(request.Data, &data); err != nil {
+			return nil, err
+		}
+		return memory.SetClaim(root, data)
+	case "memory.claim-get", "memory.claim-delete":
+		var data struct {
+			ID       string `json:"id"`
+			Revision int64  `json:"revision"`
+		}
+		if err := decodeGadget(request.Data, &data); err != nil {
+			return nil, err
+		}
+		if request.Method == "memory.claim-delete" {
+			err := memory.DeleteClaim(root, data.ID, data.Revision)
+			return map[string]bool{"deleted": err == nil}, err
+		}
+		claim, err := memory.GetClaim(root, data.ID)
+		if err == nil && claim == nil {
+			return nil, &gadgetError{"not_found", "Memory claim not found"}
+		}
+		return claim, err
 	case "memory.get", "memory.list", "memory.revisions":
 		var data struct {
 			Path   string `json:"path"`
 			Offset int    `json:"offset"`
 			Limit  *int   `json:"limit"`
+			Cursor string `json:"cursor"`
 		}
 		if err := decodeGadget(request.Data, &data); err != nil {
 			return nil, err
 		}
 		if request.Method == "memory.list" {
-			nodes, err := memory.Children(root, data.Path)
-			if err != nil {
-				return nil, err
+			q := memory.Query{Path: data.Path, Cursor: data.Cursor}
+			if data.Limit != nil {
+				q.Limit = *data.Limit
 			}
-			// Browsing is metadata-only even for imported oversized notes.
-			out := make([]map[string]any, 0, len(nodes))
-			for _, n := range nodes {
-				out = append(out, map[string]any{"path": n.Path, "description": n.Description, "revision": n.Revision, "characters": utf8.RuneCountInString(n.Body)})
-			}
-			return out, nil
+			return memory.QueryNotes(root, q, true)
 		}
 		limit := memory.MaxReadCharacters
 		if data.Limit != nil {
 			limit = *data.Limit
 		}
-		node, err := memory.Read(root, data.Path, data.Offset, limit)
+		node, err := memory.ReadBounded(root, data.Path, data.Offset, limit)
 		if err != nil {
 			return nil, err
 		}
@@ -479,12 +505,14 @@ func (h *Handler) memoryGadget(sessionID string, request gadgetRequest) (any, er
 		return node, nil
 	case "memory.search":
 		var data struct {
-			Query string `json:"query"`
+			Query  string `json:"query"`
+			Limit  int    `json:"limit"`
+			Cursor string `json:"cursor"`
 		}
 		if err := decodeGadget(request.Data, &data); err != nil {
 			return nil, err
 		}
-		return memory.Search(root, data.Query)
+		return memory.QueryNotes(root, memory.Query{Text: data.Query, Limit: data.Limit, Cursor: data.Cursor}, false)
 	case "memory.set":
 		var data struct {
 			Path string  `json:"path"`

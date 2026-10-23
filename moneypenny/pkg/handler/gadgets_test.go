@@ -106,7 +106,7 @@ func TestGadgetCredentialsAndLiveRevocation(t *testing.T) {
 	requireGadgetError(t, gadgetCall(t, params, "memory.get", map[string]string{"session_id": gadgetOtherSession}), "invalid_request")
 
 	setGadgetCaps(t, h, envelope.GadgetCapabilities{})
-	for _, method := range []string{"memory.get", "subagents.list", "schedule.list", "agents.message", "moneypenny.logs", "hem.command"} {
+	for _, method := range []string{"memory.get", "memory.query", "memory.claim-get", "memory.claim-set", "memory.claim-delete", "subagents.list", "schedule.list", "agents.message", "moneypenny.logs", "hem.command"} {
 		requireGadgetError(t, gadgetCall(t, params, method, map[string]any{}), "permission_denied")
 	}
 	if response := gadgetCall(t, params, "notify", map[string]string{"text": "Please approve access."}); !response.Success {
@@ -215,6 +215,55 @@ func TestGadgetMemoryAtomicAndOperatorSurfaces(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, "split", "child", "README.md")); !os.IsNotExist(err) {
 		t.Fatal("operation wrote retired memory files")
 	}
+	claim := memory.Claim{Path: "split/child", Title: "Operator edit observed", Body: "The topic note reflects the operator edit.", Kind: "observation", Status: "active", Confidence: "supported", Importance: "useful", Provenance: []memory.Provenance{{Method: "observed", Source: "Current topic note"}}, Links: []memory.Link{}}
+	created := gadgetCall(t, params, "memory.claim-set", claim)
+	if !created.Success {
+		t.Fatalf("claim create failed: %+v", created)
+	}
+	raw, _ := json.Marshal(created.Data)
+	var stored memory.Claim
+	if err := json.Unmarshal(raw, &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.ID == "" || stored.Revision != 1 {
+		t.Fatalf("claim identity missing: %s", raw)
+	}
+	found := gadgetCall(t, params, "memory.query", map[string]any{"path": "split", "kind": "observation", "limit": 1})
+	if !found.Success {
+		t.Fatalf("claim query failed: %+v", found)
+	}
+	raw, _ = json.Marshal(found.Data)
+	var page memory.Results[*memory.Claim]
+	if err := json.Unmarshal(raw, &page); err != nil || len(page.Items) != 1 || page.Items[0].ID != stored.ID {
+		t.Fatalf("claim query results: %s %v", raw, err)
+	}
+	other := agent.RunParams{}
+	if err := h.prepareRunInstructions(gadgetOtherSession, &other); err != nil {
+		t.Fatal(err)
+	}
+	requireGadgetError(t, gadgetCall(t, other, "memory.claim-get", map[string]any{"id": stored.ID}), "not_found")
+	requireGadgetError(t, gadgetCall(t, params, "memory.query", map[string]any{"session_id": gadgetOtherSession}), "invalid_request")
+	requireGadgetError(t, gadgetCall(t, params, "memory.claim-set", map[string]any{"session_id": gadgetOtherSession}), "invalid_request")
+	if got := gadgetCall(t, params, "memory.claim-get", map[string]any{"id": stored.ID}); !got.Success {
+		t.Fatalf("claim full fetch failed: %+v", got)
+	}
+	for _, method := range []string{"memory.list", "memory.search"} {
+		data := map[string]any{"limit": 1}
+		if method == "memory.search" {
+			data["query"] = "operator"
+		} else {
+			data["path"] = "split"
+		}
+		got := gadgetCall(t, params, method, data)
+		raw, _ := json.Marshal(got.Data)
+		if !got.Success || !bytes.Contains(raw, []byte(`"items"`)) || bytes.Contains(raw, []byte(`"body"`)) {
+			t.Fatalf("note summaries are unbounded/full: %s %+v", raw, got)
+		}
+	}
+	if got := gadgetCall(t, params, "memory.claim-delete", map[string]any{"id": stored.ID, "revision": stored.Revision}); !got.Success {
+		t.Fatalf("claim erase failed: %+v", got)
+	}
+	requireGadgetError(t, gadgetCall(t, params, "memory.claim-get", map[string]any{"id": stored.ID}), "not_found")
 }
 
 func TestGadgetSchedulesAreOwnedAndRevocable(t *testing.T) {

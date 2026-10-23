@@ -18,6 +18,7 @@ import (
 // fresh agent session and is therefore handed the transcript explicitly.
 const distillPrompt = `[SYSTEM: MEMORY DISTILLATION]
 Below is the stored conversation transcript. Extract its durable knowledge and relevant working state according to the system memory contract: the original task, key decisions and rationale, important context (file paths, names, conventions, learnings), current state, and pending actions.
+Preserve specific source references and distinguish observed/user/document evidence from inference. Keep corrections and scoped negative results; record consequential unknowns as unresolved questions without inventing verification.
 
 When done, briefly report what you wrote or updated as your final message.
 

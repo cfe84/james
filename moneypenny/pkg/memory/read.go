@@ -2,11 +2,40 @@ package memory
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"unicode/utf8"
 )
 
 const MaxReadCharacters = 64000
+
+// ReadBounded preserves Unicode paging while bounding the serialized response,
+// even when imported notes contain many JSON-escaped characters.
+func ReadBounded(root, path string, offset, limit int) (*Page, error) {
+	if limit < 1 || limit > MaxReadCharacters {
+		return nil, fmt.Errorf("limit must be 1–%d", MaxReadCharacters)
+	}
+	page, err := Read(root, path, offset, min(limit, MaxResponseCharacters/2))
+	if err != nil || page == nil {
+		return page, err
+	}
+	for {
+		encoded, err := json.Marshal(page)
+		if err != nil {
+			return nil, err
+		}
+		if utf8.RuneCount(encoded) <= MaxResponseCharacters-256 {
+			return page, nil
+		}
+		runes := []rune(page.Body)
+		if len(runes) < 2 {
+			return nil, fmt.Errorf("memory note metadata exceeds response budget")
+		}
+		page.Body = string(runes[:len(runes)/2])
+		next := offset + utf8.RuneCountInString(page.Body)
+		page.NextOffset = &next
+	}
+}
 
 type Page struct {
 	*Node

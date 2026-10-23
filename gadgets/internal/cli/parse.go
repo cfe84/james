@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +29,7 @@ func command(args []string) (string, []string, error) {
 	method := args[0] + "." + args[1]
 	switch method {
 	case "memory.get", "memory.list", "memory.search", "memory.set", "memory.batch", "memory.delete", "memory.revisions",
+		"memory.query", "memory.claim-set", "memory.claim-get", "memory.claim-delete",
 		"agents.list", "agents.message", "agents.create", "subagents.list", "subagents.create", "subagents.message",
 		"subagents.edit", "subagents.complete", "subagents.stop", "subagents.delete",
 		"traits.list", "traits.get", "traits.edit", "sessions.edit", "moneypenny.logs",
@@ -57,6 +59,14 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 	}
 	allowed := map[string]bool{}
 	switch method {
+	case "memory.list", "memory.search":
+		allowed["limit"], allowed["cursor"] = true, true
+	case "memory.query":
+		for _, key := range []string{"text", "path", "kind", "status", "confidence", "importance", "method", "source", "verified-before", "stale", "linked-to", "relation", "limit", "cursor"} {
+			allowed[key] = true
+		}
+	case "memory.claim-delete":
+		allowed["revision"] = true
 	case "moneypenny.logs":
 		allowed["name"], allowed["lines"] = true, true
 	case "memory.get":
@@ -88,7 +98,23 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 	}
 	data := map[string]any{}
 	for key, value := range flags {
+		if method == "memory.query" {
+			key = strings.ReplaceAll(key, "-", "_")
+		}
 		data[key] = value
+		if key == "stale" {
+			if value != "true" && value != "false" {
+				return Request{}, errors.New("--stale must be true or false")
+			}
+			data[key] = value == "true"
+		}
+		if key == "revision" {
+			n, err := strconv.ParseInt(value, 10, 64)
+			if err != nil || n < 1 {
+				return Request{}, errors.New("--revision must be a positive integer")
+			}
+			data[key] = n
+		}
 		if key == "yolo" {
 			data[key] = value == "true"
 		}
@@ -101,8 +127,12 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 		}
 		if key == "offset" || key == "limit" {
 			n, err := strconv.Atoi(value)
-			if err != nil || n < 0 || (key == "limit" && (n == 0 || n > 64000)) {
-				return Request{}, fmt.Errorf("--%s must be a nonnegative integer; limit must be 1–64000", key)
+			maxLimit := 64000
+			if method != "memory.get" {
+				maxLimit = 50
+			}
+			if err != nil || n < 0 || (key == "limit" && (n == 0 || n > maxLimit)) {
+				return Request{}, fmt.Errorf("--%s must be a nonnegative integer; limit must be 1–%d", key, maxLimit)
 			}
 			data[key] = n
 		}
@@ -129,6 +159,34 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 		return nil
 	}
 	switch method {
+	case "memory.query":
+		err = arity(0, 0)
+	case "memory.claim-get", "memory.claim-delete":
+		if err = arity(1, 1); err == nil {
+			data["id"] = pos[0]
+			if method == "memory.claim-delete" && flags["revision"] == "" {
+				err = errors.New("claim deletion requires --revision")
+			}
+		}
+	case "memory.claim-set":
+		if err = arity(0, 0); err == nil {
+			var b []byte
+			b, err = readBounded(stdin, MaxRequestBytes)
+			if err == nil {
+				decoder := json.NewDecoder(bytes.NewReader(b))
+				decoder.UseNumber()
+				err = decoder.Decode(&data)
+				if err == nil && data == nil {
+					err = errors.New("claim input must be a JSON object")
+				}
+				if err == nil {
+					var extra any
+					if decoder.Decode(&extra) != io.EOF {
+						err = errors.New("claim input must contain exactly one JSON object")
+					}
+				}
+			}
+		}
 	case "run.list":
 		err = arity(0, 0)
 	case "run.status", "run.stop":

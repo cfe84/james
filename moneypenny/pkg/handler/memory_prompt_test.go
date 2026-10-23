@@ -61,6 +61,11 @@ func TestMemoryPromptInjectsFreshRootOnly(t *testing.T) {
 			"4000 Unicode characters", "2000 or fewer", "split its details",
 			"annotated index", "when to consult", "not these memory-use instructions",
 			"parent index", "before handoff or compaction",
+			"Combine targeted search/query with hierarchical exploration",
+			"gadgets memory claim-set", "gadgets memory query",
+			"provenance", "bounded uncertainty queue", "at most 10",
+			"negative results", "disproven/superseded", "16000",
+			"never invent confidence or provenance", "No automatic numerical confidence decay",
 		} {
 			if !strings.Contains(prompt, instruction) {
 				t.Errorf("missing instruction %q", instruction)

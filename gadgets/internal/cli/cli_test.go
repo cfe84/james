@@ -24,6 +24,13 @@ func TestParseCommands(t *testing.T) {
 		{"list", []string{"memory", "list", "project"}, "", "memory.list", `{"path":"project"}`},
 		{"revisions", []string{"memory", "revisions"}, "", "memory.revisions", `{"path":""}`},
 		{"search", []string{"memory", "search", "two words"}, "", "memory.search", `{"query":"two words"}`},
+		{"bounded list", []string{"memory", "list", "project", "--limit=5", "--cursor=next"}, "", "memory.list", `{"path":"project","limit":5,"cursor":"next"}`},
+		{"bounded search", []string{"memory", "search", "words", "--limit=1"}, "", "memory.search", `{"query":"words","limit":1}`},
+		{"claim query", []string{"memory", "query", "--path=engineering", "--kind=question", "--status=unresolved", "--confidence=tentative", "--importance=critical", "--method=inferred", "--source=design", "--verified-before=2026-01-01T00:00:00Z", "--stale=false", "--limit=5", "--cursor=next"}, "", "memory.query", `{"path":"engineering","kind":"question","status":"unresolved","confidence":"tentative","importance":"critical","method":"inferred","source":"design","verified_before":"2026-01-01T00:00:00Z","stale":false,"limit":5,"cursor":"next"}`},
+		{"claim links", []string{"memory", "query", "--linked-to=id", "--relation=contradicts", "--text=database"}, "", "memory.query", `{"linked_to":"id","relation":"contradicts","text":"database"}`},
+		{"claim get", []string{"memory", "claim-get", "id"}, "", "memory.claim-get", `{"id":"id"}`},
+		{"claim set", []string{"memory", "claim-set"}, `{"title":"Claim","revision":9007199254740993}`, "memory.claim-set", `{"title":"Claim","revision":9007199254740993}`},
+		{"claim delete", []string{"memory", "claim-delete", "id", "--revision=2"}, "", "memory.claim-delete", `{"id":"id","revision":2}`},
 		{"set stdin", []string{"memory", "set", "project"}, "a\nb\n", "memory.set", `{"path":"project","body":"a\nb\n"}`},
 		{"set empty", []string{"memory", "set", "--body="}, "ignored", "memory.set", `{"path":"","body":""}`},
 		{"set flags first", []string{"memory", "set", "--body", "hello", "project"}, "", "memory.set", `{"path":"project","body":"hello"}`},
@@ -82,6 +89,9 @@ func TestParseCommands(t *testing.T) {
 				t.Fatalf("method = %q, want %q", got.Method, tt.method)
 			}
 			encoded, _ := json.Marshal(got.Data)
+			if tt.name == "claim set" && !bytes.Contains(encoded, []byte("9007199254740993")) {
+				t.Fatalf("claim revision lost integer precision: %s", encoded)
+			}
 			var wantData, gotData any
 			_ = json.Unmarshal([]byte(tt.data), &wantData)
 			_ = json.Unmarshal(encoded, &gotData)
@@ -131,6 +141,11 @@ func TestParseErrors(t *testing.T) {
 		{"memory", "search"}, {"memory", "get", "a", "b"}, {"memory", "set", "--session", "other"},
 		{"memory", "set", "--body"}, {"memory", "set", "--body=x", "--body=y"},
 		{"memory", "delete"}, {"memory", "delete", "a", "--recursive=maybe"},
+		{"memory", "query", "--limit=51"}, {"memory", "list", "--limit=51"},
+		{"memory", "search", "x", "--limit=0"}, {"memory", "query", "--stale=maybe"},
+		{"memory", "query", "unexpected"}, {"memory", "query", "--session-id=other"},
+		{"memory", "claim-get"}, {"memory", "claim-get", "id", "--path=other"},
+		{"memory", "claim-delete", "id"}, {"memory", "claim-delete", "id", "--revision=0"},
 		{"agents", "message", "id"}, {"subagents", "create"}, {"notify"},
 		{"agents", "create"},
 		{"moneypenny", "logs", "extra"}, {"moneypenny", "logs", "--lines=0"},
@@ -164,6 +179,11 @@ func TestParseErrors(t *testing.T) {
 	} {
 		if _, err := Parse([]string{"memory", "batch"}, strings.NewReader(input)); err == nil {
 			t.Errorf("batch input %s unexpectedly accepted", input)
+		}
+		for _, input := range []string{"null", "[]", `{} {}`, `{"id":`, `""`} {
+			if _, err := Parse([]string{"memory", "claim-set"}, strings.NewReader(input)); err == nil {
+				t.Errorf("invalid claim JSON accepted: %q", input)
+			}
 		}
 	}
 }

@@ -8,8 +8,12 @@ and implements atomic memory batches.
 
 ```text
 gadgets memory get [path] [--offset N] [--limit N]
-gadgets memory list [path]
-gadgets memory search query
+gadgets memory list [path] [--limit N] [--cursor TOKEN]
+gadgets memory search query [--limit N] [--cursor TOKEN]
+gadgets memory query [--text words] [--path topic] [--kind KIND] [--status STATUS] [--confidence LEVEL] [--importance LEVEL] [--method METHOD] [--source reference] [--verified-before RFC3339] [--stale=true|false] [--linked-to ID] [--relation RELATION] [--limit N] [--cursor TOKEN]
+gadgets memory claim-get ID
+gadgets memory claim-set
+gadgets memory claim-delete ID --revision N
 gadgets memory set [path] [--body text]
 gadgets memory batch
 gadgets memory delete path [--recursive]
@@ -173,10 +177,21 @@ settings, session assignments and unrelated definitions remain unchanged. These
 commands cannot create/delete traits, rename them, change defaults, assign traits,
 or manage sessions.
 
-Memory reads return up to 64000 Unicode characters by default. For very large imported
-notes, follow `data.next_offset` using `--offset` until it is absent; `--limit`
-accepts 1–64000 characters. `data.characters` is the full node size. Paging does
-not change stored content and allows reading notes larger than the response cap.
+Memory retrieval is bounded to 16000 serialized Unicode characters, including
+JSON escaping and metadata. Note `get --limit` accepts 1–64000 as an upper bound;
+the actual page may be shorter. Follow `data.next_offset` using `--offset`;
+`data.characters` is the full note size. Paging never changes stored content.
+
+`list`, `search` and `query` return `data.items`, `data.has_more` and
+`data.next_cursor`, default 10, maximum 50 results (`--limit`). Reuse identical
+filters/limit with `--cursor`. Note list/search return metadata, not bodies.
+Claim queries return qualified body previews, evidence, status/freshness, and
+one-hop linked titles; `claim-get` reads the full record. See
+[the claim schema and filter semantics](../SPEC.md#qualified-claims-and-deterministic-retrieval).
+`claim-set` reads one JSON object from stdin, requires an existing nonroot topic,
+and uses the current id/revision for replacement. Confidence/provenance are
+required, not inferred from old notes. `claim-delete` is explicit permanent
+erasure; normal corrections retain disproven/superseded claims with links.
 
 `memory set` and both `message` commands read stdin verbatim unless `--body`
 is present (including an explicitly empty value). `agents create` and
@@ -211,8 +226,12 @@ and `Authorization: Bearer <token>`. Body:
 
 | Command | Method | `data` |
 | --- | --- | --- |
-| memory get/list/revisions | `memory.get` / `memory.list` / `memory.revisions` | `{"path":""}`; get also accepts numeric `offset` and `limit` |
-| memory search | `memory.search` | `{"query":"..."}` |
+| memory get/list/revisions | `memory.get` / `memory.list` / `memory.revisions` | `{"path":""}`; get accepts `offset`,`limit`; list accepts `limit`,`cursor` |
+| memory search | `memory.search` | `{"query":"...","limit":10,"cursor":"..."}`; pagination fields optional |
+| memory query | `memory.query` | Optional `text`,`path`,`kind`,`status`,`confidence`,`importance`,`method`,`source`,`verified_before`,`stale`,`linked_to`,`relation`,`limit`,`cursor` |
+| memory claim-get | `memory.claim-get` | `{"id":"..."}` |
+| memory claim-set | `memory.claim-set` | Full claim JSON; id/revision required for replacement, omitted on creation |
+| memory claim-delete | `memory.claim-delete` | `{"id":"...","revision":1}` |
 | memory set | `memory.set` | `{"path":"","body":"..."}` |
 | memory batch | `memory.batch` | `{"entries":[{"path":"...","body":"..."}]}` |
 | memory delete | `memory.delete` | `{"path":"...","recursive":false}` |

@@ -19,7 +19,7 @@ import (
 const compactionDistillPrompt = `[SYSTEM: CONTEXT COMPACTION]
 Your context is getting large and is about to be compacted into a fresh session. Do the following, in order:
 
-1. Preserve the durable knowledge and working state from the current conversation according to the system memory contract.
+1. Preserve the durable knowledge and working state from the current conversation according to the system memory contract, retaining provenance, corrections, scoped negative results and consequential unresolved questions without inventing verification.
 
 2. Output a comprehensive handoff summary as your FINAL message: original task, key decisions and rationale, important context, current state, and pending actions. Include enough context to resume work, with references to any details you actually saved. Output ONLY the summary text — no preamble or meta-commentary.`
 

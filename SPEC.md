@@ -1233,7 +1233,7 @@ retired `memory/` directory. It survives turns, restarts, and compaction.
 
 ### Model and write guarantees
 
-- Memory is a uniform hierarchy of Markdown nodes addressed by slash-delimited
+- Memory combines hierarchical Markdown topic notes and structured claims. Notes are addressed by slash-delimited
   topic paths. The root path is the empty string (`""`); whole-tree listing is
   root-first, followed by case-sensitive path order. `list [path]` browses only
   immediate children. Each note includes an overview and annotated child index.
@@ -1241,7 +1241,9 @@ retired `memory/` directory. It survives turns, restarts, and compaction.
   descriptions are derived from the first non-empty heading/line for display.
   Path normalization rejects `.`/`..`, control characters, invalid UTF-8, and
   segments longer than 64 Unicode characters; paths are logical keys, not file
-  destinations.
+  destinations. New/replaced topic paths are capped at 1,024 Unicode characters
+  so identifiers fit bounded retrieval; existing longer imported paths are not
+  rewritten by copying.
 - All new or updated bodies must be valid UTF-8 and **at most 4,000 Unicode
   characters**, including headings and index; the root targets **2,000 or fewer**.
   Oversized writes fail without truncation. Missing ancestors are auto-created.
@@ -1251,11 +1253,63 @@ retired `memory/` directory. It survives turns, restarts, and compaction.
   node's current revision; caller-supplied revisions are ignored. There is no
   retained revision history or replay API.
 - Root deletion is refused. A node with descendants requires `--recursive`;
-  subtree checks and removal are transactional.
+  subtree checks and removal are transactional. Topics containing claims cannot
+  be deleted until the claims are moved or explicitly erased.
 - Imported oversized notes remain readable intact. They are not destructively
   reduced by import, copying, or prompt injection; any later replacement must
   meet the limit. Agents should split relevant oversized notes and update indexes
   atomically, preserving useful knowledge rather than discarding it.
+
+### Qualified claims and deterministic retrieval
+
+`gadgets memory claim-set` accepts a JSON claim on stdin under an existing
+nonroot topic. Each claim has a stable ID, title/body, kind
+(`fact`, `decision`, `observation`, `question`, `negative_result`), status
+(`active`, `unresolved`, `disputed`, `disproven`, `superseded`), confidence
+(`unverified`, `tentative`, `supported`), importance (`critical`, `useful`,
+`incidental`), provenance, and optional `verified_at`/`review_after` timestamps.
+Provenance records `method` (`observed`, `inferred`, `user`, `document`), a specific
+source reference, and an optional evidence timestamp. Dates use RFC3339 and are
+normalized to UTC. `recorded_at` is server-owned; verification cannot be future.
+Confidence is categorical, not a calibrated probability. Review expiry marks a
+claim stale without declaring it false or automatically changing its confidence.
+Missing verification remains unknown.
+
+Create with no ID/revision; updates require the ID and current revision.
+Revisions reject lost updates; topic moves preserve identity. Normal corrections
+retain the old claim as disproven/superseded with evidence and links rather than
+erasing it. `claim-delete ID --revision N` deliberately permanently erases a
+claim and its links. Claims do not have a separate historical revision log.
+Existing notes are preserved unchanged and are not assigned invented evidence.
+Same-host session duplication snapshots notes, claims and links together and
+preserves claim IDs/revisions; a destination claim-ID collision aborts the copy.
+
+Links use stable target claim IDs and relations `related_to`, `supports`,
+`contradicts`, `supersedes`. Full retrieval includes outgoing links and up to
+16 incoming backlinks with abbreviated titles, never recursively loaded bodies.
+`more_backlinks` signals additional incoming links; query by linked ID to explore.
+Writes atomically validate topic, revision and link targets. Limits: title 200,
+body 4,000, provenance source 500 Unicode characters; 1–8 provenance entries and
+at most 16 outgoing links. Encoded non-link claim data is capped at 6,000
+characters to leave room for linked metadata in a full response.
+
+`gadgets memory query` combines deterministic filters for text, topic subtree,
+kind, status, confidence, importance, evidence method/source, verified-before,
+stale state, linked ID and relation. Text is a Unicode case-insensitive literal
+substring; metadata categories are exact matches. All statuses are returned
+unless explicitly filtered, including rejected/unresolved claims. Results are
+stable ID-ordered summaries with evidence, freshness, link titles and a
+240-character body preview (`body_truncated` when shortened); `claim-get ID`
+fetches the complete record. There is no vector ranking or forced weak match.
+Replacing a claim from a truncated summary is rejected to prevent losing its body.
+
+Agent `memory list`, `search`, and `query` return
+`{items,has_more,next_cursor}`, default **10**, maximum **50** results per request.
+Serialized retrieval is capped at **16,000 Unicode characters**, including
+metadata and JSON escaping. Note search/list return metadata only, in binary
+path order. Cursors bind the unchanged query (including limit), use keyset
+continuation, and are not a snapshot across later writes; restart a query when
+fresh consistency is required. No automatic all-page or recursive-link loading.
 
 ### Root-first runtime prompt
 
@@ -1268,9 +1322,9 @@ relevant branches and use `gadgets memory list` to repair incomplete indexes.
 The injected **root body** is capped at **4,000 Unicode characters** (not bytes
 or tokens). An oversized root receives a marked excerpt plus a pointer to
 `gadgets memory get` for the full content; stored content is unchanged. Reads
-are paged at 64,000 Unicode characters by default (configurable with `--limit`);
-follow `next_offset` with `--offset` for unusually large imported notes, including
-those exceeding the transport response limit.
+accept an upper bound of 1–64,000 body characters with `--limit`, but actual pages
+shrink to the serialized retrieval budget; follow `next_offset` with `--offset`
+without assuming a fixed page length. Stored content remains intact.
 A separate warning of at most **2,000 Unicode characters** lists **individual
 oversized nodes and their character counts**, with an omitted-count/navigation
 footer when necessary. This is not an aggregate-tree size limit: many small
@@ -1286,9 +1340,19 @@ gadgets access. Memory-disabled compaction summarizes only; distillation require
 Memory enabled. Claude receives system-prompt instructions, Copilot its custom
 instructions file, and OpenCode a task prefix—not a separate system-role message.
 
+Instructions combine targeted note/claim search with hierarchical exploration,
+preserve attribution and retained corrections, distinguish inference from evidence,
+and keep at most 10 task-relevant unresolved questions with a next verification
+action. Scoped negative results record where/when no reliable result was found.
+Uncertainty reduction stays within the current task and permissions, not endless
+autonomous exploration. Shared Ponsonby stores and LLM-managed memory are not part
+of this session-storage change.
+
 ### Operator CLI, TUI, and Qew
 
-The existing management commands call the **same SQLite memory APIs** as gadgets:
+The existing management commands call the **same SQLite memory APIs** as gadgets.
+These existing editors manage topic notes; structured claims are accessed through
+the gadgets claim/query commands, not rendered as editable Markdown claims.
 
 - `hem show memory SESSION_ID` — body-less outline plus the root note.
 - `hem show memory SESSION_ID PATH` — complete node and immediate children.

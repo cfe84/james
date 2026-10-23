@@ -23,8 +23,15 @@ const Help = `gadgets — session-scoped tools provided by Moneypenny
 
 Usage:
   gadgets memory get [path] [--offset N] [--limit N]
-  gadgets memory list [path]
-  gadgets memory search query
+  gadgets memory list [path] [--limit N] [--cursor TOKEN]
+  gadgets memory search query [--limit N] [--cursor TOKEN]
+  gadgets memory query [--text words] [--path topic] [--kind KIND] [--status STATUS]
+                      [--confidence LEVEL] [--importance LEVEL] [--method METHOD]
+                      [--source reference] [--verified-before RFC3339] [--stale=true|false]
+                      [--linked-to ID] [--relation RELATION] [--limit N] [--cursor TOKEN]
+  gadgets memory claim-get ID
+  gadgets memory claim-set                   (JSON claim on stdin; id/revision for updates)
+  gadgets memory claim-delete ID --revision N
   gadgets memory set [path] [--body text]       (otherwise reads stdin)
   gadgets memory batch                       (JSON [{path,body}, ...] on stdin)
   gadgets memory delete path [--recursive]
@@ -58,6 +65,13 @@ Usage:
 
 Flags may follow positional arguments; -- ends flag parsing.
 Omitted memory paths refer to the root. Batch updates are atomic on the daemon.
+Memory list/search/query return paginated summaries {items,has_more,next_cursor}:
+10 results by default, at most 50; serialized retrieval is capped at 16000 Unicode
+characters. Reuse unchanged filters and the returned cursor for the next page.
+Note get returns next_offset when more content remains, even with a large --limit.
+Claims require an existing nonroot topic, title/body, kind, status, confidence,
+importance and provenance; claim-get includes the full record and linked titles.
+Use disproven/superseded status for corrections; claim-delete permanently erases.
 Creating top-level agents requires separate opt-in permission (default: false).
 Creation uses your moneypenny unless --moneypenny names another registered host, inherits your current gadget permissions, and
 automatically attributes the initial prompt to you. No --from override is accepted.

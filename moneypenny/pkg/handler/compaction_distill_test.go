@@ -272,7 +272,7 @@ func TestDistillationChunksSplitUTF8WithinByteBudget(t *testing.T) {
 }
 
 func TestDistillationPromptCapIncludesWrapperASCIIAndUTF8(t *testing.T) {
-	const cap = 512
+	cap := distillationPromptOverhead() + 128
 	for _, content := range []string{"ascii " + strings.Repeat("x", 800), strings.Repeat("界", 800)} {
 		chunks := distillationChunks([]*store.ConversationTurn{{Role: "user", Content: content}}, cap)
 		if len(chunks) == 0 {
