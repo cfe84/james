@@ -1376,8 +1376,18 @@ comma-separated; `:read` allows consultation without transcript publication.
 Explicit `none` or an explicit empty flag opts out. Omitted selection applies
 defaults to newly created agents/subagents; copies inherit their source's
 assignments. Existing and imported sessions are not retroactively assigned.
-TUI and Qew expose assignments in their existing creation/copy/edit forms;
-store administration is through Hem commands. Session memory permissions do
+TUI and Qew expose assignments in their existing creation/copy/edit forms.
+Both have a **Ponsonbies** management screen (dashboard `P`; Qew also has a
+Ponsonbies toolbar button), alongside Moneypennies. Create a store with a name,
+purpose, registered host, provider, explicit model and optional new-agent default.
+The screen lists purpose/host/model/defaults and supports configuration editing,
+default toggling, current introduction/request details, failed-request retry and
+confirmed permanent deletion. Store names/hosts are immutable after creation.
+TUI: `n` create, `e` edit, Enter details, `s` toggle default, `t` retry the first
+failed request shown in details, `d` twice delete, `r` refresh, Esc back/cancel.
+Qew details allow selecting individual failed requests to retry.
+Backend assignment/outstanding-job deletion guards remain authoritative and
+errors leave failed forms intact. Hem commands remain available. Session memory permissions do
 not grant or revoke shared-store assignments.
 
 Assigned introductions are injected without calling a curator before each

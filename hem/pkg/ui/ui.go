@@ -53,6 +53,7 @@ const (
 	viewDiff
 	viewEditProject
 	viewMoneypennies
+	viewPonsonbies
 	viewAddMoneypenny
 	viewShell
 	viewWizard
@@ -65,27 +66,28 @@ const (
 
 // Model is the top-level bubbletea model.
 type Model struct {
-	currentView   view
-	previousView  view // for esc navigation
-	dashboard     dashboardModel
-	projects      projectsModel
-	projectDetail dashboardModel // reuses dashboardModel with project filter
-	sessions      sessionsModel
-	chat          chatModel
-	create        createModel
-	edit          editModel
-	editProject   editProjectModel
-	importForm    importModel
-	diff          diffModel
-	memory        memoryModel
-	moneypennies    moneypenniesModel
-	addMoneypenny   addMoneypennyModel
-	shell           shellModel
-	wizard         wizardModel
-	summary        summaryModel
-	traits         traitsModel
-	editTrait      editTraitModel
-	channels       channelsModel
+	currentView       view
+	previousView      view // for esc navigation
+	dashboard         dashboardModel
+	projects          projectsModel
+	projectDetail     dashboardModel // reuses dashboardModel with project filter
+	sessions          sessionsModel
+	chat              chatModel
+	create            createModel
+	edit              editModel
+	editProject       editProjectModel
+	importForm        importModel
+	diff              diffModel
+	memory            memoryModel
+	moneypennies      moneypenniesModel
+	ponsonbies        ponsonbiesModel
+	addMoneypenny     addMoneypennyModel
+	shell             shellModel
+	wizard            wizardModel
+	summary           summaryModel
+	traits            traitsModel
+	editTrait         editTraitModel
+	channels          channelsModel
 	parentChats       []chatModel       // stack for subagent navigation
 	chatDrafts        map[string]string // sessionID → unsent input text
 	width             int
@@ -178,6 +180,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.diff.height = h
 		m.moneypennies.width = msg.Width
 		m.moneypennies.height = h
+		m.ponsonbies.width = msg.Width
+		m.ponsonbies.height = h
+		if m.ponsonbies.form != nil {
+			m.ponsonbies.form.width = msg.Width
+			m.ponsonbies.form.height = h
+		}
 		m.shell.width = msg.Width
 		m.shell.height = h
 		m.wizard.width = msg.Width
@@ -376,6 +384,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateEditProject(msg)
 		case viewMoneypennies:
 			return m.updateMoneypennies(msg)
+		case viewPonsonbies:
+			var cmd tea.Cmd
+			m.ponsonbies, cmd = m.ponsonbies.Update(msg)
+			return m, cmd
 		case viewAddMoneypenny:
 			return m.updateAddMoneypenny(msg)
 		case viewShell:
@@ -442,6 +454,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dashboard, cmd = m.dashboard.Update(msg)
 		return m, cmd
 
+	case ponsonbiesLoadedMsg, ponsonbyActionMsg, ponsonbyDetailMsg:
+		var cmd tea.Cmd
+		m.ponsonbies, cmd = m.ponsonbies.Update(msg)
+		return m, cmd
 	case moneypenniesLoadedMsg, moneypennyDeletedMsg, moneypennyPingedMsg, moneypennyDefaultSetMsg, moneypennyEnabledMsg:
 		var cmd tea.Cmd
 		m.moneypennies, cmd = m.moneypennies.Update(msg)
@@ -967,6 +983,13 @@ func (m Model) handleEsc() (tea.Model, tea.Cmd) {
 		m.statusMsg = ""
 		m.moneypennies.loading = true
 		return m, m.moneypennies.loadMoneypennies()
+	case viewPonsonbies:
+		if m.ponsonbies.form != nil {
+			m.ponsonbies.form = nil
+			return m, nil
+		}
+		m.currentView = viewDashboard
+		return m, tea.Batch(m.dashboard.loadDashboard(), m.dashboard.dashboardPollTickAdaptive())
 	case viewMoneypennies:
 		m.currentView = viewDashboard
 		m.statusMsg = ""
@@ -1166,6 +1189,10 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.moneypennies.height = m.viewHeight()
 		m.currentView = viewMoneypennies
 		return m, m.moneypennies.loadMoneypennies()
+	case "P":
+		m.ponsonbies = ponsonbiesModel{client: m.client, width: m.width, height: m.viewHeight(), loading: true}
+		m.currentView = viewPonsonbies
+		return m, m.ponsonbies.load()
 	case "p":
 		m.projects = newProjectsModel(m.client)
 		m.projects.width = m.width
@@ -2050,6 +2077,8 @@ func (m Model) View() string {
 		content = m.diff.View()
 	case viewMoneypennies:
 		content = m.moneypennies.View()
+	case viewPonsonbies:
+		content = m.ponsonbies.View()
 	case viewAddMoneypenny:
 		content = m.addMoneypenny.View()
 	case viewShell:
@@ -2133,6 +2162,7 @@ func (m Model) renderStatusBar() string {
 				statusKeyStyle.Render("n") + statusDescStyle.Render(" new"),
 				statusKeyStyle.Render("x") + statusDescStyle.Render(" shell"),
 				statusKeyStyle.Render("m") + statusDescStyle.Render(" moneypennies"),
+				statusKeyStyle.Render("P") + statusDescStyle.Render(" ponsonbies"),
 				statusKeyStyle.Render("p") + statusDescStyle.Render(" projects"),
 				statusKeyStyle.Render("t") + statusDescStyle.Render(" traits"),
 				statusKeyStyle.Render("l") + statusDescStyle.Render(" all sessions"),
@@ -2360,6 +2390,12 @@ func (m Model) renderStatusBar() string {
 			statusKeyStyle.Render("↵") + statusDescStyle.Render(" import"),
 			statusKeyStyle.Render("tab") + statusDescStyle.Render(" next"),
 			statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
+		}
+	case viewPonsonbies:
+		if m.ponsonbies.form != nil {
+			keys = []string{statusDescStyle.Render("enter: save  tab: next field  space: toggle  esc: cancel")}
+		} else {
+			keys = []string{statusDescStyle.Render("enter: details  n: new  e: edit  s: default  d: delete  t: retry failed  r: refresh  esc: back")}
 		}
 	case viewMoneypennies:
 		if m.moneypennies.confirmDelete {

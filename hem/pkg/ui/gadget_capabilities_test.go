@@ -10,11 +10,15 @@ import (
 )
 
 type permissionTestSender struct {
-	request *protocol.Request
+	request  *protocol.Request
+	response *protocol.Response
 }
 
 func (s *permissionTestSender) Send(req *protocol.Request) (*protocol.Response, error) {
 	s.request = req
+	if s.response != nil {
+		return s.response, nil
+	}
 	return protocol.OKResponse(map[string]string{"session_id": "created"}), nil
 }
 

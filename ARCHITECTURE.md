@@ -350,6 +350,13 @@ Explicit operator assignment changes persist before remote lifecycle requests,
 so revocation remains authoritative even if the remote update fails.
 Defaults apply only on creation, copies preserve source assignments, and imports
 do not acquire sharing implicitly. TUI/Qew reuse their current session forms.
+Dedicated Ponsonbies management screens use the same Hem commands as the CLI,
+not new HTTP endpoints or a second registry. Qew reuses management rows, keyboard
+selection and wizard modals; TUI reuses formField/createModel editing through a
+custom submit callback, preserving the existing session submission path.
+List views expose host/provider/model/default; details fetch the live introduction
+and bounded retained jobs, with failed-job retry and confirmed deletion.
+Edit forms exclude immutable name/host fields; backend errors preserve form input.
 
 Consultation submits an asynchronous request rather than holding the existing
 short-lived gadget transport open for an LLM turn. Result lookup is bound to

@@ -690,6 +690,8 @@
   function activeMgmtList() {
     const mp = document.getElementById('moneypennies-view');
     if (mp && mp.style.display !== 'none') return { kind: 'mp', container: document.getElementById('mp-content') };
+    const pn = document.getElementById('ponsonbies-view');
+    if (pn && pn.style.display !== 'none') return { kind: 'ponsonby', container: document.getElementById('ponsonby-content') };
     const tr = document.getElementById('traits-view');
     if (tr && tr.style.display !== 'none') return { kind: 'trait', container: document.getElementById('trait-content') };
     const pr = document.getElementById('projects-view');
@@ -738,6 +740,16 @@
         case 's': if (name) setDefaultMoneypenny(name); return true;
         case 'd': if (name) deleteMoneypenny(name); return true;
         case 'n': showAddMoneypennyModal(); return true;
+      }
+    } else if (a.kind === 'ponsonby') {
+      const id = row ? row.dataset.ponsonbyId : null;
+      switch (key) {
+        case 'Enter': if (id) showPonsonbyDetail(id); return true;
+        case 'e': if (id) showPonsonbyForm(id); return true;
+        case 's': if (id) togglePonsonbyDefault(id); return true;
+        case 'd': if (id) deletePonsonby(id); return true;
+        case 'n': showPonsonbyForm(); return true;
+        case 'r': loadPonsonbies(); return true;
       }
     } else if (a.kind === 'project') {
       const name = row ? row.dataset.projectName : null;
@@ -909,6 +921,7 @@
     syncSchedulesToggle([]);
     document.getElementById('dashboard-view').style.display = 'none';
     document.getElementById('moneypennies-view').style.display = 'none';
+    document.getElementById('ponsonbies-view').style.display = 'none';
     document.getElementById('projects-view').style.display = 'none';
     document.getElementById('traits-view').style.display = 'none';
     document.getElementById('chat-view').style.display = 'flex';
@@ -1896,6 +1909,7 @@
           <div class="cmd-item"><kbd>o</kbd> Quick switcher</div>
           <div class="cmd-item"><kbd>n</kbd> New agent</div>
           <div class="cmd-item"><kbd>m</kbd> Moneypennies</div>
+          <div class="cmd-item"><kbd>P</kbd> Ponsonbies</div>
           <div class="cmd-item"><kbd>p</kbd> Projects</div>
           <div class="cmd-item"><kbd>t</kbd> Traits</div>
           <div class="cmd-item"><kbd>b</kbd> Toggle completion sound</div>
@@ -4968,6 +4982,158 @@
     });
   }
 
+  // --- Ponsonby Management ---
+
+  let ponsonbiesCache = [];
+
+  function showPonsonbiesView() {
+    document.getElementById('dashboard-view').style.display = 'none';
+    document.getElementById('ponsonbies-view').style.display = 'flex';
+    stopDashboardPoll();
+    mgmtCursor = 0;
+    loadPonsonbies();
+  }
+
+  function hidePonsonbiesView() {
+    document.getElementById('ponsonbies-view').style.display = 'none';
+    document.getElementById('dashboard-view').style.display = 'flex';
+    loadDashboard();
+    startDashboardPoll();
+  }
+
+  async function loadPonsonbies() {
+    const container = document.getElementById('ponsonby-content');
+    container.innerHTML = '<div class="loading">Loading...</div>';
+    try {
+      const resp = await apiCall('list', 'ponsonby', []);
+      if (resp.status === 'error') throw new Error(resp.message);
+      ponsonbiesCache = (resp.data.rows || []).map(r => ({
+        id: r[0], name: r[1], purpose: r[2], moneypenny: r[3],
+        default: r[4] === 'yes', agent: r[5], model: r[6],
+      }));
+      container.innerHTML = ponsonbiesCache.length ? ponsonbiesCache.map(p => `
+        <div class="mgmt-row" data-ponsonby-id="${escapeAttr(p.id)}">
+          <span class="mgmt-name">${escapeHtml(p.name)}</span>
+          <span class="mgmt-detail">${escapeHtml(p.purpose)} — ${escapeHtml(p.moneypenny)} · ${escapeHtml(p.agent)} / ${escapeHtml(p.model)}</span>
+          ${p.default ? '<span class="mgmt-badge default">default</span>' : ''}
+          <span class="mgmt-actions">
+            <button data-id="${escapeAttr(p.id)}" data-action="show">Details</button>
+            <button data-id="${escapeAttr(p.id)}" data-action="edit">Edit</button>
+            <button data-id="${escapeAttr(p.id)}" data-action="default">${p.default ? 'Remove Default' : 'Set Default'}</button>
+            <button data-id="${escapeAttr(p.id)}" data-action="delete" class="danger">Delete</button>
+          </span>
+        </div>`).join('') : '<div class="empty-state">No Ponsonbies. Create a shared store with New Ponsonby.</div>';
+      container.querySelectorAll('.mgmt-actions button').forEach(button => button.addEventListener('click', () => {
+        const { id, action } = button.dataset;
+        if (action === 'show') showPonsonbyDetail(id);
+        else if (action === 'edit') showPonsonbyForm(id);
+        else if (action === 'default') togglePonsonbyDefault(id);
+        else if (action === 'delete') deletePonsonby(id);
+      }));
+      applyMgmtCursor(container, false);
+    } catch (e) {
+      container.innerHTML = `<div class="empty-state">Error: ${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  async function showPonsonbyForm(id) {
+    try {
+      let p = { name: '', purpose: '', agent: 'copilot', model: '', default: false };
+      let hosts = [];
+      if (id) {
+        const resp = await apiCall('show', 'ponsonby', [id]);
+        if (resp.status === 'error') throw new Error(resp.message);
+        p = resp.data;
+      } else {
+        const resp = await apiCall('list', 'moneypenny', []);
+        if (resp.status === 'error') throw new Error(resp.message);
+        hosts = resp.data.rows || [];
+        if (!hosts.length) throw new Error('Register a Moneypenny before creating a Ponsonby.');
+      }
+      renderWizardModal(`
+        <h3>${id ? 'Edit' : 'New'} Ponsonby</h3>
+        <label for="pn-name">Name</label>
+        <input id="pn-name" value="${escapeAttr(p.name)}"${id ? ' disabled' : ''}>
+        <label for="pn-purpose">Purpose: what should this store remember?</label>
+        <textarea id="pn-purpose">${escapeHtml(p.purpose)}</textarea>
+        <label for="pn-host">Moneypenny (store location)</label>
+        ${id ? `<input id="pn-host" value="${escapeAttr(p.moneypenny)}" disabled>` :
+          `<select id="pn-host">${hosts.map(r => `<option value="${escapeAttr(r[0])}"${r[3] === '*' ? ' selected' : ''}>${escapeHtml(r[0])}</option>`).join('')}</select>`}
+        <label for="pn-agent">Curator provider</label>
+        <select id="pn-agent">${['copilot', 'claude', 'opencode'].map(a => `<option${a === p.agent ? ' selected' : ''}>${a}</option>`).join('')}</select>
+        <label for="pn-model">Curator model (required; choose an inexpensive model)</label>
+        <input id="pn-model" value="${escapeAttr(p.model)}">
+        <div class="toggle-row"><input id="pn-default" type="checkbox"${p.default ? ' checked' : ''}><label for="pn-default">Assign to new agents by default</label></div>
+        <p>Assigned publishing stores receive conversation history on their host and configured LLM provider. Agents can opt out or use :read. Defaults affect only new agents.</p>
+        <div class="modal-actions"><button class="btn-muted" onclick="window._qewCloseWizard()">Cancel</button><button class="btn" id="pn-save">Save</button></div>
+      `);
+      document.getElementById('pn-save').addEventListener('click', async () => {
+        const value = field => document.getElementById('pn-' + field).value.trim();
+        const name = value('name'), purpose = value('purpose'), host = value('host'), model = value('model');
+        if (!name || !purpose || !host || !model) { alert('Name, purpose, Moneypenny and model are required.'); return; }
+        const args = id ? [id] : ['--name', name, '--moneypenny', host];
+        args.push('--purpose', purpose, '--agent', value('agent'), '--model', model,
+          '--default=' + document.getElementById('pn-default').checked);
+        const button = document.getElementById('pn-save');
+        button.disabled = true;
+        try {
+          const resp = await apiCall(id ? 'update' : 'create', 'ponsonby', args);
+          if (resp.status === 'error') throw new Error(resp.message);
+          closeWizard();
+          await loadPonsonbies();
+        } catch (e) {
+          alert('Error: ' + e.message);
+          button.disabled = false;
+        }
+      });
+    } catch (e) { alert('Error: ' + e.message); }
+  }
+
+  async function showPonsonbyDetail(id) {
+    try {
+      const resp = await apiCall('show', 'ponsonby', [id]);
+      if (resp.status === 'error') throw new Error(resp.message);
+      const p = resp.data;
+      renderWizardModal(`
+        <h3>${escapeHtml(p.name)}</h3>
+        <p>${escapeHtml(p.purpose)}</p>
+        <p>${escapeHtml(p.moneypenny)} · ${escapeHtml(p.agent)} / ${escapeHtml(p.model)}</p>
+        <h4>Current introduction</h4><pre>${escapeHtml(p.introduction || 'No introduction yet.')}</pre>
+        <h4>Retained requests</h4>
+        ${(p.jobs || []).map(j => `<div class="mgmt-row"><span class="mgmt-detail">${escapeHtml(j.kind)} · ${escapeHtml(j.status)} · ${escapeHtml(j.id)}${j.error ? ': ' + escapeHtml(j.error) : ''}</span>${j.status === 'failed' ? `<button data-request="${escapeAttr(j.id)}">Retry</button>` : ''}</div>`).join('') || '<p>No retained requests.</p>'}
+        <div class="modal-actions"><button class="btn-muted" onclick="window._qewCloseWizard()">Close</button><button class="btn" id="pn-detail-refresh">Refresh</button></div>
+      `);
+      document.getElementById('pn-detail-refresh').addEventListener('click', () => showPonsonbyDetail(id));
+      document.querySelectorAll('button[data-request]').forEach(button => button.addEventListener('click', async () => {
+        button.disabled = true;
+        try {
+          const result = await apiCall('retry', 'ponsonby', [id, '--request', button.dataset.request]);
+          if (result.status === 'error') throw new Error(result.message);
+          await showPonsonbyDetail(id);
+        } catch (e) { alert('Error: ' + e.message); button.disabled = false; }
+      }));
+    } catch (e) { alert('Error: ' + e.message); }
+  }
+
+  async function togglePonsonbyDefault(id) {
+    const p = ponsonbiesCache.find(p => p.id === id);
+    if (!p) return;
+    try {
+      const resp = await apiCall('update', 'ponsonby', [id, '--default=' + !p.default]);
+      if (resp.status === 'error') throw new Error(resp.message);
+      await loadPonsonbies();
+    } catch (e) { alert('Error: ' + e.message); }
+  }
+
+  async function deletePonsonby(id) {
+    if (!confirm('Permanently delete this Ponsonby and all its shared memory? Remove session assignments and finish outstanding requests first.')) return;
+    try {
+      const resp = await apiCall('delete', 'ponsonby', [id]);
+      if (resp.status === 'error') throw new Error(resp.message);
+      await loadPonsonbies();
+    } catch (e) { alert('Error: ' + e.message); }
+  }
+
   // --- Moneypennies Management ---
 
   function showMoneypenniesView() {
@@ -6332,6 +6498,10 @@
   syncSchedulesToggle([]);
   document.getElementById('new-session-btn').addEventListener('click', openCreateWizard);
   document.getElementById('nav-moneypennies-btn').addEventListener('click', showMoneypenniesView);
+  document.getElementById('nav-ponsonbies-btn').addEventListener('click', showPonsonbiesView);
+  document.getElementById('ponsonby-back-btn').addEventListener('click', hidePonsonbiesView);
+  document.getElementById('ponsonby-add-btn').addEventListener('click', () => showPonsonbyForm());
+  document.getElementById('ponsonby-refresh-btn').addEventListener('click', loadPonsonbies);
   document.getElementById('nav-projects-btn').addEventListener('click', showProjectsView);
   document.getElementById('nav-traits-btn').addEventListener('click', showTraitsView);
   document.getElementById('mp-back-btn').addEventListener('click', hideMoneypenniesView);
@@ -6649,6 +6819,7 @@
       if (e.key === 'Escape') {
         e.preventDefault();
         if (mgmt.kind === 'mp') hideMoneypenniesView();
+        else if (mgmt.kind === 'ponsonby') hidePonsonbiesView();
         else if (mgmt.kind === 'project') hideProjectsView();
         else hideTraitsView();
         return;
@@ -6716,6 +6887,7 @@
         break;
       case '/': e.preventDefault(); openDashFilter(); break;
       case 'm': e.preventDefault(); showMoneypenniesView(); break;
+      case 'P': e.preventDefault(); showPonsonbiesView(); break;
       case 'b': e.preventDefault(); toggleSound(); break;
       case 'n': e.preventDefault(); openCreateWizard(); break;
       case 'p': e.preventDefault(); showProjectsView(); break;

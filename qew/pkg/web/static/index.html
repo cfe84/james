@@ -484,6 +484,7 @@ header h1 span { color: var(--primary); }
       </select>
       <div class="spacer"></div>
       <button class="btn-muted" id="nav-moneypennies-btn">Moneypennies</button>
+      <button class="btn-muted" id="nav-ponsonbies-btn">Ponsonbies</button>
       <button class="btn-muted" id="nav-projects-btn">Projects</button>
       <button class="btn-muted" id="nav-traits-btn">Traits</button>
       <button class="btn" id="new-session-btn">+ New Agent</button>
@@ -509,6 +510,18 @@ header h1 span { color: var(--primary); }
       <button class="btn" id="mp-add-btn">+ Add Moneypenny</button>
     </div>
     <div id="mp-content"></div>
+  </div>
+
+  <div id="ponsonbies-view" style="display:none;flex:1;overflow-y:auto;flex-direction:column">
+    <div class="dash-toolbar">
+      <button class="btn-muted" id="ponsonby-back-btn">← Dashboard</button>
+      <h2>Ponsonbies</h2>
+      <div class="spacer"></div>
+      <button class="btn-muted" id="ponsonby-refresh-btn">Refresh</button>
+      <button class="btn" id="ponsonby-add-btn">+ New Ponsonby</button>
+    </div>
+    <p>Default stores receive new agents' transcripts on the selected host and LLM provider. Opt out or use :read in the agent form.</p>
+    <div id="ponsonby-content"></div>
   </div>
 
   <div id="projects-view" style="display:none;flex:1;overflow-y:auto;flex-direction:column">

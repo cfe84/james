@@ -26,6 +26,103 @@ test('shared-memory forms preserve read-only assignments and explicit opt-outs',
   assert.match(app, /Publishing stores receive unprocessed conversation history/);
 });
 
+test('Ponsonby management creates, edits, retries and deletes through existing modals', async () => {
+  const app = fs.readFileSync(path.join(__dirname, '../pkg/web/static/app.js'), 'utf8');
+  const html = fs.readFileSync(path.join(__dirname, '../pkg/web/static/index.html'), 'utf8');
+  assert.match(html, /id="nav-ponsonbies-btn"/);
+  assert.match(html, /id="ponsonbies-view"/);
+  const p = { id: 'store', name: 'engineering', purpose: '<script>shared</script>', moneypenny: 'host', agent: 'copilot', model: 'cheap', default: true,
+    introduction: '<private>', jobs: [{ id: 'failed-request', kind: 'ingest', status: 'failed', error: '<unavailable>' }] };
+  const events = [], errors = [], buttons = {};
+  const nodes = {
+    'ponsonby-content': { querySelectorAll: () => [] },
+    'pn-name': { value: 'engineering' }, 'pn-purpose': { value: 'Shared decisions' },
+    'pn-host': { value: 'host' }, 'pn-agent': { value: 'copilot' }, 'pn-model': { value: 'cheap' },
+    'pn-default': { checked: false },
+  };
+  const button = id => buttons[id] ||= { disabled: false, addEventListener: (_, action) => { buttons[id].click = action; } };
+  let markup = '', failure = false, confirmed = true;
+  const retry = { dataset: { request: 'failed-request' }, addEventListener: (_, action) => { retry.click = action; } };
+  const escape = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+  const context = vm.createContext({
+    document: {
+      getElementById: id => nodes[id] || button(id),
+      querySelectorAll: () => [retry],
+    },
+    escapeHtml: escape, escapeAttr: escape,
+    applyMgmtCursor: () => {},
+    renderWizardModal: content => { markup = content; events.push(['modal']); },
+    closeWizard: () => events.push(['closed']),
+    alert: message => errors.push(message),
+    confirm: () => confirmed,
+    apiCall: async (verb, noun, args) => {
+      events.push([verb, noun, Array.from(args)]);
+      if (verb === 'list' && noun === 'moneypenny') return { status: 'ok', data: { rows: [['host', 'local', '', '*']] } };
+      if (verb === 'list') return { status: 'ok', data: { rows: [[p.id, p.name, p.purpose, p.moneypenny, 'yes', p.agent, p.model]] } };
+      if (verb === 'show') return { status: 'ok', data: p };
+      return failure ? { status: 'error', message: 'host unavailable' } : { status: 'ok' };
+    },
+  });
+  vm.runInContext(app.slice(app.indexOf('  // --- Ponsonby Management ---'), app.indexOf('  // --- Moneypennies Management ---')), context);
+  await context.loadPonsonbies();
+  assert.match(nodes['ponsonby-content'].innerHTML, /&lt;script&gt;shared&lt;\/script&gt;/);
+  await context.showPonsonbyForm();
+  assert.match(markup, /Assign to new agents by default/);
+  assert.match(markup, /configured LLM provider/);
+  await buttons['pn-save'].click();
+  let request = events.find(e => e[0] === 'create');
+  assert.deepEqual(request, ['create', 'ponsonby', ['--name', 'engineering', '--moneypenny', 'host', '--purpose', 'Shared decisions', '--agent', 'copilot', '--model', 'cheap', '--default=false']]);
+  assert.ok(events.some(e => e[0] === 'closed'));
+  await context.showPonsonbyForm('store');
+  assert.match(markup, /id="pn-name"[^>]+disabled/);
+  assert.match(markup, /id="pn-host"[^>]+disabled/);
+  const before = events.filter(e => e[0] === 'closed').length;
+  failure = true;
+  await buttons['pn-save'].click();
+  assert.equal(buttons['pn-save'].disabled, false);
+  assert.equal(events.filter(e => e[0] === 'closed').length, before);
+  assert.equal(nodes['pn-purpose'].value, 'Shared decisions');
+  assert.equal(errors.at(-1), 'Error: host unavailable');
+  request = events.find(e => e[0] === 'update');
+  assert.equal(request[2][0], 'store');
+  assert.equal(request[2].includes('--name'), false);
+  assert.equal(request[2].includes('--moneypenny'), false);
+  failure = false;
+  await context.showPonsonbyDetail('store');
+  assert.match(markup, /&lt;private&gt;/);
+  assert.match(markup, /&lt;unavailable&gt;/);
+  await retry.click();
+  assert.ok(events.some(e => e[0] === 'retry' && e[2].join(' ') === 'store --request failed-request'));
+  await context.togglePonsonbyDefault('store');
+  assert.ok(events.some(e => e[0] === 'update' && e[2].join(' ') === 'store --default=false'));
+  confirmed = false;
+  await context.deletePonsonby('store');
+  assert.equal(events.some(e => e[0] === 'delete'), false);
+  confirmed = true;
+  failure = true;
+  await context.deletePonsonby('store');
+  assert.ok(events.some(e => e[0] === 'delete' && e[2][0] === 'store'));
+  assert.equal(errors.at(-1), 'Error: host unavailable');
+});
+
+test('Ponsonby list reuses management selection and keyboard actions', () => {
+  const app = fs.readFileSync(path.join(__dirname, '../pkg/web/static/app.js'), 'utf8');
+  const calls = [];
+  const content = { querySelectorAll: () => [{ dataset: { ponsonbyId: 'selected-store' } }] };
+  const context = vm.createContext({
+    mgmtCursor: 0,
+    document: { getElementById: id => id === 'ponsonbies-view' ? { style: { display: 'flex' } } : id === 'ponsonby-content' ? content : null },
+    showPonsonbyDetail: id => calls.push(['show', id]),
+    showPonsonbyForm: id => calls.push(['form', id]),
+    togglePonsonbyDefault: id => calls.push(['default', id]),
+    deletePonsonby: id => calls.push(['delete', id]),
+    loadPonsonbies: () => calls.push(['refresh']),
+  });
+  vm.runInContext(app.slice(app.indexOf('  function activeMgmtList('), app.indexOf('  // handleWizardListKey')), context);
+  for (const key of ['Enter', 'e', 's', 'd', 'n', 'r']) assert.equal(context.mgmtAction(key), true);
+  assert.deepEqual(calls, [['show', 'selected-store'], ['form', 'selected-store'], ['default', 'selected-store'], ['delete', 'selected-store'], ['form', undefined], ['refresh']]);
+});
+
 test('legacy details use defaults without replacing explicit false', () => {
   assert.deepEqual(controls.values(), defaults);
   assert.deepEqual(controls.values(null), defaults);

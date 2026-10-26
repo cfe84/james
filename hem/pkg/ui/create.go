@@ -12,7 +12,7 @@ import (
 	"james/moneypenny/pkg/envelope"
 )
 
-// createModel is a form for creating a new session.
+// createModel provides the session form and reusable field editing for other creation forms.
 type createModel struct {
 	fields   []formField
 	cursor   int
@@ -22,6 +22,8 @@ type createModel struct {
 	creating bool
 	async    bool // if true, add --async flag
 	client   *client
+	title    string
+	submit   func([]formField) tea.Msg
 }
 
 type formField struct {
@@ -212,6 +214,9 @@ type sessionCreatedMsg struct {
 }
 
 func (m createModel) createSession() tea.Cmd {
+	if m.submit != nil {
+		return func() tea.Msg { return m.submit(m.fields) }
+	}
 	return func() tea.Msg {
 		var args []string
 		var traitIDs []string
@@ -270,7 +275,7 @@ func (m createModel) Update(msg tea.Msg) (createModel, tea.Cmd) {
 		case "enter":
 			// If on last field or prompt is filled, submit.
 			prompt := m.fields[0].value
-			if strings.TrimSpace(prompt) != "" {
+			if m.submit != nil || strings.TrimSpace(prompt) != "" {
 				m.creating = true
 				return m, m.createSession()
 			}
@@ -387,7 +392,11 @@ func cycleFieldOptionsDir(f *formField, dir int) {
 func (m createModel) View() string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render(" New Agent "))
+	title := m.title
+	if title == "" {
+		title = " New Agent "
+	}
+	b.WriteString(titleStyle.Render(title))
 	b.WriteString("\n\n")
 
 	labels := make([]string, len(m.fields))
@@ -449,7 +458,11 @@ func (m createModel) View() string {
 
 	b.WriteString("\n")
 	if m.creating {
-		b.WriteString("  Creating session...")
+		if m.submit != nil {
+			b.WriteString("  Saving...")
+		} else {
+			b.WriteString("  Creating session...")
+		}
 	} else {
 		b.WriteString(statusDescStyle.Render(" Enter ") + " submit  " +
 			statusDescStyle.Render(" Tab ") + " next field  " +
