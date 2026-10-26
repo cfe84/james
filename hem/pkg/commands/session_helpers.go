@@ -30,6 +30,8 @@ type sessionParams struct {
 	CompactionThresholdTokens *int   // persisted custom-compaction token threshold
 	TraitsSpec                string // comma-separated trait IDs/names; resolved to TraitIDs
 	TraitIDs                  []string
+	PonsonbiesSpec            string
+	PonsonbiesExplicit        bool
 	Nick                      string // optional short nickname/alias for the session
 	Environment               environmentValues
 	GadgetCapabilities        *envelope.GadgetCapabilities
@@ -202,6 +204,9 @@ func buildCreateSessionData(params *sessionParams, sessionID, prompt string) (ma
 	}
 	if params.SystemPrompt != "" {
 		cmdData["system_prompt"] = params.SystemPrompt
+	}
+	if params.PonsonbiesExplicit {
+		cmdData["ponsonby_selection"] = params.PonsonbiesSpec
 	}
 	if params.GadgetCapabilities != nil {
 		cmdData["gadget_capabilities"] = params.GadgetCapabilities

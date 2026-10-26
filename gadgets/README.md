@@ -18,6 +18,9 @@ gadgets memory set [path] [--body text]
 gadgets memory batch
 gadgets memory delete path [--recursive]
 gadgets memory revisions [path]
+gadgets ponsonby list
+gadgets ponsonby ask STORE
+gadgets ponsonby result STORE REQUEST_ID
 gadgets agents list
 gadgets agents create [--name name] [--agent agent] [--model model] [--path path] [--moneypenny name] [--traits names-or-IDs] [--yolo]
 gadgets agents message id [--body text]
@@ -47,6 +50,21 @@ supported. `--recursive=false` explicitly disables recursion. No session,
 endpoint or credential override flags are accepted. Scoped gadgets do not accept
 permission overrides; the separately granted Hem administrative proxy below is
 an explicit exception to scoped command permissions.
+
+### Ponsonby shared stores
+
+Ponsonby access is assigned by the operator independently of local Memory
+permissions. `list` returns only assigned stores and their current introductions.
+`ask` reads a question from stdin and queues a read-only consultation;
+`result` returns its pending/running/done/failed state and qualified answer.
+Results belong to the requesting session and store, and retained results can
+expire or be evicted. Poll only while the result is needed for the current task.
+
+Publishing assignments ingest conversation fragments asynchronously; `:read`
+assignments never publish transcripts. These gadgets cannot change assignments,
+publish arbitrary content, or access a store's raw memory. Use Hem operator
+commands to create/configure stores, assign defaults, and retry failed jobs.
+Session-local `gadgets memory` is unchanged.
 
 ### Background command callbacks (License to Kill)
 

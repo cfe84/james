@@ -187,6 +187,11 @@ func TestRenameMoneypennyPreservesReferences(t *testing.T) {
 	if err := s.SetCachedModels("old", "opencode", []CachedModelEntry{{Name: "model", Value: "azure/model"}}); err != nil {
 		t.Fatal(err)
 	}
+	shared := Ponsonby{Moneypenny: "old"}
+	shared.ID, shared.Name = "engineering", "engineering"
+	if err := s.SavePonsonby(shared); err != nil {
+		t.Fatal(err)
+	}
 	for _, names := range [][2]string{{"missing", "new"}, {"old", "taken"}, {"old", " "}, {"old", "old"}} {
 		if err := s.RenameMoneypenny(names[0], names[1]); err == nil {
 			t.Fatalf("rename %q to %q unexpectedly succeeded", names[0], names[1])
@@ -213,6 +218,9 @@ func TestRenameMoneypennyPreservesReferences(t *testing.T) {
 	}
 	if value, err := s.GetDefault("moneypenny"); err != nil || value != "new" {
 		t.Fatalf("named default = %q, %v", value, err)
+	}
+	if stores, err := s.ListPonsonbies(); err != nil || len(stores) != 1 || stores[0].Moneypenny != "new" {
+		t.Fatal("shared store lost renamed host", stores, err)
 	}
 	if err := s.DeleteMoneypenny("old"); err != nil {
 		t.Fatal(err)

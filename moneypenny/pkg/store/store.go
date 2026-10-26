@@ -317,6 +317,31 @@ func (s *Store) SetNotificationWriter(nw *envelope.NotificationWriter) {
 
 func migrate(db *sql.DB) error {
 	const schema = `
+CREATE TABLE IF NOT EXISTS ponsonby_stores (
+    id TEXT PRIMARY KEY,
+    definition TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ponsonby_jobs (
+    id TEXT PRIMARY KEY,
+    store_id TEXT NOT NULL REFERENCES ponsonby_stores(id) ON DELETE RESTRICT,
+    source_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    body TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    answer TEXT NOT NULL DEFAULT '',
+    error TEXT NOT NULL DEFAULT '',
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS ponsonby_jobs_pending ON ponsonby_jobs(status,updated_at);
+CREATE TABLE IF NOT EXISTS ponsonby_runs (
+    session_id TEXT PRIMARY KEY
+);
+CREATE TABLE IF NOT EXISTS ponsonby_sources (
+    session_id TEXT PRIMARY KEY,
+    attachments TEXT NOT NULL DEFAULT '[]',
+    published_turn INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -856,6 +881,9 @@ func (s *Store) DeleteSession(sessionID string) error {
 
 	if _, err := tx.Exec(`DELETE FROM conversation_turns WHERE session_id = ?`, sessionID); err != nil {
 		return fmt.Errorf("delete conversation turns: %w", err)
+	}
+	if _, err := tx.Exec("DELETE FROM ponsonby_sources WHERE session_id=?", sessionID); err != nil {
+		return err
 	}
 	res, err := tx.Exec(`DELETE FROM sessions WHERE session_id = ?`, sessionID)
 	if err != nil {

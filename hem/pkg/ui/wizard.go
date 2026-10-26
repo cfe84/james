@@ -141,6 +141,7 @@ func newWizardModel(c *client) wizardModel {
 			{label: "Context", flag: "--context", value: "", options: contextTierOptions()},
 			{label: "System Prompt", flag: "--system-prompt", value: "", input: &spInput},
 			{label: "Environment (NAME=VALUE per line)", flag: "--env", value: ""},
+			{label: "Ponsonby stores (names/IDs; none opts out; :read is read-only)", flag: "--ponsonbies", value: ""},
 			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
 			{label: "Gadgets (James tooling)", flag: "--gadgets", isBool: true, value: "false"},
 			{label: "Compaction", flag: "--compaction", value: "custom", options: []string{"custom", "agent"}},
@@ -496,6 +497,8 @@ func (m wizardModel) Update(msg tea.Msg) (wizardModel, tea.Cmd) {
 					m.fields[i].cursorPos = len(src.SystemPrompt)
 					m.fields[i].syncToInput()
 				}
+			case "--ponsonbies":
+				m.fields[i].value = sharedMemorySpec(src.Ponsonbies)
 			case "--yolo":
 				if src.Yolo {
 					m.fields[i].value = "true"

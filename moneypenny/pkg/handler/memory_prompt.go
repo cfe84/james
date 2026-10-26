@@ -148,7 +148,7 @@ func (h *Handler) prepareRunInstructions(sessionID string, params *agent.RunPara
 	}
 	if !capabilities.Memory {
 		params.SystemPrompt += "\n\nPersistent session memory is disabled. Do not read or write session memory through gadgets, native file tools, or direct database access, even if earlier instructions mention memory."
-		return nil
+		return h.preparePonsonbyInstructions(sessionID, params)
 	}
 	memDir := h.memoryDir(sessionID)
 	if memDir == "" {
@@ -159,5 +159,5 @@ func (h *Handler) prepareRunInstructions(sessionID string, params *agent.RunPara
 		return fmt.Errorf("%w: %w", errMemoryPreparation, err)
 	}
 	params.SystemPrompt += prompt
-	return nil
+	return h.preparePonsonbyInstructions(sessionID, params)
 }

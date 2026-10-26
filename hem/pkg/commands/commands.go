@@ -563,6 +563,8 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 	}
 
 	switch verb + " " + noun {
+	case "create ponsonby", "list ponsonby", "show ponsonby", "update ponsonby", "retry ponsonby", "delete ponsonby":
+		return e.PonsonbyCommand(verb, args)
 	case "gadget route":
 		return e.GadgetRoute(args)
 	// Moneypenny commands
@@ -795,6 +797,37 @@ func (e *Executor) sendCommand(ctx context.Context, mp *store.Moneypenny, method
 				copy[key] = value
 			}
 			copy["gadget_route"] = e.gadgetRoute()
+			id, _ := fields["session_id"].(string)
+			attachments, err := e.store.SessionPonsonbies(id)
+			if err != nil {
+				return nil, err
+			}
+			if spec, explicit := fields["ponsonby_selection"].(string); explicit || method == "create_session" {
+				attachments, err = e.resolvePonsonbies(spec, !explicit)
+				if err != nil {
+					return nil, err
+				}
+				if err := e.store.SetPonsonbies(id, attachments); err != nil {
+					return nil, err
+				}
+			}
+			// Refresh declared introductions/purpose from the registry on every
+			// invocation without making remote curator calls on the critical path.
+			stores, err := e.store.ListPonsonbies()
+			if err != nil {
+				return nil, err
+			}
+			for i := range attachments {
+				for _, p := range stores {
+					if p.ID == attachments[i].ID {
+						attachments[i].Name = p.Name
+						attachments[i].Purpose = p.Purpose
+						attachments[i].Introduction = p.Introduction
+					}
+				}
+			}
+			delete(copy, "ponsonby_selection")
+			copy["ponsonbies"] = attachments
 			data = copy
 		}
 	}
@@ -1169,6 +1202,7 @@ type SessionShowResult struct {
 	Status                    string                      `json:"status"`
 	Project                   string                      `json:"project,omitempty"`
 	Traits                    []string                    `json:"traits"`
+	Ponsonbies                []envelope.Ponsonby         `json:"ponsonbies"`
 	Nick                      string                      `json:"nick,omitempty"`
 	CompactionMode            string                      `json:"compaction_mode,omitempty"`
 	CompactionThresholdTokens int                         `json:"compaction_threshold_tokens"`
@@ -1987,6 +2021,7 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 		fs.BoolVar(&params.Async, "async", false, "return immediately without waiting for response")
 		fs.StringVar(&projectNameOrID, "project", "", "project name or ID")
 		fs.StringVar(&params.TraitsSpec, "traits", "", "comma-separated trait IDs/names to apply")
+		fs.StringVar(&params.PonsonbiesSpec, "ponsonbies", "", "shared memory stores (comma-separated names/IDs; :read for read-only; empty opts out)")
 		fs.StringVar(&params.Nick, "nick", "", "optional short nickname/alias for the session")
 		fs.Var(&params.Environment, "env", "agent environment variable NAME=VALUE (repeatable)")
 	})
@@ -2001,6 +2036,7 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 	}
 
 	params.GadgetCapabilities = capabilityFlags.apply(nil)
+	params.PonsonbiesExplicit = flagSeenIn(args, "ponsonbies")
 
 	// Apply project defaults if specified.
 	if err := e.applyProjectDefaults(params, projectNameOrID); err != nil {
@@ -2073,6 +2109,9 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 	}
 
 	// Build command data.
+	if _, err := e.resolvePonsonbies(params.PonsonbiesSpec, !params.PonsonbiesExplicit); err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
 	cmdData, err := buildCreateSessionData(params, sessionID, prompt)
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -2715,6 +2754,10 @@ func (e *Executor) ShowSession(args []string) *protocol.Response {
 	if ids, err := e.store.GetSessionTraits(sessionID); err == nil {
 		result.Traits = ids
 	}
+	result.Ponsonbies, err = e.store.SessionPonsonbies(sessionID)
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
 
 	// Look up the nickname from hem's local store.
 	if hemSess, err := e.store.GetSession(sessionID); err == nil && hemSess != nil {
@@ -2742,6 +2785,7 @@ func parseCompactionThresholdTokensResponse(value interface{}) (int, error) {
 func (e *Executor) UpdateSession(args []string) *protocol.Response {
 	var sessionID, name, systemPrompt, pathArg, modelStr, effortStr, contextStr string
 	var yoloStr, projectNameOrID, gadgetsStr, traitsStr, compactionStr, nickStr string
+	var ponsonbiesStr string
 	var compactionThresholdTokens int
 	var environment environmentValues
 	var capabilityFlags gadgetCapabilityFlags
@@ -2776,6 +2820,7 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 		fs.StringVar(&projectNameOrID, "project", "", "move to project (name or ID)")
 		fs.StringVar(&gadgetsStr, "gadgets", "", "enable/disable gadgets (true/false)")
 		fs.StringVar(&traitsStr, "traits", "", "comma-separated trait IDs/names (empty clears all)")
+		fs.StringVar(&ponsonbiesStr, "ponsonbies", "", "shared stores (empty clears; :read disables publication)")
 		fs.StringVar(&compactionStr, "compaction", "", "compaction mode: agent or custom")
 		fs.IntVar(&compactionThresholdTokens, "compaction-threshold-tokens", 0, "custom compaction threshold in tokens (10000-900000)")
 		fs.StringVar(&nickStr, "nick", "", "short nickname/alias (empty clears)")
@@ -3023,8 +3068,12 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 		hasUpdate = true
 	}
 
+	if flagSeenIn(args, "ponsonbies") {
+		cmdData["ponsonby_selection"] = ponsonbiesStr
+		hasUpdate = true
+	}
 	if !hasUpdate {
-		return protocol.ErrResponse("no fields to update (use --name, --system-prompt, --yolo, --path, --project, --gadgets, --traits, --nick)")
+		return protocol.ErrResponse("no fields to update (use --name, --system-prompt, --yolo, --path, --project, --gadgets, --traits, --ponsonbies, --nick)")
 	}
 
 	// Only send to moneypenny if there are moneypenny-level fields to update.
@@ -5552,6 +5601,7 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 		fs.BoolVar(&params.Async, "async", false, "return immediately without waiting for response")
 		fs.StringVar(&projectNameOrID, "project", "", "project name or ID")
 		fs.StringVar(&params.TraitsSpec, "traits", "", "comma-separated trait IDs/names (defaults to source session's traits)")
+		fs.StringVar(&params.PonsonbiesSpec, "ponsonbies", "", "shared stores (defaults to source; empty opts out)")
 		fs.Var(&params.Environment, "env", "replace agent environment with NAME=VALUE entries (repeatable)")
 	})
 	if err != nil {
@@ -5651,6 +5701,18 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	}
 
 	// Inherit the source session's traits unless the caller specified --traits.
+	params.PonsonbiesExplicit = flagSeenIn(args, "ponsonbies")
+	if !params.PonsonbiesExplicit {
+		attachments, err := e.store.SessionPonsonbies(sourceSessionID)
+		if err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		params.PonsonbiesSpec = ponsonbySpec(attachments)
+		params.PonsonbiesExplicit = true
+	}
+	if _, err := e.resolvePonsonbies(params.PonsonbiesSpec, false); err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
 	if !traitsExplicit {
 		if ids, err := e.store.GetSessionTraits(sourceSessionID); err == nil && len(ids) > 0 {
 			params.TraitsSpec = strings.Join(ids, ",")
@@ -6941,6 +7003,7 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 	remaining, err := parseFlagsFromArgs("create-subsession", args, func(fs *flag.FlagSet) {
 		capabilityFlags.register(fs)
 		fs.StringVar(&traitsSpec, "traits", "", "comma-separated trait IDs/names (default: none)")
+		fs.StringVar(&params.PonsonbiesSpec, "ponsonbies", "", "shared stores (defaults apply; :read disables publication)")
 		fs.StringVar(&parentSessionID, "session-id", "", "parent session ID")
 		fs.StringVar(&mpName, "m", "", "moneypenny name")
 		fs.StringVar(&mpName, "moneypenny", "", "moneypenny name")
@@ -7003,6 +7066,10 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 		return protocol.ErrResponse("prompt is required")
 	}
 
+	params.PonsonbiesExplicit = flagSeenIn(args, "ponsonbies")
+	if _, err := e.resolvePonsonbies(params.PonsonbiesSpec, !params.PonsonbiesExplicit); err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
 	traits, err := e.resolveTraits(traitsSpec)
 	if err != nil {
 		return protocol.ErrResponse(err.Error())

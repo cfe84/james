@@ -14,6 +14,18 @@ const documentFor = (values) => ({
   },
 });
 
+test('shared-memory forms preserve read-only assignments and explicit opt-outs', () => {
+  const app = fs.readFileSync(path.join(__dirname, '../pkg/web/static/app.js'), 'utf8');
+  const context = vm.createContext({});
+  vm.runInContext(app.slice(app.indexOf('  function sharedMemorySpec('), app.indexOf('  async function openCreateWizard(')), context);
+  assert.equal(context.sharedMemorySpec([{ id: 'engineering', publish: true }, { id: 'reference', publish: false }]), 'engineering,reference:read');
+  assert.equal(context.sharedMemorySpec([]), '');
+  assert.equal(context.sharedMemorySpec(undefined), '');
+  assert.match(app, /if \(memories \|\| copy\) args.push\('--ponsonbies', memories\)/);
+  assert.match(app, /if \(memories !== sharedMemorySpec\(s.ponsonbies\)\) args.push\('--ponsonbies', memories\)/);
+  assert.match(app, /Publishing stores receive unprocessed conversation history/);
+});
+
 test('legacy details use defaults without replacing explicit false', () => {
   assert.deepEqual(controls.values(), defaults);
   assert.deepEqual(controls.values(null), defaults);

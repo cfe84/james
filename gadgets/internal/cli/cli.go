@@ -22,6 +22,9 @@ const (
 const Help = `gadgets — session-scoped tools provided by Moneypenny
 
 Usage:
+  gadgets ponsonby list                      (attached stores and current introductions)
+  gadgets ponsonby ask STORE                 (question on stdin; returns request ID)
+  gadgets ponsonby result STORE REQUEST_ID   (pending/running/done/failed and answer)
   gadgets memory get [path] [--offset N] [--limit N]
   gadgets memory list [path] [--limit N] [--cursor TOKEN]
   gadgets memory search query [--limit N] [--cursor TOKEN]

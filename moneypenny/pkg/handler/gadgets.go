@@ -135,6 +135,7 @@ func (h *Handler) StartGadgets() error {
 
 func (h *Handler) CloseGadgets() error {
 	h.stopCommandJobs()
+	h.stopAgentRuns()
 	h.gadgetsMu.Lock()
 	server := h.gadgetsServer
 	h.gadgetsServer = nil
@@ -363,6 +364,12 @@ func (h *Handler) executeGadget(ctx context.Context, sessionID string, request g
 	}
 	allowed := false
 	switch request.Method {
+	case "ponsonby.list", "ponsonby.ask", "ponsonby.result":
+		attachments, err := h.store.PonsonbySources(sessionID)
+		if err != nil {
+			return nil, err
+		}
+		allowed = len(attachments) > 0
 	case "memory.get", "memory.list", "memory.search", "memory.set", "memory.batch", "memory.delete", "memory.revisions",
 		"memory.query", "memory.claim-set", "memory.claim-get", "memory.claim-delete":
 		allowed = caps.Memory
@@ -399,6 +406,9 @@ func (h *Handler) executeGadget(ctx context.Context, sessionID string, request g
 	}
 	if !allowed {
 		return nil, &gadgetError{"permission_denied", "Capability is disabled for this session or License to Kill is required"}
+	}
+	if strings.HasPrefix(request.Method, "ponsonby.") {
+		return h.routeGadget(ctx, sessionID, request.Method, request.Data)
 	}
 	if strings.HasPrefix(request.Method, "run.") {
 		return h.runGadget(sessionID, request)
@@ -441,6 +451,16 @@ func (h *Handler) executeGadget(ctx context.Context, sessionID string, request g
 
 func (h *Handler) memoryGadget(sessionID string, request gadgetRequest) (any, error) {
 	root := h.memoryDir(sessionID)
+	h.ponsonbyMu.Lock()
+	access, curator := h.ponsonbyRoots[sessionID]
+	h.ponsonbyMu.Unlock()
+	if curator && !access.publish {
+		switch request.Method {
+		case "memory.get", "memory.list", "memory.search", "memory.query", "memory.claim-get", "memory.revisions":
+		default:
+			return nil, &gadgetError{"permission_denied", "Ponsonby consultation is read-only"}
+		}
+	}
 	switch request.Method {
 	case "memory.query":
 		var data memory.Query

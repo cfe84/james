@@ -122,6 +122,57 @@ func TestGadgetCommandJobLifecycle(t *testing.T) {
 	requireGadgetError(t, gadgetCall(t, params, "run.list", map[string]any{}), "permission_denied")
 }
 
+func TestCommandJobShutdownWaitsForCallback(t *testing.T) {
+	h, _ := gadgetTestHandler(t)
+	started, canceled, release := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	h.runAgentFunc = func(ctx context.Context, _ agent.RunParams) (*agent.Result, error) {
+		close(started)
+		<-ctx.Done()
+		close(canceled)
+		<-release
+		return &agent.Result{Text: "Do not persist canceled output"}, nil
+	}
+	// Release the runner before the shared fixture closes its database, even on failure.
+	defer close(release)
+	job := &commandJob{ID: strings.Repeat("b", 32), sessionID: gadgetSession, Status: "completed"}
+	h.callbackCommandJob(job)
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("callback agent did not start")
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- h.CloseGadgets() }()
+	select {
+	case <-canceled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown did not cancel callback agent")
+	}
+	select {
+	case err := <-closed:
+		t.Fatalf("shutdown returned before callback exited: %v", err)
+	default:
+	}
+	release <- struct{}{}
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("shutdown did not join callback agent")
+	}
+	turns, err := h.store.GetConversationPaginated(gadgetSession, 20, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, turn := range turns {
+		if turn.Role == "assistant" {
+			t.Fatal("canceled callback persisted an answer")
+		}
+	}
+}
+
 func TestCommandJobRestartMarksInterruptedAndQueuesCallback(t *testing.T) {
 	h, _ := gadgetTestHandler(t)
 	h.runAgentFunc = func(_ context.Context, _ agent.RunParams) (*agent.Result, error) {

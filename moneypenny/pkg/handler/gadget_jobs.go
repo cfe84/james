@@ -333,10 +333,14 @@ func (h *Handler) startCommandJob(sessionID string, argv []string) (any, error) 
 func (h *Handler) callbackCommandJob(job *commandJob) {
 	h.jobsMu.Lock()
 	stopping := h.jobsClosing
+	if !stopping {
+		h.jobsWG.Add(1)
+	}
 	h.jobsMu.Unlock()
 	if stopping {
 		return // startup recovery delivers the persisted terminal result
 	}
+	defer h.jobsWG.Done()
 	prompt := fmt.Sprintf("Background command job %s finished: status=%s, exit_code=%v. stdout: %s; stderr: %s. Inspect these files if needed; output is capped at 4 MiB per stream.",
 		job.ID, job.Status, exitCodeLabel(job.ExitCode), job.Stdout, job.Stderr)
 	claimed, err := h.store.QueueJobCallback(job.sessionID, job.ID, prompt)
@@ -350,7 +354,11 @@ func (h *Handler) callbackCommandJob(job *commandJob) {
 				"status": "working", "reason": "command_callback",
 			})
 		}
-		go h.continueQueuedPrompts(job.sessionID)
+		h.jobsWG.Add(1)
+		go func() {
+			defer h.jobsWG.Done()
+			h.continueQueuedPrompts(job.sessionID)
+		}()
 	}
 }
 

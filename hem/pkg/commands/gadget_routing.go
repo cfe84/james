@@ -45,6 +45,8 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 		return protocol.ErrResponse("gadget source session is not tracked by this Hem")
 	}
 	switch route.Method {
+	case "ponsonby.list", "ponsonby.ask", "ponsonby.result", "ponsonby.ingest":
+		return e.ponsonbyGadget(source, route.Method, route.Data)
 	case "hem.command":
 		var request struct {
 			Args []string `json:"args"`

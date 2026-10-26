@@ -165,6 +165,16 @@ CREATE TABLE IF NOT EXISTS session_traits (
     PRIMARY KEY (session_id, trait_id)
 );
 
+CREATE TABLE IF NOT EXISTS ponsonbies (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    definition TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS session_ponsonbies (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE,
+    attachments TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS invocation_reply_leases (
     invoked_session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
     invoker_session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
@@ -295,6 +305,7 @@ func (s *Store) RenameMoneypenny(oldName, newName string) error {
 		`UPDATE sessions SET moneypenny_name = ? WHERE moneypenny_name = ?`,
 		`UPDATE projects SET moneypenny = ? WHERE moneypenny = ?`,
 		`UPDATE model_cache SET moneypenny = ? WHERE moneypenny = ?`,
+		`UPDATE ponsonbies SET definition=json_set(definition,'$.moneypenny',?) WHERE json_extract(definition,'$.moneypenny')=?`,
 		`UPDATE defaults SET value = ? WHERE key = 'moneypenny' AND value = ?`,
 	} {
 		if _, err := tx.Exec(query, newName, oldName); err != nil {

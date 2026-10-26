@@ -7,6 +7,7 @@ func init() {
 	CommandHelp["create subsession"] += "\n  --traits           Comma-separated trait IDs/names (omitted or empty selects none)"
 	CommandHelp["create subsession"] += "\n  --nick             Optional unique short nickname\n  --project          Project name or ID (omitted inherits parent's project)\n  --env              Agent environment NAME=VALUE (repeatable)\n  --compaction       agent or custom\n  --compaction-threshold-tokens Custom threshold in tokens (10000-900000)\n  --yolo=false       Explicitly disable inherited permission bypass"
 	for _, command := range []string{"create session", "create subsession", "copy session", "update session"} {
+		CommandHelp[command] += "\n  --ponsonbies       Comma-separated shared-store names/IDs; :read disables transcript publication; none/explicit empty opts out. Creation uses defaults, copy inherits, update preserves omitted selection. Publishing shares unprocessed conversation history with the store host/provider."
 		CommandHelp[command] += permissionsHelp
 		CommandHelp[command] += "\n  --gadget-moneypenny-logs Read daemon logs on any registered host, including other sessions' data (default: false)"
 		CommandHelp[command] += "\n  --gadget-hem Administrative proxy for all Hem server commands, including mutations and permission changes (default: false)"
@@ -15,6 +16,12 @@ func init() {
 }
 
 var CommandHelp = map[string]string{
+	"create ponsonby":        "Usage: hem create ponsonby NAME --purpose TEXT --model MODEL [--agent copilot|claude|opencode] [--moneypenny HOST] [--introduction TEXT] [--default]\n\nCreates a host-owned shared memory store with an explicit curator model.",
+	"list ponsonby":          "Usage: hem list ponsonbies\n\nLists registered shared stores and new-session defaults.",
+	"show ponsonby":          "Usage: hem show ponsonby NAME_OR_ID\n\nShows the current introduction, configuration and retained request status/errors.",
+	"update ponsonby":        "Usage: hem update ponsonby NAME_OR_ID [--purpose TEXT] [--model MODEL] [--agent PROVIDER] [--default=true|false]\n\nUpdates store configuration. Host moves are not supported; defaults do not change existing assignments.",
+	"retry ponsonby":         "Usage: hem retry ponsonby NAME_OR_ID --request REQUEST_ID\n\nRetries a retained failed curator request.",
+	"delete ponsonby":        "Usage: hem delete ponsonby NAME_OR_ID\n\nPermanently deletes store memory and metadata. Remove session assignments and finish outstanding requests first.",
 	"setup moneypenny":       "Usage: hem setup moneypenny\n\nReturns latest macOS Apple Silicon and Windows x64 release archive URLs and SHA256 digests after verifying the signed release manifest. Used by Qew target-computer setup.",
 	"add moneypenny":         "Usage: hem add moneypenny -n NAME [--local | --fifo-folder DIR | --fifo-in PATH --fifo-out PATH | --mi6 ADDR --mi6-server-fingerprint SHA256:...]\n\nRegisters a new moneypenny instance.\n\nFlags:\n  -n, --name                  Moneypenny name (required)\n  --local                     Use default local FIFO path (~/.config/james/moneypenny/fifo)\n  --fifo-folder               Folder containing moneypenny-in and moneypenny-out FIFOs\n  --fifo-in                   Path to moneypenny input FIFO\n  --fifo-out                  Path to moneypenny output FIFO\n  --mi6                       MI6 server address (host or host/session_id)\n  --mi6-server-fingerprint    Required SHA256 fingerprint of the MI6 server\n  --session-id                MI6 session ID (combined with --mi6 host; uses default mi6 if --mi6 omitted)",
 	"list moneypenny":        "Usage: hem list moneypennies\n\nLists all registered moneypennies with name, type, address, and default status.",

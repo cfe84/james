@@ -48,11 +48,21 @@ func TestCreateFormsSendExplicitGadgetPermissions(t *testing.T) {
 		if wizard {
 			m := newWizardModel(c)
 			m.fields[0].value = "hello"
+			for i := range m.fields {
+				if m.fields[i].flag == "--ponsonbies" {
+					m.fields[i].value = "engineering:read"
+				}
+			}
 			setGadgetCapabilityFields(m.fields, &envelope.GadgetCapabilities{})
 			cmd = m.createSession()
 		} else {
 			m := newCreateModel(c)
 			m.fields[0].value = "hello"
+			for i := range m.fields {
+				if m.fields[i].flag == "--ponsonbies" {
+					m.fields[i].value = "engineering:read"
+				}
+			}
 			setGadgetCapabilityFields(m.fields, &envelope.GadgetCapabilities{})
 			cmd = m.createSession()
 		}
@@ -61,6 +71,9 @@ func TestCreateFormsSendExplicitGadgetPermissions(t *testing.T) {
 		}
 		if sender.request.Verb != "create" {
 			t.Fatalf("unexpected request: %#v", sender.request)
+		}
+		if !strings.Contains(strings.Join(sender.request.Args, " "), "--ponsonbies engineering:read") {
+			t.Fatal("shared assignment omitted", sender.request.Args)
 		}
 		got := permissionArgs(sender.request.Args)
 		if len(got) != 11 {
@@ -80,13 +93,16 @@ func TestWizardCopiesGadgetPermissions(t *testing.T) {
 	m.sourceSessionID = "source"
 	caps := envelope.GadgetCapabilities{Agents: true, Traits: true, CreateAgents: true, MoneypennyLogs: true, Hem: true}
 	m, _ = m.Update(wizardSourceLoadedMsg{source: &sessionDetail{
-		SessionID: "source", Agent: "copilot", GadgetCapabilities: &caps,
+		SessionID: "source", Agent: "copilot", GadgetCapabilities: &caps, Ponsonbies: []envelope.Ponsonby{{ID: "engineering", Publish: false}},
 	}})
 	if msg := m.createSession()().(sessionCreatedMsg); msg.err != nil {
 		t.Fatal(msg.err)
 	}
 	if sender.request.Verb != "copy" {
 		t.Fatalf("unexpected request: %#v", sender.request)
+	}
+	if !strings.Contains(strings.Join(sender.request.Args, " "), "--ponsonbies engineering:read") {
+		t.Fatal("copy lost read-only assignment", sender.request.Args)
 	}
 	args := permissionArgs(sender.request.Args)
 	if args["--gadget-agents"] != "true" || args["--gadget-traits"] != "true" || args["--gadget-memory"] != "false" ||

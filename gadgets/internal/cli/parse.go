@@ -29,6 +29,7 @@ func command(args []string) (string, []string, error) {
 	method := args[0] + "." + args[1]
 	switch method {
 	case "memory.get", "memory.list", "memory.search", "memory.set", "memory.batch", "memory.delete", "memory.revisions",
+		"ponsonby.list", "ponsonby.ask", "ponsonby.result",
 		"memory.query", "memory.claim-set", "memory.claim-get", "memory.claim-delete",
 		"agents.list", "agents.message", "agents.create", "subagents.list", "subagents.create", "subagents.message",
 		"subagents.edit", "subagents.complete", "subagents.stop", "subagents.delete",
@@ -161,6 +162,18 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 	switch method {
 	case "memory.query":
 		err = arity(0, 0)
+	case "ponsonby.list":
+		err = arity(0, 0)
+	case "ponsonby.ask":
+		if err = arity(1, 1); err == nil {
+			data["store"] = pos[0]
+			err = body("body", true)
+		}
+	case "ponsonby.result":
+		if err = arity(2, 2); err == nil {
+			data["store"] = pos[0]
+			data["id"] = pos[1]
+		}
 	case "memory.claim-get", "memory.claim-delete":
 		if err = arity(1, 1); err == nil {
 			data["id"] = pos[0]

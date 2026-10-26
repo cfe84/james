@@ -157,6 +157,9 @@ func main() {
 
 	// Start the scheduler for timed prompts.
 	h.StartScheduler(ctx)
+	if err := h.StartPonsonby(ctx); err != nil {
+		log.Fatalf("start Ponsonby: %v", err)
+	}
 
 	// Start the channel manager to poll external communication channels and
 	// mirror session replies back through them.
@@ -173,6 +176,7 @@ func main() {
 			// Windows starts a second process for re-exec. Close SQLite before
 			// that process starts so it cannot race this process's WAL mapping.
 			cancel()
+			h.Close()
 			if err := h.CloseGadgets(); err != nil {
 				log.Printf("updater: stop gadgets before restart: %v", err)
 			}

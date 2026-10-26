@@ -131,6 +131,7 @@ test('shared create wizard routes creation modes and retains fields on failure',
       'wiz-project': 'project', 'wiz-agent': 'copilot', 'wiz-model': 'model',
       'wiz-effort': 'high', 'wiz-context': 'long_context', 'wiz-sysprompt': 'instructions',
       'wiz-env': 'SETTING=value', 'wiz-compaction': 'custom', 'wiz-compaction-threshold': '150',
+      'wiz-ponsonbies': mode === 'create' ? '' : mode === 'copy' ? 'engineering:read' : 'none',
     };
     const elements = Object.fromEntries(Object.entries(values).map(([id, value]) => [id, { value }]));
     elements['wiz-yolo'] = { checked: false };
@@ -174,6 +175,8 @@ test('shared create wizard routes creation modes and retains fields on failure',
       ['--compaction', 'custom'], ['--compaction-threshold-tokens', '150000'], ['--traits', 'trait'],
     ]) assert.equal(args[args.indexOf(flag) + 1], value, flag);
     assert.ok(args.includes('--gadget-memory=false'));
+    if (values['wiz-ponsonbies']) assert.equal(args[args.indexOf('--ponsonbies') + 1], values['wiz-ponsonbies']);
+    else assert.equal(args.includes('--ponsonbies'), false);
     if (subagent) assert.ok(args.includes('--yolo=false'));
     assert.equal(args.at(-1), 'Build it');
     if (mode === 'subagent-error') {

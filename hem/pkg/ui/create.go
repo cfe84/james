@@ -55,6 +55,7 @@ func formFieldArgumentValue(field formField) string {
 	if field.flag != compactionThresholdFlag {
 		return field.value
 	}
+
 	thousands, err := strconv.ParseFloat(field.value, 64)
 	tokens := thousands * compactionThresholdDisplayScale
 	maxInt := int(^uint(0) >> 1)
@@ -64,6 +65,18 @@ func formFieldArgumentValue(field formField) string {
 		return field.value
 	}
 	return strconv.Itoa(int(tokens))
+}
+
+func sharedMemorySpec(stores []envelope.Ponsonby) string {
+	names := []string{}
+	for _, s := range stores {
+		name := s.ID
+		if !s.Publish {
+			name += ":read"
+		}
+		names = append(names, name)
+	}
+	return strings.Join(names, ",")
 }
 
 func syncDefaultCompactionThreshold(fields []formField) {
@@ -169,6 +182,7 @@ func newCreateModel(c *client) createModel {
 			{label: "Model", flag: "--model", value: "", options: []string{""}},
 			{label: "System Prompt", flag: "--system-prompt", value: ""},
 			{label: "Environment (NAME=VALUE per line)", flag: "--env", value: ""},
+			{label: "Shared memory (names; :read; none to opt out)", flag: "--ponsonbies", value: ""},
 			{label: "Path", flag: "--path", value: ""},
 			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
 			{label: "Gadgets (James tooling)", flag: "--gadgets", isBool: true, value: "false"},

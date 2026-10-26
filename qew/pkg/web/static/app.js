@@ -1647,6 +1647,10 @@
 
   function wizardTitle() { return wizardState.copy ? 'Duplicate Agent' : wizardState.parentId ? 'New Subagent' : 'New Agent'; }
 
+  function sharedMemorySpec(stores) {
+    return (Array.isArray(stores) ? stores : []).map(s => s.id + (s.publish ? '' : ':read')).join(',');
+  }
+
   async function openCreateWizard() {
     wizardState = { step: 1, moneypennies: [], selectedMP: '', currentPath: '', projects: projectsCache, copy: false, source: null, sourceId: '', thresholdDefaultDerived: true };
     if (traitsCache.length === 0) await loadTraitsCache();
@@ -2153,6 +2157,9 @@
       ${traitsCache.length ? `<label>Traits</label><div id="wiz-traits" style="display:flex;flex-direction:column;gap:4px">` +
         traitsCache.map(t => { const checked = copy ? (Array.isArray(src.traits) && src.traits.includes(t.id)) : t.def; return `<div class="toggle-row"><input type="checkbox" class="wiz-trait" id="wiz-trait-${escapeAttr(t.id)}" value="${escapeAttr(t.id)}"${checked ? ' checked' : ''}><label for="wiz-trait-${escapeAttr(t.id)}" style="margin:0;color:var(--text)" title="${escapeAttr(t.preview)}">${escapeHtml(t.name)}</label></div>`; }).join('') +
         `</div>` : ''}
+      <label for="wiz-ponsonbies">Ponsonby shared memories</label>
+      <input id="wiz-ponsonbies" value="${escapeAttr(copy ? sharedMemorySpec(src.ponsonbies) : '')}" placeholder="Names or IDs; blank uses defaults, none opts out, :read is read-only">
+      <small>Publishing stores receive this conversation, including existing history. Use :read to consult without sharing.</small>
       <div class="modal-actions">
         <button class="btn-muted" onclick="window._qewWizardBackToPath()">Back</button>
         <button class="btn" id="wiz-submit">${submitLabel}</button>
@@ -2308,6 +2315,8 @@
       args.push('--traits', selTraits.join(','));
     }
     // Prompt is the trailing positional; optional in copy mode.
+    const memories = document.getElementById('wiz-ponsonbies').value.trim();
+    if (memories || copy) args.push('--ponsonbies', memories);
     if (prompt || !copy) args.push(prompt);
 
     const btn = document.getElementById('wiz-submit');
@@ -4756,6 +4765,9 @@
         ${traitsCache.length ? `<label>Traits</label><div id="es-traits" style="display:flex;flex-direction:column;gap:4px">` +
           traitsCache.map(t => `<div class="toggle-row"><input type="checkbox" class="es-trait" id="es-trait-${escapeAttr(t.id)}" value="${escapeAttr(t.id)}"${selectedTraits.includes(t.id) ? ' checked' : ''}><label for="es-trait-${escapeAttr(t.id)}" style="margin:0;color:var(--text)" title="${escapeAttr(t.preview)}">${escapeHtml(t.name)}</label></div>`).join('') +
           `</div>` : ''}
+        <label for="es-ponsonbies">Ponsonby shared memories</label>
+        <input id="es-ponsonbies" value="${escapeAttr(sharedMemorySpec(s.ponsonbies))}" placeholder="Names or IDs; empty clears, :read is read-only">
+        <small>Publishing stores receive unprocessed conversation history. Removing a store stops future sharing, not previously accepted work.</small>
         <div class="modal-actions">
           <button class="btn-muted" onclick="window._qewCloseWizard()">Cancel</button>
           <button class="btn" id="es-submit">Save</button>
@@ -4829,6 +4841,8 @@
         const origSorted = [...selectedTraits].sort().join(',');
         const newSorted = [...newTraits].sort().join(',');
         if (origSorted !== newSorted) args.push('--traits', newTraits.join(','));
+        const memories = document.getElementById('es-ponsonbies').value.trim();
+        if (memories !== sharedMemorySpec(s.ponsonbies)) args.push('--ponsonbies', memories);
         const compaction = document.getElementById('es-compaction').value;
         if (compaction !== (s.compaction_mode || 'agent')) args.push('--compaction', compaction);
         const compactionThreshold = document.getElementById('es-compaction-threshold').value;

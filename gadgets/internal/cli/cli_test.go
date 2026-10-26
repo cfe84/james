@@ -21,6 +21,9 @@ func TestParseCommands(t *testing.T) {
 		data   string
 	}{
 		{"get root", []string{"memory", "get"}, "", "memory.get", `{"path":""}`},
+		{"shared stores", []string{"ponsonby", "list"}, "", "ponsonby.list", `{}`},
+		{"shared question", []string{"ponsonby", "ask", "engineering"}, "Which deployment?", "ponsonby.ask", `{"store":"engineering","body":"Which deployment?"}`},
+		{"shared result", []string{"ponsonby", "result", "engineering", "request"}, "", "ponsonby.result", `{"store":"engineering","id":"request"}`},
 		{"list", []string{"memory", "list", "project"}, "", "memory.list", `{"path":"project"}`},
 		{"revisions", []string{"memory", "revisions"}, "", "memory.revisions", `{"path":""}`},
 		{"search", []string{"memory", "search", "two words"}, "", "memory.search", `{"query":"two words"}`},
@@ -137,6 +140,9 @@ func TestCreateTraitsFlag(t *testing.T) {
 func TestParseErrors(t *testing.T) {
 	for _, args := range [][]string{
 		{}, {"hem"}, {"unknown"}, {"memory"}, {"memory", "unknown"}, {"agents", "list", "extra"},
+		{"ponsonby", "ask"}, {"ponsonby", "ask", "engineering"}, {"ponsonby", "result", "engineering"},
+		{"ponsonby", "list", "other"}, {"ponsonby", "ask", "engineering", "--session-id=other"},
+		{"ponsonby", "ingest"}, {"ponsonby", "create"}, {"ponsonby", "ask", "engineering", "--body=text"},
 		{"run-and-callback"}, {"run-and-callback", "echo"}, {"run-and-callback", "--"}, {"run", "status"}, {"run", "stop", "a", "b"},
 		{"memory", "search"}, {"memory", "get", "a", "b"}, {"memory", "set", "--session", "other"},
 		{"memory", "set", "--body"}, {"memory", "set", "--body=x", "--body=y"},

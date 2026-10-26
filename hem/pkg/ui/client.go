@@ -74,6 +74,7 @@ type sessionDetail struct {
 	Status                    string                       `json:"status"`
 	Project                   string                       `json:"project"`
 	Traits                    []string                     `json:"traits"`
+	Ponsonbies                []envelope.Ponsonby          `json:"ponsonbies"`
 	Nick                      string                       `json:"nick"`
 	CompactionMode            string                       `json:"compaction_mode"`
 	CompactionThresholdTokens int                          `json:"compaction_threshold_tokens"`

@@ -1078,6 +1078,10 @@ callback. In-progress jobs after a daemon restart are marked interrupted and
 receive a callback with an unavailable exit code. Terminal files expire after
 24 hours, with cleanup hourly, on job interaction, and on daemon restart.
 Session deletion removes their per-session directory.
+Daemon shutdown stops command jobs, waits for admitted callback dispatches, and
+cancels and joins their agent runs before closing storage. Callback delivery
+that has not begun remains durable for recovery; canceled runs cannot publish
+a late answer.
 
 The Agents grant combines discovery and messaging; it does **not** grant editing,
 deletion, or other management of sessions. Subagents scope does not cover siblings,
@@ -1345,8 +1349,67 @@ preserve attribution and retained corrections, distinguish inference from eviden
 and keep at most 10 task-relevant unresolved questions with a next verification
 action. Scoped negative results record where/when no reliable result was found.
 Uncertainty reduction stays within the current task and permissions, not endless
-autonomous exploration. Shared Ponsonby stores and LLM-managed memory are not part
-of this session-storage change.
+autonomous exploration. Session-local memory remains directly managed by the agent;
+shared stores use Ponsonby below.
+
+### Ponsonby shared memory
+
+Ponsonby is an optional shared-memory curator embedded in Moneypenny, not a
+separate binary or an extra curator for session-local memory. Each named store
+has a purpose, an introduction, a chosen Moneypenny, and an explicit curator
+provider/model. It reuses structured claims and hierarchical notes, including
+provenance, corrections, links, deterministic queries, and bounded retrieval.
+
+```sh
+hem create ponsonby engineering --moneypenny HOST --purpose "Shared engineering decisions" --agent copilot --model MODEL --default
+hem list ponsonbies
+hem show ponsonby engineering
+hem update ponsonby engineering --default=false --model MODEL
+hem create session "Task" --ponsonbies engineering,reference:read
+hem update session SESSION_ID --ponsonbies none
+hem retry ponsonby engineering --request REQUEST_ID
+hem delete ponsonby engineering
+```
+
+At most eight stores can be assigned per session. Store names or IDs are
+comma-separated; `:read` allows consultation without transcript publication.
+Explicit `none` or an explicit empty flag opts out. Omitted selection applies
+defaults to newly created agents/subagents; copies inherit their source's
+assignments. Existing and imported sessions are not retroactively assigned.
+TUI and Qew expose assignments in their existing creation/copy/edit forms;
+store administration is through Hem commands. Session memory permissions do
+not grant or revoke shared-store assignments.
+
+Assigned introductions are injected without calling a curator before each
+user message. `gadgets ponsonby list` refreshes current introductions;
+`gadgets ponsonby ask STORE` takes a question on stdin and returns a queued
+request. `gadgets ponsonby result STORE REQUEST_ID` returns pending/running,
+done with qualified context, or failed with an explicit error. Agents consult
+only relevant stores. They cannot change assignments through these scoped tools.
+
+**Sharing:** publishing assignments send stored user/assistant, scheduled and
+callback turns asynchronously to the selected store hosts and their configured
+LLM providers. Existing unprocessed history is included when sharing is enabled.
+Thinking/tool/system turns and attachment files are not ingested independently.
+Read-only turns are skipped; changing to publication does not replay turns
+already skipped. Removing access stops future routing, not already accepted
+jobs or previously curated knowledge. Do not attach sensitive conversations to
+stores whose readers/providers should not receive them.
+
+Each host runs one curator job at a time with a three-minute deadline. Inputs
+are limited to 32 KiB; transcript fragments are UTF-8-safe and approximately
+24 KiB. Up to 64 pending/running/retained requests fit per host. Terminal
+records expire after 24 hours and may be evicted sooner to admit new work.
+Successful payloads are cleared; failed payloads remain for explicit retry.
+Publication retries and restart recovery are durable and at-least-once.
+Store status exposes request failures. Delete requires removing assignments and
+finishing outstanding jobs, then removes the store's memory and metadata.
+
+Consultations use read-only memory gadgets; ingest curators can update only the
+selected store through those gadgets. Temporary sessions use no permission
+bypass and are cleaned up afterward. This is a gadget access boundary, **not an
+OS sandbox** for provider-native tools. Curator instructions treat transcripts
+and questions as untrusted data and prohibit unrelated tools and secret storage.
 
 ### Operator CLI, TUI, and Qew
 

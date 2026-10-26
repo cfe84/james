@@ -332,7 +332,60 @@ The memory gadget permission gate and session-bound credentials cover every
 claim/query operation, including live revocation. Shared prompts teach search
 plus hierarchy, source attribution, retained corrections and bounded unresolved
 questions/negative results; compaction/distillation preserve the same distinctions.
-Ponsonby/shared stores remain deferred.
+Ponsonby uses these same APIs for host-owned shared stores.
+
+#### Ponsonby ownership and execution
+
+Hem owns the named-store registry, selected host/provider/model, defaults, and
+per-session assignments. Moneypenny owns each store's
+`<dataDir>/ponsonby/<storeUUID>/memory.db`, durable request queue, temporary
+curator sessions and source transcript cursors. Operational tables are added
+automatically; existing session memory and assignments remain unchanged.
+
+Lifecycle requests carry trusted attachment descriptors and cached introductions
+alongside existing gadget routing. Hem checks its authoritative assignment on
+every scoped list/ask/result and internal publication route; source identity
+comes from authenticated routing, never caller-supplied payload fields.
+Explicit operator assignment changes persist before remote lifecycle requests,
+so revocation remains authoritative even if the remote update fails.
+Defaults apply only on creation, copies preserve source assignments, and imports
+do not acquire sharing implicitly. TUI/Qew reuse their current session forms.
+
+Consultation submits an asynchronous request rather than holding the existing
+short-lived gadget transport open for an LLM turn. Result lookup is bound to
+source session and store. Live list refreshes the store's root introduction and
+caches it in Hem for later prompt injection; there is no per-message all-store
+preflight. Agent-scoped gadgets cannot list unassigned stores or publish arbitrary
+content. Store creation requires an explicit model rather than silently choosing
+an expensive default.
+
+One Moneypenny worker serializes curator runs and periodically publishes up to
+16 unprocessed transcript turns. Publication uses attributed UTF-8 fragments and
+stable per-store/source/turn/fragment request IDs with content digests. A source
+cursor advances only after every selected publishing store accepts delivery.
+Retries deduplicate retained requests; interrupted running requests become
+pending after abandoned temporary sessions are cleaned up on startup. Curator
+execution is at-least-once: a crash after a memory write can repeat that write,
+so instructions require updating existing qualified claims rather than cloning
+them. Read-only attachments receive no transcript jobs. Removing an assignment
+does not retract accepted jobs or delete shared knowledge.
+
+The queue retains at most 64 records, never evicts active work, and evicts oldest
+terminal records for admission or after 24 hours. Successful raw inputs are
+cleared; failed inputs remain for explicit operator retry. Inputs cap at 32 KiB,
+answers at 8,000 characters and the encoded memory-response budget. Errors and
+cleanup failures surface explicitly; logs identify jobs rather than transcripts.
+Shutdown cancels and joins the worker before closing SQLite, including updater
+restart. A failed result write leaves recoverable running work until restart.
+
+Each job creates a fresh provider session with only the Memory capability,
+without permission bypass or persisted intermediate turns. Its session-bound
+memory root maps to exactly one shared store; query-mode memory mutations are
+denied. Tokens, temporary metadata and directories are removed after completion.
+The provider's native tool process is not OS-sandboxed; the memory-gadget boundary
+must not be described as filesystem/process isolation. Purpose and untrusted
+transcripts are separated in curator instructions, which reuse the qualified
+memory contract and maintain a concise root introduction.
 
 All existing Hem/TUI/Qew memory operations still use
 `show/list/search/update/delete_memory`, whose handlers now delegate to these
@@ -1467,7 +1520,13 @@ This prevents an idle/draining race and never interrupts the current turn.
 On startup, stale running metadata becomes interrupted and terminal records
 whose callback was missed are retried. Session deletion cancels jobs before removing
 their files; daemon shutdown and the updater stop jobs before the SQLite
-store closes. Startup resets stale working sessions before recovering job
+store closes. Callback enqueue/dispatch work participates in the command-job
+wait group, including recovery callbacks. Shutdown fences new callback dispatch
+under the job lock, joins admitted dispatches, then fences new asynchronous agent
+runs under the run lock and cancels/joins existing runs before closing storage.
+Tracking only the child command is insufficient: callback dispatch launches a
+separate agent goroutine that may still write instructions or conversation turns.
+Startup resets stale working sessions before recovering job
 callbacks, so the callbacks can claim idle sessions. Terminal records are
 cleaned up after 24 hours (hourly, on job interaction, or on restart),
 with a hard 64-record per-session admission bound.

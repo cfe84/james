@@ -123,6 +123,8 @@ type Handler struct {
 	channelCmd           string            // base command for provider MCP servers (default "agency")
 	runsMu               sync.Mutex
 	activeRuns           map[string]*activeRun
+	runsClosing          bool
+	runsWG               sync.WaitGroup
 	gadgetsMu            sync.Mutex
 	gadgetsServer        *http.Server
 	gadgetsURL           string
@@ -134,6 +136,10 @@ type Handler struct {
 	jobsClosing          bool
 	jobsCleanupStop      chan struct{}
 	jobsCleanupDone      chan struct{}
+	ponsonbyMu           sync.Mutex
+	ponsonbyRoots        map[string]ponsonbyAccess
+	ponsonbyCancel       context.CancelFunc
+	ponsonbyWG           sync.WaitGroup
 }
 
 type activeRun struct {
@@ -197,7 +203,12 @@ func New(s *store.Store, runner *agent.Runner, version, dataDir string) *Handler
 
 // Close stops background handler resources.
 func (h *Handler) Close() {
+	if h.ponsonbyCancel != nil {
+		h.ponsonbyCancel()
+		h.ponsonbyWG.Wait()
+	}
 	h.stopCommandJobs()
+	h.stopAgentRuns()
 	if h.watches != nil {
 		h.watches.Close()
 	}
@@ -301,6 +312,12 @@ func (h *Handler) sessionDirPath(sessionID string) (string, error) {
 // memoryDir is the historical location used by the memory API to resolve the
 // authoritative sibling memory.db. Files here are retained inactive backups.
 func (h *Handler) memoryDir(sessionID string) string {
+	h.ponsonbyMu.Lock()
+	access, ok := h.ponsonbyRoots[sessionID]
+	h.ponsonbyMu.Unlock()
+	if ok {
+		return access.root
+	}
 	sd := h.sessionDir(sessionID)
 	if sd == "" {
 		return ""
@@ -391,6 +408,8 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
 	}
 	switch cmd.Method {
+	case "ponsonby_save", "ponsonby_get", "ponsonby_submit", "ponsonby_result", "ponsonby_retry", "ponsonby_delete":
+		return h.ponsonbyCommand(cmd)
 	case "get_diagnostics":
 		return h.getDiagnostics(ctx, cmd)
 	case "create_session":
@@ -1110,10 +1129,18 @@ func (h *Handler) startAgent(sessionID string, params agent.RunParams) {
 	ctx, cancel := context.WithCancel(context.Background())
 	run := &activeRun{cancel: cancel}
 	h.runsMu.Lock()
+	if h.runsClosing {
+		h.runsMu.Unlock()
+		cancel()
+		return
+	}
+	h.runsWG.Add(1)
 	h.activeRuns[sessionID] = run
 	h.runsMu.Unlock()
 
 	go func() {
+		defer h.runsWG.Done()
+		defer cancel()
 		defer func() {
 			h.runsMu.Lock()
 			if h.activeRuns[sessionID] == run {
@@ -1123,6 +1150,16 @@ func (h *Handler) startAgent(sessionID string, params agent.RunParams) {
 		}()
 		h.runAgentWithContext(ctx, sessionID, params)
 	}()
+}
+
+func (h *Handler) stopAgentRuns() {
+	h.runsMu.Lock()
+	h.runsClosing = true
+	for _, run := range h.activeRuns {
+		run.cancel()
+	}
+	h.runsMu.Unlock()
+	h.runsWG.Wait()
 }
 
 func (h *Handler) cancelActiveRun(sessionID string) {

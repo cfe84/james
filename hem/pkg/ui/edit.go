@@ -69,6 +69,7 @@ func newEditModel(c *client, sessionID string) editModel {
 			{label: "Context", flag: "--context", value: "", options: contextTierOptions()},
 			{label: "System Prompt", flag: "--system-prompt", value: "", input: &spInput},
 			{label: "Environment (NAME=VALUE per line)", flag: "--env", value: ""},
+			{label: "Ponsonby stores (names/IDs; empty clears; :read is read-only)", flag: "--ponsonbies", value: ""},
 			{label: "Path", flag: "--path", value: ""},
 			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
 			{label: "Gadgets (James tooling)", flag: "--gadgets", isBool: true, value: "false"},
@@ -229,6 +230,7 @@ func (m editModel) Update(msg tea.Msg) (editModel, tea.Cmd) {
 			"--context":             d.ContextTier,
 			"--system-prompt":       d.SystemPrompt,
 			compactionThresholdFlag: compactionThresholdDisplayValue(d.CompactionThresholdTokens),
+			"--ponsonbies":          sharedMemorySpec(d.Ponsonbies),
 		}
 		if d.CompactionThresholdTokens == 0 {
 			values[compactionThresholdFlag] = defaultCompactionThresholdValue(d.ContextTier)

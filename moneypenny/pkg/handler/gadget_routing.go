@@ -29,11 +29,20 @@ func (h *Handler) refreshGadgetRoute(cmd *envelope.Command) error {
 		return nil
 	}
 	var data struct {
-		SessionID string            `json:"session_id"`
-		Route     map[string]string `json:"gadget_route"`
+		SessionID  string              `json:"session_id"`
+		Route      map[string]string   `json:"gadget_route"`
+		Ponsonbies []envelope.Ponsonby `json:"ponsonbies"`
 	}
 	if err := json.Unmarshal(cmd.Data, &data); err != nil {
 		return err
+	}
+	if data.Ponsonbies != nil {
+		if len(data.Ponsonbies) > 8 {
+			return fmt.Errorf("at most 8 Ponsonby stores may be attached")
+		}
+		if err := h.store.SetPonsonbySources(data.SessionID, data.Ponsonbies); err != nil {
+			return err
+		}
 	}
 	if len(data.Route) == 0 {
 		return nil
@@ -135,7 +144,8 @@ func (h *Handler) routeGadget(ctx context.Context, sessionID, method string, dat
 	switch method {
 	case "agents.list", "agents.message", "agents.create", "subagents.list", "subagents.create", "subagents.message",
 		"subagents.edit", "subagents.complete", "subagents.stop", "subagents.delete",
-		"traits.list", "traits.get", "traits.edit", "sessions.edit", "moneypenny.logs", "hem.command":
+		"traits.list", "traits.get", "traits.edit", "sessions.edit", "moneypenny.logs", "hem.command",
+		"ponsonby.list", "ponsonby.ask", "ponsonby.result", "ponsonby.ingest":
 	default:
 		return nil, fmt.Errorf("unsupported routed gadget method %q", method)
 	}
