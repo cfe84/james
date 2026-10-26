@@ -357,6 +357,13 @@ custom submit callback, preserving the existing session submission path.
 List views expose host/provider/model/default; details fetch the live introduction
 and bounded retained jobs, with failed-job retry and confirmed deletion.
 Edit forms exclude immutable name/host fields; backend errors preserve form input.
+Qew curator selectors reuse `loadModels`/`modelOptionsHtml`, refreshing on host or
+provider changes and generation-fencing stale discovery responses. Shared-store
+assignment controls reuse one renderer/serializer across create, copy, subagent
+and edit forms, backed by `list ponsonby`. Each store has off/read/publish modes,
+serialized to the existing `--ponsonbies` flag; no backend configuration changes.
+Unavailable assigned stores remain visible, and load errors require retry before
+submission rather than interpreting failed discovery as an empty selection.
 
 Consultation submits an asynchronous request rather than holding the existing
 short-lived gadget transport open for an LLM turn. Result lookup is bound to

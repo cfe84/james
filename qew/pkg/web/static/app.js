@@ -270,8 +270,8 @@
   // modelOptionsHtml builds <option> markup for a model dropdown. A previously
   // selected model that's no longer in the fetched list is preserved so editing
   // an existing session never silently drops its model.
-  function modelOptionsHtml(models, selected) {
-    let opts = '<option value="">(default)</option>';
+  function modelOptionsHtml(models, selected, placeholder = '(default)') {
+    let opts = `<option value="">${escapeHtml(placeholder)}</option>`;
     let found = false;
     for (const m of models) {
       if (m === selected) found = true;
@@ -1664,6 +1664,43 @@
     return (Array.isArray(stores) ? stores : []).map(s => s.id + (s.publish ? '' : ':read')).join(',');
   }
 
+  async function populatePonsonbySelector(prefix, selected, useDefaults) {
+    const container = document.getElementById(prefix + '-ponsonbies');
+    delete container.dataset.ready;
+    try {
+      const resp = await apiCall('list', 'ponsonby', []);
+      if (resp.status !== 'ok' || !Array.isArray(resp.data?.rows)) throw new Error(resp.message || 'Invalid Ponsonby list');
+      if (document.getElementById(prefix + '-ponsonbies') !== container) return;
+      const stores = resp.data.rows.map(r => ({ id: r[0], name: r[1], purpose: r[2], default: r[4] === 'yes' }));
+      const assigned = new Map((selected || []).map(p => [p.id, p.publish ? 'publish' : 'read']));
+      for (const p of selected || []) {
+        if (!stores.some(s => s.id === p.id)) stores.push({ id: p.id, name: p.name || p.id, purpose: 'Currently assigned; unavailable in registry' });
+      }
+      container.innerHTML = stores.length ? stores.map(p => {
+        const mode = useDefaults ? (p.default ? 'publish' : 'off') : (assigned.get(p.id) || 'off');
+        return `<label for="${prefix}-ponsonby-${escapeAttr(p.id)}">${escapeHtml(p.name)}</label>
+          <select id="${prefix}-ponsonby-${escapeAttr(p.id)}" data-ponsonby="${escapeAttr(p.id)}" title="${escapeAttr(p.purpose)}">
+            <option value="off"${mode === 'off' ? ' selected' : ''}>Not attached</option>
+            <option value="read"${mode === 'read' ? ' selected' : ''}>Read only</option>
+            <option value="publish"${mode === 'publish' ? ' selected' : ''}>Read and publish conversation</option>
+          </select>`;
+      }).join('') : '<p>No Ponsonbies available. Create one from the Ponsonbies screen.</p>';
+      container.dataset.ready = 'true';
+    } catch (e) {
+      if (document.getElementById(prefix + '-ponsonbies') !== container) return;
+      container.innerHTML = `<p role="alert">Could not load Ponsonbies: ${escapeHtml(e.message)}</p><button type="button" class="btn-muted">Retry</button>`;
+      container.querySelector('button').addEventListener('click', () => populatePonsonbySelector(prefix, selected, useDefaults));
+    }
+  }
+
+  function selectedPonsonbies(prefix) {
+    const container = document.getElementById(prefix + '-ponsonbies');
+    if (container.dataset.ready !== 'true') throw new Error('Wait for available Ponsonbies to load, or retry discovery.');
+    return Array.from(container.querySelectorAll('select[data-ponsonby]'))
+      .filter(s => s.value !== 'off')
+      .map(s => s.dataset.ponsonby + (s.value === 'read' ? ':read' : '')).join(',');
+  }
+
   async function openCreateWizard() {
     wizardState = { step: 1, moneypennies: [], selectedMP: '', currentPath: '', projects: projectsCache, copy: false, source: null, sourceId: '', thresholdDefaultDerived: true };
     if (traitsCache.length === 0) await loadTraitsCache();
@@ -2171,14 +2208,15 @@
       ${traitsCache.length ? `<label>Traits</label><div id="wiz-traits" style="display:flex;flex-direction:column;gap:4px">` +
         traitsCache.map(t => { const checked = copy ? (Array.isArray(src.traits) && src.traits.includes(t.id)) : t.def; return `<div class="toggle-row"><input type="checkbox" class="wiz-trait" id="wiz-trait-${escapeAttr(t.id)}" value="${escapeAttr(t.id)}"${checked ? ' checked' : ''}><label for="wiz-trait-${escapeAttr(t.id)}" style="margin:0;color:var(--text)" title="${escapeAttr(t.preview)}">${escapeHtml(t.name)}</label></div>`; }).join('') +
         `</div>` : ''}
-      <label for="wiz-ponsonbies">Ponsonby shared memories</label>
-      <input id="wiz-ponsonbies" value="${escapeAttr(copy ? sharedMemorySpec(src.ponsonbies) : '')}" placeholder="Names or IDs; blank uses defaults, none opts out, :read is read-only">
-      <small>Publishing stores receive this conversation, including existing history. Use :read to consult without sharing.</small>
+      <label>Ponsonby shared memories</label>
+      <div id="wiz-ponsonbies"><span>Loading available Ponsonbies...</span></div>
+      <small>Publishing stores receive this conversation, including existing history. Choose Read only to consult without sharing.</small>
       <div class="modal-actions">
         <button class="btn-muted" onclick="window._qewWizardBackToPath()">Back</button>
         <button class="btn" id="wiz-submit">${submitLabel}</button>
       </div>
     `);
+    populatePonsonbySelector('wiz', src.ponsonbies, !copy);
 
     // Stash the prefilled system prompt so copy mode can detect user edits and
     // only override (skipping backend marker stripping) when actually changed.
@@ -2329,8 +2367,10 @@
       args.push('--traits', selTraits.join(','));
     }
     // Prompt is the trailing positional; optional in copy mode.
-    const memories = document.getElementById('wiz-ponsonbies').value.trim();
-    if (memories || copy) args.push('--ponsonbies', memories);
+    let memories;
+    try { memories = selectedPonsonbies('wiz'); }
+    catch (e) { alert(e.message); return; }
+    args.push('--ponsonbies', memories || 'none');
     if (prompt || !copy) args.push(prompt);
 
     const btn = document.getElementById('wiz-submit');
@@ -4779,8 +4819,8 @@
         ${traitsCache.length ? `<label>Traits</label><div id="es-traits" style="display:flex;flex-direction:column;gap:4px">` +
           traitsCache.map(t => `<div class="toggle-row"><input type="checkbox" class="es-trait" id="es-trait-${escapeAttr(t.id)}" value="${escapeAttr(t.id)}"${selectedTraits.includes(t.id) ? ' checked' : ''}><label for="es-trait-${escapeAttr(t.id)}" style="margin:0;color:var(--text)" title="${escapeAttr(t.preview)}">${escapeHtml(t.name)}</label></div>`).join('') +
           `</div>` : ''}
-        <label for="es-ponsonbies">Ponsonby shared memories</label>
-        <input id="es-ponsonbies" value="${escapeAttr(sharedMemorySpec(s.ponsonbies))}" placeholder="Names or IDs; empty clears, :read is read-only">
+        <label>Ponsonby shared memories</label>
+        <div id="es-ponsonbies"><span>Loading available Ponsonbies...</span></div>
         <small>Publishing stores receive unprocessed conversation history. Removing a store stops future sharing, not previously accepted work.</small>
         <div class="modal-actions">
           <button class="btn-muted" onclick="window._qewCloseWizard()">Cancel</button>
@@ -4788,6 +4828,7 @@
         </div>
       `, 'modal-edit');
 
+      populatePonsonbySelector('es', s.ponsonbies, false);
       // Populate the model dropdown asynchronously from the session's
       // moneypenny + agent, preserving the session's current model.
       (async () => {
@@ -4855,8 +4896,10 @@
         const origSorted = [...selectedTraits].sort().join(',');
         const newSorted = [...newTraits].sort().join(',');
         if (origSorted !== newSorted) args.push('--traits', newTraits.join(','));
-        const memories = document.getElementById('es-ponsonbies').value.trim();
-        if (memories !== sharedMemorySpec(s.ponsonbies)) args.push('--ponsonbies', memories);
+        let memories;
+        try { memories = selectedPonsonbies('es'); }
+        catch (e) { alert(e.message); return; }
+        if (memories.split(',').sort().join(',') !== sharedMemorySpec(s.ponsonbies).split(',').sort().join(',')) args.push('--ponsonbies', memories || 'none');
         const compaction = document.getElementById('es-compaction').value;
         if (compaction !== (s.compaction_mode || 'agent')) args.push('--compaction', compaction);
         const compactionThreshold = document.getElementById('es-compaction-threshold').value;
@@ -5062,14 +5105,51 @@
         <label for="pn-agent">Curator provider</label>
         <select id="pn-agent">${['copilot', 'claude', 'opencode'].map(a => `<option${a === p.agent ? ' selected' : ''}>${a}</option>`).join('')}</select>
         <label for="pn-model">Curator model (required; choose an inexpensive model)</label>
-        <input id="pn-model" value="${escapeAttr(p.model)}">
+        <select id="pn-model">${modelOptionsHtml([], p.model, 'Select a model')}</select>
+        <button type="button" class="btn-muted" id="pn-model-refresh">Refresh models</button>
+        <span id="pn-model-status" role="status"></span>
         <div class="toggle-row"><input id="pn-default" type="checkbox"${p.default ? ' checked' : ''}><label for="pn-default">Assign to new agents by default</label></div>
         <p>Assigned publishing stores receive conversation history on their host and configured LLM provider. Agents can opt out or use :read. Defaults affect only new agents.</p>
         <div class="modal-actions"><button class="btn-muted" onclick="window._qewCloseWizard()">Cancel</button><button class="btn" id="pn-save">Save</button></div>
       `);
+      const modelSelect = document.getElementById('pn-model');
+      let modelHost = document.getElementById('pn-host').value;
+      let modelProvider = p.agent;
+      let modelGeneration = 0;
+      const refreshModels = async () => {
+        const generation = ++modelGeneration;
+        const select = document.getElementById('pn-model');
+        const host = document.getElementById('pn-host').value;
+        const provider = document.getElementById('pn-agent').value;
+        const selected = host === modelHost && provider === modelProvider ? select.value : '';
+        modelHost = host;
+        modelProvider = provider;
+        select.disabled = true;
+        document.getElementById('pn-model-status').textContent = 'Loading models...';
+        try {
+          const models = await loadModels(host, provider);
+          if (generation !== modelGeneration || document.getElementById('pn-model') !== select) return;
+          select.innerHTML = modelOptionsHtml(models, selected, 'Select a model');
+          select.value = selected;
+          document.getElementById('pn-model-status').textContent = '';
+        } catch (e) {
+          if (generation !== modelGeneration || document.getElementById('pn-model') !== select) return;
+          select.innerHTML = modelOptionsHtml([], selected, 'Select a model') + modelLoadErrorOption(e);
+          select.value = selected;
+          document.getElementById('pn-model-status').textContent = 'Could not load models: ' + e.message;
+        } finally {
+          if (generation === modelGeneration && document.getElementById('pn-model') === select) select.disabled = false;
+        }
+      };
+      document.getElementById('pn-host').addEventListener('change', refreshModels);
+      document.getElementById('pn-agent').addEventListener('change', refreshModels);
+      document.getElementById('pn-model-refresh').addEventListener('click', refreshModels);
+      await refreshModels();
+      if (document.getElementById('pn-model') !== modelSelect) return;
       document.getElementById('pn-save').addEventListener('click', async () => {
         const value = field => document.getElementById('pn-' + field).value.trim();
         const name = value('name'), purpose = value('purpose'), host = value('host'), model = value('model');
+        if (document.getElementById('pn-model').disabled) { alert('Wait for model discovery to finish.'); return; }
         if (!name || !purpose || !host || !model) { alert('Name, purpose, Moneypenny and model are required.'); return; }
         const args = id ? [id] : ['--name', name, '--moneypenny', host];
         args.push('--purpose', purpose, '--agent', value('agent'), '--model', model,

@@ -21,9 +21,48 @@ test('shared-memory forms preserve read-only assignments and explicit opt-outs',
   assert.equal(context.sharedMemorySpec([{ id: 'engineering', publish: true }, { id: 'reference', publish: false }]), 'engineering,reference:read');
   assert.equal(context.sharedMemorySpec([]), '');
   assert.equal(context.sharedMemorySpec(undefined), '');
-  assert.match(app, /if \(memories \|\| copy\) args.push\('--ponsonbies', memories\)/);
-  assert.match(app, /if \(memories !== sharedMemorySpec\(s.ponsonbies\)\) args.push\('--ponsonbies', memories\)/);
+  assert.match(app, /args.push\('--ponsonbies', memories \|\| 'none'\)/);
+  assert.match(app, /populatePonsonbySelector\('es', s.ponsonbies, false\)/);
   assert.match(app, /Publishing stores receive unprocessed conversation history/);
+});
+
+test('Ponsonby assignment selectors preserve defaults, read-only access and discovery errors', async () => {
+  const app = fs.readFileSync(path.join(__dirname, '../pkg/web/static/app.js'), 'utf8');
+  let choices = [], retry, fail = false;
+  const container = {
+    dataset: {},
+    set innerHTML(html) {
+      this.html = html;
+      choices = Array.from(html.matchAll(/<select[^>]+data-ponsonby="([^"]+)"[^>]*>([\s\S]*?)<\/select>/g))
+        .map(([, id, options]) => ({ dataset: { ponsonby: id }, value: options.match(/value="([^"]+)" selected/)[1] }));
+    },
+    querySelectorAll: () => choices,
+    querySelector: () => ({ addEventListener: (_, action) => { retry = action; } }),
+  };
+  const escape = value => String(value).replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+  const context = vm.createContext({
+    document: { getElementById: () => container },
+    escapeHtml: escape, escapeAttr: escape,
+    apiCall: async () => fail ? { status: 'error', message: 'unreachable' } :
+      { status: 'ok', data: { rows: [['one', '<Engineering>', 'Decisions', 'host', 'yes'], ['two', 'Reference', 'Docs', 'host', 'no']] } },
+  });
+  vm.runInContext(app.slice(app.indexOf('  function sharedMemorySpec('), app.indexOf('  async function openCreateWizard(')), context);
+  assert.throws(() => context.selectedPonsonbies('wiz'), /Wait for available/);
+  await context.populatePonsonbySelector('wiz', [], true);
+  assert.match(container.html, /&lt;Engineering&gt;/);
+  assert.equal(context.selectedPonsonbies('wiz'), 'one');
+  choices[0].value = 'off';
+  assert.equal(context.selectedPonsonbies('wiz'), '');
+  await context.populatePonsonbySelector('es', [{ id: 'two', publish: false }, { id: 'legacy', name: 'Old store', publish: true }], false);
+  assert.equal(context.selectedPonsonbies('es'), 'two:read,legacy');
+  assert.match(container.html, /Currently assigned; unavailable/);
+  fail = true;
+  await context.populatePonsonbySelector('es', [], false);
+  assert.match(container.html, /Could not load Ponsonbies: unreachable/);
+  assert.throws(() => context.selectedPonsonbies('es'), /Wait for available/);
+  fail = false;
+  await retry();
+  assert.equal(context.selectedPonsonbies('es'), '');
 });
 
 test('Ponsonby management creates, edits, retries and deletes through existing modals', async () => {
@@ -37,11 +76,13 @@ test('Ponsonby management creates, edits, retries and deletes through existing m
   const nodes = {
     'ponsonby-content': { querySelectorAll: () => [] },
     'pn-name': { value: 'engineering' }, 'pn-purpose': { value: 'Shared decisions' },
-    'pn-host': { value: 'host' }, 'pn-agent': { value: 'copilot' }, 'pn-model': { value: 'cheap' },
+    'pn-host': { value: 'host', addEventListener: (_, action) => { buttons.hostChange = action; } },
+    'pn-agent': { value: 'copilot', addEventListener: (_, action) => { buttons.agentChange = action; } }, 'pn-model': { value: 'cheap' },
+    'pn-model-status': {},
     'pn-default': { checked: false },
   };
   const button = id => buttons[id] ||= { disabled: false, addEventListener: (_, action) => { buttons[id].click = action; } };
-  let markup = '', failure = false, confirmed = true;
+  let markup = '', failure = false, confirmed = true, modelFailure = false;
   const retry = { dataset: { request: 'failed-request' }, addEventListener: (_, action) => { retry.click = action; } };
   const escape = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
   const context = vm.createContext({
@@ -50,6 +91,9 @@ test('Ponsonby management creates, edits, retries and deletes through existing m
       querySelectorAll: () => [retry],
     },
     escapeHtml: escape, escapeAttr: escape,
+    modelOptionsHtml: (models, selected) => `<option value="">Select</option>${models.map(m => `<option>${m}</option>`).join('')}${selected && !models.includes(selected) ? `<option selected>${selected}</option>` : ''}`,
+    modelLoadErrorOption: e => `<option disabled>${escape(e.message)}</option>`,
+    loadModels: async (host, agent) => { events.push(['models', host, agent]); if (modelFailure) throw new Error('discovery failed'); return ['cheap', 'other-model']; },
     applyMgmtCursor: () => {},
     renderWizardModal: content => { markup = content; events.push(['modal']); },
     closeWizard: () => events.push(['closed']),
@@ -67,6 +111,9 @@ test('Ponsonby management creates, edits, retries and deletes through existing m
   await context.loadPonsonbies();
   assert.match(nodes['ponsonby-content'].innerHTML, /&lt;script&gt;shared&lt;\/script&gt;/);
   await context.showPonsonbyForm();
+  assert.match(markup, /<select id="pn-model">/);
+  assert.ok(events.some(e => e[0] === 'models' && e[1] === 'host' && e[2] === 'copilot'));
+  nodes['pn-model'].value = 'cheap';
   assert.match(markup, /Assign to new agents by default/);
   assert.match(markup, /configured LLM provider/);
   await buttons['pn-save'].click();
@@ -76,6 +123,25 @@ test('Ponsonby management creates, edits, retries and deletes through existing m
   await context.showPonsonbyForm('store');
   assert.match(markup, /id="pn-name"[^>]+disabled/);
   assert.match(markup, /id="pn-host"[^>]+disabled/);
+  nodes['pn-agent'].value = 'claude';
+  await buttons.agentChange();
+  assert.equal(nodes['pn-model'].value, '');
+  assert.ok(events.some(e => e[0] === 'models' && e[2] === 'claude'));
+  nodes['pn-agent'].value = 'copilot';
+  await buttons.agentChange();
+  nodes['pn-model'].value = 'cheap';
+  modelFailure = true;
+  await buttons['pn-model-refresh'].click();
+  assert.equal(nodes['pn-model'].value, 'cheap');
+  assert.match(nodes['pn-model-status'].textContent, /discovery failed/);
+  assert.equal(nodes['pn-model'].disabled, false);
+  modelFailure = false;
+  nodes['pn-host'].value = 'remote';
+  await buttons.hostChange();
+  assert.equal(nodes['pn-model'].value, '');
+  assert.ok(events.some(e => e[0] === 'models' && e[1] === 'remote'));
+  nodes['pn-host'].value = 'host';
+  nodes['pn-model'].value = 'cheap';
   const before = events.filter(e => e[0] === 'closed').length;
   failure = true;
   await buttons['pn-save'].click();
@@ -103,6 +169,19 @@ test('Ponsonby management creates, edits, retries and deletes through existing m
   await context.deletePonsonby('store');
   assert.ok(events.some(e => e[0] === 'delete' && e[2][0] === 'store'));
   assert.equal(errors.at(-1), 'Error: host unavailable');
+  const pending = [];
+  context.loadModels = () => new Promise(resolve => pending.push(resolve));
+  nodes['pn-host'].value = 'old-host';
+  const oldDiscovery = buttons.hostChange();
+  nodes['pn-host'].value = 'new-host';
+  const newDiscovery = buttons.hostChange();
+  pending[1](['new-host-model']);
+  await newDiscovery;
+  assert.match(nodes['pn-model'].innerHTML, /new-host-model/);
+  pending[0](['stale-model']);
+  await oldDiscovery;
+  assert.doesNotMatch(nodes['pn-model'].innerHTML, /stale-model/);
+  assert.equal(nodes['pn-model'].disabled, false);
 });
 
 test('Ponsonby list reuses management selection and keyboard actions', () => {

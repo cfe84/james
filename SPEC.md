@@ -1386,6 +1386,17 @@ confirmed permanent deletion. Store names/hosts are immutable after creation.
 TUI: `n` create, `e` edit, Enter details, `s` toggle default, `t` retry the first
 failed request shown in details, `d` twice delete, `r` refresh, Esc back/cancel.
 Qew details allow selecting individual failed requests to retry.
+Qew Ponsonby create/edit forms discover curator models using the chosen host and
+provider, with an explicit model dropdown and refresh action. Changing host or
+provider clears the previous choice; editing preserves a currently configured
+model even if discovery no longer lists it. Discovery failures are visible.
+Qew agent create/copy/subagent/edit forms list registered Ponsonbies with a
+per-store selector: Not attached, Read only, or Read and publish conversation.
+New-agent selectors preselect configured defaults; copy/edit retain assignments.
+An empty selection explicitly opts out rather than accidentally restoring defaults.
+Failed store discovery blocks submission and offers retry, never silently clearing
+assignments. These selectors replace manual names/IDs only in Qew; CLI syntax and
+TUI fields remain available.
 Backend assignment/outstanding-job deletion guards remain authoritative and
 errors leave failed forms intact. Hem commands remain available. Session memory permissions do
 not grant or revoke shared-store assignments.

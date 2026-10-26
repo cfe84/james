@@ -148,6 +148,7 @@ test('shared create wizard routes creation modes and retains fields on failure',
       },
       traitsCache: [{ id: 'trait' }],
       gadgetCapabilities: { args: () => ['--gadget-memory=false'] },
+      selectedPonsonbies: () => values['wiz-ponsonbies'],
       validateCompactionThreshold: () => '',
       window: { jamesCompactionThreshold: thresholds,
         _openSubagent: (...args) => events.push(['open', ...args]) },
@@ -175,8 +176,7 @@ test('shared create wizard routes creation modes and retains fields on failure',
       ['--compaction', 'custom'], ['--compaction-threshold-tokens', '150000'], ['--traits', 'trait'],
     ]) assert.equal(args[args.indexOf(flag) + 1], value, flag);
     assert.ok(args.includes('--gadget-memory=false'));
-    if (values['wiz-ponsonbies']) assert.equal(args[args.indexOf('--ponsonbies') + 1], values['wiz-ponsonbies']);
-    else assert.equal(args.includes('--ponsonbies'), false);
+    assert.equal(args[args.indexOf('--ponsonbies') + 1], values['wiz-ponsonbies'] || 'none');
     if (subagent) assert.ok(args.includes('--yolo=false'));
     assert.equal(args.at(-1), 'Build it');
     if (mode === 'subagent-error') {
