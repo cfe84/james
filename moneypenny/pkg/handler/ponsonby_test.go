@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -174,6 +176,131 @@ func TestPonsonbyAssignmentsIndependentOfLocalMemory(t *testing.T) {
 	}
 	requireGadgetError(t, gadgetCall(t, params, "ponsonby.ask", map[string]any{"store": a.ID, "body": "question"}), "permission_denied")
 	requireGadgetError(t, gadgetCall(t, params, "ponsonby.ingest", map[string]any{}), "unknown_method")
+}
+
+func TestPonsonbyDeleteCancelsActiveAndQueuedJobs(t *testing.T) {
+	h, _ := gadgetTestHandler(t)
+	p := envelope.PonsonbyStore{ID: "00000000-0000-0000-0000-000000000081", Name: "engineering", Purpose: "Engineering", Agent: "copilot", Model: "test"}
+	if r := ponsonbyCall(t, h, "ponsonby_save", envelope.PonsonbyRequest{Store: p}); r.Status != envelope.StatusSuccess {
+		t.Fatal(r)
+	}
+	other := p
+	other.ID = "00000000-0000-0000-0000-000000000082"
+	if err := h.store.SavePonsonby(other); err != nil {
+		t.Fatal(err)
+	}
+	for _, status := range []string{"running", "pending", "done", "failed", "other"} {
+		job := envelope.PonsonbyJob{ID: status, StoreID: p.ID, SourceID: gadgetSession, Kind: "ingest", Body: "Decision"}
+		if status == "other" {
+			job.StoreID = other.ID
+		}
+		if err := h.store.SubmitPonsonby(job); err != nil {
+			t.Fatal(err)
+		}
+		switch status {
+		case "running":
+			if job, err := h.store.NextPonsonbyJob(); err != nil || job == nil || job.ID != status {
+				t.Fatal(job, err)
+			}
+		case "done", "failed":
+			failure := ""
+			if status == "failed" {
+				failure = "model unavailable"
+			}
+			if err := h.store.FinishPonsonbyJob(job.ID, "answer", failure); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	job := envelope.PonsonbyJob{ID: "running", StoreID: p.ID, SourceID: gadgetSession, Kind: "ingest", Body: "Decision"}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cleanupCtx, allowCleanup := context.WithCancel(ctx)
+	defer allowCleanup()
+	started := make(chan agent.RunParams, 1)
+	cancelled := make(chan struct{})
+	finished := make(chan error, 1)
+	h.runAgentFunc = func(ctx context.Context, params agent.RunParams) (*agent.Result, error) {
+		started <- params
+		<-ctx.Done()
+		close(cancelled)
+		<-cleanupCtx.Done()
+		// A final write must finish before deletion removes the shared memory.
+		if _, err := memory.Set(h.ponsonbyRoot(p.ID), "", "Final write"); err != nil {
+			return nil, err
+		}
+		return nil, ctx.Err()
+	}
+	go func() {
+		_, err := h.runPonsonby(ctx, job)
+		finished <- err
+	}()
+	defer func() {
+		cancel()
+		allowCleanup()
+		if err := <-finished; !errors.Is(err, context.Canceled) {
+			t.Error("curator cancellation lost", err)
+		}
+	}()
+	var params agent.RunParams
+	select {
+	case params = <-started:
+	case <-ctx.Done():
+		t.Fatal("curator did not start")
+	}
+	deleted := make(chan *envelope.Response, 1)
+	go func() {
+		deleted <- ponsonbyCall(t, h, "ponsonby_delete", envelope.PonsonbyRequest{Store: p})
+	}()
+	select {
+	case <-cancelled:
+	case <-ctx.Done():
+		t.Fatal("deletion did not cancel curator")
+	}
+	select {
+	case r := <-deleted:
+		t.Fatal("deletion did not wait for curator cleanup", r)
+	default:
+	}
+	allowCleanup()
+	select {
+	case r := <-deleted:
+		if r.Status != envelope.StatusSuccess {
+			t.Fatal(r)
+		}
+	case <-ctx.Done():
+		t.Fatal("deletion did not finish")
+	}
+	if err := h.store.FinishPonsonbyJob(job.ID, "", "cancelled"); err != nil {
+		t.Fatal(err)
+	}
+	if jobs, err := h.store.PonsonbyJobs(p.ID); err != nil || len(jobs) != 0 {
+		t.Fatal("deleted store retained jobs", jobs, err)
+	}
+	if r := ponsonbyCall(t, h, "ponsonby_submit", envelope.PonsonbyRequest{Job: job}); r.Status != envelope.StatusError {
+		t.Fatal("deleted store accepted new work", r)
+	}
+	if store, err := h.store.GetPonsonby(p.ID); err != nil || store != nil {
+		t.Fatal("deleted store retained metadata", store, err)
+	}
+	for _, path := range []string{filepath.Dir(h.ponsonbyRoot(p.ID)), params.Path} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatal("deleted store or curator directory retained", path, err)
+		}
+	}
+	if runs, err := h.store.PonsonbyRuns(); err != nil || len(runs) != 0 {
+		t.Fatal("curator run retained", runs, err)
+	}
+	if session, err := h.store.GetSession(params.SessionID); err != nil || session != nil {
+		t.Fatal("curator session retained", session, err)
+	}
+	requireGadgetError(t, gadgetCall(t, params, "memory.get", map[string]any{}), "unauthorized")
+	if next, err := h.store.NextPonsonbyJob(); err != nil || next == nil || next.StoreID != other.ID {
+		t.Fatal("deletion affected another store's work", next, err)
+	}
+	if _, err := h.runPonsonby(ctx, job); err == nil || !strings.Contains(err.Error(), "store deleted") {
+		t.Fatal("already-selected job started after deletion", err)
+	}
 }
 
 func TestPonsonbyQueueCapacityAndCancellation(t *testing.T) {

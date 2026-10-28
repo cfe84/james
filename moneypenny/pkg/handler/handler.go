@@ -137,7 +137,9 @@ type Handler struct {
 	jobsCleanupStop      chan struct{}
 	jobsCleanupDone      chan struct{}
 	ponsonbyMu           sync.Mutex
+	ponsonbyCommandMu    sync.Mutex
 	ponsonbyRoots        map[string]ponsonbyAccess
+	ponsonbyActive       *ponsonbyRun
 	ponsonbyCancel       context.CancelFunc
 	ponsonbyWG           sync.WaitGroup
 }

@@ -5206,7 +5206,7 @@
   }
 
   async function deletePonsonby(id) {
-    if (!confirm('Permanently delete this Ponsonby and all its shared memory? Remove session assignments and finish outstanding requests first.')) return;
+    if (!confirm('Permanently delete this Ponsonby, all its shared memory and all associated jobs? Active curator work will be cancelled. Remove session assignments first.')) return;
     try {
       const resp = await apiCall('delete', 'ponsonby', [id]);
       if (resp.status === 'error') throw new Error(resp.message);

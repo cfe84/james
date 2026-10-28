@@ -202,7 +202,7 @@ func (e *Executor) PonsonbyCommand(verb string, args []string) *protocol.Respons
 		if err := e.store.DeletePonsonby(p.ID); err != nil {
 			return protocol.ErrResponse(err.Error())
 		}
-		return protocol.OKResponse(TextResult{Message: "Ponsonby store and memory deleted."})
+		return protocol.OKResponse(TextResult{Message: "Ponsonby store, memory and all associated jobs deleted."})
 	}
 	if verb == "create" || verb == "update" {
 		if err := e.store.SavePonsonby(p); err != nil {

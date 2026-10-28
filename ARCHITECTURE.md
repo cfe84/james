@@ -383,6 +383,12 @@ execution is at-least-once: a crash after a memory write can repeat that write,
 so instructions require updating existing qualified claims rather than cloning
 them. Read-only attachments receive no transcript jobs. Removing an assignment
 does not retract accepted jobs or delete shared knowledge.
+Store deletion still requires removing Hem assignments first. Moneypenny
+serializes command handling and curator admission so deletion cancels and joins
+the selected store's active run, including temporary-session cleanup, before
+removing its memory. All associated job rows and the store definition are then
+deleted in one transaction, regardless of job status. Already-selected work
+cannot start after deletion; jobs for other stores remain intact.
 
 The queue retains at most 64 records, never evicts active work, and evicts oldest
 terminal records for admission or after 24 hours. Successful raw inputs are

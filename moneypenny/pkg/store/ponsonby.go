@@ -235,7 +235,7 @@ func (s *Store) DeletePonsonby(id string) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec("DELETE FROM ponsonby_jobs WHERE store_id=? AND status IN ('done','failed')", id); err != nil {
+	if _, err := tx.Exec("DELETE FROM ponsonby_jobs WHERE store_id=?", id); err != nil {
 		return err
 	}
 	if _, err := tx.Exec("DELETE FROM ponsonby_stores WHERE id=?", id); err != nil {

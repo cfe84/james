@@ -1397,7 +1397,7 @@ An empty selection explicitly opts out rather than accidentally restoring defaul
 Failed store discovery blocks submission and offers retry, never silently clearing
 assignments. These selectors replace manual names/IDs only in Qew; CLI syntax and
 TUI fields remain available.
-Backend assignment/outstanding-job deletion guards remain authoritative and
+Backend assignment deletion guards remain authoritative and
 errors leave failed forms intact. Hem commands remain available. Session memory permissions do
 not grant or revoke shared-store assignments.
 
@@ -1423,8 +1423,10 @@ are limited to 32 KiB; transcript fragments are UTF-8-safe and approximately
 records expire after 24 hours and may be evicted sooner to admit new work.
 Successful payloads are cleared; failed payloads remain for explicit retry.
 Publication retries and restart recovery are durable and at-least-once.
-Store status exposes request failures. Delete requires removing assignments and
-finishing outstanding jobs, then removes the store's memory and metadata.
+Store status exposes request failures. Delete requires removing assignments,
+cancels and joins any active curator for that store, then removes its memory,
+metadata and all associated jobs (pending, running, completed and failed).
+Jobs belonging to other stores are unaffected.
 
 Consultations use read-only memory gadgets; ingest curators can update only the
 selected store through those gadgets. Temporary sessions use no permission

@@ -251,7 +251,7 @@ func (m ponsonbiesModel) View() string {
 		}
 	}
 	if m.confirmDelete {
-		b.WriteString("\n  Permanently delete this store? Press d again; any other key cancels.\n")
+		b.WriteString("\n  Permanently delete this store, memory and all jobs, cancelling active work? Press d again; any other key cancels.\n")
 	}
 	if m.err != nil {
 		b.WriteString("\n  Error: " + m.err.Error() + "\n")

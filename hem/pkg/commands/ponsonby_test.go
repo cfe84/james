@@ -139,4 +139,15 @@ func TestPonsonbyRegistryAssignmentsAndRoutedConsultation(t *testing.T) {
 	if r := gadgetRouteRequest(t, e, id, "ponsonby.ask", map[string]any{"store": p.ID, "body": "question"}); r.Status != "error" || !strings.Contains(r.Message, "not assigned") {
 		t.Fatal("removed assignment retained access", r.Message)
 	}
+	if r := e.Dispatch("delete", "ponsonby", []string{"engineering"}); r.Status != "ok" {
+		t.Fatal(r.Message)
+	}
+	if stores, err := e.store.ListPonsonbies(); err != nil || len(stores) != 0 {
+		t.Fatal("deleted store retained in registry", stores, err)
+	}
+	for {
+		if cmd := <-requests; cmd.Method == "ponsonby_delete" {
+			break
+		}
+	}
 }
