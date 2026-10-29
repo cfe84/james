@@ -216,6 +216,75 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 			return transport.Command{}
 		}
 	}
+	t.Run("session edits preserve fields and scope", func(t *testing.T) {
+		if err := e.store.SetSessionParent("target", "source"); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			liveCapabilities.Store(capabilities)
+			if err := e.store.SetSessionParent("target", ""); err != nil {
+				t.Error(err)
+			}
+		}()
+		for _, tc := range []struct {
+			name, method, target, failure string
+			caps                          envelope.GadgetCapabilities
+		}{
+			{"own", "sessions.edit", "", "", envelope.GadgetCapabilities{EditOwnSession: true}},
+			{"any", "sessions.edit", "parent", "", envelope.GadgetCapabilities{EditSessions: true}},
+			{"child", "subagents.edit", "target", "", envelope.GadgetCapabilities{EditOwnSubagents: true}},
+			{"revoked", "sessions.edit", "", "edit own session capability", envelope.GadgetCapabilities{}},
+			{"own-only", "sessions.edit", "parent", "edit sessions capability", envelope.GadgetCapabilities{EditOwnSession: true}},
+			{"child-only", "subagents.edit", "parent", "direct children", envelope.GadgetCapabilities{EditSessions: true, EditOwnSubagents: true}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				liveCapabilities.Store(tc.caps)
+				data := map[string]any{
+					"system_prompt": "Ownership\nand scale", "context_tier": "long_context",
+					"compaction_mode": "custom", "compaction_threshold_tokens": 150000,
+				}
+				target := tc.target
+				if target != "" {
+					data["session_id"] = target
+				} else {
+					target = "source"
+				}
+				response := gadgetRouteRequest(t, e, "source", tc.method, data)
+				if tc.failure != "" {
+					if response.Status != "error" || !strings.Contains(response.Message, tc.failure) {
+						t.Fatalf("wrong scope rejection: %#v", response)
+					}
+					return
+				}
+				if response.Status != "ok" {
+					t.Fatal(response.Message)
+				}
+				command := next()
+				got := command.Data.(map[string]any)
+				if command.Method != "update_session" || got["session_id"] != target ||
+					!strings.Contains(got["system_prompt"].(string), data["system_prompt"].(string)) ||
+					got["context_tier"] != data["context_tier"] ||
+					got["compaction_mode"] != data["compaction_mode"] ||
+					got["compaction_threshold_tokens"] != float64(150000) {
+					t.Fatalf("session edit lost target or fields: %#v", command)
+				}
+			})
+		}
+		for _, method := range []string{"sessions.edit", "subagents.edit"} {
+			liveCapabilities.Store(envelope.GadgetCapabilities{EditSessions: true, EditOwnSubagents: true})
+			for _, field := range []string{"gadget_capabilities", "gadget_route", "unknown"} {
+				data := map[string]any{"session_id": "target", "system_prompt": "Changed", field: map[string]any{}}
+				if response := gadgetRouteRequest(t, e, "source", method, data); response.Status != "error" {
+					t.Fatalf("%s accepted forbidden field %s", method, field)
+				}
+			}
+		}
+		select {
+		case command := <-writes:
+			t.Fatalf("rejected edit reached daemon: %#v", command)
+		default:
+		}
+	})
 	for _, tc := range []struct {
 		name  string
 		data  map[string]any

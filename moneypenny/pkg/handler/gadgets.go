@@ -426,7 +426,7 @@ func (h *Handler) executeGadget(ctx context.Context, sessionID string, request g
 			return nil, &gadgetError{"invalid_request", err.Error()}
 		}
 	}
-	if request.Method == "hem.command" || request.Method == "moneypenny.logs" || strings.HasPrefix(request.Method, "agents.") || strings.HasPrefix(request.Method, "subagents.") || strings.HasPrefix(request.Method, "traits.") {
+	if request.Method == "sessions.edit" || request.Method == "hem.command" || request.Method == "moneypenny.logs" || strings.HasPrefix(request.Method, "agents.") || strings.HasPrefix(request.Method, "subagents.") || strings.HasPrefix(request.Method, "traits.") {
 		return h.routeGadget(ctx, sessionID, request.Method, request.Data)
 	}
 	if strings.HasPrefix(request.Method, "schedule.") {

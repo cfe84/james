@@ -156,7 +156,7 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 			return protocol.ErrResponse(err.Error())
 		}
 		return response
-	case "subagents.edit", "subagents.complete", "subagents.stop", "subagents.delete":
+	case "subagents.complete", "subagents.stop", "subagents.delete":
 		var request struct {
 			ID string `json:"session_id"`
 		}
@@ -170,9 +170,6 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 		if target.ParentSessionID != source.SessionID {
 			return protocol.ErrResponse("subagent management is restricted to direct children")
 		}
-		if route.Method == "subagents.edit" {
-			return e.editGadgetSession(source, route.Data)
-		}
 		switch route.Method {
 		case "subagents.complete":
 			if err := e.store.SetSessionHemStatus(target.SessionID, "completed"); err != nil {
@@ -185,8 +182,8 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 			return e.DeleteSession([]string{target.SessionID})
 		}
 		return protocol.ErrResponse("unsupported subagent management method")
-	case "sessions.edit":
-		return e.editGadgetSession(source, route.Data)
+	case "sessions.edit", "subagents.edit":
+		return e.editGadgetSession(source, route.Data, route.Method == "subagents.edit")
 	case "subagents.create", "agents.create":
 		create, err := envelope.DecodeCreateAgentGadget(route.Data)
 		if err != nil {
@@ -277,7 +274,7 @@ func gadgetRelated(source, target *store.Session) bool {
 		(target.ParentSessionID == source.SessionID || source.ParentSessionID == target.SessionID)
 }
 
-func (e *Executor) editGadgetSession(source *store.Session, raw json.RawMessage) *protocol.Response {
+func (e *Executor) editGadgetSession(source *store.Session, raw json.RawMessage, childOnly bool) *protocol.Response {
 	var update envelope.UpdateSessionData
 	if err := decodeGadgetData(raw, &update); err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -289,6 +286,9 @@ func (e *Executor) editGadgetSession(source *store.Session, raw json.RawMessage)
 	target, err := e.store.GetSession(targetID)
 	if err != nil || target == nil {
 		return protocol.ErrResponse("gadget target session is not tracked by this Hem")
+	}
+	if childOnly && target.ParentSessionID != source.SessionID {
+		return protocol.ErrResponse("subagent management is restricted to direct children")
 	}
 	if targetID != source.SessionID {
 		caps, err := e.currentGadgetCapabilities(source)

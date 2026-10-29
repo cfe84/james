@@ -937,6 +937,11 @@ ignores it. Manual `compact session` (TUI/Qew `K`) requires idle state. **Pipeli
 
 91. **Qew Ctrl+J/K in all navigable lists (`v1.65.0`)**: Every Qew surface that supports arrow-key selection—wizard moneypenny/path lists, diff and changed-file review lists, override pickers, and management lists—also accepts `Ctrl+J`/`Ctrl+K` as down/up movement. The command-palette form uses the same shortcuts to enter the existing conversation transcript navigation mode. Meta/Alt shortcuts remain available to the browser and are not intercepted.
 92. **Gadget session editing permissions**: `edit-own-session`, `edit-sessions`, and `edit-own-subagents` are independent opt-in capabilities. Hem TUI and Qew use the same explicit capability fields for create/copy/edit forms. Moneypenny checks the live capability set before routing. Hem authorizes the authenticated session, any tracked session, or a direct child respectively, decodes only editable session fields, and explicitly rejects gadget-capability and trusted-route changes. `edit-own-subagents` also permits direct-child lifecycle operations (complete, stop, delete). Replying to the parent is unconditional; child management is not.
+    Gadgets shares flag serialization between session and child edits, using
+    `UpdateSessionData` field names without retaining CLI flag aliases in JSON.
+    Moneypenny routes `sessions.edit` to Hem rather than the notification decoder.
+    Hem decodes child edits as full updates before checking direct-child ownership;
+    ID-only lifecycle requests retain their separate strict decoder.
 
 93. **Qew transient connection recovery**: `app.js` centralizes connectivity in `setConnectionState`, which updates the header status and disables `#chat-send` whenever the API is unavailable or a send is in flight. `loadChat` treats history errors (including HTTP 502 during deployment) as transient: it leaves the current `#chat-messages` DOM and conversation state untouched, marks Qew disconnected, and relies on the existing 3-second `startChatPoll` loop to retry. A successful refresh marks the connection restored and re-enables Send. Dashboard request failures use the same status indicator, avoiding replacement of an active conversation with an error screen.
 

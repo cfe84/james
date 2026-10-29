@@ -1536,6 +1536,10 @@ Subagents report results back to their parent as **callbacks**, which render as 
 - Both clients provide an **All subagents** view that includes completed work: Hem's `Esc` → `a` picker and Qew's command-palette `l` shortcut. Entries can be opened from either view. Qew opens the `l` modal immediately with a loading state and performs a dedicated authoritative `list subsession` request, so a slow optional chat-panel refresh cannot leave the list empty until the next poll. Qew's modal supports `j`/`k` and `↓`/`↑` selection (clamped at the ends), `Enter` to open the selected agent, and `Escape` to close.
 - Runtime gadget instructions expose only permitted tools. The combined agents capability grants list/message across tracked agents, not editing or deletion. Subagent creation is bound to the authenticated parent and inherits its current capabilities without accepting permission overrides.
 - Gadget session editing is separately permissioned: `edit-own-session` permits `gadgets sessions edit` for the authenticated session, while `edit-sessions` permits editing any tracked session. `edit-own-subagents` permits a parent to edit, complete, stop, or delete its direct-child subagents. Hem TUI and Qew create/copy/edit forms expose all three controls. All three exclude gadget permissions and trusted routing. Replying to a parent with `gadgets subagents message` is always available; managing children remains opt-in.
+  Session and child edits persist system prompts and other supported fields through
+  the normal session-update path. `--system-prompt`, `--context`, and `--compaction`
+  use the protocol fields `system_prompt`, `context_tier`, and `compaction_mode`;
+  requests must contain at least one editable field.
 
 Conversation keyboard shortcuts remain active while the Session Commands help
 palette is open: single-key commands and numbered subagents, `Ctrl+P` compose

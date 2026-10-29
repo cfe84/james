@@ -80,11 +80,7 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 		for _, key := range []string{"name", "agent", "model", "path", "moneypenny", "traits", "yolo"} {
 			allowed[key] = true
 		}
-	case "sessions.edit":
-		for _, key := range []string{"name", "system-prompt", "model", "effort", "context", "path", "yolo", "compaction", "compaction-threshold-tokens", "env"} {
-			allowed[key] = true
-		}
-	case "subagents.edit":
+	case "sessions.edit", "subagents.edit":
 		for _, key := range []string{"name", "system-prompt", "model", "effort", "context", "path", "yolo", "compaction", "compaction-threshold-tokens", "env"} {
 			allowed[key] = true
 		}
@@ -265,43 +261,6 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 			data["id"] = pos[0]
 			err = body("body", true)
 		}
-	case "subagents.edit":
-		if err = arity(1, 1); err == nil {
-			data["session_id"] = pos[0]
-			delete(data, "env")
-			for _, key := range []string{"name", "system-prompt", "model", "effort", "context", "path", "compaction", "compaction-threshold-tokens"} {
-				if value, ok := flags[key]; ok {
-					mapped := strings.ReplaceAll(key, "-", "_")
-					if key == "compaction-threshold-tokens" {
-						n, parseErr := strconv.Atoi(value)
-						if parseErr != nil {
-							err = fmt.Errorf("--%s must be an integer", key)
-							break
-						}
-						data[mapped] = n
-					} else {
-						data[mapped] = value
-					}
-					if key == "compaction-threshold-tokens" {
-						delete(data, key)
-					}
-				}
-			}
-			if value, ok := flags["yolo"]; ok {
-				data["yolo"] = value == "true"
-			}
-			if value, ok := flags["env"]; ok {
-				parts := strings.SplitN(value, "=", 2)
-				if len(parts) != 2 || parts[0] == "" {
-					err = errors.New("--env must be NAME=VALUE")
-				} else {
-					data["environment"] = map[string]string{parts[0]: parts[1]}
-				}
-			}
-			if len(data) == 1 {
-				err = errors.New("subagents edit requires editable flags")
-			}
-		}
 	case "subagents.complete", "subagents.stop", "subagents.delete":
 		if err = arity(1, 1); err == nil {
 			data["session_id"] = pos[0]
@@ -310,8 +269,12 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 		if err = arity(0, 0); err == nil {
 			err = body("prompt", true)
 		}
-	case "sessions.edit":
-		if err = arity(0, 1); err == nil {
+	case "sessions.edit", "subagents.edit":
+		minArgs := 0
+		if method == "subagents.edit" {
+			minArgs = 1
+		}
+		if err = arity(minArgs, 1); err == nil {
 			if len(pos) == 1 {
 				data["session_id"] = pos[0]
 			}
@@ -319,6 +282,12 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 			for _, key := range []string{"name", "system-prompt", "model", "effort", "context", "path", "compaction", "compaction-threshold-tokens"} {
 				if value, ok := flags[key]; ok {
 					mapped := strings.ReplaceAll(key, "-", "_")
+					switch key {
+					case "context":
+						mapped = "context_tier"
+					case "compaction":
+						mapped = "compaction_mode"
+					}
 					if key == "compaction-threshold-tokens" {
 						n, parseErr := strconv.Atoi(value)
 						if parseErr != nil {
@@ -329,7 +298,7 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 					} else {
 						data[mapped] = value
 					}
-					if key == "compaction-threshold-tokens" {
+					if mapped != key {
 						delete(data, key)
 					}
 				}
@@ -345,8 +314,12 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 					data["environment"] = map[string]string{parts[0]: parts[1]}
 				}
 			}
-			if len(data) == 0 {
-				err = errors.New("sessions edit requires a session ID or editable flags")
+			editable := len(data)
+			if _, targeted := data["session_id"]; targeted {
+				editable--
+			}
+			if editable == 0 {
+				err = errors.New("session edit requires at least one editable flag")
 			}
 		}
 	case "schedule.create":
