@@ -251,7 +251,7 @@ func TestBuildOpenCodeArgs(t *testing.T) {
 		"--model", "azure/gpt-5.4", "--variant", "high", "--auto",
 		"--file", "/tmp/one.txt", "--file", "/tmp/two.png",
 		"--",
-		"Instructions for this task:\nBe concise.\n\n---\n\nInspect this.",
+		"Inspect this.",
 	}
 	if !reflect.DeepEqual(inv.args, want) {
 		t.Errorf("args = %#v, want %#v", inv.args, want)
@@ -274,12 +274,5 @@ func TestBuildOpenCodeArgsCreatesWithoutSession(t *testing.T) {
 	}
 	if inv.args[len(inv.args)-2] != "--" {
 		t.Errorf("prompt must be separated from options even without attachments: %v", inv.args)
-	}
-}
-
-func TestOpenCodeSystemPrompt(t *testing.T) {
-	got := withOpenCodeSystemPrompt(RunParams{SystemPrompt: "Rules", Prompt: "Task"})
-	if !strings.Contains(got, "Rules") || !strings.HasSuffix(got, "Task") {
-		t.Errorf("combined prompt = %q", got)
 	}
 }

@@ -82,6 +82,13 @@ case " $* " in
   *" --dir /original "*) ;;
   *) exit 12 ;;
 esac
+case "$OPENCODE_CONFIG_CONTENT" in
+  *opencode-instructions.md*) ;;
+  *) exit 13 ;;
+esac
+case " $* " in
+  *"Private session rules"*) exit 14 ;;
+esac
 printf '%s\n' '{"type":"text","sessionID":"ses_existing","part":{"text":"answer"}}'
 `
 	if err := os.WriteFile(filepath.Join(bin, "opencode"), []byte(script), 0700); err != nil {
@@ -91,7 +98,8 @@ printf '%s\n' '{"type":"text","sessionID":"ses_existing","part":{"text":"answer"
 	runner := New(log.New(io.Discard, "", 0))
 	result, err := runner.Run(context.Background(), RunParams{
 		Agent: "opencode", SessionID: "test-session", AgentSessionID: "ses_existing",
-		Resume: true, Path: t.TempDir(), Prompt: "secret prompt",
+		Resume: true, Path: t.TempDir(), SessionDir: t.TempDir(),
+		SystemPrompt: "Private session rules", Prompt: "secret prompt",
 	})
 	if err != nil {
 		t.Fatal(err)

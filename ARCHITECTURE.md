@@ -1330,8 +1330,19 @@ discarding a session's existing model.
 OpenCode model identifiers retain the CLI's `provider/model` form and are
 discovered with `opencode models`. James maps effort to OpenCode's
 provider-specific `--variant`, yolo to `--auto`, and uploads to repeated
-`--file`. OpenCode has no system-prompt flag, so each prompt is prefixed with
-the configured system instructions. Memory access and injection are controlled
+`--file`. OpenCode loads James' configured system instructions (including traits,
+gadgets and memory) through its native `instructions` config, not a prefix on
+each user message. The runner refreshes a private `opencode-instructions.md` in
+the James session directory on every invocation, including resumes and fresh
+lost-session recovery. An absolute file path in `OPENCODE_CONFIG_CONTENT`
+preserves the working directory and normal project/global instruction discovery.
+Existing inline JSON config and instruction entries are preserved; invalid
+inline JSON or instruction arrays and file-write failures reject the run rather
+than silently dropping rules. One-shot runs use isolated temporary instruction
+files, cleaned up after completion or failure, without overwriting live-session
+instructions. Native system context still includes the rules on model requests;
+this avoids accumulating repeated copies as user turns, not all input-token cost.
+Old instruction-prefixed history is not rewritten. Memory access and injection are controlled
 by the session's Memory capability, not yolo mode. It uses the same local
 gadgets/SQLite path as the other adapters; OpenCode's native permission and deny
 rules still determine whether it can execute the client.

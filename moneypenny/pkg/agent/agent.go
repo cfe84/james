@@ -437,6 +437,14 @@ func (r *Runner) RunOneShot(ctx context.Context, params RunParams) (string, erro
 	env := withEnvironment(os.Environ(), params.Environment)
 	env = PrependToPath(env, filepath.Dir(agentPath))
 	env = append(env, inv.env...)
+	if params.Agent == "opencode" {
+		var cleanup func()
+		env, cleanup, err = prepareOpenCodeInstructions(env, params.SystemPrompt, "")
+		if err != nil {
+			return "", err
+		}
+		defer cleanup()
+	}
 	cmd.Env = env
 	if inv.stdin != "" {
 		cmd.Stdin = strings.NewReader(inv.stdin)
@@ -499,6 +507,14 @@ func (r *Runner) Run(ctx context.Context, params RunParams) (*Result, error) {
 		params.openCodeDirectory = directory
 		r.vlog.Printf("opencode resume: session=%s directory_differs=%t", params.SessionID, params.Path != "" && filepath.Clean(params.Path) != directory)
 		inv = buildArgs(params)
+	}
+	if params.Agent == "opencode" {
+		var cleanup func()
+		env, cleanup, err = prepareOpenCodeInstructions(env, params.SystemPrompt, params.SessionDir)
+		if err != nil {
+			return nil, err
+		}
+		defer cleanup()
 	}
 	cmd := exec.CommandContext(ctx, agentPath, inv.args...)
 	if params.Path != "" {
@@ -1618,7 +1634,7 @@ func buildOpenCodeOneShotArgs(params RunParams) agentInvocation {
 	if params.Yolo {
 		args = append(args, "--auto")
 	}
-	args = append(args, withOpenCodeSystemPrompt(params))
+	args = append(args, "--", params.Prompt)
 	return agentInvocation{args: args}
 }
 
@@ -1643,15 +1659,8 @@ func buildOpenCodeArgs(params RunParams) agentInvocation {
 		args = append(args, "--file", path)
 	}
 	args = append(args, "--")
-	args = append(args, withOpenCodeSystemPrompt(params))
+	args = append(args, params.Prompt)
 	return agentInvocation{args: args}
-}
-
-func withOpenCodeSystemPrompt(params RunParams) string {
-	if params.SystemPrompt == "" {
-		return params.Prompt
-	}
-	return "Instructions for this task:\n" + params.SystemPrompt + "\n\n---\n\n" + params.Prompt
 }
 
 func buildClaudeArgs(params RunParams) agentInvocation {
