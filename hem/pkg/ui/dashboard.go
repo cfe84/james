@@ -81,6 +81,11 @@ type dashboardEntry struct {
 	Category        int    // 0=READY, 1=WORKING, 2=IDLE, 3=COMPLETED
 	ParentSessionID string // non-empty for subagent entries
 	Nick            string // optional short nickname/alias
+	RootSessionID   string
+	Depth           int
+	Unread          bool
+	HierarchyIssue  string
+	Expandable      bool
 }
 
 // dashboardModel displays the attention-based dashboard.
@@ -100,12 +105,17 @@ type dashboardModel struct {
 	filtering     bool   // true when filter input is active
 	filterText    string // current filter text (case insensitive match on name)
 	confirmDelete bool   // first-press flag for two-step delete confirmation
+	workstreams   bool
+	legacy        bool
+	expanded      map[string]bool
 }
 
 type dashboardLoadedMsg struct {
 	entries       []dashboardEntry
 	err           error
 	projectFilter string // which dashboard instance this belongs to
+	workstreams   bool
+	legacy        bool
 }
 
 type sessionCompletedMsg struct{ err error }
@@ -113,8 +123,9 @@ type dashboardDeletedMsg struct{ err error }
 
 func newDashboardModel(c *client) dashboardModel {
 	return dashboardModel{
-		client:  c,
-		loading: true,
+		client:   c,
+		loading:  true,
+		expanded: make(map[string]bool),
 	}
 }
 
@@ -131,15 +142,34 @@ func (m dashboardModel) loadDashboard() tea.Cmd {
 		if showAll {
 			args = append(args, "--all")
 		}
-		if showSubs {
+		if showSubs && m.legacy {
 			args = append(args, "--show-subs")
 		}
-		resp, err := m.client.send("dashboard", "", args...)
+		requestArgs := args
+		if !m.legacy {
+			requestArgs = append(append([]string{}, args...), "--view=workstreams")
+		}
+		resp, err := m.client.send("dashboard", "", requestArgs...)
+		legacy := m.legacy
+		if err == nil && resp.Status == "error" && protocol.UnsupportedDashboardView(resp.Message) {
+			legacy = true
+			resp, err = m.client.send("dashboard", "", args...)
+		}
 		if err != nil {
 			return dashboardLoadedMsg{err: err, projectFilter: projectFilter}
 		}
 		if resp.Status == "error" {
 			return dashboardLoadedMsg{err: fmt.Errorf("%s", resp.Message), projectFilter: projectFilter}
+		}
+		if !legacy {
+			var data protocol.DashboardResult
+			if err := json.Unmarshal(resp.Data, &data); err != nil {
+				return dashboardLoadedMsg{err: fmt.Errorf("parsing workstreams: %w", err), projectFilter: projectFilter}
+			}
+			if data.Workstreams == nil {
+				return dashboardLoadedMsg{err: fmt.Errorf("dashboard response has no workstreams"), projectFilter: projectFilter}
+			}
+			return dashboardLoadedMsg{entries: workstreamEntries(data), workstreams: true, projectFilter: projectFilter}
 		}
 
 		// Parse the TableResult.
@@ -148,7 +178,7 @@ func (m dashboardModel) loadDashboard() tea.Cmd {
 			Rows    [][]string `json:"rows"`
 		}
 		if err := json.Unmarshal(resp.Data, &table); err != nil {
-			return dashboardLoadedMsg{err: fmt.Errorf("parsing dashboard: %w", err)}
+			return dashboardLoadedMsg{err: fmt.Errorf("parsing dashboard: %w", err), projectFilter: projectFilter}
 		}
 
 		var entries []dashboardEntry
@@ -221,7 +251,7 @@ func (m dashboardModel) loadDashboard() tea.Cmd {
 		// - Else use the parent's own category
 		entries = unifySubagentCategories(entries)
 
-		return dashboardLoadedMsg{entries: entries, projectFilter: projectFilter}
+		return dashboardLoadedMsg{entries: entries, legacy: true, projectFilter: projectFilter}
 	}
 }
 
@@ -293,10 +323,21 @@ func (m dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 			m.err = msg.err
 			// Don't wipe entries on error — keep last good data.
 		} else {
+			selectedID := ""
+			if selected := m.selectedEntry(); selected != nil {
+				selectedID = selected.SessionID
+			}
 			m.entries = msg.entries
+			m.workstreams = msg.workstreams
+			m.legacy = msg.legacy
 			m.err = nil
-			if m.cursor >= len(m.entries) {
-				m.cursor = max(0, len(m.entries)-1)
+			visible := m.filteredEntries()
+			m.cursor = min(m.cursor, max(0, len(visible)-1))
+			for i, entry := range visible {
+				if entry.SessionID == selectedID {
+					m.cursor = i
+					break
+				}
 			}
 		}
 
@@ -375,6 +416,27 @@ func (m dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 		}
 
 		switch msg.String() {
+		case " ", "right", "left":
+			if m.workstreams {
+				if e := m.selectedEntry(); e != nil {
+					if m.expanded == nil {
+						m.expanded = make(map[string]bool)
+					}
+					expand := !m.expanded[e.RootSessionID]
+					if msg.String() == "right" {
+						expand = true
+					} else if msg.String() == "left" {
+						expand = false
+					}
+					m.expanded[e.RootSessionID] = expand
+					for i, row := range m.filteredEntries() {
+						if row.SessionID == e.SessionID || (!expand && row.SessionID == e.RootSessionID) {
+							m.cursor = i
+							break
+						}
+					}
+				}
+			}
 		case "up", "k":
 			if m.cursor > 0 {
 				m.cursor--
@@ -393,6 +455,10 @@ func (m dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 			m.loading = true
 			return m, m.loadDashboard()
 		case "s":
+			if m.workstreams {
+				m.toggleAllWorkstreams()
+				return m, nil
+			}
 			m.showSubs = !m.showSubs
 			m.loading = true
 			return m, m.loadDashboard()
@@ -404,8 +470,57 @@ func (m dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 	return m, nil
 }
 
+func (m *dashboardModel) toggleAllWorkstreams() {
+	if m.expanded == nil {
+		m.expanded = make(map[string]bool)
+	}
+	expand := false
+	for _, e := range m.entries {
+		if e.Expandable && !m.expanded[e.RootSessionID] {
+			expand = true
+			break
+		}
+	}
+	selected := m.selectedEntry()
+	for _, e := range m.entries {
+		if e.Expandable {
+			m.expanded[e.RootSessionID] = expand
+		}
+	}
+	if selected != nil {
+		for i, e := range m.filteredEntries() {
+			if e.SessionID == selected.SessionID || (!expand && e.SessionID == selected.RootSessionID) {
+				m.cursor = i
+				break
+			}
+		}
+	}
+}
+
 // filteredEntries returns entries matching the current filter text.
 func (m dashboardModel) filteredEntries() []dashboardEntry {
+	if m.workstreams {
+		matches := make(map[string]bool)
+		ancestors := []string{}
+		for _, e := range m.entries {
+			ancestors = ancestors[:min(e.Depth, len(ancestors))]
+			ancestors = append(ancestors, e.SessionID)
+			if m.filterText == "" || strings.Contains(strings.ToLower(
+				e.Name+" "+e.Nick+" "+e.Project+" "+e.Agent+" "+e.Model+" "+e.Moneypenny+" "+e.SessionID),
+				strings.ToLower(m.filterText)) {
+				for _, id := range ancestors {
+					matches[id] = true
+				}
+			}
+		}
+		var result []dashboardEntry
+		for _, e := range m.entries {
+			if matches[e.SessionID] && (m.filterText != "" || e.Depth == 0 || m.expanded[e.RootSessionID]) {
+				result = append(result, e)
+			}
+		}
+		return result
+	}
 	if m.filterText == "" {
 		return m.entries
 	}
@@ -417,6 +532,37 @@ func (m dashboardModel) filteredEntries() []dashboardEntry {
 		}
 	}
 	return result
+}
+
+func workstreamEntries(data protocol.DashboardResult) []dashboardEntry {
+	var entries []dashboardEntry
+	categories := map[string]int{"needs_you": 0, "in_progress": 1, "quiet": 2, "completed": 3}
+	for _, w := range data.Workstreams {
+		for _, s := range w.Sessions {
+			e := dashboardEntry{
+				SessionID: s.SessionID, ParentSessionID: s.ParentSessionID,
+				Name: s.Name, Nick: s.Nick, Project: s.Project, Agent: s.Agent, Model: s.Model,
+				Moneypenny: s.Moneypenny, MPStatus: s.Execution, HemStatus: "active",
+				CreatedAt: s.CreatedAt, LastActive: s.LastActivity, Unread: s.Unread && !s.Completed,
+				RootSessionID: w.RootSessionID, Depth: s.Depth, Category: categories[w.Section],
+				HierarchyIssue: s.HierarchyIssue,
+			}
+			if s.Completed {
+				e.HemStatus = "completed"
+			}
+			if s.Depth == 0 {
+				e.ParentSessionID = ""
+				e.LastActive = w.LastActivity
+				e.Expandable = len(w.Sessions) > 1
+				e.SubInfo = fmt.Sprintf("%d active · %d running · %d unread", w.Active, w.Running, w.Unread)
+				if w.Unavailable > 0 {
+					e.SubInfo += fmt.Sprintf(" · %d unavailable", w.Unavailable)
+				}
+			}
+			entries = append(entries, e)
+		}
+	}
+	return entries
 }
 
 func (m dashboardModel) selectedEntry() *dashboardEntry {
@@ -593,6 +739,10 @@ func (m dashboardModel) View() string {
 		b.WriteString(titleStyle.Render(" " + m.title + " "))
 		b.WriteString("\n")
 	}
+	if m.workstreams {
+		b.WriteString(sessionHeaderStyle.Render("  Space/←/→ expand · Enter open · a completed · l all sessions"))
+		b.WriteString("\n")
+	}
 
 	// Filter bar.
 	if m.filtering {
@@ -618,6 +768,9 @@ func (m dashboardModel) View() string {
 	}
 	if maxRows < 1 {
 		maxRows = 10
+	}
+	if m.workstreams {
+		maxRows = max(1, (m.height-10)/3)
 	}
 
 	// Compute visible window.
@@ -694,9 +847,59 @@ func (m dashboardModel) View() string {
 			if lastCat != -1 {
 				b.WriteString("\n")
 			}
-			b.WriteString(categoryLabel(e.Category))
+			if m.workstreams {
+				labels := []string{" NEEDS YOU ", " IN PROGRESS ", " QUIET ", " COMPLETED "}
+				b.WriteString(labelStyle.Render(labels[e.Category]))
+			} else {
+				b.WriteString(categoryLabel(e.Category))
+			}
 			b.WriteString("\n")
 			lastCat = e.Category
+		}
+		if m.workstreams {
+			prefix := strings.Repeat("  ", min(e.Depth, 6))
+			if e.Expandable {
+				if m.expanded[e.RootSessionID] {
+					prefix += "▾ "
+				} else {
+					prefix += "▸ "
+				}
+			}
+			name := e.Name
+			if e.Nick != "" {
+				name += " (" + e.Nick + ")"
+			}
+			state := e.MPStatus
+			if e.HemStatus == "completed" {
+				state += " · completed"
+			}
+			if e.Unread {
+				state += " · unread"
+			}
+			name = truncate(name, max(12, m.width-lipgloss.Width(state)-lipgloss.Width(prefix)-6))
+			line := fmt.Sprintf("  %s%s  %s", prefix, name, state)
+			if e.Project != "" && m.projectFilter == "" {
+				line += " · " + e.Project
+			}
+			if e.HierarchyIssue != "" {
+				line += " · hierarchy: " + e.HierarchyIssue
+			}
+			line = truncate(line, max(10, m.width))
+			if i == m.cursor {
+				b.WriteString(sessionSelectedStyle.Render(line))
+			} else {
+				b.WriteString(sessionNormalStyle.Render(line))
+			}
+			b.WriteString("\n")
+			if e.SubInfo != "" {
+				b.WriteString(sessionHeaderStyle.Render(truncate("    "+e.SubInfo, max(10, m.width))))
+				b.WriteString("\n")
+			}
+			if i == m.cursor {
+				b.WriteString(sessionHeaderStyle.Render(truncate("    "+e.Moneypenny+" · "+sessionAgentLabel(e)+" · "+relativeTime(e.LastActive), max(10, m.width))))
+				b.WriteString("\n")
+			}
+			continue
 		}
 
 		// Entry line.

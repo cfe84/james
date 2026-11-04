@@ -1754,9 +1754,38 @@ statuses; an expired retry cooldown alone does not. Qew uses these same
 dashboard rows. The metadata cache is in memory, so names cannot be recovered
 after a Hem restart until that Moneypenny responds again.
 
-`hem dashboard [--project NAME] [--all]` — attention-based view of sessions.
+`hem dashboard [--project NAME] [--all] [--view workstreams]` — attention-based view of sessions.
 
-Groups sessions by state:
+The TUI and Qew default to **workstreams**: a collapsed root session with its
+recursive descendants, not a new organizational entity. Hem supplies the same
+typed `workstreams` projection to both clients. Sections are **Needs you** (any
+active session unread), **In progress** (otherwise any running), **Quiet**, and
+optionally **Completed**. Unread and running counts are independent; an idle
+parent stays idle even when its children run. In this phase "Needs you" means
+unread, not a durable question or blocker.
+
+Expand a workstream to open individual descendants. TUI: `Space`/`Left`/`Right`
+toggle/collapse/expand, `s` expands or collapses all, and `Enter` opens the selected
+session. Qew uses disclosure buttons or `Left`/`Right`; expansion survives reloads.
+Selection follows session IDs through refresh. Search retains matching descendants'
+ancestor context and temporarily reveals collapsed matches; project filters keep
+the same context. Completed ancestors remain visible when they contain live work,
+but completed sessions never contribute to active, unread, running or unavailable
+counts. Missing-parent sessions remain standalone; cycles are broken
+deterministically and flagged rather than losing sessions. Workstreams sort by
+section, latest activity descending, then root ID.
+
+Names are primary, nicknames secondary. Provider/model/host details are available
+on the selected TUI row and under Qew's **Details**, rather than dominating every
+row. Qew keeps **New Agent** prominent and puts existing management screens,
+**All sessions** (an expanded diagnostic view) and **Show completed** under
+**Manage**. TUI retains `l` for its existing All sessions screen and `a` for
+completed sessions. Existing refresh/watch and completion alerts are reused;
+expanding and searching do not fetch transcripts or run agents. Clients fall back
+to the legacy dashboard only when an older Hem rejects the `--view` flag.
+
+The default CLI/table response remains compatible and groups sessions by state:
+
 1. **READY** — session is idle and unreviewed (agent finished, needs user attention)
 2. **WORKING** — agent is currently running
 3. **IDLE** — session is idle and reviewed (user has seen the response)
@@ -1768,7 +1797,9 @@ ready counts and summaries remain visible on the parent row.
 
 The "reviewed" flag tracks whether the user has seen the latest agent response. A session becomes unreviewed when `continue_session` is called. It becomes reviewed when the user views the conversation history and the last turn is from the assistant (i.e., the agent has finished). This prevents the chat view's polling from prematurely marking a session as reviewed while the agent is still working. The user can also manually toggle the flag with `hem mark session` (see **Session commands**) — "mark as ready" (unread) re-promotes an idle session into the READY group, and `--read` clears it; in the TUI/Qew this is bound to `u`.
 
-Each session row shows its agent (`claude`, `copilot`, or `opencode`) and, when explicitly selected, its model beside the agent. Both values come from Moneypenny's `list_sessions` response and appear in the TUI and Qew dashboards; an unset model is omitted rather than guessed from the agent default. The TUI colors the agent label (orange for copilot, violet for claude) and shows `-` when agent metadata is unavailable; Qew omits the badge in that case.
+Agent/model metadata comes from Moneypenny's `list_sessions` response; an unset
+model is omitted rather than guessed from the agent default. Legacy dashboards
+retain their inline agent/model labels.
 
 The dashboard auto-refreshes every 5 seconds by polling moneypennies. When a session transitions from WORKING to READY, a notification sound is played client-side. In the TUI, the embedded WAV file is played via `afplay` (macOS) or `aplay` (Linux). In Qew, a Web Audio API chime is played and a slide-in pop-over notification is shown. Both clients support disabling sound: `--silent` flag for `hem ui`, and a toggle button in Qew's header. This works regardless of which view is active, as the dashboard polling runs in the background.
 
@@ -1778,7 +1809,9 @@ The dashboard auto-refreshes every 5 seconds by polling moneypennies. When a ses
 
 `hem ui` — launches an interactive terminal UI (TUI) built with bubbletea + lipgloss.
 
-- **Dashboard** (default view): attention-based grouped view of sessions (READY, WORKING, IDLE, COMPLETED). Shows project name and agent (claude/copilot) alongside sessions; the project column appears when any session has a project assigned. Uses a shared moneypenny session cache for instant rendering — moneypenny data refreshes in the background (10s timeout) so the dashboard never blocks. When connected via MI6, the server pushes broadcast updates as each moneypenny responds, so the dashboard updates incrementally without waiting for slow/offline moneypennies.
+- **Dashboard** (default view): expandable workstreams grouped into Needs you, In progress, Quiet and Completed (see **Dashboard**). Uses a shared moneypenny session cache for instant rendering — moneypenny data refreshes in the background (10s timeout). When connected via MI6, server broadcasts update the dashboard incrementally without waiting for slow/offline moneypennies.
+  - `Space` / `Left` / `Right` — toggle / collapse / expand selected workstream
+  - `s` — expand or collapse all workstreams
   - `Enter` — open chat for selected session
   - `a` — toggle show/hide completed sessions
   - `c` — mark session as completed
@@ -1905,7 +1938,7 @@ qew --development --listen 127.0.0.1:8077
 
 ## Features
 
-- **Dashboard**: Groups sessions by state (READY, WORKING, IDLE, COMPLETED), same as TUI dashboard. Polls every 5 seconds.
+- **Dashboard**: Uses the same typed, expandable workstreams and attention/execution counts as the TUI dashboard. Existing push/watch refresh and fallback polling are unchanged.
 - **Session navigation**: Opening a session adds browser history rather than
   replacing the dashboard. Mobile/browser Back and the chat Back button return
   through nested sessions to the dashboard, not the prior login page. Forward

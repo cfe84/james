@@ -93,6 +93,29 @@ header h1 span { color: var(--primary); }
 .session-status.working { background: var(--warning); color: #000; }
 .session-status.ready { background: var(--info); color: #000; }
 .session-status.idle { background: var(--surface2); color: var(--text); }
+.workstream-main { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.workstream-main .session-name { font-weight: 600; }
+.workstream-nick, .workstream-summary { color: var(--muted); font-size: 0.85em; }
+.workstream-nick { margin-left: 8px; }
+.workstream-summary { display: block; margin-top: 4px; }
+.workstream-expand {
+  align-self: stretch; min-width: 36px; border: 0; border-radius: 6px;
+  background: var(--surface2); color: var(--text); cursor: pointer; margin-right: 8px;
+}
+.session-details { position: relative; margin-left: 8px; color: var(--muted); font-size: 0.8em; }
+.session-details summary { cursor: pointer; }
+.session-details > span {
+  display: block; position: absolute; right: 0; top: 100%; z-index: 2;
+  width: min(320px, 70vw); padding: 12px; border: 1px solid var(--surface2);
+  border-radius: 6px; background: var(--surface); overflow-wrap: anywhere;
+}
+@media (max-width: 600px) {
+  .session-row:has(.workstream-main) { position: relative; flex-wrap: wrap; gap: 4px; }
+  .workstream-main { flex-basis: calc(100% - 56px); }
+  .session-row:has(.workstream-main) .session-time { margin-left: auto; }
+  .session-details { position: static; }
+  .session-details > span { width: min(320px, 100%); }
+}
 
 /* Chat */
 #chat-view { display: none; flex-direction: column; flex: 1; min-height: 0; overflow: hidden; }
@@ -480,13 +503,21 @@ header h1 span { color: var(--primary); }
   <div id="dashboard-view">
     <div class="dash-toolbar">
       <select id="project-filter">
-        <option value="">All sessions</option>
+        <option value="">All projects</option>
       </select>
       <div class="spacer"></div>
-      <button class="btn-muted" id="nav-moneypennies-btn">Moneypennies</button>
-      <button class="btn-muted" id="nav-ponsonbies-btn">Ponsonbies</button>
-      <button class="btn-muted" id="nav-projects-btn">Projects</button>
-      <button class="btn-muted" id="nav-traits-btn">Traits</button>
+      <div class="dropdown">
+        <button class="btn-muted" id="manage-btn" aria-expanded="false" aria-controls="manage-menu">Manage ▾</button>
+        <div class="dropdown-menu" id="manage-menu">
+          <button id="dash-all-sessions-btn">All sessions</button>
+          <button id="dash-completed-btn">Show completed</button>
+          <hr>
+          <button id="nav-moneypennies-btn">Moneypennies</button>
+          <button id="nav-ponsonbies-btn">Ponsonbies</button>
+          <button id="nav-projects-btn">Projects</button>
+          <button id="nav-traits-btn">Traits</button>
+        </div>
+      </div>
       <button class="btn" id="new-session-btn">+ New Agent</button>
     </div>
     <input id="dash-filter" class="dash-filter" type="text" placeholder="Filter sessions… (type to fuzzy-match, Enter to navigate, Esc to clear)" autocomplete="off">

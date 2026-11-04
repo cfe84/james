@@ -626,7 +626,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.projectFilter == "" && msg.err == nil && !m.silent {
 			for _, entry := range msg.entries {
 				prev := m.lastSessionStates[entry.SessionID]
-				if prev == "working" && entry.MPStatus == "ready" {
+				if prev == "working" && (entry.MPStatus == "ready" ||
+					(entry.MPStatus == "idle" && entry.Unread && entry.HemStatus != "completed")) {
 					go commands.PlayNotificationSound()
 					name := entry.Name
 					if name == "" {
@@ -1097,13 +1098,15 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if e.ParentSessionID != "" {
 				// Opening a subagent: push parent chat onto stack, then open sub.
 				parentName := ""
+				parentMP := e.Moneypenny
 				for _, pe := range m.dashboard.entries {
 					if pe.SessionID == e.ParentSessionID {
 						parentName = pe.Name
+						parentMP = pe.Moneypenny
 						break
 					}
 				}
-				parentChat := newChatModel(m.client, e.ParentSessionID, parentName, e.Moneypenny)
+				parentChat := newChatModel(m.client, e.ParentSessionID, parentName, parentMP)
 				parentChat.width = m.width
 				parentChat.height = m.viewHeight()
 				m.parentChats = append(m.parentChats, parentChat)
@@ -1206,6 +1209,10 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.currentView = viewTraits
 		return m, m.traits.loadTraits()
 	case "s":
+		if m.dashboard.workstreams {
+			m.dashboard.toggleAllWorkstreams()
+			return m, nil
+		}
 		m.dashboard.showSubs = !m.dashboard.showSubs
 		m.dashboard.loading = true
 		if m.dashboard.showSubs {
@@ -1329,13 +1336,15 @@ func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			uilog("projectDetail: opening session id=%s name=%q mp=%s", e.SessionID, e.Name, e.Moneypenny)
 			if e.ParentSessionID != "" {
 				parentName := ""
+				parentMP := e.Moneypenny
 				for _, pe := range m.projectDetail.entries {
 					if pe.SessionID == e.ParentSessionID {
 						parentName = pe.Name
+						parentMP = pe.Moneypenny
 						break
 					}
 				}
-				parentChat := newChatModel(m.client, e.ParentSessionID, parentName, e.Moneypenny)
+				parentChat := newChatModel(m.client, e.ParentSessionID, parentName, parentMP)
 				parentChat.width = m.width
 				parentChat.height = m.viewHeight()
 				m.parentChats = append(m.parentChats, parentChat)
@@ -1398,6 +1407,10 @@ func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.previousView = viewProjectDetail
 		return m, m.wizard.Init()
 	case "s":
+		if m.projectDetail.workstreams {
+			m.projectDetail.toggleAllWorkstreams()
+			return m, nil
+		}
 		m.projectDetail.showSubs = !m.projectDetail.showSubs
 		m.projectDetail.loading = true
 		if m.projectDetail.showSubs {
@@ -2144,6 +2157,9 @@ func (m Model) renderStatusBar() string {
 			if m.dashboard.showSubs {
 				subsLabel = " hide subs"
 			}
+			if m.dashboard.workstreams {
+				subsLabel = " expand/collapse"
+			}
 			soundLabel := " 🔔 sound"
 			if m.silent {
 				soundLabel = " 🔕 sound"
@@ -2234,6 +2250,9 @@ func (m Model) renderStatusBar() string {
 			subsLabel := " show subs"
 			if m.projectDetail.showSubs {
 				subsLabel = " hide subs"
+			}
+			if m.projectDetail.workstreams {
+				subsLabel = " expand/collapse"
 			}
 			keys = []string{
 				statusKeyStyle.Render("↵") + statusDescStyle.Render(" chat"),

@@ -64,7 +64,8 @@ test('session Back/Forward stays in Qew across nested sessions, reloads and deep
     assert.equal(entries[index - 1].url.hash, '');
     assert.equal(entries[index - 1].url.pathname, '/');
     context.document.getElementById('chat-input').value = 'parent draft';
-    context.window._openSubagent('child', 'Child');
+    context.window._openSubagent('child', 'Child', 'windows');
+    assert.equal(context.currentSessionMP, 'windows');
     context.document.getElementById('chat-input').value = 'child draft';
     context.history.back();
     assert.equal(context.currentSession, 'parent');
@@ -451,34 +452,48 @@ test('agent-authored messages have their own icon and red role style', () => {
   assert.match(css, /\.msg-role\.agent-user\s*\{\s*color:\s*var\(--danger\)/);
 });
 
-test('dashboard shows the selected model and refreshes the row when it changes', () => {
-  const rowElement = {
-    dataset: { sessionId: 'session' },
-    setAttribute() {},
-    addEventListener() {},
-  };
+function dashboardHarness() {
+  let html = '';
+  let rows = [];
   const container = {
-    innerHTML: '',
-    querySelector() { return this.innerHTML.includes('session-row') ? rowElement : null; },
-    querySelectorAll() { return [rowElement]; },
+    get innerHTML() { return html; },
+    set innerHTML(value) {
+      html = value;
+      rows = [...value.matchAll(/class="session-row" data-session-id="([^"]+)"/g)].map(match => ({
+        dataset: { sessionId: match[1] },
+        setAttribute() {}, addEventListener() {},
+      }));
+    },
+    scrollTop: 140,
+    querySelector() { return rows[0] || null; },
+    querySelectorAll() { return rows; },
   };
+  const saved = new Map();
   const context = vm.createContext({
     document: { getElementById: () => container },
+    localStorage: { setItem: (key, value) => saved.set(key, value) },
     escapeAttr: value => String(value).replaceAll('"', '&quot;'),
     escapeHtml: value => String(value).replaceAll('<', '&lt;'),
     relativeTime: () => '',
-    fuzzyMatch: () => true,
+    fuzzyMatch: (query, target) => target.toLowerCase().includes(query.toLowerCase()),
     applyDashSelection() {},
     dashFilter: '',
     dashSelectedId: '',
     dashEntries: [],
     dashRowSigs: {},
     lastDashRenderSig: null,
+    dashExpanded: new Set(), dashAllSessions: false, dashShowCompleted: false,
   });
   const source = app.slice(app.indexOf('  function renderDashboard(data)'), app.indexOf('  // Open a dashboard entry'));
   vm.runInContext(`${source}\nglobalThis.render = renderDashboard;`, context);
+  return { context, container, saved };
+}
+
+test('dashboard shows the selected model and refreshes the row when it changes', () => {
+  const { context, container } = dashboardHarness();
   const data = model => ({ rows: [['session', 'Arnold', '', 'idle', 'mac', '', '', '', 'opencode', '', model]] });
   context.render(data('azure/gpt-6-luna'));
+  const rowElement = container.querySelector();
   assert.match(container.innerHTML, /opencode · azure\/gpt-6-luna/);
   context.render(data('azure/gpt-6-sol'));
   assert.match(rowElement.innerHTML, /opencode · azure\/gpt-6-sol/);
@@ -487,6 +502,89 @@ test('dashboard shows the selected model and refreshes the row when it changes',
   assert.doesNotMatch(rowElement.innerHTML, /opencode ·/);
   context.render(data('<unsafe>'));
   assert.match(rowElement.innerHTML, /&lt;unsafe>/);
+});
+
+test('workstreams retain hierarchy, independent state, expansion, selection and filter context', () => {
+  const { context, container, saved } = dashboardHarness();
+  const data = { workstreams: [{
+    root_session_id: 'parent', section: 'needs_you', active: 3, running: 1, unread: 1, unavailable: 0,
+    sessions: [
+      { session_id: 'parent', name: 'Research', nick: 'ian', execution: 'idle', depth: 0, moneypenny: 'mac' },
+      { session_id: 'child', parent_session_id: 'parent', name: 'Collect', execution: 'working', depth: 1, moneypenny: 'mac' },
+      { session_id: 'nested', parent_session_id: 'child', name: 'Findings', execution: 'idle', unread: true, depth: 2, moneypenny: 'mac' },
+      { session_id: 'done', parent_session_id: 'parent', name: 'Archived', execution: 'idle', completed: true, depth: 1, moneypenny: 'mac' },
+    ],
+  }] };
+  context.render(data);
+  assert.deepEqual(Array.from(context.dashEntries, e => e.sessionId), ['parent']);
+  assert.match(container.innerHTML, /Needs you/);
+  assert.match(container.innerHTML, /3 active · 1 running · 1 unread/);
+  assert.match(container.innerHTML, /class="session-status idle">idle<\/span>/);
+  assert.doesNotMatch(container.innerHTML, /class="session-status working"/);
+  assert.equal(container.scrollTop, 140);
+  assert.equal(data.rows.length, 4, 'quick switcher cache retains collapsed descendants');
+  context.toggleWorkstream('parent', true);
+  assert.deepEqual(Array.from(context.dashEntries, e => e.sessionId), ['parent', 'child', 'nested']);
+  assert.equal((container.innerHTML.match(/Needs you/g) || []).length, 1);
+  assert.equal(saved.get('qewExpandedWorkstreams'), 'parent');
+  context.dashSelectedId = 'nested';
+  context.render(data);
+  assert.equal(context.dashSelectedId, 'nested');
+  context.toggleWorkstream('parent', false);
+  assert.equal(context.dashSelectedId, 'parent');
+  context.dashFilter = 'Findings';
+  context.render(data);
+  assert.deepEqual(Array.from(context.dashEntries, e => e.sessionId), ['parent', 'child', 'nested']);
+  context.dashFilter = '';
+  context.dashAllSessions = true;
+  context.render(data);
+  assert.equal(context.dashEntries.length, 3);
+  context.dashShowCompleted = true;
+  context.render(data);
+  assert.equal(context.dashEntries.length, 4);
+  // Completed ancestors are retained, but unrelated completed branches are not.
+  data.workstreams[0].sessions[0].completed = true;
+  data.workstreams[0].sessions.splice(3, 0,
+    { session_id: 'completed-branch', parent_session_id: 'parent', name: 'Old branch', execution: 'idle', completed: true, depth: 1 });
+  context.dashShowCompleted = false;
+  context.render(data);
+  assert.deepEqual(Array.from(context.dashEntries, e => e.sessionId), ['parent', 'child', 'nested']);
+  data.workstreams[0].sessions[2].name = '<unsafe>';
+  context.render(data);
+  assert.match(container.querySelectorAll()[2].innerHTML, /&lt;unsafe>/);
+});
+
+test('dashboard falls back only when the server does not support the workstream view', async () => {
+  for (const message of ['flag provided but not defined: -view', 'database unavailable']) {
+    const calls = [];
+    const rendered = [];
+    const errors = [];
+    const context = vm.createContext({
+      dashboardLegacy: false, dashboardRefresh: null, projectFilter: '',
+      lastSessionStates: {}, lastDashboardData: null,
+      document: { getElementById: () => ({ style: {} }) },
+      apiCall: async (verb, noun, args) => {
+        calls.push(Array.from(args));
+        return calls.length === 1 ? { status: 'error', message } : { status: 'ok', data: { rows: [] } };
+      },
+      renderDashboard: data => rendered.push(data), showDashboardError: error => errors.push(error),
+      setConnectionState() {}, clearBackendRecovery() {}, scheduleBackendRecovery() {},
+    });
+    vm.runInContext(app.slice(app.indexOf('  function loadDashboard()'), app.indexOf('  function showDashboardError(')), context);
+    await context.loadDashboard();
+    assert.ok(calls[0].includes('--view=workstreams'));
+    if (message.includes('-view')) {
+      assert.equal(calls.length, 2);
+      assert.ok(!calls[1].some(arg => arg.includes('--view')));
+      assert.equal(rendered.length, 1);
+      await context.loadDashboard();
+      assert.ok(!calls[2].some(arg => arg.includes('--view')));
+    } else {
+      assert.equal(calls.length, 1);
+      assert.equal(rendered.length, 0);
+      assert.deepEqual(errors, [message]);
+    }
+  }
 });
 
 test('model picker refreshes a cold cache and surfaces discovery failures', async () => {

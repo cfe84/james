@@ -98,6 +98,123 @@ func TestDashboardUnavailablePreservesCachedMetadata(t *testing.T) {
 	if got := e.cacheManager.GetSnapshot()["mac"]["working"]; got != working {
 		t.Fatalf("offline rendering mutated last-known cache: %#v", got)
 	}
+	resp := e.Dashboard([]string{"--view=workstreams"})
+	var dashboard protocol.DashboardResult
+	if resp.Status != "ok" || json.Unmarshal(resp.Data, &dashboard) != nil {
+		t.Fatalf("workstream dashboard failed: %+v", resp)
+	}
+	seen := 0
+	for _, w := range dashboard.Workstreams {
+		if w.Running != 0 || w.Unavailable != len(w.Sessions) {
+			t.Fatalf("offline counts claim live execution: %+v", w)
+		}
+		for _, s := range w.Sessions {
+			seen++
+			if s.Execution != "offline" || s.Name != cached[s.SessionID].Name || s.Model != "gpt-6-sol" {
+				t.Fatalf("workstream lost offline metadata: %+v", s)
+			}
+		}
+	}
+	if seen != len(cached) {
+		t.Fatalf("workstream has %d sessions, want %d", seen, len(cached))
+	}
+}
+
+func TestWorkstreamProjection(t *testing.T) {
+	base := []protocol.DashboardSession{
+		{SessionID: "parent", Execution: "idle", Completed: true},
+		{SessionID: "child", ParentSessionID: "parent", Execution: "working", Project: "selected"},
+		{SessionID: "grandchild", ParentSessionID: "child", Execution: "idle", Unread: true, Project: "selected"},
+		{SessionID: "done", ParentSessionID: "child", Execution: "working", Unread: true, Completed: true},
+		{SessionID: "other", Execution: "idle", LastActivity: "2026-09-01T10:00:00Z"},
+	}
+	for _, tc := range []struct {
+		name, project string
+		all           bool
+		streams, size int
+	}{
+		{"active", "", false, 2, 3},
+		{"completed visible", "", true, 2, 4},
+		{"project ancestor context", "selected", false, 1, 3},
+		{"no matching project", "absent", true, 0, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := buildWorkstreams(base, tc.project, tc.all)
+			if len(got.Workstreams) != tc.streams {
+				t.Fatalf("streams = %+v", got.Workstreams)
+			}
+			if tc.streams == 0 {
+				return
+			}
+			w := got.Workstreams[0]
+			if w.RootSessionID != "parent" || len(w.Sessions) != tc.size ||
+				w.Section != "needs_you" || w.Running != 1 || w.Unread != 1 || w.Active != 2 {
+				t.Fatalf("wrong hierarchy/counts: %+v", w)
+			}
+			if w.Sessions[0].Execution != "idle" || !w.Sessions[0].Completed {
+				t.Fatal("group state overwrote parent execution/completion")
+			}
+			for _, s := range w.Sessions {
+				if s.SessionID == "grandchild" && s.Depth != 2 {
+					t.Fatalf("lost nested depth: %+v", s)
+				}
+			}
+		})
+	}
+}
+
+func TestWorkstreamHierarchyAndOrdering(t *testing.T) {
+	sessions := []protocol.DashboardSession{
+		{SessionID: "cycle-b", ParentSessionID: "cycle-a", Execution: "idle"},
+		{SessionID: "cycle-a", ParentSessionID: "cycle-b", Execution: "idle"},
+		{SessionID: "orphan", ParentSessionID: "missing", Execution: "offline"},
+		{SessionID: "self", ParentSessionID: "self", Execution: "unknown"},
+		{SessionID: "running", Execution: "working", LastActivity: "2026-09-01T12:00:00Z"},
+		{SessionID: "newer", Execution: "idle", LastActivity: "2026-09-01T12:00:00.1Z"},
+		{SessionID: "older", Execution: "idle", LastActivity: "2026-09-01T14:00:00+02:00"},
+		{SessionID: "done", Execution: "working", Unread: true, Completed: true},
+	}
+	got := buildWorkstreams(sessions, "", true)
+	seen := make(map[string]bool)
+	for _, w := range got.Workstreams {
+		for _, s := range w.Sessions {
+			if seen[s.SessionID] {
+				t.Fatalf("duplicate session %s", s.SessionID)
+			}
+			seen[s.SessionID] = true
+			switch s.SessionID {
+			case "cycle-a", "cycle-b", "self":
+				if s.HierarchyIssue != "cycle" {
+					t.Fatalf("cycle not exposed: %+v", s)
+				}
+			case "orphan":
+				if s.HierarchyIssue != "missing_parent" || s.Depth != 0 || w.Unavailable != 1 {
+					t.Fatalf("orphan hidden or claims availability: %+v", w)
+				}
+			}
+		}
+	}
+	if len(seen) != len(sessions) {
+		t.Fatalf("lost sessions: %v", seen)
+	}
+	if got.Workstreams[0].RootSessionID != "running" ||
+		got.Workstreams[1].RootSessionID != "newer" || got.Workstreams[2].RootSessionID != "older" {
+		t.Fatalf("incorrect section/chronological ordering: %+v", got.Workstreams)
+	}
+	last := got.Workstreams[len(got.Workstreams)-1]
+	if last.Section != "completed" || last.Running != 0 || last.Unread != 0 || last.Active != 0 {
+		t.Fatalf("completed sessions counted as active: %+v", last)
+	}
+	// Input ordering must not change cycle roots or equal-activity ordering.
+	for i, j := 0, len(sessions)-1; i < j; i, j = i+1, j-1 {
+		sessions[i], sessions[j] = sessions[j], sessions[i]
+	}
+	again := buildWorkstreams(sessions, "", true)
+	a, _ := json.Marshal(got)
+	b, _ := json.Marshal(again)
+	if string(a) != string(b) {
+		t.Fatal("projection depends on input order")
+	}
 }
 
 func TestDashboardMissingMetadataStatuses(t *testing.T) {

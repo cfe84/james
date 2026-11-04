@@ -1076,7 +1076,7 @@ Subagents:
   watch session SESSION_ID [--timeout 30m]
 
 Dashboard:
-  dashboard [--project NAME] [--all]
+  dashboard [--project NAME] [--all] [--view workstreams]
 
 Chat:
   chat [-m MONEYPENNY] [--session-id ID] [--agent, --name, --system-prompt, --yolo, --path]

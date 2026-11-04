@@ -677,7 +677,31 @@ hem/
 
 8. **Projects**: Provide organizational context for sessions. A project has defaults (moneypenny, agent, path, system prompt) that sessions inherit when created with `--project`. Status: active/paused/done for filtering.
 
-9. **Dashboard**: Attention-based view grouping sessions by state: REVIEW (idle, needs user attention), WORKING (agent running), COMPLETED (user marked done). An unreviewed ready child may promote an idle parent to REVIEW, but never overrides a WORKING parent; child-ready counts and summaries remain on the parent row. Available as both CLI command and TUI default view.
+9. **Dashboard**: The default CLI retains its legacy table and ready/working/idle/completed semantics. Qew and the TUI request `dashboard --view=workstreams`, a typed `protocol.DashboardResult` computed by Hem from existing tracked sessions and the shared Moneypenny cache. No workstream entity, schema change, transcript fetch or agent call is introduced.
+
+   `commands/dashboard.go` shares cached-data collection and availability overlay
+   with the table path. The projection preserves actual execution, unread and
+   completion independently, recursively groups descendants, and aggregates only
+   active sessions. Any unread selects Needs you, otherwise any running selects
+   In progress, then Quiet; wholly completed groups are optional. An offline
+   session can remain unread without claiming it is ready or running.
+   Missing parents become flagged roots. Cycles are flagged and one edge is
+   broken at the lowest session ID, so every eligible session appears once.
+   Project filtering retains ancestor context and completed bridges to live work.
+   Sorting uses parsed timestamps, then session IDs for stable ties.
+
+   Both clients extend their existing dashboard models, rows, actions and refresh
+   pipelines. Qew persists expansion by root ID and keeps a derived table cache
+   for existing quick-switcher, title and notification consumers; presentation
+   uses typed fields, not formatted status parsing. Search reveals matching
+   descendants with ancestors. Selection is session-ID-based, while collapsed
+   workstreams preserve each descendant's own execution state. Qew reuses its
+   dropdown for Manage and row reconciliation for refreshes. Technical metadata
+   moves into row details/selected-row context. The TUI's existing All sessions
+   view remains available; Qew offers an uncollapsed diagnostic view. Only the
+   exact older-server unknown-`view` flag error enables legacy fallback; other
+   errors remain visible. Durable questions/blockers and unified notification
+   persistence are not part of this projection.
 
 10. **Async agent execution**: Moneypenny runs agents asynchronously — `create_session` and `continue_session` return immediately with session_id, agent runs in background goroutine. Hem polls moneypenny for completion when not using `--async`. This allows moneypenny to handle multiple concurrent requests.
 
@@ -1018,7 +1042,8 @@ the other's successful refresh.
    expiry of the retry cooldown alone does not imply recovery. Successful
    session sync also hydrates the same cache instead of discarding metadata.
    Dashboard attention grouping does not turn offline unreviewed sessions (or
-   subsessions) into Ready. Qew consumes these corrected Hem rows unchanged.
+   subsessions) into Ready. The structured projection exposes execution as
+   offline independently of unread attention.
    This cache is in memory: a Hem restart while Moneypenny is unavailable still
    cannot recover names that have not been fetched in the new process.
 

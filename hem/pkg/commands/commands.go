@@ -5941,16 +5941,20 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 }
 
 func (e *Executor) Dashboard(args []string) *protocol.Response {
-	var projectFilter string
+	var projectFilter, view string
 	var showAll, showSubs bool
 
 	_, err := parseFlagsFromArgs("dashboard", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&projectFilter, "project", "", "filter by project name")
 		fs.BoolVar(&showAll, "all", false, "include completed sessions")
 		fs.BoolVar(&showSubs, "show-subs", false, "show all subagents")
+		fs.StringVar(&view, "view", "", "dashboard view (workstreams or table)")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
+	}
+	if view != "" && view != "table" && view != "workstreams" {
+		return protocol.ErrResponse(fmt.Sprintf("unsupported dashboard view %q", view))
 	}
 
 	// Get all tracked sessions.
@@ -5973,10 +5977,16 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 	}
 
 	// Build project name cache.
-	projects, _ := e.store.ListProjects("")
+	projects, err := e.store.ListProjects("")
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
 	projectNames := make(map[string]string)
 	for _, p := range projects {
 		projectNames[p.ID] = p.Name
+	}
+	if view == "workstreams" {
+		return e.workstreamDashboard(trackedSessions, projectNames, projectNames[projectIDFilter], showAll)
 	}
 
 	type dashboardEntry struct {
@@ -6018,36 +6028,7 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 		filteredSessions = append(filteredSessions, sess)
 	}
 
-	// Group filtered sessions by moneypenny name.
-	sessionsByMP := make(map[string][]*store.Session)
-	for _, sess := range filteredSessions {
-		sessionsByMP[sess.MoneypennyName] = append(sessionsByMP[sess.MoneypennyName], sess)
-	}
-
-	// Use cached moneypenny data for instant response; refresh in background.
-	mpNames := make([]string, 0, len(sessionsByMP))
-	for mpName := range sessionsByMP {
-		mpNames = append(mpNames, mpName)
-	}
-
-	mpData := e.getMPData()
-
-	// First-ever call: no cache yet — do a synchronous fetch so the first dashboard isn't empty.
-	hasData := false
-	for _, name := range mpNames {
-		if _, ok := mpData[name]; ok {
-			hasData = true
-			break
-		}
-	}
-	if !hasData && len(mpNames) > 0 {
-		// First call with no cache: do a quick synchronous fetch (3s timeout)
-		// so we show something on the first dashboard load.
-		e.refreshMPSessionsQuick(mpNames)
-		mpData = e.getMPData()
-	} else {
-		e.ensureMPRefresh(mpNames)
-	}
+	mpData := e.dashboardMPData(filteredSessions)
 
 	// Build subagent index: parent session ID → list of child sessions.
 	// Use all tracked sessions (not filtered) so we count subs even for filtered parents.
@@ -6062,33 +6043,9 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 	var entries []dashboardEntry
 
 	for _, sess := range filteredSessions {
-		var mpStatus, sessionName, createdAt, lastAccessed, agentName, modelName string
-
-		if mpSessions, ok := mpData[sess.MoneypennyName]; ok {
-			if info, found := mpSessions[sess.SessionID]; found {
-				mpStatus = info.Status
-				sessionName = info.Name
-				createdAt = info.CreatedAt
-				lastAccessed = info.LastAccessed
-				agentName = info.Agent
-				modelName = info.Model
-			} else {
-				mpStatus = "unknown"
-				log.Printf("dashboard: session %s not found on moneypenny %q (mp has %d sessions)",
-					sess.SessionID, sess.MoneypennyName, len(mpSessions))
-			}
-		} else {
-			mpStatus = "offline"
-			log.Printf("dashboard: moneypenny %q unreachable for session %s", sess.MoneypennyName, sess.SessionID)
-		}
-		if e.clientManager.IsUnavailable(sess.MoneypennyName) {
-			mpStatus = "offline"
-		}
-
-		// Fallback to hem's tracked creation time if moneypenny didn't send timestamps.
-		if createdAt == "" && !sess.CreatedAt.IsZero() {
-			createdAt = sess.CreatedAt.UTC().Format("2006-01-02T15:04:05Z")
-		}
+		info := e.dashboardSessionInfo(sess, mpData)
+		mpStatus, sessionName, createdAt := info.Status, info.Name, info.CreatedAt
+		lastAccessed, agentName, modelName := info.LastAccessed, info.Agent, info.Model
 		projectName := projectNames[sess.ProjectID]
 
 		// Determine attention category.
@@ -6134,13 +6091,6 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 		}
 
 		displayName := sessionName
-		if displayName == "" {
-			if len(sess.SessionID) > 12 {
-				displayName = sess.SessionID[:12] + "..."
-			} else {
-				displayName = sess.SessionID
-			}
-		}
 
 		createdAtFormatted := timestampForClient(createdAt)
 		lastActiveFormatted := timestampForClient(lastAccessed)
@@ -6167,32 +6117,12 @@ func (e *Executor) Dashboard(args []string) *protocol.Response {
 			if sub.HemStatus == "completed" && !showSubs {
 				continue
 			}
-			var subMPStatus, subName, subCreated, subLastAccessed, subAgent, subModel string
-			subMPStatus = "offline"
-			if mpSessions, ok := mpData[sub.MoneypennyName]; ok {
-				subMPStatus = "unknown"
-				if info, found := mpSessions[sub.SessionID]; found {
-					subMPStatus = info.Status
-					subName = info.Name
-					subCreated = info.CreatedAt
-					subLastAccessed = info.LastAccessed
-					subAgent = info.Agent
-					subModel = info.Model
-				}
-			}
-			if e.clientManager.IsUnavailable(sub.MoneypennyName) {
-				subMPStatus = "offline"
-			}
+			info := e.dashboardSessionInfo(sub, mpData)
+			subMPStatus, subName, subCreated := info.Status, info.Name, info.CreatedAt
+			subLastAccessed, subAgent, subModel := info.LastAccessed, info.Agent, info.Model
 			subDisplayStatus := subMPStatus
 			if subMPStatus == "idle" && !sub.Reviewed {
 				subDisplayStatus = "ready"
-			}
-			if subName == "" {
-				if len(sub.SessionID) > 12 {
-					subName = sub.SessionID[:12] + "..."
-				} else {
-					subName = sub.SessionID
-				}
 			}
 			entries = append(entries, dashboardEntry{
 				SessionID:       sub.SessionID,

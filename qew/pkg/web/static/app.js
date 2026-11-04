@@ -58,6 +58,10 @@
   let lastDashboardData = null; // most recent dashboard payload (for local re-filter)
   let lastDashRenderSig = null; // structural signature of the last full dashboard render (skip rebuilds when unchanged)
   let dashRowSigs = {};    // sessionId -> mutable-content signature of the currently rendered row (for in-place patching)
+  let dashExpanded = new Set((localStorage.getItem('qewExpandedWorkstreams') || '').split(',').filter(Boolean));
+  let dashAllSessions = false;
+  let dashShowCompleted = false;
+  let dashboardLegacy = false;
   let mgmtCursor = 0;      // selected row index in the active mgmt list (moneypennies/traits)
   let cmdPaletteOpen = false; // the in-conversation command palette modal is open
   let chatNavMode = false; // in-conversation keyboard nav mode (input blurred, j/k scroll)
@@ -204,7 +208,7 @@
   function updateProjectFilter() {
     const select = document.getElementById('project-filter');
     const current = select.value;
-    select.innerHTML = '<option value="">All sessions</option>';
+    select.innerHTML = '<option value="">All projects</option>';
     for (const p of projectsCache) {
       if (p.status === 'done') continue;
       const opt = document.createElement('option');
@@ -374,7 +378,11 @@
     try {
       const args = ['--all'];
       if (projectFilter) args.push('--project', projectFilter);
-      const resp = await apiCall('dashboard', '', args);
+      let resp = await apiCall('dashboard', '', dashboardLegacy ? args : [...args, '--view=workstreams']);
+      if (resp.status === 'error' && resp.message === 'flag provided but not defined: -view') {
+        dashboardLegacy = true;
+        resp = await apiCall('dashboard', '', args);
+      }
       if (resp.status === 'error') {
         showDashboardError(resp.message);
         setConnectionState(false);
@@ -383,6 +391,13 @@
       }
       setConnectionState(true);
       clearBackendRecovery();
+      if (!resp.data || (!Array.isArray(resp.data.rows) && !Array.isArray(resp.data.workstreams))) {
+        throw new Error('Invalid dashboard response');
+      }
+      if (Array.isArray(resp.data.workstreams)) resp.data.rows = dashboardRows(resp.data);
+      for (const id of ['dash-all-sessions-btn', 'dash-completed-btn']) {
+        document.getElementById(id).hidden = dashboardLegacy;
+      }
       // Detect WORKING→READY transitions for notifications.
       if (resp.data && resp.data.rows) {
         for (const row of resp.data.rows) {
@@ -391,7 +406,7 @@
           const idx = statusRaw.indexOf(' (');
           const mpStatus = idx >= 0 ? statusRaw.substring(0, idx) : statusRaw;
           const prev = lastSessionStates[sessionId];
-          if (prev === 'working' && mpStatus === 'ready') {
+          if (prev === 'working' && mpStatus === 'ready' && !statusRaw.includes('(completed)')) {
             const name = row[1] || sessionId.substring(0, 12);
             showNotification(name, sessionId);
           }
@@ -411,13 +426,15 @@
   function showDashboardError(message) {
     // Keep the last authoritative list visible while the header reports the
     // disconnected state. Show an error only before the first successful load.
-    if (lastDashboardData && Array.isArray(lastDashboardData.rows)) return;
+    if (lastDashboardData) return;
     document.getElementById('dash-content').innerHTML =
       `<div class="empty-state">${escapeHtml(message)}</div>`;
   }
 
   function renderDashboard(data) {
     lastDashboardData = data;
+    const grouped = data && Array.isArray(data.workstreams);
+    if (grouped) data.rows = dashboardRows(data);
     const container = document.getElementById('dash-content');
     if (!data || !data.rows || data.rows.length === 0) {
       container.innerHTML = '<div class="empty-state">No sessions</div>';
@@ -429,7 +446,16 @@
     }
 
     // Parse entries and categorize.
-    const entries = data.rows.map(row => {
+    const entries = grouped ? data.workstreams.flatMap(w => w.sessions.map(s => ({
+      sessionId: s.session_id, name: s.name, nick: s.nick || '', project: s.project || '',
+      moneypenny: s.moneypenny, agent: s.agent || '', model: s.model || '',
+      mpStatus: s.execution, hemStatus: s.completed ? 'completed' : 'active',
+      unread: s.unread && !s.completed,
+      lastActive: (s.depth === 0 && w.last_activity) || s.last_activity || s.created_at || '',
+      parentSessionId: s.depth > 0 ? s.parent_session_id : '',
+      rootId: w.root_session_id, depth: s.depth, hierarchyIssue: s.hierarchy_issue || '',
+      workstream: w, category: ({ needs_you: 0, in_progress: 1, quiet: 2, completed: 3 })[w.section],
+    }))) : data.rows.map(row => {
       const e = {
         sessionId: row[0] || '',
         name: row[1] || '',
@@ -465,12 +491,31 @@
     // Server sends entries pre-sorted with subagents after their parents.
 
     // Apply the fuzzy filter (if any) against name/project/agent/model/moneypenny/id.
-    const filtered = dashFilter
-      ? entries.filter(e => fuzzyMatch(dashFilter, `${e.nick} ${e.name} ${e.project} ${e.agent} ${e.model} ${e.moneypenny} ${e.sessionId}`))
-      : entries;
+    const activeContext = new Set();
+    const contextPath = [];
+    if (grouped && !dashShowCompleted) {
+      for (const e of entries) {
+        contextPath.length = e.depth;
+        contextPath[e.depth] = e.sessionId;
+        if (e.hemStatus !== 'completed') contextPath.forEach(id => activeContext.add(id));
+      }
+    }
+    const eligible = grouped && !dashShowCompleted ? entries.filter(e => activeContext.has(e.sessionId)) : entries;
+    const matches = new Set();
+    const ancestors = [];
+    for (const e of eligible) {
+      if (grouped) ancestors.length = e.depth;
+      ancestors[e.depth || 0] = e.sessionId;
+      if (!dashFilter || fuzzyMatch(dashFilter, `${e.nick} ${e.name} ${e.project} ${e.agent} ${e.model} ${e.moneypenny} ${e.sessionId}`)) {
+        matches.add(e.sessionId);
+        if (grouped) ancestors.forEach(id => matches.add(id));
+      }
+    }
+    const filtered = eligible.filter(e => matches.has(e.sessionId) &&
+      (!grouped || dashAllSessions || dashFilter || e.depth === 0 || dashExpanded.has(e.rootId)));
 
     if (filtered.length === 0) {
-      container.innerHTML = `<div class="empty-state">No sessions match "${escapeHtml(dashFilter)}"</div>`;
+      container.innerHTML = `<div class="empty-state">${dashFilter ? `No sessions match "${escapeHtml(dashFilter)}"` : 'No active workstreams'}</div>`;
       dashEntries = [];
       lastDashRenderSig = null;
       applyDashSelection();
@@ -481,12 +526,15 @@
     // is unchanged we keep every existing row element (and its click handler) and
     // patch only the rows whose mutable content actually changed — so a single
     // status transition touches one row instead of rebuilding the whole list.
-    const structSig = JSON.stringify(filtered.map(e => [e.category, e.sessionId]));
+    const structSig = JSON.stringify(filtered.map(e => [e.category, e.sessionId, e.depth, grouped && dashAllSessions]));
 
     // Per-row content signature: everything the row's inner HTML depends on.
     const rowSig = e => e.name + '\x1f' + e.nick + '\x1f' + e.project + '\x1f' +
       e.mpStatus + '\x1f' + e.subInfo + '\x1f' + e.agent + '\x1f' + e.model + '\x1f' +
-      e.moneypenny + '\x1f' + relativeTime(e.lastActive || '') + '\x1f' + (e.lastActive ? '1' : '0');
+      e.moneypenny + '\x1f' + relativeTime(e.lastActive || '') + '\x1f' + (e.lastActive ? '1' : '0') +
+      '\x1f' + (e.workstream ? JSON.stringify([e.unread, e.hemStatus, e.hierarchyIssue,
+        e.workstream.active, e.workstream.running, e.workstream.unread, e.workstream.unavailable,
+        e.workstream.sessions.length, dashExpanded.has(e.rootId), dashAllSessions]) : '');
 
     // Update the shared navigation state (cheap; order matches the DOM either path).
     dashEntries = filtered.map(e => ({
@@ -495,6 +543,7 @@
       mp: e.moneypenny,
       parent: e.parentSessionId,
       agent: e.agent,
+      rootId: e.rootId,
     }));
 
     if (structSig === lastDashRenderSig && container.querySelector('.session-row')) {
@@ -518,9 +567,9 @@
     lastDashRenderSig = structSig;
 
     const catLabels = [
-      { cls: 'cat-ready', label: 'Ready' },
-      { cls: 'cat-working', label: 'Working' },
-      { cls: 'cat-idle', label: 'Idle' },
+      { cls: 'cat-ready', label: grouped ? 'Needs you' : 'Ready' },
+      { cls: 'cat-working', label: grouped ? 'In progress' : 'Working' },
+      { cls: 'cat-idle', label: grouped ? 'Quiet' : 'Idle' },
       { cls: 'cat-completed', label: 'Completed' },
     ];
 
@@ -540,12 +589,22 @@
     }
     if (lastCat !== -1) html += '</div>';
 
+    const scrollTop = container.scrollTop;
     container.innerHTML = html;
+    container.scrollTop = scrollTop;
     dashRowSigs = newSigs;
 
     // Click handlers.
-    container.querySelectorAll('.session-row').forEach((row, i) => {
-      row.addEventListener('click', () => openDashEntry(dashEntries[i]));
+    container.querySelectorAll('.session-row').forEach(row => {
+      row.addEventListener('click', event => {
+        const toggle = event.target.closest('[data-expand]');
+        if (toggle) {
+          toggleWorkstream(toggle.dataset.expand);
+          return;
+        }
+        if (event.target.closest('details')) return;
+        openDashEntry(dashEntries.find(e => e.sessionId === row.dataset.sessionId));
+      });
     });
 
     applyDashSelection();
@@ -553,6 +612,29 @@
 
   // Inner HTML of a single dashboard session row (everything inside .session-row).
   function dashRowInner(e) {
+    if (e.workstream) {
+      const w = e.workstream;
+      const root = e.depth === 0;
+      const expandable = root && w.sessions.length > 1 && !dashAllSessions;
+      const summary = root
+        ? `${w.active} active · ${w.running} running · ${w.unread} unread${w.unavailable ? ` · ${w.unavailable} unavailable` : ''}`
+        : '';
+      return `
+        ${expandable ? `<button class="workstream-expand" data-expand="${escapeAttr(e.rootId)}" aria-expanded="${dashExpanded.has(e.rootId)}" aria-label="Toggle agents in ${escapeAttr(e.name)}">${dashExpanded.has(e.rootId) ? '▾' : '▸'}</button>` : ''}
+        <span class="workstream-main" style="padding-left:${(root ? 0 : 44) + Math.min(e.depth, 6) * 16}px">
+          <span class="session-name">${escapeHtml(e.name || e.sessionId.substring(0, 12))}</span>
+          ${e.nick ? `<span class="workstream-nick">${escapeHtml(e.nick)}</span>` : ''}
+          ${e.project ? `<span class="session-project">${escapeHtml(e.project)}</span>` : ''}
+          ${summary ? `<span class="workstream-summary">${escapeHtml(summary)}</span>` : ''}
+          ${e.hierarchyIssue ? `<span class="workstream-summary">Hierarchy: ${escapeHtml(e.hierarchyIssue.replaceAll('_', ' '))}</span>` : ''}
+        </span>
+        <span class="session-status ${e.mpStatus === 'working' ? 'working' : 'idle'}">${escapeHtml(e.mpStatus)}${e.hemStatus === 'completed' ? ' · completed' : ''}</span>
+        ${e.unread ? '<span class="session-status ready">unread</span>' : ''}
+        <details class="session-details"><summary aria-label="Session details">Details</summary>
+          <span>${escapeHtml([e.agent, e.model, e.moneypenny, e.sessionId].filter(Boolean).join(' · '))}</span>
+        </details>
+        ${e.lastActive ? `<span class="session-time">${escapeHtml(relativeTime(e.lastActive))}</span>` : ''}`;
+    }
     const displayName = e.name || e.sessionId.substring(0, 12);
     const nickPrefix = e.nick ? `<span class="session-nick">${escapeHtml(e.nick)}</span> ` : '';
     const statusCls = e.mpStatus === 'working' ? 'working' : (e.mpStatus === 'ready' ? 'ready' : 'idle');
@@ -565,12 +647,45 @@
           ${e.lastActive ? `<span class="session-time">${escapeHtml(relativeTime(e.lastActive))}</span>` : ''}`;
   }
 
+  // Keep the existing session cache, quick switcher and completion alerts usable
+  // without parsing display strings for the workstream presentation.
+  function dashboardRows(data) {
+    if (!Array.isArray(data.workstreams)) return data.rows;
+    return data.workstreams.flatMap(w => w.sessions.map(s => [
+      s.session_id, s.name, s.project || '',
+      `${s.execution === 'idle' && s.unread ? 'ready' : s.execution} (${s.completed ? 'completed' : 'active'})`,
+      s.moneypenny, s.created_at || '', s.last_activity || '', s.depth > 0 ? s.parent_session_id : '',
+      s.agent || '', s.nick || '', s.model || '',
+    ]));
+  }
+
+  function toggleWorkstream(rootId, expand) {
+    if (!rootId || !lastDashboardData || !lastDashboardData.workstreams) return;
+    const focused = document.activeElement;
+    const focusToggle = focused && focused.dataset.expand === rootId;
+    if (expand === undefined) expand = !dashExpanded.has(rootId);
+    if (expand) dashExpanded.add(rootId);
+    else {
+      dashExpanded.delete(rootId);
+      if (dashEntries.some(e => e.sessionId === dashSelectedId && e.rootId === rootId)) dashSelectedId = rootId;
+    }
+    localStorage.setItem('qewExpandedWorkstreams', [...dashExpanded].join(','));
+    renderDashboard(lastDashboardData);
+    if (focusToggle) {
+      document.querySelectorAll('[data-expand]').forEach(button => {
+        if (button.dataset.expand === rootId) button.focus();
+      });
+    }
+  }
+
   // Open a dashboard entry, handling subagents (open parent then the sub).
   function openDashEntry(e) {
     if (!e) return;
     if (e.parent) {
-      openChat(e.parent, '', e.mp);
-      setTimeout(() => window._openSubagent(e.sessionId, e.name), 100);
+      const parent = lastDashboardData && lastDashboardData.rows &&
+        lastDashboardData.rows.find(row => row[0] === e.parent);
+      openChat(e.parent, parent ? parent[1] : '', parent ? parent[4] : e.mp);
+      setTimeout(() => window._openSubagent(e.sessionId, e.name, e.mp), 100);
     } else {
       openChat(e.sessionId, e.name, e.mp);
     }
@@ -959,10 +1074,10 @@
     if (currentSession) startChatPoll();
   }
 
-  window._openSubagent = function(sessionId, name) {
+  window._openSubagent = function(sessionId, name, mp) {
     // Push current session onto parent stack.
     parentSessionStack.push({ id: currentSession, name: currentSessionName, mp: currentSessionMP });
-    openChat(sessionId, name, currentSessionMP);
+    openChat(sessionId, name, mp || currentSessionMP);
   };
 
   function cacheChatDraft() {
@@ -1951,6 +2066,7 @@
         <div class="cmd-list">
           <div class="cmd-item"><kbd>j</kbd>/<kbd>k</kbd> or <kbd>↓</kbd>/<kbd>↑</kbd> Select session</div>
           <div class="cmd-item"><kbd>Enter</kbd> Open selected session</div>
+          <div class="cmd-item"><kbd>←</kbd>/<kbd>→</kbd> Collapse/expand workstream</div>
           <div class="cmd-item"><kbd>/</kbd> Filter sessions</div>
           <div class="cmd-item"><kbd>o</kbd> Quick switcher</div>
           <div class="cmd-item"><kbd>n</kbd> New agent</div>
@@ -6593,6 +6709,36 @@
   document.getElementById('ponsonby-refresh-btn').addEventListener('click', loadPonsonbies);
   document.getElementById('nav-projects-btn').addEventListener('click', showProjectsView);
   document.getElementById('nav-traits-btn').addEventListener('click', showTraitsView);
+  const manageBtn = document.getElementById('manage-btn');
+  const manageMenu = document.getElementById('manage-menu');
+  function closeManageMenu() {
+    manageMenu.classList.remove('open');
+    manageBtn.setAttribute('aria-expanded', 'false');
+  }
+  manageBtn.addEventListener('click', e => {
+    e.stopPropagation();
+    const open = manageMenu.classList.toggle('open');
+    manageBtn.setAttribute('aria-expanded', String(open));
+  });
+  document.addEventListener('click', closeManageMenu);
+  manageMenu.addEventListener('click', closeManageMenu);
+  manageBtn.parentElement.addEventListener('keydown', e => {
+    if (e.key === 'Escape') {
+      e.stopPropagation();
+      closeManageMenu();
+      manageBtn.focus();
+    }
+  });
+  document.getElementById('dash-all-sessions-btn').addEventListener('click', e => {
+    dashAllSessions = !dashAllSessions;
+    e.currentTarget.textContent = dashAllSessions ? 'Workstreams' : 'All sessions';
+    if (lastDashboardData) renderDashboard(lastDashboardData);
+  });
+  document.getElementById('dash-completed-btn').addEventListener('click', e => {
+    dashShowCompleted = !dashShowCompleted;
+    e.currentTarget.textContent = dashShowCompleted ? 'Hide completed' : 'Show completed';
+    if (lastDashboardData) renderDashboard(lastDashboardData);
+  });
   document.getElementById('mp-back-btn').addEventListener('click', hideMoneypenniesView);
   document.getElementById('mp-add-btn').addEventListener('click', showAddMoneypennyModal);
   document.getElementById('proj-back-btn').addEventListener('click', hideProjectsView);
@@ -6944,7 +7090,7 @@
       return;
     }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
-    const typingFocus = typingText || tag === 'button' || tag === 'a';
+    const typingFocus = typingText || tag === 'button' || tag === 'a' || tag === 'summary';
     // Allow auto-repeat for list navigation (holding j/k scrolls a long list),
     // but ignore it for every other key (action keys must not fire repeatedly).
     const dashIsNav = e.key === 'ArrowDown' || e.key === 'j' || e.key === 'ArrowUp' || e.key === 'k';
@@ -6960,6 +7106,15 @@
     switch (e.key) {
       case 'ArrowDown': case 'j': e.preventDefault(); dashMove(1); break;
       case 'ArrowUp':   case 'k': e.preventDefault(); dashMove(-1); break;
+      case 'ArrowRight': case 'ArrowLeft': {
+        const selected = dashEntries.find(entry => entry.sessionId === dashSelectedId);
+        const rootId = (e.target.dataset || {}).expand || (selected && selected.rootId);
+        if (rootId) {
+          e.preventDefault();
+          toggleWorkstream(rootId, e.key === 'ArrowRight');
+        }
+        break;
+      }
       case 'Escape':
         // Cancel an active filter while navigating the list (the filter input
         // is blurred after Enter, so its own Escape handler no longer fires).

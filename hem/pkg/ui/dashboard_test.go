@@ -3,7 +3,96 @@ package ui
 import (
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"james/hem/pkg/protocol"
 )
+
+func TestWorkstreamDashboardExpansionFilterAndSelection(t *testing.T) {
+	data := protocol.DashboardResult{Workstreams: []protocol.Workstream{
+		{RootSessionID: "root", Section: "needs_you", Active: 3, Running: 1, Unread: 1, Sessions: []protocol.DashboardSession{
+			{SessionID: "root", Name: "Research", Execution: "idle", Agent: "copilot", Model: "selected-model", Moneypenny: "mac"},
+			{SessionID: "child", ParentSessionID: "root", Name: "Collect", Execution: "working", Depth: 1, Moneypenny: "windows"},
+			{SessionID: "nested", ParentSessionID: "child", Name: "Findings", Execution: "idle", Unread: true, Depth: 2},
+		}},
+		{RootSessionID: "quiet", Section: "quiet", Active: 1, Sessions: []protocol.DashboardSession{
+			{SessionID: "quiet", Name: "Later", Execution: "idle"},
+		}},
+	}}
+	sender := &permissionTestSender{response: protocol.OKResponse(data)}
+	m := newDashboardModel(&client{sender: sender})
+	m.width, m.height = 120, 40
+	loaded := m.loadDashboard()().(dashboardLoadedMsg)
+	if !loaded.workstreams || !strings.Contains(strings.Join(sender.request.Args, " "), "--view=workstreams") {
+		t.Fatal("client did not request/decode typed workstreams")
+	}
+	m, _ = m.Update(loaded)
+	if len(m.filteredEntries()) != 2 {
+		t.Fatal("workstreams should start collapsed")
+	}
+	view := m.View()
+	for _, want := range []string{"NEEDS YOU", "idle", "1 running", "1 unread", "selected-model"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("view missing %q: %s", want, view)
+		}
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
+	if len(m.filteredEntries()) != 4 {
+		t.Fatal("expansion lost nested descendants")
+	}
+	m.cursor = 1
+	parent := Model{client: m.client, dashboard: m, currentView: viewDashboard}
+	opened, _ := parent.updateDashboard(tea.KeyMsg{Type: tea.KeyEnter})
+	chats := opened.(Model)
+	if chats.chat.moneypennyName != "windows" || len(chats.parentChats) != 1 || chats.parentChats[0].moneypennyName != "mac" {
+		t.Fatal("cross-host child navigation lost parent or child host")
+	}
+	m.cursor = 2
+	if m.selectedEntry().SessionID != "nested" {
+		t.Fatal("cannot select descendant")
+	}
+	reordered := append([]dashboardEntry{loaded.entries[3]}, loaded.entries[:3]...)
+	m, _ = m.Update(dashboardLoadedMsg{entries: reordered, workstreams: true})
+	if m.selectedEntry().SessionID != "nested" || !m.expanded["root"] {
+		t.Fatal("refresh lost selected identity or expansion")
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	if m.selectedEntry().SessionID != "root" || len(m.filteredEntries()) != 2 {
+		t.Fatal("collapse should select the root")
+	}
+	m.filterText = "findings"
+	if got := m.filteredEntries(); len(got) != 3 || got[0].SessionID != "root" || got[1].SessionID != "child" {
+		t.Fatalf("filter lost ancestor context: %+v", got)
+	}
+	m.filterText = ""
+	m.toggleAllWorkstreams()
+	if len(m.filteredEntries()) != 4 {
+		t.Fatal("expand all did not reuse workstream hierarchy")
+	}
+}
+
+func TestDashboardCompatibilityDoesNotMaskErrors(t *testing.T) {
+	for _, tc := range []struct {
+		message string
+		view    bool
+	}{
+		{"flag provided but not defined: -view", false},
+		{"database unavailable", true},
+	} {
+		sender := &permissionTestSender{response: protocol.ErrResponse(tc.message)}
+		m := newDashboardModel(&client{sender: sender})
+		m.projectFilter = "project"
+		loaded := m.loadDashboard()().(dashboardLoadedMsg)
+		// The fixed response fails both attempts; the last request shows whether
+		// the client retried without the view flag or preserved the real error.
+		if got := strings.Contains(strings.Join(sender.request.Args, " "), "--view"); got != tc.view {
+			t.Fatalf("%q: last request %+v", tc.message, sender.request)
+		}
+		if loaded.err == nil || loaded.err.Error() != tc.message || loaded.projectFilter != "project" {
+			t.Fatalf("error/context lost: %+v", loaded)
+		}
+	}
+}
 
 func TestChatDistinguishesAgentMessagesFromHumanMessages(t *testing.T) {
 	m := chatModel{
