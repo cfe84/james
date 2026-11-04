@@ -673,6 +673,15 @@ func printResponse(data json.RawMessage, outputFmt string) {
 			if result.ContextTier != "" {
 				td.Rows = append(td.Rows, []string{"context_tier", result.ContextTier})
 			}
+			if result.Summary != "" {
+				td.Rows = append(td.Rows, []string{"summary", result.Summary})
+			}
+			if result.Attention.Active() {
+				td.Rows = append(td.Rows,
+					[]string{"attention", result.Attention.Kind},
+					[]string{"attention_reason", result.Attention.Reason},
+					[]string{"attention_revision", fmt.Sprint(result.Attention.Revision)})
+			}
 			showFmt := outputFmt
 			if showFmt == output.FormatText {
 				showFmt = output.FormatTable
@@ -1077,6 +1086,7 @@ Subagents:
 
 Dashboard:
   dashboard [--project NAME] [--all] [--view workstreams]
+  resolve attention SESSION_ID --revision N
 
 Chat:
   chat [-m MONEYPENNY] [--session-id ID] [--agent, --name, --system-prompt, --yolo, --path]

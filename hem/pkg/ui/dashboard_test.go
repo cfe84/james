@@ -7,13 +7,14 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"james/hem/pkg/protocol"
+	"james/moneypenny/pkg/envelope"
 )
 
 func TestWorkstreamDashboardExpansionFilterAndSelection(t *testing.T) {
 	data := protocol.DashboardResult{Workstreams: []protocol.Workstream{
-		{RootSessionID: "root", Section: "needs_you", Active: 3, Running: 1, Unread: 1, Sessions: []protocol.DashboardSession{
+		{RootSessionID: "root", Section: "needs_you", Active: 3, Running: 1, Unread: 1, Requests: 1, Sessions: []protocol.DashboardSession{
 			{SessionID: "root", Name: "Research", Nick: "ian", Execution: "idle", Agent: "copilot", Model: "selected-model", Moneypenny: "mac"},
-			{SessionID: "child", ParentSessionID: "root", Name: "Collect", Execution: "working", Depth: 1, Moneypenny: "windows"},
+			{SessionReport: envelope.SessionReport{Summary: "Checking deployment", Attention: &envelope.SessionAttention{Kind: "needs_answer", Reason: "Which host?", Revision: 1}}, SessionID: "child", ParentSessionID: "root", Name: "Collect", Execution: "working", Depth: 1, Moneypenny: "windows"},
 			{SessionID: "nested", ParentSessionID: "child", Name: "Findings", Execution: "idle", Unread: true, Depth: 2},
 		}},
 		{RootSessionID: "quiet", Section: "quiet", Active: 1, Sessions: []protocol.DashboardSession{
@@ -32,7 +33,7 @@ func TestWorkstreamDashboardExpansionFilterAndSelection(t *testing.T) {
 		t.Fatal("workstreams should start collapsed")
 	}
 	view := m.View()
-	for _, want := range []string{"NEEDS YOU", "ian · Research", "idle", "1 running", "1 unread", "selected-model"} {
+	for _, want := range []string{"NEEDS YOU", "ian · Research", "idle", "1 running", "1 unread", "selected-model", "1 need attention", "Collect · Needs answer: Which host?"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q: %s", want, view)
 		}

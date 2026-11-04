@@ -97,6 +97,9 @@ header h1 span { color: var(--primary); }
 .workstream-main .session-name { font-weight: 600; }
 .workstream-summary { color: var(--muted); font-size: 0.85em; }
 .workstream-summary { display: block; margin-top: 4px; }
+.workstream-attention { display: block; color: var(--warning); margin-top: 4px; }
+.chat-attention { padding: 12px; margin-bottom: 8px; border: 1px solid var(--warning); border-radius: 6px; overflow-wrap: anywhere; flex-shrink: 0; max-height: 35vh; overflow-y: auto; }
+.chat-attention .btn-muted { margin-left: 8px; }
 .workstream-expand {
   align-self: stretch; min-width: 36px; border: 0; border-radius: 6px;
   background: var(--surface2); color: var(--text); cursor: pointer; margin-right: 8px;
@@ -608,6 +611,7 @@ header h1 span { color: var(--primary); }
       </div>
       </div>
     </div>
+    <div class="chat-attention" id="chat-attention" role="status" tabindex="0" hidden></div>
     <div class="chat-messages" id="chat-messages"></div>
     <div class="chat-attachments" id="chat-attachments"></div>
     <div class="chat-input-row">

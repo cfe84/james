@@ -65,7 +65,8 @@ func (e *Executor) workstreamDashboard(tracked []*store.Session, projectNames ma
 	for _, s := range eligible {
 		info := e.dashboardSessionInfo(s, data)
 		sessions = append(sessions, protocol.DashboardSession{
-			SessionID: s.SessionID, ParentSessionID: s.ParentSessionID,
+			SessionReport: info.SessionReport,
+			SessionID:     s.SessionID, ParentSessionID: s.ParentSessionID,
 			Name: info.Name, Nick: s.Nick, Project: projectNames[s.ProjectID],
 			Moneypenny: s.MoneypennyName, Agent: info.Agent, Model: info.Model,
 			Execution: info.Status, Unread: !s.Reviewed, Completed: s.HemStatus == "completed",
@@ -160,7 +161,7 @@ func buildWorkstreams(sessions []protocol.DashboardSession, project string, show
 			for _, child := range children[id] {
 				descendants = append(descendants, collect(child, depth+1, matches)...)
 			}
-			if len(descendants) == 0 && (!matches || (s.Completed && !showAll)) {
+			if len(descendants) == 0 && (!matches || (s.Completed && !s.Attention.Active() && !showAll)) {
 				return nil
 			}
 			s.Depth = depth
@@ -175,6 +176,9 @@ func buildWorkstreams(sessions []protocol.DashboardSession, project string, show
 			if t := dashboardActivity(s); t.After(latest) {
 				latest = t
 				w.LastActivity = t.UTC().Format(time.RFC3339Nano)
+			}
+			if s.Attention.Active() {
+				w.Requests++
 			}
 			if s.Completed {
 				continue
@@ -191,10 +195,10 @@ func buildWorkstreams(sessions []protocol.DashboardSession, project string, show
 			}
 		}
 		switch {
+		case w.Requests > 0 || w.Unread > 0:
+			w.Section = "needs_you"
 		case w.Active == 0:
 			w.Section = "completed"
-		case w.Unread > 0:
-			w.Section = "needs_you"
 		case w.Running > 0:
 			w.Section = "in_progress"
 		default:

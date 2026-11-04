@@ -587,6 +587,26 @@ test('dashboard h/l reuse directional workstream folding shortcuts', () => {
   }
 });
 
+test('collapsed workstreams show and refresh child requests, including completed blockers', () => {
+  const { context, container } = dashboardHarness();
+  const child = { session_id: 'child', name: 'Deploy', depth: 1, completed: true, execution: 'idle',
+    attention: { kind: 'needs_answer', reason: 'Which <host>?', revision: 1 } };
+  const data = { workstreams: [{
+    root_session_id: 'parent', section: 'needs_you', active: 0, running: 0, unread: 0, requests: 1,
+    sessions: [{ session_id: 'parent', name: 'Rollout', summary: 'Checking deployment', depth: 0, completed: true, execution: 'idle' }, child],
+  }] };
+  context.render(data);
+  assert.match(container.innerHTML, /1 need attention/);
+  assert.match(container.innerHTML, /Checking deployment/);
+  assert.match(container.innerHTML, /Deploy · Needs answer: Which &lt;host>\?/);
+  child.attention = { kind: 'needs_action', reason: 'Sign in.', revision: 2 };
+  context.render(data);
+  assert.match(container.querySelector().innerHTML, /Deploy · Needs action: Sign in\./);
+  context.dashFilter = 'Sign in';
+  context.render(data);
+  assert.deepEqual(Array.from(context.dashEntries, e => e.sessionId), ['parent', 'child']);
+});
+
 test('dashboard falls back only when the server does not support the workstream view', async () => {
   for (const message of ['flag provided but not defined: -view', 'database unavailable']) {
     const calls = [];
@@ -650,24 +670,28 @@ test('model picker refreshes a cold cache and surfaces discovery failures', asyn
 
 // Run the application's refresh and socket handlers, substituting only browser
 // services, API responses and rendering so timer behavior is deterministic.
-function browser({ stableReconcile = false, reconcileRevision = 1, pushFirst = true } = {}) {
+function browser({ stableReconcile = false, reconcileRevision = 1, pushFirst = true, storage = new Map() } = {}) {
   const intervals = new Map();
   const timeouts = new Map();
   const calls = [];
   const rendered = [];
   const sockets = [];
   const socketMessages = [];
+  const notifications = [], errors = [];
   let timerID = 0;
   let history = { conversation: [], total: 0 };
+  let report = {};
   let pending = null;
   let rejectNext = false;
   const elements = new Map();
   const context = vm.createContext({
-    localStorage: { getItem: () => null },
+    localStorage: { getItem: key => storage.get(key) || null, setItem: (key, value) => storage.set(key, value) },
+    console,
+    currentSessionName: 'Agent',
     window: { location: { protocol: 'https:', host: 'qew.test' }, jamesCompactionThreshold: thresholds },
     document: {
       getElementById(id) {
-        if (!elements.has(id)) elements.set(id, { style: {}, innerHTML: '' });
+        if (!elements.has(id)) elements.set(id, { style: {}, innerHTML: '', addEventListener(event, handler) { this[event] = handler; } });
         return elements.get(id);
       },
     },
@@ -685,11 +709,18 @@ function browser({ stableReconcile = false, reconcileRevision = 1, pushFirst = t
     apiCall(verb, noun, args) {
       calls.push({ verb, noun, args: Array.from(args) });
       if (rejectNext) { rejectNext = false; return Promise.reject(new Error('offline')); }
+      if (verb === 'resolve') {
+        if (Number(args[2]) !== report.attention.revision) {
+          return Promise.resolve({ status: 'error', message: 'attention changed; refresh before updating' });
+        }
+        report = { attention: { revision: report.attention.revision + 1, kind: '' } };
+        return Promise.resolve({ status: 'ok', data: report });
+      }
       const response = verb === 'history'
-        ? { status: 'ok', data: history }
+        ? { status: 'ok', data: { ...history, ...report } }
         : verb === 'reconcile' && stableReconcile
-          ? { status: 'ok', data: { session_id: 'session', total: 1, revision: reconcileRevision, generation: 1 } }
-          : { status: 'ok', data: { rows: [] } };
+          ? { status: 'ok', data: { session_id: 'session', conversation: null, total: 1, revision: reconcileRevision, generation: 1, ...report } }
+          : { status: 'ok', data: verb === 'show' ? { name: 'Other agent', ...report } : { rows: [] } };
       if (pending) {
         const blocked = pending;
         pending = null;
@@ -703,17 +734,21 @@ function browser({ stableReconcile = false, reconcileRevision = 1, pushFirst = t
     mergeRecentHistory(data) { context.latestHistory = data; },
     renderChat() { rendered.push(context.latestHistory); },
     renderDashboard() {},
-    escapeHtml: value => value,
+    showNotification: (...args) => notifications.push(args),
+    alert: message => errors.push(message),
+    escapeHtml: value => String(value).replaceAll('<', '&lt;'),
   });
   const source = pushFirst ? app : app.replace('const PUSH_FIRST = true;', 'const PUSH_FIRST = false;');
   const state = source.slice(source.indexOf("'use strict';"), source.indexOf('  function setConnectionState'));
   const ack = source.slice(source.indexOf('  function acknowledgeRenderedSnapshot'), source.indexOf('  // Optional panels'));
   const dashboard = source.slice(source.indexOf('  // --- Dashboard ---'), source.indexOf('  function renderDashboard'));
-  const chat = source.slice(source.search(/^  (?:async )?function loadChat\(/m), source.indexOf('  // mergeRecentHistory'));
+  const attention = source.slice(source.indexOf('  function attentionLabel('), source.indexOf('  function toggleWorkstream('));
+  const chat = source.slice(source.indexOf('  function renderAttentionBanner('), source.indexOf('  // mergeRecentHistory'));
   const polling = source.slice(source.indexOf('  // --- Polling ---'), source.indexOf('  // --- Helpers ---'));
-  vm.runInContext(`${state}\n${ack}\n${dashboard}\n${chat}\n${polling}
+  vm.runInContext(`${state}\n${ack}\n${dashboard}\n${attention}\n${chat}\n${polling}
     globalThis.controls = {
       loadChat, loadDashboard, connectPushStream, startChatPoll, startDashboardPoll,
+      resolveAttention,
       acknowledgeRenderedSnapshot,
       navigate(id) {
         currentSession = id;
@@ -734,7 +769,9 @@ function browser({ stableReconcile = false, reconcileRevision = 1, pushFirst = t
       panels() { return { currentSessionStatus, lastActivity, lastSchedules, allSubagents }; }
     };`, context);
   return {
-    ...context.controls, calls, rendered, sockets, socketMessages,
+    ...context.controls, calls, rendered, sockets, socketMessages, notifications, errors,
+    report(value) { report = value; },
+    banner() { return elements.get('chat-attention'); },
     history(content) {
       history = {
         conversation: [{ role: 'assistant', content }],
@@ -765,6 +802,83 @@ function browser({ stableReconcile = false, reconcileRevision = 1, pushFirst = t
     },
   };
 }
+
+test('durable attention survives reads, deduplicates delivery and resolves only the current revision', async () => {
+  const storage = new Map();
+  const page = browser({ stableReconcile: true, storage });
+  const question = { attention: { kind: 'needs_answer', reason: 'Which <region>?', revision: 1 } };
+  page.report(question);
+  page.navigate('session');
+  page.history('Ready to deploy');
+  await page.loadChat();
+  assert.equal(page.banner().hidden, false);
+  assert.match(page.banner().innerHTML, /Needs answer.*Which &lt;region>\?/s);
+  assert.equal(page.notifications.length, 1);
+  await page.loadChat();
+  assert.equal(page.notifications.length, 1);
+  assert.equal(page.calls.filter(c => c.verb === 'history').length, 1, 'unchanged metadata did not fetch history');
+  assert.equal(page.banner().hidden, false, 'reading did not clear the question');
+  const newer = { attention: { kind: 'needs_action', reason: 'Sign in.', revision: 2 } };
+  page.report(newer);
+  await page.resolveAttention();
+  await page.loadChat();
+  assert.match(page.errors[0], /attention changed/);
+  assert.match(page.banner().innerHTML, /Needs action.*Sign in/s);
+  assert.equal(page.notifications.length, 2);
+  await page.resolveAttention();
+  await page.loadChat();
+  assert.equal(page.banner().hidden, true);
+  assert.equal(page.notifications.length, 2, 'resolution did not alert');
+  assert.deepEqual(page.calls.filter(c => c.verb === 'resolve').map(c => c.args),
+    [['session', '--revision', '1'], ['session', '--revision', '2']]);
+  // Reload/reconnect can still display the request, but cannot replay delivery.
+  const reloaded = browser({ stableReconcile: true, storage });
+  reloaded.navigate('session');
+  reloaded.report(newer);
+  await reloaded.loadChat();
+  assert.equal(reloaded.banner().hidden, false);
+  assert.equal(reloaded.notifications.length, 0);
+  const socket = reloaded.openSocket();
+  reloaded.report({ attention: { kind: 'failed', reason: 'Provider unavailable', revision: 1 } });
+  socket.onmessage({ data: JSON.stringify({ event: 'session_attention', session_id: 'other' }) });
+  await new Promise(setImmediate);
+  assert.ok(reloaded.calls.some(c => c.verb === 'show' && c.args[0] === 'other'));
+  assert.deepEqual(reloaded.notifications[0], ['Other agent', 'other', 'Failed', 'Provider unavailable']);
+});
+
+test('attention popovers retain the session name and tolerate unavailable sound', async () => {
+  const popovers = [], opened = [], warnings = [];
+  const context = vm.createContext({
+    soundEnabled: true,
+    Audio: class { async play() { throw new Error('autoplay unavailable'); } },
+    Notification: class { static permission = 'denied'; },
+    console: { warn: (...args) => warnings.push(args) },
+    document: {
+      createElement: () => ({ addEventListener(event, handler) { this[event] = handler; }, remove() {} }),
+      body: { appendChild: popover => popovers.push(popover) },
+    },
+    setTimeout() {},
+    openChat: (...args) => opened.push(args),
+  });
+  vm.runInContext(app.slice(app.indexOf('  async function playNotificationSound('), app.indexOf('  function toggleSound(')), context);
+  context.showNotification('Deploy', 'session', 'Needs answer', 'Which <host>?');
+  await new Promise(setImmediate);
+  assert.equal(warnings.length, 1);
+  assert.equal(popovers[0].textContent, 'Needs answer: Deploy: Which <host>?');
+  popovers[0].click();
+  assert.deepEqual(opened[0], ['session', 'Deploy']);
+  context.soundEnabled = false;
+  for (const notification of [
+    undefined,
+    class { static permission = 'granted'; constructor() { throw new Error('system notification unavailable'); } },
+    class { static permission = 'default'; static async requestPermission() { throw new Error('permission unavailable'); } },
+  ]) {
+    context.Notification = notification;
+    await context.showNotification('Deploy', 'session', 'Needs action', 'Sign in.');
+    assert.equal(popovers.at(-1).textContent, 'Needs action: Deploy: Sign in.');
+  }
+  assert.equal(warnings.length, 3, 'unavailable optional delivery is reported without failing the view');
+});
 
 test('unchanged reconcile polls do not fetch history or change the transcript', async () => {
   const page = browser({ stableReconcile: true, pushFirst: false });

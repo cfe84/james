@@ -738,7 +738,7 @@ an already-running agent turn. Notifications cannot be disabled by these flags.
 
 ### Complete
 
-`hem complete session SESSION_ID` — marks a session as completed in hem's local tracking. Completed sessions are hidden from default list and dashboard views.
+`hem complete session SESSION_ID` — marks a session as completed in hem's local tracking. Completed sessions are hidden from default lists and legacy dashboards; workstream dashboards retain unresolved attention requests until explicitly resolved.
 
 - If a completed session is continued (via `continue session`), it automatically goes back to active status.
 
@@ -1477,17 +1477,42 @@ operator-led recovery.
 ### Operator notifications
 
 Normal runs receive notification guidance independently of memory permissions,
-including non-yolo Copilot/OpenCode. While an agent is working, it can request human intervention by emitting
-`<NOTIFY_USER>message</NOTIFY_USER>` in streamed thinking or intermediate text.
-Moneypenny removes complete tags from persisted activity, saves each bounded
-message as a durable `notification` turn, and broadcasts it immediately. Hem
-and Qew always render it as **Action needed**, independently of the
-train-of-thought setting. Agents reserve this for authentication, permission,
-credentials, irreversible decisions, or blocking external dependencies—not
-routine progress. It is **not** an agent-to-agent channel: agents must never
-use it for progress, completion reports, review results, or messages to another
-agent; direct parent/child communication, including a subagent's completion
-report, uses `gadgets subagents message`.
+including non-yolo Copilot/OpenCode. Each session has a durable short summary
+and one revisioned attention request, independent of execution, unread and
+completion:
+
+- `gadgets attention set --summary TEXT` updates the work summary (at most 240 Unicode characters).
+- `gadgets attention set --kind needs_answer --reason TEXT` asks a question or requests a decision.
+- `gadgets attention set --kind needs_action --reason TEXT` requests authentication, permissions, credentials, an irreversible action, or help with an external dependency.
+- `gadgets attention get` reads the current report; `gadgets attention resolve --revision N` explicitly resolves that revision.
+
+Reasons contain 1–1000 Unicode characters. Omitted fields preserve existing
+state. Reading, arbitrary human replies, and successful runs never implicitly
+resolve a request. Changed kind/reason increments its revision; repeating an
+identical request does not re-alert. Stale resolution fails rather than
+dismissing a newer request. Gadgets are scoped to the authenticated session.
+Moneypenny reports execution failures, including interrupted runs on restart,
+as `failed`; agents cannot self-report that kind.
+
+Dashboard rows show the summary, request counts and reasons; the same request
+remains in the conversation banner until resolved. Qew provides **Resolve**,
+the TUI uses `Esc` then `R`, and operators can use
+`hem resolve attention SESSION_ID --revision N`. Completed sessions with
+unresolved requests remain in **Needs you** until explicitly resolved.
+New requests and changed reasons use the existing sound/popover notification
+delivery instead of a separate transient state. Qew deduplicates by session and
+attention revision in local storage (tab-local fallback with a warning if storage
+is unavailable); the TUI remembers delivered revisions for its lifetime.
+Refreshes, reads and reconnects do not replay delivery. Ordinary completion
+remains unread work rather than an operator-intervention alert in these clients.
+
+`gadgets notify` and `<NOTIFY_USER>message</NOTIFY_USER>` are compatibility
+setters for the same durable `needs_action` request. Complete tags are removed
+from streamed activity and final responses; a changed compatibility request
+also adds one visible `notification` conversation turn. Repeated streamed/final
+tags or gadget calls do not duplicate it. Operator attention is **not** an
+agent-to-agent channel: children should ask their parent, and completion reports,
+review results and direct parent/child communication use `gadgets subagents message`.
 
 ## Sub-agents
 
@@ -1759,10 +1784,10 @@ after a Hem restart until that Moneypenny responds again.
 The TUI and Qew default to **workstreams**: a collapsed root session with its
 recursive descendants, not a new organizational entity. Hem supplies the same
 typed `workstreams` projection to both clients. Sections are **Needs you** (any
-active session unread), **In progress** (otherwise any running), **Quiet**, and
+unresolved request or active session unread), **In progress** (otherwise any running), **Quiet**, and
 optionally **Completed**. Unread and running counts are independent; an idle
-parent stays idle even when its children run. In this phase "Needs you" means
-unread, not a durable question or blocker.
+parent stays idle even when its children run. Durable requests remain independent
+of those states.
 
 Expand a workstream to open individual descendants. TUI: `Space`/`Left`/`Right`
 toggle/collapse/expand; `h`/`l` also fold/unfold, `s` expands or collapses all, and
@@ -1776,7 +1801,8 @@ Search retains matching descendants'
 ancestor context and temporarily reveals collapsed matches; project filters keep
 the same context. Completed ancestors remain visible when they contain live work,
 but completed sessions never contribute to active, unread, running or unavailable
-counts. Missing-parent sessions remain standalone; cycles are broken
+counts. Unresolved requests still count, including on completed sessions.
+Missing-parent sessions remain standalone; cycles are broken
 deterministically and flagged rather than losing sessions. Workstreams sort by
 section, latest activity descending, then root ID.
 
@@ -1787,7 +1813,7 @@ row. Qew keeps **New Agent** prominent and puts existing management screens,
 **All sessions** (an expanded diagnostic view) and **Show completed** under
 **Manage**. TUI uses `L` for its existing All sessions screen (`l` still opens it
 outside expandable parent rows) and `a` for
-completed sessions. Existing refresh/watch and completion alerts are reused;
+completed sessions. Existing refresh/watch and notification components are reused;
 expanding and searching do not fetch transcripts or run agents. Clients fall back
 to the legacy dashboard only when an older Hem rejects the `--view` flag.
 

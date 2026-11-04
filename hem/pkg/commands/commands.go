@@ -55,6 +55,8 @@ func gadgetsParentID(e *Executor, sessionID string) string {
 
 // mpSessionInfo holds cached session data from a moneypenny's list_sessions response.
 type mpSessionInfo struct {
+	envelope.SessionReport
+	Revision        int64  `json:"revision"`
 	Status          string `json:"status"`
 	Name            string `json:"name"`
 	Agent           string `json:"agent"`
@@ -125,9 +127,21 @@ func (e *Executor) Subscribe() (<-chan *protocol.Response, func()) {
 	return e.eventBroker.Subscribe()
 }
 
-func (e *Executor) handleMoneypennyEvent(_ string, event *transport.Response) {
+func (e *Executor) handleMoneypennyEvent(mpName string, event *transport.Response) {
 	if event == nil || event.Type != "notification" {
 		return
+	}
+	if event.Event == envelope.EventSessionAttention {
+		var report struct {
+			envelope.SessionReport
+			Revision int64 `json:"revision"`
+		}
+		if err := json.Unmarshal(event.Data, &report); err != nil {
+			log.Printf("invalid attention event: moneypenny=%s session=%s error=%v", mpName, event.SessionID, err)
+			return
+		}
+		e.cacheManager.UpdateReport(mpName, event.SessionID, report.SessionReport, report.Revision)
+		e.emitDashboardRefresh()
 	}
 	e.publishEvent(&protocol.Response{
 		Status:    protocol.StatusOK,
@@ -628,6 +642,8 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.AcknowledgeSession(args)
 	case "reconcile session":
 		return e.ReconcileSession(args)
+	case "resolve attention":
+		return e.ResolveAttention(args)
 	case "update session":
 		return e.UpdateSession(args)
 	case "list session":
@@ -1186,6 +1202,7 @@ type SessionLastResult struct {
 }
 
 type SessionShowResult struct {
+	envelope.SessionReport
 	GadgetCapabilities        envelope.GadgetCapabilities `json:"gadget_capabilities"`
 	SessionID                 string                      `json:"session_id"`
 	Moneypenny                string                      `json:"moneypenny"`
@@ -1397,6 +1414,7 @@ type ConversationTurn struct {
 }
 
 type HistoryResult struct {
+	envelope.SessionReport
 	SessionID    string             `json:"session_id"`
 	Conversation []ConversationTurn `json:"conversation"`
 	Total        int                `json:"total"` // total turns in the session
@@ -2671,6 +2689,9 @@ func (e *Executor) ShowSession(args []string) *protocol.Response {
 		SessionID:  sessionID,
 		Moneypenny: mp.Name,
 	}
+	if err := json.Unmarshal(resp.Data, &result.SessionReport); err != nil {
+		return protocol.ErrResponse(fmt.Sprintf("parsing session report: %v", err))
+	}
 	result.GadgetCapabilities, err = sessionGadgetCapabilities(resp.Data)
 	if err != nil {
 		return protocol.ErrResponse(fmt.Sprintf("parsing session capabilities: %v", err))
@@ -3613,6 +3634,7 @@ func (e *Executor) HistorySession(args []string) *protocol.Response {
 	}
 
 	var sessionData struct {
+		envelope.SessionReport
 		Conversation []ConversationTurn `json:"conversation"`
 		Total        int                `json:"total"`
 		Revision     int64              `json:"revision"`
@@ -3642,13 +3664,14 @@ func (e *Executor) HistorySession(args []string) *protocol.Response {
 	}
 
 	return protocol.OKResponse(HistoryResult{
-		SessionID:    sessionID,
-		Conversation: conv,
-		Total:        sessionData.Total,
-		Revision:     sessionData.Revision,
-		Generation:   sessionData.Generation,
-		NextCursor:   sessionData.NextCursor,
-		HasMore:      sessionData.HasMore,
+		SessionReport: sessionData.SessionReport,
+		SessionID:     sessionID,
+		Conversation:  conv,
+		Total:         sessionData.Total,
+		Revision:      sessionData.Revision,
+		Generation:    sessionData.Generation,
+		NextCursor:    sessionData.NextCursor,
+		HasMore:       sessionData.HasMore,
 	})
 }
 

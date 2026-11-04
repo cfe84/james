@@ -366,7 +366,7 @@ func TestGadgetPromptShowsOnlyGrantedCommands(t *testing.T) {
 		"Use `gadgets subagents message` for direct children and parent replies",
 		"you may use the same command to send exactly one callback to that invoking session",
 		"Send completion reports, review results, and blockers through this callback path",
-		"Never use it for progress, completion reports, review results, or messages to another agent",
+		"Never use operator attention for completion reports, review results, or messages to another agent",
 	} {
 		if !strings.Contains(params.SystemPrompt, text) {
 			t.Fatalf("missing James subagent instruction: %s", text)

@@ -21,6 +21,11 @@ func TestParseCommands(t *testing.T) {
 		data   string
 	}{
 		{"get root", []string{"memory", "get"}, "", "memory.get", `{"path":""}`},
+		{"attention get", []string{"attention", "get"}, "", "attention.get", `{}`},
+		{"attention summary", []string{"attention", "set", "--summary", "Checking transport"}, "", "attention.set", `{"summary":"Checking transport"}`},
+		{"attention question", []string{"attention", "set", "--kind", "needs_answer", "--reason", "Which host?", "--revision", "3"}, "", "attention.set", `{"kind":"needs_answer","reason":"Which host?","revision":3}`},
+		{"attention resolve", []string{"attention", "resolve", "--revision", "3"}, "", "attention.set", `{"kind":"","revision":3}`},
+		{"attention resolve empty", []string{"attention", "resolve", "--revision", "0"}, "", "attention.set", `{"kind":"","revision":0}`},
 		{"shared stores", []string{"ponsonby", "list"}, "", "ponsonby.list", `{}`},
 		{"shared question", []string{"ponsonby", "ask", "engineering"}, "Which deployment?", "ponsonby.ask", `{"store":"engineering","body":"Which deployment?"}`},
 		{"shared result", []string{"ponsonby", "result", "engineering", "request"}, "", "ponsonby.result", `{"store":"engineering","id":"request"}`},
@@ -144,6 +149,8 @@ func TestParseErrors(t *testing.T) {
 		{}, {"hem"}, {"unknown"}, {"memory"}, {"memory", "unknown"}, {"agents", "list", "extra"},
 		{"ponsonby", "ask"}, {"ponsonby", "ask", "engineering"}, {"ponsonby", "result", "engineering"},
 		{"ponsonby", "list", "other"}, {"ponsonby", "ask", "engineering", "--session-id=other"},
+		{"attention", "get", "other"}, {"attention", "set"}, {"attention", "set", "--session-id=other"},
+		{"attention", "resolve"}, {"attention", "resolve", "--revision=-1"}, {"attention", "resolve", "--revision=oops"},
 		{"ponsonby", "ingest"}, {"ponsonby", "create"}, {"ponsonby", "ask", "engineering", "--body=text"},
 		{"run-and-callback"}, {"run-and-callback", "echo"}, {"run-and-callback", "--"}, {"run", "status"}, {"run", "stop", "a", "b"},
 		{"memory", "search"}, {"memory", "get", "a", "b"}, {"memory", "set", "--session", "other"},
@@ -313,7 +320,7 @@ func TestBoundsAndConfiguration(t *testing.T) {
 }
 
 func TestHelpVersion(t *testing.T) {
-	for _, args := range [][]string{{}, {"help"}, {"--help"}, {"memory", "--help"}, {"memory", "set", "--help"}, {"traits", "--help"}, {"traits", "list", "--help"}, {"traits", "get", "--help"}, {"traits", "edit", "--help"}, {"version"}, {"--version"}} {
+	for _, args := range [][]string{{}, {"help"}, {"--help"}, {"memory", "--help"}, {"memory", "set", "--help"}, {"traits", "--help"}, {"traits", "list", "--help"}, {"traits", "get", "--help"}, {"traits", "edit", "--help"}, {"attention", "--help"}, {"attention", "resolve", "--help"}, {"version"}, {"--version"}} {
 		var stdout, stderr bytes.Buffer
 		if code := Run(args, strings.NewReader(""), &stdout, &stderr, func(string) string { return "" }, "1.78.0"); code != 0 || stdout.Len() == 0 || stderr.Len() != 0 {
 			t.Fatalf("%q: code=%d stdout=%s stderr=%s", args, code, &stdout, &stderr)

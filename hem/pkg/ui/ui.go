@@ -11,8 +11,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"james/hem/pkg/commands"
 	"james/hem/pkg/hemclient"
+	"james/moneypenny/pkg/envelope"
 )
 
 // uiLog is the TUI debug logger. Writes to ~/.config/james/hem/ui.log.
@@ -66,37 +66,37 @@ const (
 
 // Model is the top-level bubbletea model.
 type Model struct {
-	currentView       view
-	previousView      view // for esc navigation
-	dashboard         dashboardModel
-	projects          projectsModel
-	projectDetail     dashboardModel // reuses dashboardModel with project filter
-	sessions          sessionsModel
-	chat              chatModel
-	create            createModel
-	edit              editModel
-	editProject       editProjectModel
-	importForm        importModel
-	diff              diffModel
-	memory            memoryModel
-	moneypennies      moneypenniesModel
-	ponsonbies        ponsonbiesModel
-	addMoneypenny     addMoneypennyModel
-	shell             shellModel
-	wizard            wizardModel
-	summary           summaryModel
-	traits            traitsModel
-	editTrait         editTraitModel
-	channels          channelsModel
-	parentChats       []chatModel       // stack for subagent navigation
-	chatDrafts        map[string]string // sessionID → unsent input text
-	width             int
-	height            int
-	client            *client
-	statusMsg         string
-	version           string
-	silent            bool
-	lastSessionStates map[string]string // sessionID → last known mpStatus
+	currentView        view
+	previousView       view // for esc navigation
+	dashboard          dashboardModel
+	projects           projectsModel
+	projectDetail      dashboardModel // reuses dashboardModel with project filter
+	sessions           sessionsModel
+	chat               chatModel
+	create             createModel
+	edit               editModel
+	editProject        editProjectModel
+	importForm         importModel
+	diff               diffModel
+	memory             memoryModel
+	moneypennies       moneypenniesModel
+	ponsonbies         ponsonbiesModel
+	addMoneypenny      addMoneypennyModel
+	shell              shellModel
+	wizard             wizardModel
+	summary            summaryModel
+	traits             traitsModel
+	editTrait          editTraitModel
+	channels           channelsModel
+	parentChats        []chatModel       // stack for subagent navigation
+	chatDrafts         map[string]string // sessionID → unsent input text
+	width              int
+	height             int
+	client             *client
+	statusMsg          string
+	version            string
+	silent             bool
+	attentionRevisions map[string]int64 // sessionID → last delivered attention revision
 }
 
 // UIOptions configures the TUI.
@@ -123,14 +123,13 @@ func New(version string, opts ...UIOptions) Model {
 		c.useNotifications = opts[0].UseNotifications
 	}
 	return Model{
-		currentView:       viewDashboard,
-		dashboard:         newDashboardModel(c),
-		sessions:          newSessionsModel(c),
-		chatDrafts:        make(map[string]string),
-		client:            c,
-		version:           version,
-		silent:            silent,
-		lastSessionStates: make(map[string]string),
+		currentView: viewDashboard,
+		dashboard:   newDashboardModel(c),
+		sessions:    newSessionsModel(c),
+		chatDrafts:  make(map[string]string),
+		client:      c,
+		version:     version,
+		silent:      silent,
 	}
 }
 
@@ -622,23 +621,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.dashboard.dashboardPollTickAdaptive()
 
 	case dashboardLoadedMsg:
-		// Detect working→ready transitions for notifications.
-		if msg.projectFilter == "" && msg.err == nil && !m.silent {
+		if msg.err == nil {
 			for _, entry := range msg.entries {
-				prev := m.lastSessionStates[entry.SessionID]
-				if prev == "working" && (entry.MPStatus == "ready" ||
-					(entry.MPStatus == "idle" && entry.Unread && entry.HemStatus != "completed")) {
-					go commands.PlayNotificationSound()
-					name := entry.Name
-					if name == "" {
-						name = entry.SessionID[:12]
-					}
-					m.statusMsg = fmt.Sprintf("Session ready: %s", name)
-					break
-				}
-			}
-			for _, entry := range msg.entries {
-				m.lastSessionStates[entry.SessionID] = entry.MPStatus
+				m.observeAttention(entry.SessionID, entry.Name, entry.Attention)
 			}
 		}
 		// Route to the matching dashboard instance based on projectFilter.
@@ -683,6 +668,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity(), m.chat.loadOverrideConfig(), m.chat.chatPollTickAdaptive())
 
 	case broadcastMsg, broadcastReconnectMsg:
+		if hint, ok := msg.(broadcastMsg); ok && hint.resp != nil && hint.resp.Event == envelope.EventSessionAttention {
+			return m, tea.Batch(m.loadAttention(hint.resp.SessionID), listenForBroadcasts(m.client.broadcasts()))
+		}
 		// Route dashboard broadcast messages.
 		if m.currentView == viewProjectDetail {
 			var cmd tea.Cmd
@@ -694,12 +682,42 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case chatBroadcastMsg, chatBroadcastReconnectMsg:
+		if hint, ok := msg.(chatBroadcastMsg); ok && hint.resp != nil && hint.resp.Event == envelope.EventSessionAttention {
+			return m, tea.Batch(m.loadAttention(hint.resp.SessionID), listenForChatBroadcasts(m.client.broadcasts(), m.chat.sessionID))
+		}
 		// Route chat broadcast messages.
 		var cmd tea.Cmd
 		m.chat, cmd = m.chat.Update(msg)
 		return m, cmd
 
-	case historyLoadedMsg, messageSentMsg, olderHistoryLoadedMsg,
+	case attentionLoadedMsg:
+		if msg.err != nil {
+			m.statusMsg = "Unable to refresh attention: " + msg.err.Error()
+			return m, nil
+		}
+		m.observeAttention(msg.sessionID, msg.detail.Name, msg.detail.Attention)
+		if msg.sessionID == m.chat.sessionID &&
+			(m.chat.attention == nil || (msg.detail.Attention != nil && msg.detail.Attention.Revision >= m.chat.attention.Revision)) {
+			m.chat.attention = msg.detail.Attention
+		}
+		return m, nil
+	case attentionResolvedMsg:
+		if msg.sessionID != m.chat.sessionID {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.chat.err = msg.err
+			m.statusMsg = "Unable to resolve attention: " + msg.err.Error()
+		}
+		return m, m.chat.loadHistory()
+	case historyLoadedMsg:
+		if msg.err == nil && msg.sessionID == m.chat.sessionID {
+			m.observeAttention(msg.sessionID, m.chat.sessionName, msg.report.Attention)
+		}
+		var cmd tea.Cmd
+		m.chat, cmd = m.chat.Update(msg)
+		return m, cmd
+	case messageSentMsg, olderHistoryLoadedMsg,
 		activityLoadedMsg, schedulesLoadedMsg, subagentsLoadedMsg, scheduleCreatedMsg, scheduleCancelledMsg,
 		chatSubagentCreatedMsg, browserLoadedMsg, fileTransferredMsg,
 		fileContentLoadedMsg, fileDownloadedMsg, downloadBrowserLoadedMsg:
@@ -1554,6 +1572,10 @@ func (m Model) updateSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.chat.commandMode && !m.chat.pickingSubagent && !m.chat.creatingSubagent && !m.chat.pickingSchedule && !m.chat.pickingModel && !m.chat.pickingEffort {
 		switch msg.String() {
+		case "R":
+			if m.chat.attention.Active() {
+				return m, m.chat.resolveAttention()
+			}
 		case "s":
 			m.chat.confirmDelete = false
 			return m, func() tea.Msg {
@@ -2318,6 +2340,7 @@ func (m Model) renderStatusBar() string {
 			}
 		} else if m.chat.commandMode {
 			keys = []string{
+				statusKeyStyle.Render("R") + statusDescStyle.Render(" resolve attention"),
 				statusKeyStyle.Render("a") + statusDescStyle.Render(" subagents"),
 				statusKeyStyle.Render("c") + statusDescStyle.Render(" complete"),
 				statusKeyStyle.Render("u") + statusDescStyle.Render(" ready"),

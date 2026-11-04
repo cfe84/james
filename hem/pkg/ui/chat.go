@@ -19,6 +19,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"james/hem/pkg/protocol"
+	"james/moneypenny/pkg/envelope"
 )
 
 type chatSessionStoppedMsg struct{ err error }
@@ -80,6 +81,7 @@ type fileReviewSubmitMsg struct {
 }
 
 type chatModel struct {
+	attention             *envelope.SessionAttention
 	sessionID             string
 	sessionName           string
 	sessionNick           string // optional short nickname/alias
@@ -377,6 +379,8 @@ func newChatModel(c *client, sessionID, sessionName, moneypennyName string) chat
 
 // Messages
 type historyLoadedMsg struct {
+	sessionID      string
+	report         envelope.SessionReport
 	conversation   []conversationTurn
 	total          int
 	status         string // session status from moneypenny
@@ -475,7 +479,7 @@ func (m chatModel) loadHistory() tea.Cmd {
 			nick = detail.Nick
 		}
 		uilog("loadHistory: done in %v, turns=%d total=%d status=%s", time.Since(start), len(page.Conversation), page.Total, status)
-		return historyLoadedMsg{conversation: page.Conversation, total: page.Total, status: status, nick: nick, contextTokens: ctxTokens, contextWindow: ctxWindow, compactionMode: compactionMode, revision: page.Revision, generation: page.Generation}
+		return historyLoadedMsg{sessionID: m.sessionID, report: page.SessionReport, conversation: page.Conversation, total: page.Total, status: status, nick: nick, contextTokens: ctxTokens, contextWindow: ctxWindow, compactionMode: compactionMode, revision: page.Revision, generation: page.Generation}
 	}
 }
 
@@ -763,7 +767,7 @@ func listenForChatBroadcasts(broadcasts <-chan *protocol.Response, sessionID str
 				return chatBroadcastReconnectMsg{}
 			}
 			// Only process broadcasts for this session
-			if matchesChatSession(resp, sessionID) {
+			if resp.Event == envelope.EventSessionAttention || matchesChatSession(resp, sessionID) {
 				return chatBroadcastMsg{resp: resp}
 			}
 		}
@@ -868,9 +872,15 @@ func (m chatModel) Update(msg tea.Msg) (chatModel, tea.Cmd) {
 		return m, tea.Batch(cmds...)
 
 	case historyLoadedMsg:
+		if msg.sessionID != "" && msg.sessionID != m.sessionID {
+			return m, nil
+		}
 		m.loading = false
 		m.polling = false
 		if msg.err == nil {
+			if m.attention == nil || (msg.report.Attention != nil && msg.report.Attention.Revision >= m.attention.Revision) {
+				m.attention = msg.report.Attention
+			}
 			uilog("history loaded: status=%s turns=%d total=%d", msg.status, len(msg.conversation), msg.total)
 			m.sessionStatus = msg.status
 			m.sessionNick = msg.nick
@@ -1729,6 +1739,15 @@ func (m chatModel) View() string {
 	}
 	b.WriteString("\n")
 
+	attentionLines := 0
+	if m.attention.Active() {
+		width := max(10, m.width-2)
+		text := attentionDescription(m.attention)
+		banner := categoryWorkingStyle.Width(width).Render(
+			truncate(text, width*max(1, m.height/4)) + "  [Esc R: resolve]")
+		b.WriteString(banner + "\n")
+		attentionLines = strings.Count(banner, "\n") + 1
+	}
 	if m.loading {
 		b.WriteString("\n  Loading conversation...\n")
 		return b.String()
@@ -1754,7 +1773,7 @@ func (m chatModel) View() string {
 	if m.err != nil {
 		errLines = 1
 	}
-	msgHeight := m.height - 1 - errLines - inputLineCount
+	msgHeight := m.height - 1 - errLines - inputLineCount - attentionLines
 
 	// Render messages.
 	var msgLines []string

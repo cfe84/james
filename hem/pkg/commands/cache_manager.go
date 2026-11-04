@@ -3,6 +3,8 @@ package commands
 import (
 	"sync"
 	"time"
+
+	"james/moneypenny/pkg/envelope"
 )
 
 // CacheManager manages moneypenny session caching.
@@ -49,8 +51,26 @@ func (cm *CacheManager) Update(data map[string]map[string]mpSessionInfo) {
 func (cm *CacheManager) UpdateMP(mpName string, sessions map[string]mpSessionInfo) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
+	for id, info := range sessions {
+		if old, ok := cm.mpCache[mpName][id]; ok && old.Revision > info.Revision {
+			info.SessionReport = old.SessionReport
+			info.Revision = old.Revision
+			sessions[id] = info
+		}
+	}
 	cm.mpCache[mpName] = sessions
 	cm.cacheTime = time.Now()
+}
+
+// UpdateReport applies a durable attention hint without fetching a transcript.
+func (cm *CacheManager) UpdateReport(mpName, sessionID string, report envelope.SessionReport, revision int64) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	if session, ok := cm.mpCache[mpName][sessionID]; ok && revision > session.Revision {
+		session.SessionReport = report
+		session.Revision = revision
+		cm.mpCache[mpName][sessionID] = session
+	}
 }
 
 // Rename retains dashboard session data when a registration name changes.

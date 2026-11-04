@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"james/hem/pkg/protocol"
+	"james/moneypenny/pkg/envelope"
 )
 
 type dashboardPollTickMsg struct{}
@@ -86,6 +87,9 @@ type dashboardEntry struct {
 	Unread          bool
 	HierarchyIssue  string
 	Expandable      bool
+	Summary         string
+	Attention       *envelope.SessionAttention
+	AttentionInfo   string
 }
 
 // dashboardModel displays the attention-based dashboard.
@@ -506,7 +510,7 @@ func (m dashboardModel) filteredEntries() []dashboardEntry {
 			ancestors = ancestors[:min(e.Depth, len(ancestors))]
 			ancestors = append(ancestors, e.SessionID)
 			if m.filterText == "" || strings.Contains(strings.ToLower(
-				e.Name+" "+e.Nick+" "+e.Project+" "+e.Agent+" "+e.Model+" "+e.Moneypenny+" "+e.SessionID),
+				e.Name+" "+e.Nick+" "+e.Project+" "+e.Agent+" "+e.Model+" "+e.Moneypenny+" "+e.SessionID+" "+e.Summary+" "+e.AttentionInfo),
 				strings.ToLower(m.filterText)) {
 				for _, id := range ancestors {
 					matches[id] = true
@@ -546,6 +550,10 @@ func workstreamEntries(data protocol.DashboardResult) []dashboardEntry {
 				CreatedAt: s.CreatedAt, LastActive: s.LastActivity, Unread: s.Unread && !s.Completed,
 				RootSessionID: w.RootSessionID, Depth: s.Depth, Category: categories[w.Section],
 				HierarchyIssue: s.HierarchyIssue,
+				Summary:        s.Summary, Attention: s.Attention,
+			}
+			if s.Attention.Active() {
+				e.AttentionInfo = attentionDescription(s.Attention)
 			}
 			if s.Completed {
 				e.HemStatus = "completed"
@@ -555,6 +563,17 @@ func workstreamEntries(data protocol.DashboardResult) []dashboardEntry {
 				e.LastActive = w.LastActivity
 				e.Expandable = len(w.Sessions) > 1
 				e.SubInfo = fmt.Sprintf("%d active · %d running · %d unread", w.Active, w.Running, w.Unread)
+				if w.Requests > 0 {
+					e.SubInfo += fmt.Sprintf(" · %d need attention", w.Requests)
+					if e.AttentionInfo == "" {
+						for _, child := range w.Sessions {
+							if child.Attention.Active() {
+								e.AttentionInfo = child.Name + " · " + attentionDescription(child.Attention)
+								break
+							}
+						}
+					}
+				}
 				if w.Unavailable > 0 {
 					e.SubInfo += fmt.Sprintf(" · %d unavailable", w.Unavailable)
 				}
@@ -770,7 +789,7 @@ func (m dashboardModel) View() string {
 		maxRows = 10
 	}
 	if m.workstreams {
-		maxRows = max(1, (m.height-10)/3)
+		maxRows = max(1, (m.height-10)/4)
 	}
 
 	// Compute visible window.
@@ -893,6 +912,14 @@ func (m dashboardModel) View() string {
 			b.WriteString("\n")
 			if e.SubInfo != "" {
 				b.WriteString(sessionHeaderStyle.Render(truncate("    "+e.SubInfo, max(10, m.width))))
+				b.WriteString("\n")
+			}
+			if e.Summary != "" {
+				b.WriteString(sessionHeaderStyle.Render(truncate("    "+strings.Join(strings.Fields(e.Summary), " "), max(10, m.width))))
+				b.WriteString("\n")
+			}
+			if e.AttentionInfo != "" {
+				b.WriteString(categoryWorkingStyle.Render(truncate("    "+e.AttentionInfo, max(10, m.width))))
 				b.WriteString("\n")
 			}
 			if i == m.cursor {

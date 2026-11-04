@@ -41,7 +41,6 @@
   let allSubagentsRefresh = null;
   let lastActivity = [];
   const CHAT_PAGE_SIZE = 50;
-  let lastSessionStates = {}; // track WORKING→READY transitions for notifications
   let parentSessionStack = []; // stack for subagent navigation
   let soundEnabled = true;
   let userLabel = localStorage.getItem('qewUserLabel') || 'you';
@@ -86,6 +85,8 @@
   let activeWatchID = null;
   let activeWatchRequestID = null;
   const sessionWatermarks = {};
+  let currentAttention = null;
+  const attentionSeen = {};
 
   function releaseActiveWatch() {
     if (activeWatchID && ws && ws.readyState === WebSocket.OPEN) {
@@ -398,19 +399,11 @@
       for (const id of ['dash-all-sessions-btn', 'dash-completed-btn']) {
         document.getElementById(id).hidden = dashboardLegacy;
       }
-      // Detect WORKING→READY transitions for notifications.
-      if (resp.data && resp.data.rows) {
-        for (const row of resp.data.rows) {
-          const sessionId = row[0] || '';
-          const statusRaw = row[3] || '';
-          const idx = statusRaw.indexOf(' (');
-          const mpStatus = idx >= 0 ? statusRaw.substring(0, idx) : statusRaw;
-          const prev = lastSessionStates[sessionId];
-          if (prev === 'working' && mpStatus === 'ready' && !statusRaw.includes('(completed)')) {
-            const name = row[1] || sessionId.substring(0, 12);
-            showNotification(name, sessionId);
+      if (Array.isArray(resp.data.workstreams)) {
+        for (const w of resp.data.workstreams) {
+          for (const session of w.sessions) {
+            deliverAttention(session.session_id, session.name, session.attention);
           }
-          lastSessionStates[sessionId] = mpStatus;
         }
       }
       renderDashboard(resp.data);
@@ -451,6 +444,7 @@
       moneypenny: s.moneypenny, agent: s.agent || '', model: s.model || '',
       mpStatus: s.execution, hemStatus: s.completed ? 'completed' : 'active',
       unread: s.unread && !s.completed,
+      summary: s.summary || '', attention: s.attention,
       lastActive: (s.depth === 0 && w.last_activity) || s.last_activity || s.created_at || '',
       parentSessionId: s.depth > 0 ? s.parent_session_id : '',
       rootId: w.root_session_id, depth: s.depth, hierarchyIssue: s.hierarchy_issue || '',
@@ -497,7 +491,7 @@
       for (const e of entries) {
         contextPath.length = e.depth;
         contextPath[e.depth] = e.sessionId;
-        if (e.hemStatus !== 'completed') contextPath.forEach(id => activeContext.add(id));
+        if (e.hemStatus !== 'completed' || (e.attention && e.attention.kind)) contextPath.forEach(id => activeContext.add(id));
       }
     }
     const eligible = grouped && !dashShowCompleted ? entries.filter(e => activeContext.has(e.sessionId)) : entries;
@@ -506,7 +500,7 @@
     for (const e of eligible) {
       if (grouped) ancestors.length = e.depth;
       ancestors[e.depth || 0] = e.sessionId;
-      if (!dashFilter || fuzzyMatch(dashFilter, `${e.nick} ${e.name} ${e.project} ${e.agent} ${e.model} ${e.moneypenny} ${e.sessionId}`)) {
+      if (!dashFilter || fuzzyMatch(dashFilter, `${e.nick} ${e.name} ${e.project} ${e.agent} ${e.model} ${e.moneypenny} ${e.sessionId} ${e.summary || ''} ${e.attention ? e.attention.reason : ''}`)) {
         matches.add(e.sessionId);
         if (grouped) ancestors.forEach(id => matches.add(id));
       }
@@ -534,7 +528,9 @@
       e.moneypenny + '\x1f' + relativeTime(e.lastActive || '') + '\x1f' + (e.lastActive ? '1' : '0') +
       '\x1f' + (e.workstream ? JSON.stringify([e.unread, e.hemStatus, e.hierarchyIssue,
         e.workstream.active, e.workstream.running, e.workstream.unread, e.workstream.unavailable,
-        e.workstream.sessions.length, dashExpanded.has(e.rootId), dashAllSessions]) : '');
+        e.workstream.sessions.length, dashExpanded.has(e.rootId), dashAllSessions,
+        e.summary, e.attention, e.workstream.requests,
+        e.depth === 0 && e.workstream.sessions.map(s => [s.name, s.nick, s.attention])]) : '');
 
     // Update the shared navigation state (cheap; order matches the DOM either path).
     dashEntries = filtered.map(e => ({
@@ -619,7 +615,7 @@
       const root = e.depth === 0;
       const expandable = root && w.sessions.length > 1 && !dashAllSessions;
       const summary = root
-        ? `${w.active} active · ${w.running} running · ${w.unread} unread${w.unavailable ? ` · ${w.unavailable} unavailable` : ''}`
+        ? `${w.active} active · ${w.running} running · ${w.unread} unread${w.requests ? ` · ${w.requests} need attention` : ''}${w.unavailable ? ` · ${w.unavailable} unavailable` : ''}`
         : '';
       return `
         ${expandable ? `<button class="workstream-expand" data-expand="${escapeAttr(e.rootId)}" aria-expanded="${dashExpanded.has(e.rootId)}" aria-label="Toggle agents in ${escapeAttr(e.name)}">${dashExpanded.has(e.rootId) ? '▾' : '▸'}</button>` : ''}
@@ -627,6 +623,10 @@
           <span class="session-name">${nickPrefix}${escapeHtml(displayName)}</span>
           ${e.project ? `<span class="session-project">${escapeHtml(e.project)}</span>` : ''}
           ${summary ? `<span class="workstream-summary">${escapeHtml(summary)}</span>` : ''}
+          ${e.summary ? `<span class="workstream-summary">${escapeHtml(e.summary)}</span>` : ''}
+          ${e.attention && e.attention.kind ? `<span class="workstream-attention">${escapeHtml(attentionLabel(e.attention.kind))}: ${escapeHtml(e.attention.reason)}</span>` : ''}
+          ${root && !dashExpanded.has(e.rootId) ? w.sessions.filter(s => s.depth > 0 && s.attention && s.attention.kind).map(s =>
+            `<span class="workstream-attention">${escapeHtml(s.nick || s.name)} · ${escapeHtml(attentionLabel(s.attention.kind))}: ${escapeHtml(s.attention.reason)}</span>`).join('') : ''}
           ${e.hierarchyIssue ? `<span class="workstream-summary">Hierarchy: ${escapeHtml(e.hierarchyIssue.replaceAll('_', ' '))}</span>` : ''}
         </span>
         <span class="session-status ${e.mpStatus === 'working' ? 'working' : 'idle'}">${escapeHtml(e.mpStatus)}${e.hemStatus === 'completed' ? ' · completed' : ''}</span>
@@ -656,6 +656,29 @@
       s.moneypenny, s.created_at || '', s.last_activity || '', s.depth > 0 ? s.parent_session_id : '',
       s.agent || '', s.nick || '', s.model || '',
     ]));
+  }
+
+  function attentionLabel(kind) {
+    return ({ needs_answer: 'Needs answer', needs_action: 'Needs action', failed: 'Failed' })[kind] || 'Attention';
+  }
+
+  function deliverAttention(sessionId, name, attention) {
+    if (!attention || !Number.isSafeInteger(attention.revision)) return;
+    const key = `qewAttentionSeen:${sessionId}`;
+    let seen = attentionSeen[sessionId] || 0;
+    try {
+      seen = Math.max(seen, Number(localStorage.getItem(key) || 0) || 0);
+    } catch (error) {
+      console.warn('Unable to read attention delivery state', error);
+    }
+    if (attention.revision <= seen) return;
+    attentionSeen[sessionId] = attention.revision;
+    try {
+      localStorage.setItem(key, String(attention.revision));
+    } catch (error) {
+      console.warn('Unable to persist attention delivery state; deduplicating for this tab only', error);
+    }
+    if (attention.kind) showNotification(name || sessionId, sessionId, attentionLabel(attention.kind), attention.reason);
   }
 
   function toggleWorkstream(rootId, expand) {
@@ -1014,6 +1037,9 @@
     stopDashboardPoll();
     stopChatPoll();
     currentSession = sessionId;
+    currentAttention = null;
+    const attentionBanner = document.getElementById('chat-attention');
+    if (attentionBanner) attentionBanner.hidden = true;
     currentSessionStatus = '';
     multilineCompose = localStorage.getItem(`qewMultilineCompose:${sessionId}`) === '1';
     syncComposeModeToggle();
@@ -1114,6 +1140,49 @@
     startDashboardPoll();
   }
 
+  function renderAttentionBanner(report) {
+    if (!report || !Object.prototype.hasOwnProperty.call(report, 'attention')) return;
+    if (currentAttention && report.attention && report.attention.revision <= currentAttention.revision) return;
+    currentAttention = report.attention || null;
+    const banner = document.getElementById('chat-attention');
+    if (!banner) return;
+    banner.hidden = !currentAttention || !currentAttention.kind;
+    deliverAttention(currentSession, currentSessionName, currentAttention);
+    if (banner.hidden) return;
+    const label = attentionLabel(currentAttention.kind);
+    banner.innerHTML = `<strong>${escapeHtml(label)}</strong> ${escapeHtml(currentAttention.reason)}
+      <button class="btn-muted" id="resolve-attention-btn">Resolve</button>`;
+    document.getElementById('resolve-attention-btn').addEventListener('click', resolveAttention);
+  }
+
+  async function loadAttention(sessionId) {
+    try {
+      const resp = await apiCall('show', 'session', [sessionId]);
+      if (resp.status === 'error') throw new Error(resp.message);
+      if (resp.data) deliverAttention(sessionId, resp.data.name, resp.data.attention);
+    } catch (error) {
+      console.warn('Unable to refresh attention; the request remains available on the dashboard', error);
+    }
+  }
+
+  async function resolveAttention() {
+    if (!currentSession || !currentAttention || !currentAttention.kind) return;
+    const sessionId = currentSession;
+    const generation = chatGeneration;
+    const revision = currentAttention.revision;
+    try {
+      const resp = await apiCall('resolve', 'attention', [sessionId, '--revision', String(revision)]);
+      if (resp.status === 'error') throw new Error(resp.message);
+      if (currentSession !== sessionId || chatGeneration !== generation) return;
+      renderAttentionBanner(resp.data);
+      loadChat();
+    } catch (error) {
+      if (currentSession !== sessionId || chatGeneration !== generation) return;
+      alert(`Unable to resolve attention: ${error.message}`);
+      loadChat();
+    }
+  }
+
   function loadChat() {
     if (!currentSession) return Promise.resolve();
     if (!chatRefresh) {
@@ -1158,7 +1227,7 @@
         typeof histResp.data.revision === 'number' &&
         typeof histResp.data.generation === 'number' &&
         typeof histResp.data.total === 'number' &&
-        !Object.prototype.hasOwnProperty.call(histResp.data, 'conversation') &&
+        !Array.isArray(histResp.data.conversation) &&
         histResp.data.revision === watermark.revision &&
         histResp.data.generation === watermark.generation;
       if (histResp.status === 'error' || !histResp.data ||
@@ -1172,6 +1241,7 @@
       if (histResp.status === 'error') {
         throw new Error(histResp.message || 'Unable to load conversation');
       }
+      renderAttentionBanner(histResp.data);
       if (histResp.data && typeof histResp.data.revision === 'number') {
         const next = { revision: histResp.data.revision, generation: histResp.data.generation || 0 };
         const changedGeneration = watermark.generation !== 0 && next.generation !== watermark.generation;
@@ -6285,6 +6355,10 @@
         if (currentSession) loadChat(); else loadDashboard();
         return;
       }
+      if (msg.event === 'session_attention' && msg.session_id && currentSession && msg.session_id !== currentSession) {
+        loadAttention(msg.session_id);
+        return;
+      }
       if (currentSession && msg.session_id === currentSession && msg.data &&
           msg.data.reset_required) {
         chatConversation = [];
@@ -6552,19 +6626,22 @@
 
   // --- Notifications ---
 
-  function playNotificationSound() {
+  async function playNotificationSound() {
     if (!soundEnabled) return;
     try {
-      new Audio('james.wav').play();
-    } catch (e) { /* ignore audio errors */ }
+      await new Audio('james.wav').play();
+    } catch (error) {
+      console.warn('Unable to play notification sound', error);
+    }
   }
 
-  function showNotification(sessionName, sessionId) {
+  async function showNotification(sessionName, sessionId, label, reason) {
     playNotificationSound();
+    const message = sessionName + ': ' + reason;
     // Pop-over notification — clickable to open session.
     const popover = document.createElement('div');
     popover.className = 'notification-popover';
-    popover.textContent = 'Session ready: ' + sessionName;
+    popover.textContent = label + ': ' + message;
     if (sessionId) {
       popover.addEventListener('click', () => {
         popover.remove();
@@ -6578,10 +6655,15 @@
       setTimeout(() => popover.remove(), 300);
     }, 4000);
     // Browser notification (works when tab is in background).
-    if (Notification.permission === 'granted') {
-      new Notification('Session ready', { body: sessionName });
-    } else if (Notification.permission !== 'denied') {
-      Notification.requestPermission();
+    if (typeof Notification === 'undefined') return;
+    try {
+      if (Notification.permission === 'granted') {
+        new Notification(label, { body: message });
+      } else if (Notification.permission !== 'denied') {
+        await Notification.requestPermission();
+      }
+    } catch (error) {
+      console.warn('Unable to deliver browser notification', error);
     }
   }
 

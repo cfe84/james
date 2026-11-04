@@ -80,4 +80,7 @@ func TestStopSessionDiscardsLateAgentResult(t *testing.T) {
 	if err != nil || sess.Status != store.StateIdle {
 		t.Fatalf("session after stop = %#v, %v", sess, err)
 	}
+	if sess.Attention.Active() {
+		t.Fatalf("stopping a run generated failure attention: %+v", sess.Attention)
+	}
 }

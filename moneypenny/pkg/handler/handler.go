@@ -95,7 +95,15 @@ irreversible decisions, or blocked external dependencies—not routine progress.
 Never use this tag to report progress, completion, review results, or any
 message to another agent. Report to a parent or child through
 gadgets subagents message instead.
-The message is saved and shown to the user immediately while you keep working.`
+The message is saved as a durable needs_action request and shown immediately.
+When gadgets are available, prefer gadgets attention set --kind needs_answer
+--reason "question" for decisions, or --kind needs_action for external actions.
+Use gadgets attention set --summary "short work summary" to update the dashboard
+without requesting attention. Omitted fields never clear an outstanding request.
+After the request is satisfied, use gadgets attention get then
+gadgets attention resolve --revision N to explicitly resolve it. Reading or an
+arbitrary human reply does not resolve it. Children should ask their parent via
+gadgets subagents message instead of escalating to the human by default.`
 
 var notifyUserTagRe = regexp.MustCompile(`(?s)<NOTIFY_USER>\s*(.{1,1000}?)\s*</NOTIFY_USER>`)
 
@@ -177,27 +185,13 @@ func New(s *store.Store, runner *agent.Runner, version, dataDir string) *Handler
 	// Persist thinking and intermediate-text activity events as conversation
 	// turns so the train of thought survives across reloads.
 	runner.SetPersistentActivityFunc(func(sessionID, eventType, content string) {
-		notifications := notifyUserTagRe.FindAllStringSubmatch(content, -1)
-		content = notifyUserTagRe.ReplaceAllString(content, "")
+		content = h.extractAttentionTags(sessionID, content)
 		role := "thinking"
 		if eventType == "text" {
 			role = "agent_text"
 		}
 		if strings.TrimSpace(content) != "" {
 			_ = s.AddConversationTurn(sessionID, role, content)
-		}
-		for _, match := range notifications {
-			message := strings.TrimSpace(match[1])
-			if message == "" {
-				continue
-			}
-			if err := s.AddConversationTurn(sessionID, "notification", message); err != nil {
-				h.vlog("failed to save user notification for session %s: %v", sessionID, err)
-				continue
-			}
-			if h.notifyWriter != nil {
-				_ = h.notifyWriter.SendAsync(envelope.EventChatUserNotification, sessionID, map[string]string{"message": message})
-			}
 		}
 	})
 	return h
@@ -426,6 +420,8 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.getSessionConversation(ctx, cmd)
 	case "reconcile_session":
 		return h.reconcileSession(ctx, cmd)
+	case "update_attention":
+		return h.updateAttention(ctx, cmd)
 	case "watch_session":
 		return h.watchSession(cmd.Data, cmd.RequestID)
 	case "renew_watch":
@@ -1268,6 +1264,13 @@ func (h *Handler) runAgentWithContext(ctx context.Context, sessionID string, par
 		errMsg := agentFailureMessage(params, err)
 
 		_ = h.store.AddConversationTurn(sessionID, "system", errMsg)
+		reason := []rune(errMsg)
+		if len(reason) > 1000 {
+			reason = reason[:1000]
+		}
+		if _, _, persistErr := h.setAttention(sessionID, "failed", string(reason), "daemon"); persistErr != nil {
+			h.errorLog("failed to persist execution failure: session=%s error=%v", sessionID, persistErr)
+		}
 		_ = h.store.UpdateSessionStatus(sessionID, store.StateIdle)
 		if params.OperationID != "" {
 			_, _ = h.store.UpdateClientOperationStatus(sessionID, params.OperationID, store.OperationRunning, store.OperationFailed, map[string]interface{}{
@@ -1292,7 +1295,7 @@ func (h *Handler) runAgentWithContext(ctx context.Context, sessionID string, par
 		h.errorLog("opencode run recovered: session=%s source=%s", sessionID, result.OpenCodeRecovery)
 	}
 	// Parse and create any <schedule> tags from agent output.
-	responseText := h.parseAndCreateSchedules(sessionID, result.Text)
+	responseText := h.extractAttentionTags(sessionID, h.parseAndCreateSchedules(sessionID, result.Text))
 
 	// Dedupe (Claude only): the Claude streaming parser saves each text block
 	// as an intermediate `agent_text` turn, and the final `result` event often
@@ -1493,13 +1496,14 @@ func (h *Handler) listSessions(_ context.Context, cmd *envelope.Command) *envelo
 	infos := make([]envelope.SessionInfo, 0, len(sessions))
 	for _, s := range sessions {
 		info := envelope.SessionInfo{
-			SessionID: s.SessionID,
-			Name:      s.Name,
-			Status:    s.Status,
-			Agent:     s.Agent,
-			Model:     s.Model,
-			CreatedAt: s.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
-			Revision:  s.Revision, Generation: s.Generation,
+			SessionReport: s.SessionReport,
+			SessionID:     s.SessionID,
+			Name:          s.Name,
+			Status:        s.Status,
+			Agent:         s.Agent,
+			Model:         s.Model,
+			CreatedAt:     s.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			Revision:      s.Revision, Generation: s.Generation,
 		}
 		// Use the last conversation turn as last_accessed, falling back to
 		// the session's updated_at (which tracks status changes like working→idle).
@@ -1533,6 +1537,7 @@ func (h *Handler) getSession(_ context.Context, cmd *envelope.Command) *envelope
 	}
 
 	detail := envelope.SessionDetail{
+		SessionReport:             sess.SessionReport,
 		SessionID:                 sess.SessionID,
 		Name:                      sess.Name,
 		Status:                    sess.Status,
@@ -1614,13 +1619,14 @@ func (h *Handler) getSessionConversation(ctx context.Context, cmd *envelope.Comm
 	}
 
 	return envelope.SuccessResponse(cmd.RequestID, envelope.SessionConversation{
-		SessionID:    data.SessionID,
-		Conversation: conversation,
-		Total:        total,
-		Revision:     sess.Revision,
-		Generation:   sess.Generation,
-		NextCursor:   nextCursor,
-		HasMore:      hasMore,
+		SessionReport: sess.SessionReport,
+		SessionID:     data.SessionID,
+		Conversation:  conversation,
+		Total:         total,
+		Revision:      sess.Revision,
+		Generation:    sess.Generation,
+		NextCursor:    nextCursor,
+		HasMore:       hasMore,
 	})
 }
 
@@ -1646,7 +1652,8 @@ func (h *Handler) reconcileSession(_ context.Context, cmd *envelope.Command) *en
 	}
 	if data.Revision == sess.Revision && data.Generation == sess.Generation {
 		return envelope.SuccessResponse(cmd.RequestID, envelope.SessionReconcile{
-			SessionID: data.SessionID, Total: total, Revision: sess.Revision, Generation: sess.Generation,
+			SessionReport: sess.SessionReport,
+			SessionID:     data.SessionID, Total: total, Revision: sess.Revision, Generation: sess.Generation,
 		})
 	}
 	turns, err := h.store.GetConversationPaginated(data.SessionID, 100, offset)
@@ -1658,7 +1665,8 @@ func (h *Handler) reconcileSession(_ context.Context, cmd *envelope.Command) *en
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
 	}
 	return envelope.SuccessResponse(cmd.RequestID, envelope.SessionReconcile{
-		SessionID: data.SessionID, Conversation: conversation, Total: total,
+		SessionReport: sess.SessionReport,
+		SessionID:     data.SessionID, Conversation: conversation, Total: total,
 		Revision: sess.Revision, Generation: sess.Generation,
 		ResetRequired: data.Generation != 0 && data.Generation != sess.Generation,
 		Truncated:     hasMore,

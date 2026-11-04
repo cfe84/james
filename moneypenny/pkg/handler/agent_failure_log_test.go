@@ -35,6 +35,10 @@ func TestRunAgentLogsSafeFailureSummaryWithoutVerboseLogging(t *testing.T) {
 	if err != nil || session.Status != store.StateIdle {
 		t.Fatalf("session did not recover to idle: session=%#v err=%v", session, err)
 	}
+	if !session.Attention.Active() || session.Attention.Kind != "failed" || session.Attention.Source != "daemon" ||
+		strings.Contains(session.Attention.Reason, "secret prompt content") {
+		t.Fatalf("missing or unsafe durable failure: %+v", session.Attention)
+	}
 }
 
 func TestRunAgentDoesNotMislabelAgentErrorsAsMemoryPreparation(t *testing.T) {

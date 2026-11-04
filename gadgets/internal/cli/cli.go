@@ -63,10 +63,17 @@ Usage:
   gadgets run list | status ID | stop ID
   gadgets hem VERB [NOUN] [ARGS...]
   gadgets notify [text]                      (otherwise reads stdin)
+  gadgets attention get                     (current summary and durable request)
+  gadgets attention set [--summary text] [--kind needs_answer|needs_action --reason text]
+  gadgets attention resolve --revision N     (explicitly resolve the current request)
   gadgets help
   gadgets version
 
 Flags may follow positional arguments; -- ends flag parsing.
+Attention is scoped to your session. Summary is at most 240 Unicode characters;
+reason is 1-1000. Reading or sending a message never resolves a request. Omitted
+fields preserve state. notify is a compatibility setter for needs_action, not a
+transient alert. Children should request help from their parent by default.
 Omitted memory paths refer to the root. Batch updates are atomic on the daemon.
 Memory list/search/query return paginated summaries {items,has_more,next_cursor}:
 10 results by default, at most 50; serialized retrieval is capped at 16000 Unicode
@@ -150,7 +157,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(s
 		return 0
 	}
 	if args[0] != "hem" && (len(args) == 2 || len(args) == 3) && (args[len(args)-1] == "--help" || args[len(args)-1] == "-h") {
-		groupHelp := len(args) == 2 && (args[0] == "memory" || args[0] == "agents" || args[0] == "traits" || args[0] == "subagents" || args[0] == "schedule" || args[0] == "moneypenny" || args[0] == "notify")
+		groupHelp := len(args) == 2 && (args[0] == "memory" || args[0] == "agents" || args[0] == "traits" || args[0] == "subagents" || args[0] == "schedule" || args[0] == "moneypenny" || args[0] == "notify" || args[0] == "attention")
 		_, rest, err := command(args)
 		if groupHelp || (len(args) == 3 && err == nil && len(rest) == 1) {
 			_, _ = io.WriteString(stdout, Help)

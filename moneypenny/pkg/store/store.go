@@ -23,6 +23,7 @@ const (
 
 // Session represents a stored session.
 type Session struct {
+	envelope.SessionReport
 	SessionID    string
 	Name         string
 	Agent        string
@@ -543,6 +544,14 @@ CREATE INDEX IF NOT EXISTS idx_channel_outbox_pending ON channel_outbox(status);
 	db.Exec(`ALTER TABLE sessions ADD COLUMN gadget_route TEXT NOT NULL DEFAULT '{}'`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN revision INTEGER NOT NULL DEFAULT 0`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN generation INTEGER NOT NULL DEFAULT 1`)
+	var hasReport int
+	if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info('sessions') WHERE name = 'report'`).Scan(&hasReport); err != nil {
+		return err
+	} else if hasReport == 0 {
+		if _, err := db.Exec(`ALTER TABLE sessions ADD COLUMN report TEXT NOT NULL DEFAULT '{}'`); err != nil {
+			return err
+		}
+	}
 
 	// Migration: reply_channel_id routes a run's final response to an external
 	// communication channel (channels.id). 0 = no channel routing. Present on
@@ -629,23 +638,27 @@ func (s *Store) CreateSession(sess *Session) error {
 // GetSession retrieves a session by ID. Returns nil, nil if not found.
 func (s *Store) GetSession(sessionID string) (*Session, error) {
 	row := s.db.QueryRow(
-		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, gadget_route, gadget_capabilities, status, agent_session_id, compaction_mode, compaction_threshold_tokens, context_tokens, context_window, opencode_cost, schedule_ready_at, created_at, updated_at, revision, generation
+		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, gadget_route, gadget_capabilities, status, agent_session_id, compaction_mode, compaction_threshold_tokens, context_tokens, context_window, opencode_cost, schedule_ready_at, created_at, updated_at, revision, generation, report
 		 FROM sessions WHERE session_id = ?`, sessionID,
 	)
 
 	sess := &Session{}
 	var yolo int
 	var scheduleReadyAt sql.NullTime
+	var report string
 	err := row.Scan(
 		&sess.SessionID, &sess.Name, &sess.Agent, &sess.SystemPrompt, &sess.Model, &sess.Effort, &sess.ContextTier,
 		&yolo, &sess.Path, &sess.Environment, &sess.GadgetRoute, &sess.GadgetCapabilities, &sess.Status, &sess.AgentSessionID, &sess.CompactionMode, &sess.CompactionThresholdTokens,
-		&sess.ContextTokens, &sess.ContextWindow, &sess.OpenCodeCost, &scheduleReadyAt, &sess.CreatedAt, &sess.UpdatedAt, &sess.Revision, &sess.Generation,
+		&sess.ContextTokens, &sess.ContextWindow, &sess.OpenCodeCost, &scheduleReadyAt, &sess.CreatedAt, &sess.UpdatedAt, &sess.Revision, &sess.Generation, &report,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get session: %w", err)
+	}
+	if err := json.Unmarshal([]byte(report), &sess.SessionReport); err != nil {
+		return nil, fmt.Errorf("get session report: %w", err)
 	}
 	sess.Yolo = yolo != 0
 	if scheduleReadyAt.Valid {
@@ -664,7 +677,7 @@ func (s *Store) GetSession(sessionID string) (*Session, error) {
 // ListSessions returns all sessions.
 func (s *Store) ListSessions() ([]*Session, error) {
 	rows, err := s.db.Query(
-		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, gadget_route, gadget_capabilities, status, agent_session_id, compaction_mode, compaction_threshold_tokens, context_tokens, context_window, opencode_cost, schedule_ready_at, created_at, updated_at, revision, generation
+		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, gadget_route, gadget_capabilities, status, agent_session_id, compaction_mode, compaction_threshold_tokens, context_tokens, context_window, opencode_cost, schedule_ready_at, created_at, updated_at, revision, generation, report
 		 FROM sessions ORDER BY created_at`,
 	)
 	if err != nil {
@@ -677,12 +690,16 @@ func (s *Store) ListSessions() ([]*Session, error) {
 		sess := &Session{}
 		var yolo int
 		var scheduleReadyAt sql.NullTime
+		var report string
 		if err := rows.Scan(
 			&sess.SessionID, &sess.Name, &sess.Agent, &sess.SystemPrompt, &sess.Model, &sess.Effort, &sess.ContextTier,
 			&yolo, &sess.Path, &sess.Environment, &sess.GadgetRoute, &sess.GadgetCapabilities, &sess.Status, &sess.AgentSessionID, &sess.CompactionMode, &sess.CompactionThresholdTokens,
-			&sess.ContextTokens, &sess.ContextWindow, &sess.OpenCodeCost, &scheduleReadyAt, &sess.CreatedAt, &sess.UpdatedAt, &sess.Revision, &sess.Generation,
+			&sess.ContextTokens, &sess.ContextWindow, &sess.OpenCodeCost, &scheduleReadyAt, &sess.CreatedAt, &sess.UpdatedAt, &sess.Revision, &sess.Generation, &report,
 		); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
+		}
+		if err := json.Unmarshal([]byte(report), &sess.SessionReport); err != nil {
+			return nil, fmt.Errorf("list session report: %w", err)
 		}
 		sess.Yolo = yolo != 0
 		if scheduleReadyAt.Valid {
@@ -858,8 +875,13 @@ func (s *Store) UpdateSessionStatus(sessionID string, status string) error {
 func (s *Store) ResetWorkingSessions() (int64, error) {
 	now := time.Now().UTC()
 	res, err := s.db.Exec(
-		`UPDATE sessions SET status = ?, revision = revision + 1, updated_at = ? WHERE status = ?`,
-		StateIdle, now, StateWorking,
+		`UPDATE sessions SET status = ?, revision = revision + 1, updated_at = ?,
+		 report = json_set(report, '$.attention', json_object(
+		   'kind', 'failed', 'reason', 'Agent run was interrupted by a Moneypenny restart.',
+		   'revision', COALESCE(json_extract(report, '$.attention.revision'), 0) + 1,
+		   'source', 'daemon', 'updated_at', ?))
+		 WHERE status = ?`,
+		StateIdle, now, now.Format(time.RFC3339Nano), StateWorking,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("reset working sessions: %w", err)

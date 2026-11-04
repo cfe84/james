@@ -1,5 +1,7 @@
 package protocol
 
+import "james/moneypenny/pkg/envelope"
+
 // DashboardResult is the structured dashboard projection. Sessions are in tree
 // order within each workstream; execution, unread and completion are independent.
 type DashboardResult struct {
@@ -7,6 +9,7 @@ type DashboardResult struct {
 }
 
 type DashboardSession struct {
+	envelope.SessionReport
 	SessionID       string `json:"session_id"`
 	ParentSessionID string `json:"parent_session_id,omitempty"`
 	Name            string `json:"name"`
@@ -30,6 +33,7 @@ type Workstream struct {
 	Sessions      []DashboardSession `json:"sessions"`
 	Running       int                `json:"running"`
 	Unread        int                `json:"unread"`
+	Requests      int                `json:"requests"`
 	Unavailable   int                `json:"unavailable"`
 	Active        int                `json:"active"`
 	LastActivity  string             `json:"last_activity,omitempty"`

@@ -59,6 +59,7 @@ type sessionInfo struct {
 
 // sessionDetail is a parsed session detail.
 type sessionDetail struct {
+	envelope.SessionReport
 	GadgetCapabilities        *envelope.GadgetCapabilities `json:"gadget_capabilities"`
 	SessionID                 string                       `json:"session_id"`
 	Moneypenny                string                       `json:"moneypenny"`
@@ -268,6 +269,7 @@ func (c *client) showSession(sessionID string) (*sessionDetail, error) {
 }
 
 type historyPage struct {
+	envelope.SessionReport
 	Conversation []conversationTurn
 	Total        int
 	Revision     int64
@@ -297,6 +299,7 @@ func (c *client) getHistoryPaginated(sessionID string, count, from int) (*histor
 	}
 
 	var result struct {
+		envelope.SessionReport
 		Conversation []conversationTurn `json:"conversation"`
 		Total        int                `json:"total"`
 		Revision     int64              `json:"revision"`
@@ -305,7 +308,7 @@ func (c *client) getHistoryPaginated(sessionID string, count, from int) (*histor
 	if err := json.Unmarshal(resp.Data, &result); err != nil {
 		return nil, fmt.Errorf("parsing history: %w", err)
 	}
-	return &historyPage{Conversation: result.Conversation, Total: result.Total, Revision: result.Revision, Generation: result.Generation}, nil
+	return &historyPage{SessionReport: result.SessionReport, Conversation: result.Conversation, Total: result.Total, Revision: result.Revision, Generation: result.Generation}, nil
 }
 
 func (c *client) acknowledgeSession(sessionID string, revision, generation int64) error {

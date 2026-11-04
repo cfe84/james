@@ -150,6 +150,7 @@ type GetLogsResponse struct {
 
 // SessionInfo is returned by list_sessions for each session.
 type SessionInfo struct {
+	SessionReport
 	SessionID    string `json:"session_id"`
 	Name         string `json:"name"`
 	Status       string `json:"status"`
@@ -166,6 +167,7 @@ type SessionInfo struct {
 
 // SessionDetail is returned by get_session (metadata only, no conversation).
 type SessionDetail struct {
+	SessionReport
 	SessionID    string `json:"session_id"`
 	Name         string `json:"name"`
 	Status       string `json:"status"`
@@ -197,6 +199,7 @@ type SessionDetail struct {
 
 // SessionConversation is returned by get_session_conversation.
 type SessionConversation struct {
+	SessionReport
 	SessionID    string             `json:"session_id"`
 	Conversation []ConversationTurn `json:"conversation"`
 	Total        int                `json:"total"` // total number of turns in the session
@@ -207,6 +210,7 @@ type SessionConversation struct {
 }
 
 type SessionReconcile struct {
+	SessionReport
 	SessionID     string             `json:"session_id"`
 	Conversation  []ConversationTurn `json:"conversation"`
 	Total         int                `json:"total"`

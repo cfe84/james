@@ -13,6 +13,8 @@ import (
 
 	"james/hem/pkg/protocol"
 	"james/hem/pkg/store"
+	"james/hem/pkg/transport"
+	"james/moneypenny/pkg/envelope"
 )
 
 func dashboardTable(t *testing.T, resp *protocol.Response) map[string][]string {
@@ -160,6 +162,49 @@ func TestWorkstreamProjection(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAttentionProjectionAndEventCache(t *testing.T) {
+	report := envelope.SessionReport{Summary: "Checking rollout", Attention: &envelope.SessionAttention{
+		Kind: "needs_answer", Reason: "Which region?", Revision: 1,
+	}}
+	e := newHierarchyExecutor(t)
+	e.cacheManager.UpdateMP("mac", map[string]mpSessionInfo{"done": {
+		SessionID: "done", Status: "idle", Revision: 3,
+	}})
+	events, unsubscribe := e.Subscribe()
+	defer unsubscribe()
+	data, _ := json.Marshal(struct {
+		envelope.SessionReport
+		Revision int64 `json:"revision"`
+	}{report, 4})
+	e.handleMoneypennyEvent("mac", &transport.Response{Type: "notification", Event: envelope.EventSessionAttention, SessionID: "done", Data: data})
+	select {
+	case event := <-events:
+		if event.Noun != "dashboard" {
+			t.Fatalf("attention did not invalidate dashboard: %+v", event)
+		}
+	default:
+		t.Fatal("attention did not publish a refresh")
+	}
+	// A list request started before the event must not roll its report back.
+	e.cacheManager.UpdateMP("mac", map[string]mpSessionInfo{"done": {SessionID: "done", Status: "idle", Revision: 3}})
+	got := e.cacheManager.GetSnapshot()["mac"]["done"]
+	if got.Attention == nil || got.Attention.Reason != report.Attention.Reason || got.Revision != 4 {
+		t.Fatalf("event report was lost: %+v", got)
+	}
+	result := buildWorkstreams([]protocol.DashboardSession{{
+		SessionReport: got.SessionReport, SessionID: "done", Execution: "idle", Completed: true,
+	}}, "", false)
+	if len(result.Workstreams) != 1 || result.Workstreams[0].Section != "needs_you" ||
+		result.Workstreams[0].Requests != 1 || result.Workstreams[0].Active != 0 || result.Workstreams[0].Unread != 0 {
+		t.Fatalf("completion hid an unresolved request: %+v", result)
+	}
+	for _, args := range [][]string{nil, {"done"}, {"done", "--revision", "-1"}, {"done", "--revision", "bad"}} {
+		if e.ResolveAttention(args).Status != protocol.StatusError {
+			t.Fatalf("accepted unsafe resolution: %v", args)
+		}
 	}
 }
 

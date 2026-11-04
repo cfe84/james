@@ -264,7 +264,7 @@ func (h *Handler) prepareGadgets(sessionID string, params *agent.RunParams) erro
 	if session.Yolo {
 		params.SystemPrompt += "Background commands: gadgets run-and-callback -- command [args...] returns a job ID and stdout/stderr paths; gadgets run list, gadgets run status ID, gadgets run stop ID. Commands run without a shell in your session directory, output is bounded, and completion queues an exit-code callback to this session. Available only while License to Kill remains enabled.\n"
 	}
-	params.SystemPrompt += "Operator notifications are always available: gadgets notify 'action needed' (or supply text on stdin). This alerts the human operator only. Use it only when human intervention is required for authentication, permissions, credentials, an irreversible decision, or a blocked external dependency. Never use it for progress, completion reports, review results, or messages to another agent; use `gadgets subagents message` for parent/child communication.\n</gadgets>"
+	params.SystemPrompt += "Operator attention is always available: gadgets attention get; gadgets attention set [--summary text] [--kind needs_answer|needs_action --reason text]; gadgets attention resolve --revision N. Summary is at most 240 characters, reason 1-1000. Questions/decisions use needs_answer; external actions use needs_action. Reading and arbitrary human messages do not resolve requests; explicitly resolve the current revision when satisfied. Omitted fields preserve requests. gadgets notify 'action needed' (or stdin) is a compatibility setter for needs_action, not progress/completion reporting. Children should ask their parent via gadgets subagents message rather than escalate to the human by default. Never use operator attention for completion reports, review results, or messages to another agent.\n</gadgets>"
 	params.SystemPrompt += notifyUserSystemPromptSuffix
 	return nil
 }
@@ -393,7 +393,7 @@ func (h *Handler) executeGadget(ctx context.Context, sessionID string, request g
 		allowed = caps.MoneypennyLogs
 	case "hem.command":
 		allowed = caps.Hem
-	case "notify":
+	case "notify", "attention.get", "attention.set":
 		allowed = true
 	case "run.start", "run.list", "run.status", "run.stop":
 		session, lookupErr := h.store.GetSession(sessionID)
@@ -406,6 +406,9 @@ func (h *Handler) executeGadget(ctx context.Context, sessionID string, request g
 	}
 	if !allowed {
 		return nil, &gadgetError{"permission_denied", "Capability is disabled for this session or License to Kill is required"}
+	}
+	if strings.HasPrefix(request.Method, "attention.") {
+		return h.attentionGadget(sessionID, request)
 	}
 	if strings.HasPrefix(request.Method, "ponsonby.") {
 		return h.routeGadget(ctx, sessionID, request.Method, request.Data)
@@ -442,10 +445,9 @@ func (h *Handler) executeGadget(ctx context.Context, sessionID string, request g
 	if text == "" || utf8.RuneCountInString(text) > 1000 {
 		return nil, &gadgetError{"invalid_request", "Notification must contain 1–1000 Unicode characters"}
 	}
-	if err := h.store.AddConversationTurn(sessionID, "notification", text); err != nil {
+	if err := h.notifyAttention(sessionID, text); err != nil {
 		return nil, err
 	}
-	_ = h.notifyWriter.SendAsync(envelope.EventChatUserNotification, sessionID, map[string]string{"message": text})
 	return map[string]bool{"notified": true}, nil
 }
 

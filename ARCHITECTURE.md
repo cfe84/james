@@ -677,12 +677,12 @@ hem/
 
 8. **Projects**: Provide organizational context for sessions. A project has defaults (moneypenny, agent, path, system prompt) that sessions inherit when created with `--project`. Status: active/paused/done for filtering.
 
-9. **Dashboard**: The default CLI retains its legacy table and ready/working/idle/completed semantics. Qew and the TUI request `dashboard --view=workstreams`, a typed `protocol.DashboardResult` computed by Hem from existing tracked sessions and the shared Moneypenny cache. No workstream entity, schema change, transcript fetch or agent call is introduced.
+9. **Dashboard**: The default CLI retains its legacy table and ready/working/idle/completed semantics. Qew and the TUI request `dashboard --view=workstreams`, a typed `protocol.DashboardResult` computed by Hem from existing tracked sessions and the shared Moneypenny cache. No workstream entity, transcript fetch or agent call is introduced.
 
    `commands/dashboard.go` shares cached-data collection and availability overlay
    with the table path. The projection preserves actual execution, unread and
-   completion independently, recursively groups descendants, and aggregates only
-   active sessions. Any unread selects Needs you, otherwise any running selects
+   completion independently, recursively groups descendants, and aggregates
+   active execution/unread counts. Any unresolved request or active unread selects Needs you, otherwise any running selects
    In progress, then Quiet; wholly completed groups are optional. An offline
    session can remain unread without claiming it is ready or running.
    Missing parents become flagged roots. Cycles are flagged and one edge is
@@ -710,11 +710,45 @@ hem/
    Qew offers an uncollapsed diagnostic view. Only the
    exact older-server unknown-`view` flag error enables legacy fallback; other
    errors remain visible. Durable questions/blockers and unified notification
-   persistence are not part of this projection.
+   persistence use the session report described below.
+
+   **Durable attention**: Moneypenny owns `sessions.report` JSON, containing a
+   bounded agent summary and one `SessionAttention` (kind, reason, monotonic
+   revision, source and update time). Immediate SQLite transactions serialize
+   updates. Identical requests are no-ops; summary-only updates preserve the
+   request; explicit resolution retains a tombstone revision and requires
+   compare-and-set against the current revision. Reading/reviewing, user messages
+   and successful execution do not clear it. Moneypenny owns `failed`, including
+   restart recovery; cancellations are not failures. Completed requests remain
+   visible without contributing to active execution/unread counts.
+
+   Session-scoped `attention.get`/`attention.set` gadgets enforce identity and
+   reject agent-supplied failures. The CLI's `attention resolve` maps to the
+   same setter with empty kind and expected revision. Operator resolution
+   travels through Hem's `resolve attention` and Moneypenny's `update_attention`.
+   Legacy notify/tags share this setter and deduplicate their transcript turn.
+   Final response tags use the same path as streamed tags.
+
+   List/show/history/reconcile responses carry the report, including unchanged
+   metadata-only reconcile. A committed update advances the session watermark
+   and emits `session_attention`. Hem updates the cached report by session
+   revision, fences older in-flight list reports, then publishes dashboard
+   invalidation and the session hint. Clients consume authoritative metadata
+   before skipping unchanged transcripts. Attention hints for another session
+   fetch only its show metadata, not its transcript.
+
+   Existing rows, chat banners and notification components present the same
+   durable state. Qew remembers delivered attention revisions in local storage
+   with an explicitly warned tab-local fallback; TUI revisions live in the
+   top-level model across refreshes/view changes/reconnects. Resolution and stale
+   metadata cannot replay delivery. Qew generation-guards resolution callbacks;
+   both clients reject older attention revisions. No provider-output schema,
+   LLM classification, automatic reply resolution or new organization entity is
+   involved.
 
 10. **Async agent execution**: Moneypenny runs agents asynchronously — `create_session` and `continue_session` return immediately with session_id, agent runs in background goroutine. Hem polls moneypenny for completion when not using `--async`. This allows moneypenny to handle multiple concurrent requests.
 
-11. **Session lifecycle**: Hem tracks a local `hem_status` (active/completed) separate from moneypenny's status (idle/working). Completing a session hides it from default views. Continuing a completed session automatically reactivates it.
+11. **Session lifecycle**: Hem tracks a local `hem_status` (active/completed) separate from moneypenny's status (idle/working). Completing a session hides it from default lists/legacy dashboards; unresolved requests remain in workstream Needs you. Continuing a completed session automatically reactivates it.
 
 12. **TUI**: Built with bubbletea + lipgloss. View-based architecture: `ui.go` is the top-level router, each view is its own model in a separate file (dashboard.go, sessions.go, chat.go, diff.go, etc). Messages bubble up to the top-level `Update()` which routes to the appropriate view. All views communicate with the hem server via the same Unix socket as the CLI.
 
@@ -734,7 +768,7 @@ hem/
 
 20. **Version display**: All components log their version on startup. `hem version` and `hem --version` print the local client version before resolving a configured server or constructing a sender. This keeps diagnostics usable when a remote Hem configuration is incomplete, including a missing MI6 fingerprint. TUI shows the version in the status bar.
 
-21. **Client-side notifications**: Notification sounds are played client-side when a session transitions from WORKING to READY. The TUI detects these transitions during dashboard auto-refresh polling and plays the embedded WAV file via `afplay` (macOS) or `aplay` (Linux). The WAV is embedded at build time from `hem/assets/notification.wav` using `go:embed` and cached at `~/.config/james/hem/notification.wav`. The `--silent` flag on `hem ui` disables sound. Qew detects the same transitions during its dashboard polling and plays a Web Audio API chime, plus shows a slide-in pop-over notification. Qew has a header toggle button (bell icon) to enable/disable sound.
+21. **Client-side notifications**: The TUI and Qew alert on new or meaningfully changed durable attention revisions, not routine WORKING→READY transitions. The TUI plays the embedded WAV file via `afplay` (macOS) or `aplay` (Linux). The WAV is embedded at build time from `hem/assets/notification.wav` using `go:embed` and cached at `~/.config/james/hem/notification.wav`. The `--silent` flag on `hem ui` disables sound. Qew reuses its bundled WAV audio, slide-in pop-over and browser notification; the bell toggles sound. Autoplay failures are logged without disrupting the dashboard/banner. Ordinary completion remains unread. CLI synchronous-command completion sounds are unchanged.
 
 22. **Create session wizard**: TUI session creation uses a 3-step wizard (`wizard.go`): (1) select moneypenny from a list, (2) browse remote filesystem to pick a working directory via `list_directory` moneypenny method, (3) fill in prompt and options. Esc navigates back through steps. The wizard replaces the old single-screen create form for all TUI entry points (dashboard, project detail, session list). The path browser tracks the moneypenny's resolved absolute path (returned by `list_directory`) so navigation stays correct even when a request is sent as `~`; `client.listDirectory` returns this resolved path alongside the entries. **Dead-path fallback:** when the prefilled path fails to list (commonly a duplicated session whose working dir was deleted, or a copy onto a different host), the wizard retries **once** with `~`, which the moneypenny resolves to its own home, then adopts that as `currentPath` — guarded by a `pathTriedHome` one-shot flag (reset on any successful load) to avoid looping if home also fails. Qew mirrors this in `renderPathBrowser` with a `wizardState.triedHome` guard.
 
@@ -1267,7 +1301,7 @@ qew/
 
 6. **Chat features**: Chat view fetches session status and schedules alongside history. Shows "working..." indicator when session is active, queued message labels for optimistic sends, and pending schedule times.
 
-7. **Client-side notifications**: Dashboard polling tracks session states and detects WORKING→READY transitions. Plays a Web Audio API chime and shows a slide-in pop-over notification. Sound can be toggled via a header button.
+7. **Client-side notifications**: Dashboard/chat metadata supplies durable attention requests; revision-deduplicated delivery uses the existing bundled WAV audio, slide-in pop-over and browser notification. Reading does not dismiss the persistent banner. Sound can be toggled via a header button.
 
 8. **Passkeys (WebAuthn)**: Additive passwordless auth layered on top of the existing password (`github.com/go-webauthn/webauthn`). The password bootstraps the first enrollment and remains a fallback, sidestepping the chicken-and-egg of having no accounts. A new `passkey.go` holds a JSON credential store (`~/.config/james/qew/qew_passkeys.json`, 0600, atomic write, mutex-guarded) and a `qewUser` implementing `webauthn.User` for the single fixed `qew` user (multiple credentials allowed). `webauthn_handlers.go` builds a **per-request** `*webauthn.WebAuthn` from the `Host` header (RP ID = host w/o port; origin from `X-Forwarded-Proto`+host, so it works behind a TLS-terminating proxy like Caddy) — no RP-ID flag. Register endpoints sit behind `requireAuth` (password session); login endpoints are public but reuse the password login's per-IP rate limiter. Begin/finish ceremonies are linked by a 5-minute single-use temporary cookie (`qew_wa`) keying an in-memory challenge map (lazily swept). On a successful assertion the handler updates the stored sign counter and issues the *same* `makeToken`/`sessionCookie` session as a password login — none of the sliding-window/CSRF/WS-deadline logic changes. The login page (server-rendered) gets a "Sign in with a passkey" button; the app header gets a 🔑 dialog to register/list/remove credentials. Reuses the existing `X-Requested-With: QewClient` CSRF guard.
 

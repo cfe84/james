@@ -35,7 +35,7 @@ func command(args []string) (string, []string, error) {
 		"subagents.edit", "subagents.complete", "subagents.stop", "subagents.delete",
 		"traits.list", "traits.get", "traits.edit", "sessions.edit", "moneypenny.logs",
 		"schedule.list", "schedule.create", "schedule.delete",
-		"run.list", "run.status", "run.stop":
+		"run.list", "run.status", "run.stop", "attention.get", "attention.set", "attention.resolve":
 		return method, args[2:], nil
 	}
 	return "", nil, fmt.Errorf("unknown command %q; run gadgets help", strings.Join(args[:2], " "))
@@ -60,6 +60,12 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 	}
 	allowed := map[string]bool{}
 	switch method {
+	case "attention.set":
+		for _, key := range []string{"summary", "kind", "reason", "revision"} {
+			allowed[key] = true
+		}
+	case "attention.resolve":
+		allowed["revision"] = true
 	case "memory.list", "memory.search":
 		allowed["limit"], allowed["cursor"] = true, true
 	case "memory.query":
@@ -107,7 +113,11 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 		}
 		if key == "revision" {
 			n, err := strconv.ParseInt(value, 10, 64)
-			if err != nil || n < 1 {
+			attention := method == "attention.set" || method == "attention.resolve"
+			if err != nil || n < 0 || (!attention && n == 0) {
+				if attention {
+					return Request{}, errors.New("--revision must be a nonnegative integer")
+				}
 				return Request{}, errors.New("--revision must be a positive integer")
 			}
 			data[key] = n
@@ -335,6 +345,19 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 	case "schedule.delete":
 		if err = arity(1, 1); err == nil {
 			data["id"] = pos[0]
+		}
+	case "attention.get":
+		err = arity(0, 0)
+	case "attention.set", "attention.resolve":
+		err = arity(0, 0)
+		if method == "attention.resolve" {
+			method = "attention.set"
+			data["kind"] = ""
+			if _, ok := flags["revision"]; !ok {
+				err = errors.New("attention resolve requires --revision")
+			}
+		} else if len(flags) == 0 {
+			err = errors.New("attention set requires --summary or --kind and --reason")
 		}
 	case "notify":
 		if err = arity(0, 1); err == nil {
