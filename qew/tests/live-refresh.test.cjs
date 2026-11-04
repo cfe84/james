@@ -8,6 +8,88 @@ const thresholds = require('../pkg/web/static/compaction-threshold.js');
 const app = fs.readFileSync(process.env.QEW_APP_SOURCE ||
   path.join(__dirname, '../pkg/web/static/app.js'), 'utf8');
 
+test('session Back/Forward stays in Qew across nested sessions, reloads and deep links', async () => {
+  for (const deepLink of [false, true]) {
+    const entries = [
+      { url: new URL('https://qew.test/login'), state: null },
+      { url: new URL('https://qew.test/?filter=active' + (deepLink ? '#/session/parent' : '')), state: null },
+    ];
+    let index = 1;
+    const elements = new Map();
+    const context = vm.createContext({
+      currentSession: null, currentSessionStatus: '', parentSessionStack: [], chatGeneration: 0,
+      chatInputCache: {}, localStorage: { getItem: () => null },
+      document: { getElementById(id) {
+        if (!elements.has(id)) elements.set(id, { style: {}, value: '', focus() {} });
+        return elements.get(id);
+      } },
+      releaseActiveWatch() {}, stopDashboardPoll() {}, stopChatPoll() {},
+      syncComposeModeToggle() {}, sessionNameFromCache: id => id, sessionNickFromCache: () => '',
+      syncSchedulesToggle() {}, setChatTitle() {}, clearPendingAttachments() {}, autoResize() {},
+      loadChat: async () => {}, requestActiveWatch() {}, startChatPoll() {},
+      loadDashboard() {}, startDashboardPoll() {},
+      window: { addEventListener() {} },
+    });
+    const location = {};
+    for (const key of ['hash', 'pathname', 'search']) {
+      Object.defineProperty(location, key, { get: () => entries[index].url[key] });
+    }
+    context.window.location = location;
+    function move(step) {
+      const previous = location.hash;
+      index += step;
+      assert.ok(index >= 0 && index < entries.length);
+      if (previous !== location.hash) context.handleRoute();
+    }
+    context.history = {
+      get state() { return entries[index].state; },
+      replaceState(state, unused, url) {
+        entries[index] = { state, url: new URL(url, entries[index].url) };
+      },
+      pushState(state, unused, url) {
+        const next = { state, url: new URL(url, entries[index].url) };
+        entries.splice(index + 1);
+        entries.push(next);
+        index++;
+      },
+      back: () => move(-1), forward: () => move(1),
+    };
+    vm.runInContext(app.slice(app.indexOf('  async function openChat('), app.indexOf('  function loadChat(')), context);
+    vm.runInContext(app.slice(app.indexOf('  function initializeRouteHistory('),
+      app.indexOf("  window.addEventListener('hashchange'")), context);
+    context.initializeRouteHistory();
+    if (deepLink) context.handleRoute();
+    else await context.openChat('parent');
+    assert.equal(context.currentSession, 'parent');
+    assert.equal(entries[index - 1].url.hash, '');
+    assert.equal(entries[index - 1].url.pathname, '/');
+    context.document.getElementById('chat-input').value = 'parent draft';
+    context.window._openSubagent('child', 'Child');
+    context.document.getElementById('chat-input').value = 'child draft';
+    context.history.back();
+    assert.equal(context.currentSession, 'parent');
+    assert.equal(context.document.getElementById('chat-input').value, 'parent draft');
+    assert.equal(context.parentSessionStack.length, 0);
+    context.history.forward();
+    assert.equal(context.currentSession, 'child');
+    assert.equal(context.document.getElementById('chat-input').value, 'child draft');
+    assert.equal(context.parentSessionStack[0].id, 'parent');
+    // Reload must reuse the existing entry rather than add another dashboard.
+    const length = entries.length;
+    context.initializeRouteHistory();
+    assert.equal(entries.length, length);
+    context.closeChat();
+    assert.equal(context.currentSession, 'parent');
+    context.closeChat();
+    assert.equal(context.currentSession, null);
+    assert.equal(location.pathname, '/');
+    assert.equal(location.search, '?filter=active');
+    assert.equal(location.hash, '');
+    context.history.forward();
+    assert.equal(context.currentSession, 'parent');
+  }
+});
+
 test('Markdown preserves literal code and PowerShell continuation backticks', () => {
   const escapeHtml = text => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
   const context = vm.createContext({ escapeHtml, safeLinkHref: url => url });

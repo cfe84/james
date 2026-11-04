@@ -1163,6 +1163,13 @@ moneypenny/pkg/handler/channels.go  # ChannelManager (poll/forward/drain) + CRUD
 
 ## Qew - Web UI for Remote Access
 
+Session routes use `pushState` with a snapshot of the subagent parent stack.
+The existing hashchange router renders Back/Forward destinations without
+creating new entries or popping an unrelated parent. The chat Back action
+traverses the same history. Initial deep links seed a dashboard entry before the
+session; reloading a managed session reuses its history entry. Drafts are cached
+before switching sessions. Authentication and cookie policy are unchanged.
+
 Qew's lightweight Markdown renderer extracts HTML-escaped fenced and inline
 code into opaque placeholders before applying prose formatting. It restores
 code after prose newline conversion, preserving literal source and preventing

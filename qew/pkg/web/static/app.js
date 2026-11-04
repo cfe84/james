@@ -900,6 +900,7 @@
   }
 
   async function openChat(sessionId, name, mp) {
+    cacheChatDraft();
     releaseActiveWatch();
     chatGeneration++;
     stopDashboardPoll();
@@ -948,10 +949,10 @@
     lastSubagents = [];
     allSubagents = [];
     lastActivity = [];
-    // Update URL hash without triggering hashchange handler.
+    // Keep an in-app entry behind the session for browser/mobile Back.
     const newHash = '#/session/' + sessionId;
     if (window.location.hash !== newHash) {
-      history.replaceState(null, '', newHash);
+      history.pushState({ qewSession: true, parents: parentSessionStack.slice() }, '', newHash);
     }
     await loadChat();
     requestActiveWatch();
@@ -964,20 +965,28 @@
     openChat(sessionId, name, currentSessionMP);
   };
 
-  function closeChat() {
-    // Cache any draft text.
+  function cacheChatDraft() {
     if (currentSession) {
       const draft = document.getElementById('chat-input').value;
       if (draft) chatInputCache[currentSession] = draft;
       else delete chatInputCache[currentSession];
     }
-    // If viewing a subagent, pop back to parent.
-    if (parentSessionStack.length > 0) {
+  }
+
+  function closeChat(navigate = true) {
+    cacheChatDraft();
+    if (navigate && history.state && history.state.qewSession) {
+      history.back();
+      return;
+    }
+    // Legacy/unmanaged hash navigation can still return to a subagent's parent.
+    if (navigate && parentSessionStack.length > 0) {
       const parent = parentSessionStack.pop();
       openChat(parent.id, parent.name, parent.mp);
       return;
     }
     releaseActiveWatch();
+    parentSessionStack = [];
     chatGeneration++;
     currentSession = null;
     currentSessionName = '';
@@ -991,7 +1000,7 @@
     overrideContext = '';
     document.getElementById('chat-view').style.display = 'none';
     document.getElementById('dashboard-view').style.display = 'flex';
-    if (window.location.hash) history.replaceState(null, '', window.location.pathname);
+    if (window.location.hash) history.replaceState(null, '', window.location.pathname + window.location.search);
     stopChatPoll();
     loadDashboard();
     startDashboardPoll();
@@ -6983,6 +6992,15 @@
 
   // --- Routing ---
 
+  function initializeRouteHistory() {
+    if (history.state && history.state.qewSession) return;
+    const hash = window.location.hash;
+    history.replaceState(null, '', window.location.pathname + window.location.search);
+    if (/^#\/session\/(.+)$/.test(hash)) {
+      history.pushState({ qewSession: true, parents: [] }, '', hash);
+    }
+  }
+
   function handleRoute() {
     const hash = window.location.hash;
     const match = hash.match(/^#\/session\/(.+)$/);
@@ -6990,14 +7008,16 @@
       const sessionId = match[1];
       // If already viewing this session, do nothing.
       if (currentSession === sessionId) return;
+      parentSessionStack = ((history.state && history.state.parents) || []).slice();
       openChat(sessionId);
     } else if (currentSession) {
-      closeChat();
+      closeChat(false);
     }
   }
 
   window.addEventListener('hashchange', handleRoute);
 
+  initializeRouteHistory();
   initDashFilter();
 
   // Display the Qew version in the header.
