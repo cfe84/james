@@ -1765,9 +1765,14 @@ parent stays idle even when its children run. In this phase "Needs you" means
 unread, not a durable question or blocker.
 
 Expand a workstream to open individual descendants. TUI: `Space`/`Left`/`Right`
-toggle/collapse/expand, `s` expands or collapses all, and `Enter` opens the selected
-session. Qew uses disclosure buttons or `Left`/`Right`; expansion survives reloads.
-Selection follows session IDs through refresh. Search retains matching descendants'
+toggle/collapse/expand; `h`/`l` also fold/unfold, `s` expands or collapses all, and
+`Enter` opens the selected session. Qew uses disclosure buttons, `h`/`l` or
+`Left`/`Right`; expansion survives reloads.
+Selection follows session IDs through refresh.
+Opening a subsession from a list returns to that list with `q`/Back; its parent
+conversation is a Back destination only when the child was opened from that
+conversation.
+Search retains matching descendants'
 ancestor context and temporarily reveals collapsed matches; project filters keep
 the same context. Completed ancestors remain visible when they contain live work,
 but completed sessions never contribute to active, unread, running or unavailable
@@ -1775,11 +1780,13 @@ counts. Missing-parent sessions remain standalone; cycles are broken
 deterministically and flagged rather than losing sessions. Workstreams sort by
 section, latest activity descending, then root ID.
 
-Names are primary, nicknames secondary. Provider/model/host details are available
+Nicknames retain their existing prefix formatting: bold blue before the name in
+Qew, and `nickname · name` in the TUI. Provider/model/host details are available
 on the selected TUI row and under Qew's **Details**, rather than dominating every
 row. Qew keeps **New Agent** prominent and puts existing management screens,
 **All sessions** (an expanded diagnostic view) and **Show completed** under
-**Manage**. TUI retains `l` for its existing All sessions screen and `a` for
+**Manage**. TUI uses `L` for its existing All sessions screen (`l` still opens it
+outside expandable parent rows) and `a` for
 completed sessions. Existing refresh/watch and completion alerts are reused;
 expanding and searching do not fetch transcripts or run agents. Clients fall back
 to the legacy dashboard only when an older Hem rejects the `--view` flag.
@@ -1811,6 +1818,7 @@ The dashboard auto-refreshes every 5 seconds by polling moneypennies. When a ses
 
 - **Dashboard** (default view): expandable workstreams grouped into Needs you, In progress, Quiet and Completed (see **Dashboard**). Uses a shared moneypenny session cache for instant rendering — moneypenny data refreshes in the background (10s timeout). When connected via MI6, server broadcasts update the dashboard incrementally without waiting for slow/offline moneypennies.
   - `Space` / `Left` / `Right` — toggle / collapse / expand selected workstream
+  - `h` / `l` — fold / unfold selected parent workstream
   - `s` — expand or collapse all workstreams
   - `Enter` — open chat for selected session
   - `a` — toggle show/hide completed sessions
@@ -1824,7 +1832,7 @@ The dashboard auto-refreshes every 5 seconds by polling moneypennies. When a ses
   - `S` — summarize session (open the summary view; runs `hem summarize session` and renders the result with an option to save to file)
   - `m` — switch to moneypennies view
   - `p` — switch to projects view
-  - `l` — switch to full session list
+  - `L` — switch to full session list
   - `r` — refresh
   - `q` — quit
 - **Projects**: browse all projects with status, moneypenny, agent, paths.

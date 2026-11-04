@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -11,7 +12,7 @@ import (
 func TestWorkstreamDashboardExpansionFilterAndSelection(t *testing.T) {
 	data := protocol.DashboardResult{Workstreams: []protocol.Workstream{
 		{RootSessionID: "root", Section: "needs_you", Active: 3, Running: 1, Unread: 1, Sessions: []protocol.DashboardSession{
-			{SessionID: "root", Name: "Research", Execution: "idle", Agent: "copilot", Model: "selected-model", Moneypenny: "mac"},
+			{SessionID: "root", Name: "Research", Nick: "ian", Execution: "idle", Agent: "copilot", Model: "selected-model", Moneypenny: "mac"},
 			{SessionID: "child", ParentSessionID: "root", Name: "Collect", Execution: "working", Depth: 1, Moneypenny: "windows"},
 			{SessionID: "nested", ParentSessionID: "child", Name: "Findings", Execution: "idle", Unread: true, Depth: 2},
 		}},
@@ -31,11 +32,24 @@ func TestWorkstreamDashboardExpansionFilterAndSelection(t *testing.T) {
 		t.Fatal("workstreams should start collapsed")
 	}
 	view := m.View()
-	for _, want := range []string{"NEEDS YOU", "idle", "1 running", "1 unread", "selected-model"} {
+	for _, want := range []string{"NEEDS YOU", "ian · Research", "idle", "1 running", "1 unread", "selected-model"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q: %s", want, view)
 		}
 	}
+	parentKeys := Model{client: m.client, dashboard: m, currentView: viewDashboard}
+	for _, key := range []rune{'l', 'l', 'h', 'h'} {
+		updated, cmd := parentKeys.updateDashboard(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{key}})
+		parentKeys = updated.(Model)
+		if cmd != nil || parentKeys.currentView != viewDashboard || parentKeys.dashboard.expanded["root"] != (key == 'l') {
+			t.Fatalf("%c did not fold/unfold the parent in place", key)
+		}
+	}
+	allSessions, cmd := parentKeys.updateDashboard(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'L'}})
+	if allSessions.(Model).currentView != viewSessions || cmd == nil {
+		t.Fatal("L did not retain access to all sessions")
+	}
+	m = parentKeys.dashboard
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRight})
 	if len(m.filteredEntries()) != 4 {
 		t.Fatal("expansion lost nested descendants")
@@ -44,8 +58,8 @@ func TestWorkstreamDashboardExpansionFilterAndSelection(t *testing.T) {
 	parent := Model{client: m.client, dashboard: m, currentView: viewDashboard}
 	opened, _ := parent.updateDashboard(tea.KeyMsg{Type: tea.KeyEnter})
 	chats := opened.(Model)
-	if chats.chat.moneypennyName != "windows" || len(chats.parentChats) != 1 || chats.parentChats[0].moneypennyName != "mac" {
-		t.Fatal("cross-host child navigation lost parent or child host")
+	if chats.chat.moneypennyName != "windows" || len(chats.parentChats) != 0 || !chats.chat.isSubagent {
+		t.Fatal("list entry should open the child directly without a parent navigation frame")
 	}
 	m.cursor = 2
 	if m.selectedEntry().SessionID != "nested" {
@@ -91,6 +105,51 @@ func TestDashboardCompatibilityDoesNotMaskErrors(t *testing.T) {
 		if loaded.err == nil || loaded.err.Error() != tc.message || loaded.projectFilter != "project" {
 			t.Fatalf("error/context lost: %+v", loaded)
 		}
+	}
+}
+
+func TestListSubsessionBackReturnsToOrigin(t *testing.T) {
+	c := &client{sender: &permissionTestSender{}}
+	for _, origin := range []view{viewDashboard, viewProjectDetail, viewSessions} {
+		t.Run(fmt.Sprint(origin), func(t *testing.T) {
+			dashboard := newDashboardModel(c)
+			dashboard.entries = []dashboardEntry{{
+				SessionID: "child", ParentSessionID: "parent", Name: "Child", Moneypenny: "windows",
+			}}
+			m := Model{
+				client: c, currentView: origin, dashboard: dashboard, projectDetail: dashboard,
+				sessions:    sessionsModel{client: c, sessions: []sessionInfo{{SessionID: "child", Name: "Child", Moneypenny: "windows"}}},
+				parentChats: []chatModel{newChatModel(c, "stale", "Stale", "mac")},
+			}
+			var opened tea.Model
+			switch origin {
+			case viewDashboard:
+				opened, _ = m.updateDashboard(tea.KeyMsg{Type: tea.KeyEnter})
+			case viewProjectDetail:
+				opened, _ = m.updateProjectDetail(tea.KeyMsg{Type: tea.KeyEnter})
+			case viewSessions:
+				opened, _ = m.updateSessions(tea.KeyMsg{Type: tea.KeyEnter})
+			}
+			m = opened.(Model)
+			if len(m.parentChats) != 0 || m.chat.sessionID != "child" || m.chat.moneypennyName != "windows" {
+				t.Fatal("list entry invented a parent navigation frame")
+			}
+			// A genuine child visit still returns to the conversation first.
+			nested, _ := m.Update(chatOpenSubagentMsg{sessionID: "nested", name: "Nested"})
+			m = nested.(Model)
+			m.chat.commandMode = true
+			back, _ := m.updateChat(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+			m = back.(Model)
+			if m.currentView != viewChat || m.chat.sessionID != "child" {
+				t.Fatal("conversation-origin Back lost its real parent")
+			}
+			m.chat.commandMode = true
+			back, _ = m.updateChat(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+			m = back.(Model)
+			if m.currentView != origin || len(m.parentChats) != 0 {
+				t.Fatal("list-origin Back did not return to its list")
+			}
+		})
 	}
 }
 

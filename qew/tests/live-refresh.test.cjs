@@ -55,6 +55,7 @@ test('session Back/Forward stays in Qew across nested sessions, reloads and deep
       back: () => move(-1), forward: () => move(1),
     };
     vm.runInContext(app.slice(app.indexOf('  async function openChat('), app.indexOf('  function loadChat(')), context);
+    vm.runInContext(app.slice(app.indexOf('  function openDashEntry('), app.indexOf('  // Re-apply the keyboard selection')), context);
     vm.runInContext(app.slice(app.indexOf('  function initializeRouteHistory('),
       app.indexOf("  window.addEventListener('hashchange'")), context);
     context.initializeRouteHistory();
@@ -88,6 +89,18 @@ test('session Back/Forward stays in Qew across nested sessions, reloads and deep
     assert.equal(location.hash, '');
     context.history.forward();
     assert.equal(context.currentSession, 'parent');
+    context.closeChat();
+    context.openDashEntry({ sessionId: 'child', name: 'Child', mp: 'windows', parent: 'parent' });
+    assert.equal(context.currentSession, 'child');
+    assert.equal(context.currentSessionMP, 'windows');
+    assert.equal(context.parentSessionStack.length, 0);
+    assert.equal(entries[index - 1].url.hash, '');
+    context.closeChat();
+    assert.equal(context.currentSession, null);
+    assert.equal(location.hash, '');
+    context.history.forward();
+    assert.equal(context.currentSession, 'child');
+    assert.equal(context.parentSessionStack.length, 0);
   }
 });
 
@@ -518,6 +531,8 @@ test('workstreams retain hierarchy, independent state, expansion, selection and 
   context.render(data);
   assert.deepEqual(Array.from(context.dashEntries, e => e.sessionId), ['parent']);
   assert.match(container.innerHTML, /Needs you/);
+  assert.match(container.innerHTML, /<span class="session-nick">ian<\/span> Research/);
+  assert.doesNotMatch(container.innerHTML, /workstream-nick/);
   assert.match(container.innerHTML, /3 active · 1 running · 1 unread/);
   assert.match(container.innerHTML, /class="session-status idle">idle<\/span>/);
   assert.doesNotMatch(container.innerHTML, /class="session-status working"/);
@@ -552,6 +567,24 @@ test('workstreams retain hierarchy, independent state, expansion, selection and 
   data.workstreams[0].sessions[2].name = '<unsafe>';
   context.render(data);
   assert.match(container.querySelectorAll()[2].innerHTML, /&lt;unsafe>/);
+});
+
+test('dashboard h/l reuse directional workstream folding shortcuts', () => {
+  const calls = [];
+  const context = vm.createContext({
+    dashEntries: [{ sessionId: 'parent', rootId: 'parent' }],
+    dashSelectedId: 'parent',
+    toggleWorkstream: (id, expanded) => calls.push([id, expanded]),
+  });
+  const start = app.indexOf("      case 'ArrowRight': case 'ArrowLeft':");
+  const end = app.indexOf("      case 'Escape':", start);
+  vm.runInContext(`function press(e) { switch(e.key) { ${app.slice(start, end)} } }`, context);
+  for (const [key, expanded] of [['h', false], ['l', true], ['ArrowLeft', false], ['ArrowRight', true]]) {
+    let prevented = false;
+    context.press({ key, target: {}, preventDefault() { prevented = true; } });
+    assert.equal(prevented, true);
+    assert.deepEqual(calls.pop(), ['parent', expanded]);
+  }
 });
 
 test('dashboard falls back only when the server does not support the workstream view', async () => {

@@ -612,6 +612,8 @@
 
   // Inner HTML of a single dashboard session row (everything inside .session-row).
   function dashRowInner(e) {
+    const displayName = e.name || e.sessionId.substring(0, 12);
+    const nickPrefix = e.nick ? `<span class="session-nick">${escapeHtml(e.nick)}</span> ` : '';
     if (e.workstream) {
       const w = e.workstream;
       const root = e.depth === 0;
@@ -622,8 +624,7 @@
       return `
         ${expandable ? `<button class="workstream-expand" data-expand="${escapeAttr(e.rootId)}" aria-expanded="${dashExpanded.has(e.rootId)}" aria-label="Toggle agents in ${escapeAttr(e.name)}">${dashExpanded.has(e.rootId) ? '▾' : '▸'}</button>` : ''}
         <span class="workstream-main" style="padding-left:${(root ? 0 : 44) + Math.min(e.depth, 6) * 16}px">
-          <span class="session-name">${escapeHtml(e.name || e.sessionId.substring(0, 12))}</span>
-          ${e.nick ? `<span class="workstream-nick">${escapeHtml(e.nick)}</span>` : ''}
+          <span class="session-name">${nickPrefix}${escapeHtml(displayName)}</span>
           ${e.project ? `<span class="session-project">${escapeHtml(e.project)}</span>` : ''}
           ${summary ? `<span class="workstream-summary">${escapeHtml(summary)}</span>` : ''}
           ${e.hierarchyIssue ? `<span class="workstream-summary">Hierarchy: ${escapeHtml(e.hierarchyIssue.replaceAll('_', ' '))}</span>` : ''}
@@ -635,8 +636,6 @@
         </details>
         ${e.lastActive ? `<span class="session-time">${escapeHtml(relativeTime(e.lastActive))}</span>` : ''}`;
     }
-    const displayName = e.name || e.sessionId.substring(0, 12);
-    const nickPrefix = e.nick ? `<span class="session-nick">${escapeHtml(e.nick)}</span> ` : '';
     const statusCls = e.mpStatus === 'working' ? 'working' : (e.mpStatus === 'ready' ? 'ready' : 'idle');
     return `
           <span class="session-name">${nickPrefix}${escapeHtml(displayName)}</span>
@@ -678,17 +677,11 @@
     }
   }
 
-  // Open a dashboard entry, handling subagents (open parent then the sub).
+  // Open a dashboard entry without inventing a parent conversation visit.
   function openDashEntry(e) {
     if (!e) return;
-    if (e.parent) {
-      const parent = lastDashboardData && lastDashboardData.rows &&
-        lastDashboardData.rows.find(row => row[0] === e.parent);
-      openChat(e.parent, parent ? parent[1] : '', parent ? parent[4] : e.mp);
-      setTimeout(() => window._openSubagent(e.sessionId, e.name, e.mp), 100);
-    } else {
-      openChat(e.sessionId, e.name, e.mp);
-    }
+    parentSessionStack = [];
+    openChat(e.sessionId, e.name, e.mp);
   }
 
   // Re-apply the keyboard selection highlight after a dashboard re-render.
@@ -2066,7 +2059,7 @@
         <div class="cmd-list">
           <div class="cmd-item"><kbd>j</kbd>/<kbd>k</kbd> or <kbd>↓</kbd>/<kbd>↑</kbd> Select session</div>
           <div class="cmd-item"><kbd>Enter</kbd> Open selected session</div>
-          <div class="cmd-item"><kbd>←</kbd>/<kbd>→</kbd> Collapse/expand workstream</div>
+          <div class="cmd-item"><kbd>h</kbd>/<kbd>l</kbd> or <kbd>←</kbd>/<kbd>→</kbd> Collapse/expand workstream</div>
           <div class="cmd-item"><kbd>/</kbd> Filter sessions</div>
           <div class="cmd-item"><kbd>o</kbd> Quick switcher</div>
           <div class="cmd-item"><kbd>n</kbd> New agent</div>
@@ -7106,12 +7099,12 @@
     switch (e.key) {
       case 'ArrowDown': case 'j': e.preventDefault(); dashMove(1); break;
       case 'ArrowUp':   case 'k': e.preventDefault(); dashMove(-1); break;
-      case 'ArrowRight': case 'ArrowLeft': {
+      case 'ArrowRight': case 'ArrowLeft': case 'h': case 'l': {
         const selected = dashEntries.find(entry => entry.sessionId === dashSelectedId);
         const rootId = (e.target.dataset || {}).expand || (selected && selected.rootId);
         if (rootId) {
           e.preventDefault();
-          toggleWorkstream(rootId, e.key === 'ArrowRight');
+          toggleWorkstream(rootId, e.key === 'ArrowRight' || e.key === 'l');
         }
         break;
       }

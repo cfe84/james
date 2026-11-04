@@ -416,16 +416,16 @@ func (m dashboardModel) Update(msg tea.Msg) (dashboardModel, tea.Cmd) {
 		}
 
 		switch msg.String() {
-		case " ", "right", "left":
+		case " ", "right", "left", "h", "l":
 			if m.workstreams {
 				if e := m.selectedEntry(); e != nil {
 					if m.expanded == nil {
 						m.expanded = make(map[string]bool)
 					}
 					expand := !m.expanded[e.RootSessionID]
-					if msg.String() == "right" {
+					if msg.String() == "right" || msg.String() == "l" {
 						expand = true
-					} else if msg.String() == "left" {
+					} else if msg.String() == "left" || msg.String() == "h" {
 						expand = false
 					}
 					m.expanded[e.RootSessionID] = expand
@@ -740,7 +740,7 @@ func (m dashboardModel) View() string {
 		b.WriteString("\n")
 	}
 	if m.workstreams {
-		b.WriteString(sessionHeaderStyle.Render("  Space/←/→ expand · Enter open · a completed · l all sessions"))
+		b.WriteString(sessionHeaderStyle.Render("  h/← fold · l/→ unfold · Enter open · a completed · L all sessions"))
 		b.WriteString("\n")
 	}
 
@@ -867,7 +867,7 @@ func (m dashboardModel) View() string {
 			}
 			name := e.Name
 			if e.Nick != "" {
-				name += " (" + e.Nick + ")"
+				name = e.Nick + " · " + name
 			}
 			state := e.MPStatus
 			if e.HemStatus == "completed" {

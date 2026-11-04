@@ -697,8 +697,17 @@ hem/
    descendants with ancestors. Selection is session-ID-based, while collapsed
    workstreams preserve each descendant's own execution state. Qew reuses its
    dropdown for Manage and row reconciliation for refreshes. Technical metadata
-   moves into row details/selected-row context. The TUI's existing All sessions
-   view remains available; Qew offers an uncollapsed diagnostic view. Only the
+   moves into row details/selected-row context.
+   Nicknames reuse the existing prefix presentation (`session-nick` in Qew,
+   `nickname · name` in the TUI) rather than a separate workstream style.
+   The TUI's existing All sessions screen uses `L`; on expandable parent rows
+   `h`/`l` fold/unfold using the same
+   disclosure path as Left/Right in both clients.
+   List/quick-switcher entry opens the chosen session directly with no synthetic
+   parent navigation frame; q/Back returns to the originating list. Only child
+   navigation from an actual conversation pushes that conversation onto the
+   parent stack/browser history.
+   Qew offers an uncollapsed diagnostic view. Only the
    exact older-server unknown-`view` flag error enables legacy fallback; other
    errors remain visible. Durable questions/blockers and unified notification
    persistence are not part of this projection.

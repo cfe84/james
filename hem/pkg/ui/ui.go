@@ -1095,27 +1095,10 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		uilog("dashboard: enter pressed, selectedEntry=%v cursor=%d entries=%d filtered=%d", e != nil, m.dashboard.cursor, len(m.dashboard.entries), len(m.dashboard.filteredEntries()))
 		if e != nil {
 			uilog("dashboard: opening session id=%s name=%q mp=%s status=%s parent=%s", e.SessionID, e.Name, e.Moneypenny, e.MPStatus, e.ParentSessionID)
-			if e.ParentSessionID != "" {
-				// Opening a subagent: push parent chat onto stack, then open sub.
-				parentName := ""
-				parentMP := e.Moneypenny
-				for _, pe := range m.dashboard.entries {
-					if pe.SessionID == e.ParentSessionID {
-						parentName = pe.Name
-						parentMP = pe.Moneypenny
-						break
-					}
-				}
-				parentChat := newChatModel(m.client, e.ParentSessionID, parentName, parentMP)
-				parentChat.width = m.width
-				parentChat.height = m.viewHeight()
-				m.parentChats = append(m.parentChats, parentChat)
-				m.chat = newChatModel(m.client, e.SessionID, e.Name, e.Moneypenny)
-				m.chat.isSubagent = true
-			} else {
-				m.chat = newChatModel(m.client, e.SessionID, e.Name, e.Moneypenny)
-				m = m.withChatDraftRestored()
-			}
+			m.parentChats = nil
+			m.chat = newChatModel(m.client, e.SessionID, e.Name, e.Moneypenny)
+			m.chat.isSubagent = e.ParentSessionID != ""
+			m = m.withChatDraftRestored()
 			m.chat.width = m.width
 			m.chat.height = m.viewHeight()
 			m.currentView = viewChat
@@ -1180,7 +1163,14 @@ func (m Model) updateDashboard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.previousView = viewDashboard
 			return m, nil
 		}
-	case "l":
+	case "l", "L":
+		if msg.String() == "l" && m.dashboard.workstreams {
+			if e := m.dashboard.selectedEntry(); e != nil && e.Expandable {
+				var cmd tea.Cmd
+				m.dashboard, cmd = m.dashboard.Update(msg)
+				return m, cmd
+			}
+		}
 		m.sessions = newSessionsModel(m.client)
 		m.sessions.width = m.width
 		m.sessions.height = m.viewHeight()
@@ -1334,26 +1324,10 @@ func (m Model) updateProjectDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		uilog("projectDetail: enter pressed, selectedEntry=%v", e != nil)
 		if e != nil {
 			uilog("projectDetail: opening session id=%s name=%q mp=%s", e.SessionID, e.Name, e.Moneypenny)
-			if e.ParentSessionID != "" {
-				parentName := ""
-				parentMP := e.Moneypenny
-				for _, pe := range m.projectDetail.entries {
-					if pe.SessionID == e.ParentSessionID {
-						parentName = pe.Name
-						parentMP = pe.Moneypenny
-						break
-					}
-				}
-				parentChat := newChatModel(m.client, e.ParentSessionID, parentName, parentMP)
-				parentChat.width = m.width
-				parentChat.height = m.viewHeight()
-				m.parentChats = append(m.parentChats, parentChat)
-				m.chat = newChatModel(m.client, e.SessionID, e.Name, e.Moneypenny)
-				m.chat.isSubagent = true
-			} else {
-				m.chat = newChatModel(m.client, e.SessionID, e.Name, e.Moneypenny)
-				m = m.withChatDraftRestored()
-			}
+			m.parentChats = nil
+			m.chat = newChatModel(m.client, e.SessionID, e.Name, e.Moneypenny)
+			m.chat.isSubagent = e.ParentSessionID != ""
+			m = m.withChatDraftRestored()
 			m.chat.width = m.width
 			m.chat.height = m.viewHeight()
 			m.currentView = viewChat
@@ -1477,6 +1451,7 @@ func (m Model) updateSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		uilog("sessions: enter pressed, selectedSession=%v cursor=%d sessions=%d", s != nil, m.sessions.cursor, len(m.sessions.sessions))
 		if s != nil {
 			uilog("sessions: opening session id=%s name=%q mp=%s", s.SessionID, s.Name, s.Moneypenny)
+			m.parentChats = nil
 			m.chat = newChatModel(m.client, s.SessionID, s.Name, s.Moneypenny)
 			m.chat.width = m.width
 			m.chat.height = m.viewHeight()
@@ -2181,7 +2156,7 @@ func (m Model) renderStatusBar() string {
 				statusKeyStyle.Render("P") + statusDescStyle.Render(" ponsonbies"),
 				statusKeyStyle.Render("p") + statusDescStyle.Render(" projects"),
 				statusKeyStyle.Render("t") + statusDescStyle.Render(" traits"),
-				statusKeyStyle.Render("l") + statusDescStyle.Render(" all sessions"),
+				statusKeyStyle.Render("L") + statusDescStyle.Render(" all sessions"),
 				statusKeyStyle.Render("r") + statusDescStyle.Render(" refresh"),
 				statusKeyStyle.Render("q") + statusDescStyle.Render(" quit"),
 			}
