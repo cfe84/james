@@ -38,18 +38,8 @@ header h1 span { color: var(--primary); }
 
 /* Dashboard */
 .dash-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
-.dash-toolbar select {
-  background: var(--surface); color: var(--text); border: 1px solid var(--surface2);
-  border-radius: 6px; padding: 6px 10px; font-size: 0.9em; font-family: inherit;
-}
-.dash-toolbar select:focus { outline: none; border-color: var(--primary); }
 .dash-toolbar .spacer { flex: 1; }
-.dash-filter {
-  display: none; width: 100%; box-sizing: border-box; margin-bottom: 12px;
-  background: var(--surface); color: var(--text); border: 1px solid var(--surface2);
-  border-radius: 6px; padding: 8px 12px; font-size: 0.95em; font-family: inherit;
-}
-.dash-filter:focus { outline: none; border-color: var(--primary); }
+#project-filter-list { max-height: 55vh; overflow-y: auto; }
 .btn {
   background: var(--primary); color: white; border: none; border-radius: 6px;
   padding: 6px 14px; cursor: pointer; font-weight: 600; font-size: 0.9em;
@@ -504,9 +494,7 @@ header h1 span { color: var(--primary); }
 
   <div id="dashboard-view">
     <div class="dash-toolbar">
-      <select id="project-filter">
-        <option value="">All projects</option>
-      </select>
+      <button class="btn-muted" id="project-filter" aria-haspopup="dialog" title="Filter projects (/)">All projects</button>
       <div class="spacer"></div>
       <div class="dropdown">
         <button class="btn-muted" id="manage-btn" aria-expanded="false" aria-controls="manage-menu">Manage ▾</button>
@@ -522,7 +510,6 @@ header h1 span { color: var(--primary); }
       </div>
       <button class="btn" id="new-session-btn">+ New Agent</button>
     </div>
-    <input id="dash-filter" class="dash-filter" type="text" placeholder="Filter sessions… (type to fuzzy-match, Enter to navigate, Esc to clear)" autocomplete="off">
     <div class="loading" id="dash-loading">Loading dashboard...</div>
     <div id="dash-content" style="flex:1;overflow-y:auto"></div>
   </div>

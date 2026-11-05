@@ -188,6 +188,7 @@ test('conversation help retains action, compose, focus and scrolling shortcuts',
       runCmd: command => calls.push(['command', command]),
       closeWizard: () => calls.push(['close']),
       window: { _openSubagent: (...args) => calls.push(['subagent', ...args]) },
+      handleProjectFilterKey: () => false,
       handleAllSubagentsKey: () => false, handleDiffModalKey: () => false, handleWizardListKey() {},
     });
     vm.runInContext(source, context);
@@ -431,7 +432,7 @@ test('dashboard completion selects the next visible session before the request',
       applyDashSelection() { calls.push(['selection', context.dashSelectedId]); },
       completeSession(id) { calls.push(['complete', id, context.dashSelectedId]); },
     });
-    const source = app.slice(app.indexOf('  function dashAction(cmd)'), app.indexOf('  // --- Dashboard fuzzy filter'));
+    const source = app.slice(app.indexOf('  function dashAction(cmd)'), app.indexOf('  // --- Project filter ---'));
     vm.runInContext(`${source}\ndashAction('complete');`, context);
     assert.deepEqual(calls, [['selection', expected], ['complete', selected, expected]]);
   }
@@ -490,7 +491,7 @@ function dashboardHarness() {
     relativeTime: () => '',
     fuzzyMatch: (query, target) => target.toLowerCase().includes(query.toLowerCase()),
     applyDashSelection() {},
-    dashFilter: '',
+    excludedProjects: new Set(), projectsCache: [], projectFilterCursor: 0, projectFilterOptions: [],
     dashSelectedId: '',
     dashEntries: [],
     dashRowSigs: {},
@@ -498,7 +499,9 @@ function dashboardHarness() {
     dashExpanded: new Set(), dashAllSessions: false, dashShowCompleted: false,
   });
   const source = app.slice(app.indexOf('  function renderDashboard(data)'), app.indexOf('  // Open a dashboard entry'));
-  vm.runInContext(`${source}\nglobalThis.render = renderDashboard;`, context);
+  const projectFilter = app.slice(app.indexOf('  function dashboardProjectOptions('), app.indexOf('  // fuzzyMatch returns'));
+  const projectLabel = app.slice(app.indexOf('  function updateProjectFilter('), app.indexOf('  // --- Traits ---'));
+  vm.runInContext(`${source}\n${projectFilter}\n${projectLabel}\nglobalThis.render = renderDashboard;`, context);
   return { context, container, saved };
 }
 
@@ -547,10 +550,6 @@ test('workstreams retain hierarchy, independent state, expansion, selection and 
   assert.equal(context.dashSelectedId, 'nested');
   context.toggleWorkstream('parent', false);
   assert.equal(context.dashSelectedId, 'parent');
-  context.dashFilter = 'Findings';
-  context.render(data);
-  assert.deepEqual(Array.from(context.dashEntries, e => e.sessionId), ['parent', 'child', 'nested']);
-  context.dashFilter = '';
   context.dashAllSessions = true;
   context.render(data);
   assert.equal(context.dashEntries.length, 3);
@@ -587,6 +586,122 @@ test('dashboard h/l reuse directional workstream folding shortcuts', () => {
   }
 });
 
+test('project exclusions keep matching descendants, accurate counts and untouched cached data', () => {
+  const { context } = dashboardHarness();
+  const data = { workstreams: [{
+    root_session_id: 'parent', section: 'needs_you', active: 3, unread: 1, running: 1, requests: 1,
+    sessions: [
+      { session_id: 'parent', name: 'Root', project: 'Hidden', depth: 0, execution: 'idle',
+        attention: { kind: 'needs_answer', reason: 'Excluded question', revision: 1 } },
+      { session_id: 'child', name: 'Child', project: 'Keep', depth: 1, execution: 'working' },
+      { session_id: 'other', name: 'Other', project: 'Hidden', depth: 1, execution: 'idle', unread: true },
+      { session_id: 'none', name: 'Unassigned', depth: 1, execution: 'idle' },
+      { session_id: 'archived', project: 'Archived', depth: 1, completed: true, execution: 'idle' },
+    ],
+  }] };
+  const original = JSON.stringify(data);
+  context.excludedProjects.add('Hidden');
+  context.excludedProjects.add('');
+  const filtered = context.filterDashboardProjects(data);
+  assert.equal(JSON.stringify(data), original);
+  assert.deepEqual(Array.from(filtered.workstreams[0].sessions, s => s.session_id), ['parent', 'child']);
+  assert.equal(filtered.workstreams[0].active, 1);
+  assert.equal(filtered.workstreams[0].unread, 0);
+  assert.equal(filtered.workstreams[0].requests, 0);
+  assert.equal(filtered.workstreams[0].section, 'in_progress');
+  assert.equal(filtered.workstreams[0].sessions[0].attention, null);
+  context.excludedProjects.add('Keep');
+  assert.equal(context.filterDashboardProjects(data).workstreams.length, 0);
+  context.dashShowCompleted = true;
+  assert.deepEqual(Array.from(context.filterDashboardProjects(data).workstreams[0].sessions, s => s.session_id), ['parent', 'archived']);
+  assert.deepEqual(Array.from(context.filterDashboardProjects({ rows: [
+    ['one', '', 'Keep'], ['two', '', 'Hidden'], ['three', '', ''],
+  ] }).rows), []);
+  context.excludedProjects.clear();
+  assert.equal(context.filterDashboardProjects(data), data);
+});
+
+test('project picker toggles with Space and mouse, navigates with jk, clears with q and closes with Escape', () => {
+  const { context, container } = dashboardHarness();
+  let inputs = [], rows = [], open = false, focus, markup = '';
+  const buttons = new Map();
+  const button = id => {
+    if (!buttons.has(id)) buttons.set(id, {
+      addEventListener(event, handler) { this[event] = handler; },
+      focus() { focus = id; },
+    });
+    return buttons.get(id);
+  };
+  const list = {
+    closest: () => ({ setAttribute() {} }),
+    querySelectorAll: selector => selector === 'input' ? inputs : rows,
+  };
+  context.document.getElementById = id => id === 'dash-content' ? container
+    : id === 'project-filter-list' ? open ? list : null : button(id);
+  context.closeWizard = () => { open = false; };
+  context.renderWizardModal = content => {
+    open = true;
+    markup = content;
+    inputs = [...content.matchAll(/data-project-index="(\d+)" (checked)?/g)].map(match => {
+      const row = { classList: { toggle() {} }, scrollIntoView() {} };
+      const handlers = {};
+      return {
+        checked: Boolean(match[2]), dataset: { projectIndex: match[1] },
+        closest: () => row,
+        addEventListener(event, handler) { handlers[event] = handler; },
+        focus() { focus = Number(this.dataset.projectIndex); handlers.focus?.(); },
+        click() { this.checked = !this.checked; handlers.change(); },
+      };
+    });
+    rows = inputs.map(input => input.closest());
+  };
+  context.projectsCache = [{ name: 'Alpha' }, { name: '<Beta>', status: 'done' }];
+  const data = { rows: [['one', 'One', 'Alpha'], ['two', 'Two', '<Beta>'], ['three', 'Three', '']] };
+  context.render(data);
+  const press = (key, extra = {}) => {
+    let prevented = false;
+    assert.equal(context.handleProjectFilterKey({ key, preventDefault() { prevented = true; }, ...extra }), true);
+    return prevented;
+  };
+  context.openProjectFilter();
+  assert.match(markup, /No project/);
+  assert.match(markup, /&lt;Beta>/);
+  assert.equal(inputs.length, 3);
+  assert.equal(focus, 0);
+  press('k');
+  assert.equal(focus, 0);
+  press(' ');
+  assert.equal(context.excludedProjects.has(''), true);
+  assert.deepEqual(Array.from(context.dashEntries, e => e.sessionId), ['one', 'two']);
+  press(' ', { repeat: true });
+  assert.equal(inputs[0].checked, false, 'held Space must not repeatedly toggle');
+  press('j');
+  const name = context.projectFilterOptions[1];
+  inputs[1].click();
+  assert.equal(context.excludedProjects.has(name), true);
+  press('j', { repeat: true });
+  press('j');
+  assert.equal(focus, 2, 'cursor clamps at end');
+  press('Escape');
+  assert.equal(open, false);
+  assert.equal(focus, 'project-filter');
+  context.openProjectFilter();
+  assert.equal(inputs[0].checked, false, 'closing preserves choices');
+  press('q');
+  assert.equal(open, true, 'clear does not close the picker');
+  assert.equal(context.excludedProjects.size, 0);
+  assert.ok(inputs.every(input => input.checked));
+  assert.equal(context.dashEntries.length, 3);
+  press('Escape');
+  context.selectOnlyProject('Alpha');
+  assert.deepEqual(Array.from(context.dashEntries, e => e.sessionId), ['one']);
+  context.clearProjectFilter();
+  assert.equal(context.dashEntries.length, 3);
+  assert.doesNotMatch(app, /id="dash-filter"|function openDashFilter|function initDashFilter/);
+  assert.match(app, /case '\/': e\.preventDefault\(\); openProjectFilter\(\)/);
+  assert.match(app, /case 'q': e\.preventDefault\(\); clearProjectFilter\(\)/);
+});
+
 test('collapsed workstreams show and refresh child requests, including completed blockers', () => {
   const { context, container } = dashboardHarness();
   const child = { session_id: 'child', name: 'Deploy', depth: 1, completed: true, execution: 'idle',
@@ -602,7 +717,7 @@ test('collapsed workstreams show and refresh child requests, including completed
   child.attention = { kind: 'needs_action', reason: 'Sign in.', revision: 2 };
   context.render(data);
   assert.match(container.querySelector().innerHTML, /Deploy · Needs action: Sign in\./);
-  context.dashFilter = 'Sign in';
+  context.dashExpanded.add('parent');
   context.render(data);
   assert.deepEqual(Array.from(context.dashEntries, e => e.sessionId), ['parent', 'child']);
 });

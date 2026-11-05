@@ -49,11 +49,12 @@
   // the agent is working. Persisted across reloads.
   let showThoughts = (localStorage.getItem('qewShowThoughts') === '1');
   let expandedActivity = (localStorage.getItem('qewExpandedActivity') === '1');
-  let projectFilter = ''; // current project filter
+  const excludedProjects = new Set();
+  let projectFilterCursor = 0;
+  let projectFilterOptions = [];
   let projectsCache = []; // cached project list
   let dashEntries = [];   // dashboard rows in display order (for keyboard nav)
   let dashSelectedId = ''; // session id of keyboard-selected dashboard row
-  let dashFilter = '';     // fuzzy filter term for the session list ('' = no filter)
   let lastDashboardData = null; // most recent dashboard payload (for local re-filter)
   let lastDashRenderSig = null; // structural signature of the last full dashboard render (skip rebuilds when unchanged)
   let dashRowSigs = {};    // sessionId -> mutable-content signature of the currently rendered row (for in-place patching)
@@ -207,17 +208,8 @@
   }
 
   function updateProjectFilter() {
-    const select = document.getElementById('project-filter');
-    const current = select.value;
-    select.innerHTML = '<option value="">All projects</option>';
-    for (const p of projectsCache) {
-      if (p.status === 'done') continue;
-      const opt = document.createElement('option');
-      opt.value = p.name;
-      opt.textContent = p.name;
-      select.appendChild(opt);
-    }
-    select.value = current || '';
+    document.getElementById('project-filter').textContent = excludedProjects.size
+      ? `Projects (${excludedProjects.size} excluded)` : 'All projects';
   }
 
   // --- Traits ---
@@ -378,7 +370,6 @@
   async function refreshDashboard() {
     try {
       const args = ['--all'];
-      if (projectFilter) args.push('--project', projectFilter);
       let resp = await apiCall('dashboard', '', dashboardLegacy ? args : [...args, '--view=workstreams']);
       if (resp.status === 'error' && resp.message === 'flag provided but not defined: -view') {
         dashboardLegacy = true;
@@ -426,6 +417,7 @@
 
   function renderDashboard(data) {
     lastDashboardData = data;
+    data = filterDashboardProjects(data);
     const grouped = data && Array.isArray(data.workstreams);
     if (grouped) data.rows = dashboardRows(data);
     const container = document.getElementById('dash-content');
@@ -484,7 +476,6 @@
 
     // Server sends entries pre-sorted with subagents after their parents.
 
-    // Apply the fuzzy filter (if any) against name/project/agent/model/moneypenny/id.
     const activeContext = new Set();
     const contextPath = [];
     if (grouped && !dashShowCompleted) {
@@ -495,21 +486,11 @@
       }
     }
     const eligible = grouped && !dashShowCompleted ? entries.filter(e => activeContext.has(e.sessionId)) : entries;
-    const matches = new Set();
-    const ancestors = [];
-    for (const e of eligible) {
-      if (grouped) ancestors.length = e.depth;
-      ancestors[e.depth || 0] = e.sessionId;
-      if (!dashFilter || fuzzyMatch(dashFilter, `${e.nick} ${e.name} ${e.project} ${e.agent} ${e.model} ${e.moneypenny} ${e.sessionId} ${e.summary || ''} ${e.attention ? e.attention.reason : ''}`)) {
-        matches.add(e.sessionId);
-        if (grouped) ancestors.forEach(id => matches.add(id));
-      }
-    }
-    const filtered = eligible.filter(e => matches.has(e.sessionId) &&
-      (!grouped || dashAllSessions || dashFilter || e.depth === 0 || dashExpanded.has(e.rootId)));
+    const filtered = eligible.filter(e =>
+      !grouped || dashAllSessions || e.depth === 0 || dashExpanded.has(e.rootId));
 
     if (filtered.length === 0) {
-      container.innerHTML = `<div class="empty-state">${dashFilter ? `No sessions match "${escapeHtml(dashFilter)}"` : 'No active workstreams'}</div>`;
+      container.innerHTML = '<div class="empty-state">No active workstreams</div>';
       dashEntries = [];
       lastDashRenderSig = null;
       applyDashSelection();
@@ -756,7 +737,139 @@
     else if (cmd === 'duplicate') openDuplicateWizard(e.sessionId);
   }
 
-  // --- Dashboard fuzzy filter ---
+  // --- Project filter ---
+
+  function dashboardProjectOptions() {
+    const names = new Set(['', ...projectsCache.map(p => p.name), ...excludedProjects]);
+    if (lastDashboardData) {
+      const sessions = lastDashboardData.workstreams
+        ? lastDashboardData.workstreams.flatMap(w => w.sessions)
+        : (lastDashboardData.rows || []).map(row => ({ project: row[2] }));
+      sessions.forEach(s => names.add(s.project || ''));
+    }
+    return [...names].sort((a, b) => a.localeCompare(b));
+  }
+
+  function filterDashboardProjects(data) {
+    if (!data || !excludedProjects.size) return data;
+    if (!Array.isArray(data.workstreams)) {
+      return { ...data, rows: (data.rows || []).filter(row => !excludedProjects.has(row[2] || '')) };
+    }
+    const workstreams = data.workstreams.flatMap(w => {
+      const keep = new Set(), path = [];
+      for (const s of w.sessions) {
+        path.length = s.depth;
+        path[s.depth] = s.session_id;
+        if (!excludedProjects.has(s.project || '') &&
+            (dashShowCompleted || !s.completed || (s.attention && s.attention.kind))) {
+          path.forEach(id => keep.add(id));
+        }
+      }
+      const sessions = w.sessions.filter(s => keep.has(s.session_id));
+      if (!sessions.length) return [];
+      const matching = sessions.filter(s => !excludedProjects.has(s.project || ''));
+      const active = matching.filter(s => !s.completed);
+      const requests = matching.filter(s => s.attention && s.attention.kind).length;
+      const unread = active.filter(s => s.unread).length;
+      const running = active.filter(s => s.execution === 'working').length;
+      return [{ ...w, sessions: sessions.map(s => excludedProjects.has(s.project || '')
+        ? { ...s, summary: '', attention: null, unread: false } : s),
+      active: active.length, requests, unread, running,
+      unavailable: active.filter(s => s.execution === 'offline' || s.execution === 'unknown').length,
+      section: requests || unread ? 'needs_you' : !active.length ? 'completed' : running ? 'in_progress' : 'quiet' }];
+    });
+    const rank = { needs_you: 0, in_progress: 1, quiet: 2, completed: 3 };
+    workstreams.sort((a, b) => rank[a.section] - rank[b.section]);
+    return { ...data, workstreams };
+  }
+
+  function applyProjectFilter() {
+    updateProjectFilter();
+    if (lastDashboardData) renderDashboard(lastDashboardData);
+  }
+
+  function clearProjectFilter() {
+    excludedProjects.clear();
+    applyProjectFilter();
+  }
+
+  function selectOnlyProject(name) {
+    excludedProjects.clear();
+    dashboardProjectOptions().forEach(project => {
+      if (project !== name) excludedProjects.add(project);
+    });
+    applyProjectFilter();
+  }
+
+  function openProjectFilter() {
+    projectFilterOptions = dashboardProjectOptions();
+    projectFilterCursor = Math.min(projectFilterCursor, projectFilterOptions.length - 1);
+    renderWizardModal(`<h2 id="project-filter-title">Projects</h2>
+      <p>Show checked projects. j/k: move · Space: toggle · q: clear · Esc: close</p>
+      <div id="project-filter-list" role="group" aria-labelledby="project-filter-title">
+        ${projectFilterOptions.map((name, i) => `<label class="mgmt-row${i === projectFilterCursor ? ' selected' : ''}">
+          <input type="checkbox" data-project-index="${i}" ${excludedProjects.has(name) ? '' : 'checked'}>
+          <span>${escapeHtml(name || 'No project')}</span></label>`).join('')}
+      </div>
+      <div class="modal-actions"><button class="btn-muted" id="project-filter-clear">Clear filters (q)</button>
+      <button class="btn" id="project-filter-close">Close</button></div>`);
+    const list = document.getElementById('project-filter-list');
+    const modal = list.closest('.modal');
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+    modal.setAttribute('aria-labelledby', 'project-filter-title');
+    list.querySelectorAll('input').forEach(input => {
+      input.addEventListener('focus', () => {
+        projectFilterCursor = Number(input.dataset.projectIndex);
+        list.querySelectorAll('.mgmt-row').forEach((row, i) => row.classList.toggle('selected', i === projectFilterCursor));
+      });
+      input.addEventListener('change', () => {
+        projectFilterCursor = Number(input.dataset.projectIndex);
+        const name = projectFilterOptions[projectFilterCursor];
+        if (input.checked) excludedProjects.delete(name); else excludedProjects.add(name);
+        applyProjectFilter();
+        focusProjectFilter();
+      });
+    });
+    document.getElementById('project-filter-clear').addEventListener('click', () => {
+      clearProjectFilter();
+      list.querySelectorAll('input').forEach(input => { input.checked = true; });
+      focusProjectFilter();
+    });
+    document.getElementById('project-filter-close').addEventListener('click', () => {
+      closeWizard();
+      document.getElementById('project-filter').focus();
+    });
+    focusProjectFilter();
+  }
+
+  function focusProjectFilter() {
+    const inputs = document.getElementById('project-filter-list').querySelectorAll('input');
+    inputs.forEach((input, i) => input.closest('.mgmt-row').classList.toggle('selected', i === projectFilterCursor));
+    const input = inputs[projectFilterCursor];
+    if (input) {
+      input.focus();
+      input.closest('.mgmt-row').scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  function handleProjectFilterKey(e) {
+    if (!document.getElementById('project-filter-list')) return false;
+    if (e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return false;
+    const delta = ({ j: 1, ArrowDown: 1, k: -1, ArrowUp: -1 })[e.key];
+    if (delta) {
+      e.preventDefault();
+      projectFilterCursor = Math.max(0, Math.min(projectFilterOptions.length - 1, projectFilterCursor + delta));
+      focusProjectFilter();
+    } else if ([' ', 'q', 'Escape'].includes(e.key)) {
+      e.preventDefault();
+      if (!e.repeat) {
+        if (e.key === ' ') document.getElementById('project-filter-list').querySelectorAll('input')[projectFilterCursor]?.click();
+        else document.getElementById(e.key === 'q' ? 'project-filter-clear' : 'project-filter-close').click();
+      }
+    }
+    return true;
+  }
 
   // fuzzyMatch returns true when every character of query appears in target in
   // order (case-insensitive subsequence match), the usual lightweight fuzzy
@@ -770,47 +883,6 @@
       if (t[ti] === q[qi]) qi++;
     }
     return qi === q.length;
-  }
-
-  // Open (reveal + focus) the dashboard filter input.
-  function openDashFilter() {
-    const input = document.getElementById('dash-filter');
-    if (!input) return;
-    input.style.display = 'block';
-    input.focus();
-    input.select();
-  }
-
-  // Wire the filter input: live fuzzy filtering, Enter blurs (keeping the filter
-  // so the list can be navigated with j/k/Enter), Escape clears + hides.
-  function initDashFilter() {
-    const input = document.getElementById('dash-filter');
-    if (!input) return;
-    input.addEventListener('input', () => {
-      dashFilter = input.value;
-      // Re-render from the cached dashboard data without a network round-trip.
-      if (lastDashboardData) renderDashboard(lastDashboardData);
-    });
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        e.stopPropagation();
-        input.blur();
-        // Select the first result so j/k navigation has an anchor.
-        if (dashEntries.length && !dashEntries.some(x => x.sessionId === dashSelectedId)) {
-          dashSelectedId = dashEntries[0].sessionId;
-          applyDashSelection();
-        }
-      } else if (e.key === 'Escape') {
-        e.preventDefault();
-        e.stopPropagation();
-        input.value = '';
-        dashFilter = '';
-        if (lastDashboardData) renderDashboard(lastDashboardData);
-        input.blur();
-        input.style.display = 'none';
-      }
-    });
   }
 
   // --- Management list keyboard navigation (moneypennies / traits views) ---
@@ -887,8 +959,7 @@
       switch (key) {
         case 'Enter':
           if (name) {
-            projectFilter = name;
-            document.getElementById('project-filter').value = name;
+            selectOnlyProject(name);
             hideProjectsView();
           }
           return true;
@@ -2130,7 +2201,8 @@
           <div class="cmd-item"><kbd>j</kbd>/<kbd>k</kbd> or <kbd>↓</kbd>/<kbd>↑</kbd> Select session</div>
           <div class="cmd-item"><kbd>Enter</kbd> Open selected session</div>
           <div class="cmd-item"><kbd>h</kbd>/<kbd>l</kbd> or <kbd>←</kbd>/<kbd>→</kbd> Collapse/expand workstream</div>
-          <div class="cmd-item"><kbd>/</kbd> Filter sessions</div>
+          <div class="cmd-item"><kbd>/</kbd> Filter projects (j/k, Space)</div>
+          <div class="cmd-item"><kbd>q</kbd> Clear project filters</div>
           <div class="cmd-item"><kbd>o</kbd> Quick switcher</div>
           <div class="cmd-item"><kbd>n</kbd> New agent</div>
           <div class="cmd-item"><kbd>m</kbd> Moneypennies</div>
@@ -2412,8 +2484,9 @@
 
     // If a project is pre-selected from the filter, select it — but in copy
     // mode the source's project takes precedence.
-    if (projectFilter && !copy && !wizardState.parentId) {
-      document.getElementById('wiz-project').value = projectFilter;
+    const includedProjects = dashboardProjectOptions().filter(name => name && !excludedProjects.has(name));
+    if (excludedProjects.size && includedProjects.length === 1 && !copy && !wizardState.parentId) {
+      document.getElementById('wiz-project').value = includedProjects[0];
     }
 
     document.getElementById('wiz-submit').addEventListener('click', submitCreateSession);
@@ -5832,8 +5905,7 @@
         row.addEventListener('click', (e) => {
           if (e.target.closest('.mgmt-actions')) return;
           const projName = row.dataset.projectName;
-          projectFilter = projName;
-          document.getElementById('project-filter').value = projName;
+          selectOnlyProject(projName);
           hideProjectsView();
         });
       });
@@ -6857,10 +6929,7 @@
     else if (action === 'delete') deleteSession();
   });
 
-  document.getElementById('project-filter').addEventListener('change', (e) => {
-    projectFilter = e.target.value;
-    loadDashboard();
-  });
+  document.getElementById('project-filter').addEventListener('click', openProjectFilter);
 
   const chatInput = document.getElementById('chat-input');
   chatInput.addEventListener('keydown', e => {
@@ -7080,6 +7149,7 @@
     // diff review modal additionally supports keyboard navigation. All other
     // keys are left to the modal's own handlers.
     if (document.querySelector('.modal-overlay')) {
+      if (handleProjectFilterKey(e)) return;
       if (e.key === 'Escape') {
         if (escapeCloseModal()) e.preventDefault();
         return;
@@ -7191,20 +7261,11 @@
         break;
       }
       case 'Escape':
-        // Cancel an active filter while navigating the list (the filter input
-        // is blurred after Enter, so its own Escape handler no longer fires).
-        if (dashFilter) {
-          e.preventDefault();
-          dashFilter = '';
-          const fi = document.getElementById('dash-filter');
-          if (fi) { fi.value = ''; fi.style.display = 'none'; }
-          if (lastDashboardData) renderDashboard(lastDashboardData);
-        } else {
-          e.preventDefault();
-          showDashboardShortcuts();
-        }
+        e.preventDefault();
+        showDashboardShortcuts();
         break;
-      case '/': e.preventDefault(); openDashFilter(); break;
+      case '/': e.preventDefault(); openProjectFilter(); break;
+      case 'q': e.preventDefault(); clearProjectFilter(); break;
       case 'm': e.preventDefault(); showMoneypenniesView(); break;
       case 'P': e.preventDefault(); showPonsonbiesView(); break;
       case 'b': e.preventDefault(); toggleSound(); break;
@@ -7248,7 +7309,6 @@
   window.addEventListener('hashchange', handleRoute);
 
   initializeRouteHistory();
-  initDashFilter();
 
   // Display the Qew version in the header.
   fetch('/version').then(r => r.ok ? r.text() : '').then(v => {
