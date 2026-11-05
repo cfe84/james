@@ -690,11 +690,16 @@ hem/
    Project filtering retains ancestor context and completed bridges to live work.
    Qew's toolbar and `/` now open a multi-project checkbox picker through
    `renderWizardModal`, reusing `.mgmt-row` selection and native checkboxes.
+   The `modal-project-filter` variant scopes checkbox/label layout overrides to
+   prevent the generic form-field CSS from stretching checkboxes or stacking
+   names. A bounded flex layout keeps the header/actions outside the scrolling
+   list; rows and buttons retain 44px touch targets.
    A page-local exclusion set is applied to the full cached dashboard, not sent
    as multiple server requests. Matching descendants keep excluded ancestors
    as context only; counts and reasons exclude those ancestors and other
    excluded sessions. Sections are recalculated and sorted after filtering.
-   `j`/`k` move, Space toggles, Esc closes, and `q` clears exclusions without
+   `j`/`k` move, Space toggles, Esc closes, `d` deselects all known projects,
+   and `q` clears exclusions without
    closing. The list also accepts `q` to clear. Project-management entry reuses
    this filter for single-project navigation; create defaults are only inferred
    when one named project remains enabled. No persistence/schema/API change;

@@ -1974,8 +1974,13 @@ qew --development --listen 127.0.0.1:8077
 
 - **Dashboard**: Uses the same typed, expandable workstreams and attention/execution counts as the TUI dashboard. Existing push/watch refresh and fallback polling are unchanged.
 - **Project filter (Qew)**: The project toolbar button or `/` opens a checkbox modal.
+  The compact picker aligns each checkbox with its project name in a touch-sized
+  row, with a scrolling list between a fixed header and Show all/Deselect all/Done actions.
+  Keyboard hints sit in the footer and are hidden on touch-first devices.
   All projects, including **No project**, start enabled. `j`/`k` or arrows move,
-  Space toggles a project, and mouse/touch checkboxes work identically. Esc
+  Space toggles a project, and mouse/touch checkboxes work identically.
+  `d` or **Deselect all** unchecks every project without closing the picker.
+  Esc
   closes without clearing; `q` clears exclusions to show all projects, both in
   the picker and on the session list. Changes apply immediately to cached data,
   survive refreshes and navigation within the page, and reset on browser reload.

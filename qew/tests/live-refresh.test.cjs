@@ -639,9 +639,11 @@ test('project picker toggles with Space and mouse, navigates with jk, clears wit
   context.document.getElementById = id => id === 'dash-content' ? container
     : id === 'project-filter-list' ? open ? list : null : button(id);
   context.closeWizard = () => { open = false; };
-  context.renderWizardModal = content => {
+  let modalClass;
+  context.renderWizardModal = (content, className) => {
     open = true;
     markup = content;
+    modalClass = className;
     inputs = [...content.matchAll(/data-project-index="(\d+)" (checked)?/g)].map(match => {
       const row = { classList: { toggle() {} }, scrollIntoView() {} };
       const handlers = {};
@@ -664,10 +666,13 @@ test('project picker toggles with Space and mouse, navigates with jk, clears wit
     return prevented;
   };
   context.openProjectFilter();
+  assert.equal(modalClass, 'modal-project-filter');
   assert.match(markup, /No project/);
   assert.match(markup, /&lt;Beta>/);
   assert.equal(inputs.length, 3);
   assert.equal(focus, 0);
+  assert.equal(press(' ', { target: { tagName: 'BUTTON' } }), false, 'buttons retain native Space activation');
+  assert.ok(inputs.every(input => input.checked));
   press('k');
   assert.equal(focus, 0);
   press(' ');
@@ -691,6 +696,18 @@ test('project picker toggles with Space and mouse, navigates with jk, clears wit
   assert.equal(open, true, 'clear does not close the picker');
   assert.equal(context.excludedProjects.size, 0);
   assert.ok(inputs.every(input => input.checked));
+  assert.equal(context.dashEntries.length, 3);
+  press('d');
+  assert.equal(open, true, 'deselect all does not close the picker');
+  assert.ok(inputs.every(input => !input.checked));
+  assert.equal(context.dashEntries.length, 0);
+  press(' ');
+  assert.equal(inputs.filter(input => input.checked).length, 1, 'a project can be enabled after deselecting all');
+  press('d', { repeat: true });
+  assert.equal(inputs.filter(input => input.checked).length, 1, 'held d is ignored');
+  buttons.get('project-filter-none').click();
+  assert.ok(inputs.every(input => !input.checked), 'mouse action also deselects all');
+  press('q');
   assert.equal(context.dashEntries.length, 3);
   press('Escape');
   context.selectOnlyProject('Alpha');

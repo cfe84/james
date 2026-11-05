@@ -804,15 +804,18 @@
   function openProjectFilter() {
     projectFilterOptions = dashboardProjectOptions();
     projectFilterCursor = Math.min(projectFilterCursor, projectFilterOptions.length - 1);
-    renderWizardModal(`<h2 id="project-filter-title">Projects</h2>
-      <p>Show checked projects. j/k: move · Space: toggle · q: clear · Esc: close</p>
+    renderWizardModal(`<div class="project-filter-header">
+      <h3 id="project-filter-title">Projects</h3>
+      <p>Choose which projects appear.</p></div>
       <div id="project-filter-list" role="group" aria-labelledby="project-filter-title">
         ${projectFilterOptions.map((name, i) => `<label class="mgmt-row${i === projectFilterCursor ? ' selected' : ''}">
           <input type="checkbox" data-project-index="${i}" ${excludedProjects.has(name) ? '' : 'checked'}>
-          <span>${escapeHtml(name || 'No project')}</span></label>`).join('')}
+          <span class="mgmt-name">${escapeHtml(name || 'No project')}</span></label>`).join('')}
       </div>
-      <div class="modal-actions"><button class="btn-muted" id="project-filter-clear">Clear filters (q)</button>
-      <button class="btn" id="project-filter-close">Close</button></div>`);
+      <div class="modal-actions"><button class="btn-muted" id="project-filter-clear">Show all</button>
+      <button class="btn-muted" id="project-filter-none">Deselect all</button>
+      <button class="btn" id="project-filter-close">Done</button></div>
+      <div class="project-filter-shortcuts">j/k move · Space toggle · q all · d none · Esc done</div>`, 'modal-project-filter');
     const list = document.getElementById('project-filter-list');
     const modal = list.closest('.modal');
     modal.setAttribute('role', 'dialog');
@@ -836,6 +839,12 @@
       list.querySelectorAll('input').forEach(input => { input.checked = true; });
       focusProjectFilter();
     });
+    document.getElementById('project-filter-none').addEventListener('click', () => {
+      dashboardProjectOptions().forEach(name => excludedProjects.add(name));
+      applyProjectFilter();
+      list.querySelectorAll('input').forEach(input => { input.checked = false; });
+      focusProjectFilter();
+    });
     document.getElementById('project-filter-close').addEventListener('click', () => {
       closeWizard();
       document.getElementById('project-filter').focus();
@@ -856,16 +865,17 @@
   function handleProjectFilterKey(e) {
     if (!document.getElementById('project-filter-list')) return false;
     if (e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return false;
+    if (e.key === ' ' && e.target?.tagName === 'BUTTON') return true;
     const delta = ({ j: 1, ArrowDown: 1, k: -1, ArrowUp: -1 })[e.key];
     if (delta) {
       e.preventDefault();
       projectFilterCursor = Math.max(0, Math.min(projectFilterOptions.length - 1, projectFilterCursor + delta));
       focusProjectFilter();
-    } else if ([' ', 'q', 'Escape'].includes(e.key)) {
+    } else if ([' ', 'q', 'd', 'Escape'].includes(e.key)) {
       e.preventDefault();
       if (!e.repeat) {
         if (e.key === ' ') document.getElementById('project-filter-list').querySelectorAll('input')[projectFilterCursor]?.click();
-        else document.getElementById(e.key === 'q' ? 'project-filter-clear' : 'project-filter-close').click();
+        else document.getElementById(({ q: 'project-filter-clear', d: 'project-filter-none', Escape: 'project-filter-close' })[e.key]).click();
       }
     }
     return true;
