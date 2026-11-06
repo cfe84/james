@@ -135,6 +135,17 @@ func TestRunInstructionsPermissionsAndNotifications(t *testing.T) {
 			if !strings.Contains(params.SystemPrompt, "gadgets notify") {
 				t.Fatalf("%s yolo=%t lacks notification guidance", name, yolo)
 			}
+			for _, instruction := range []string{
+				"You MUST signal every required user answer, decision, approval, or external action",
+				"before waiting for the user or ending your turn",
+				"Asking in chat alone is not sufficient",
+				"for answers, choices, confirmations, or approvals",
+				"Children route requests to their parent first",
+			} {
+				if !strings.Contains(params.SystemPrompt, instruction) {
+					t.Errorf("%s yolo=%t lacks required attention guidance: %s", name, yolo, instruction)
+				}
+			}
 			if !strings.Contains(params.SystemPrompt, "<session-memory>") {
 				t.Fatalf("%s yolo=%t: memory access/injection mismatch", name, yolo)
 			}

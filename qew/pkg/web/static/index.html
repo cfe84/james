@@ -484,6 +484,20 @@ header h1 span { color: var(--primary); }
   accent-color: var(--primary); cursor: pointer;
 }
 #project-filter-list .mgmt-name { min-width: 0; overflow-wrap: anywhere; }
+#project-filter-list .project-filter-category {
+  margin-top: 8px; color: var(--muted); font-size: 0.85em;
+}
+#project-filter-list .project-filter-project { padding-left: 28px; }
+.project-filter-count { margin-left: auto; font-size: 0.85em; color: var(--muted); }
+.project-category-defaults { margin-bottom: 16px; padding: 12px; background: var(--surface); border-radius: 6px; }
+.project-category-defaults summary { cursor: pointer; min-height: 32px; }
+.project-category-defaults p { color: var(--muted); font-size: 0.85em; margin: 8px 0; }
+.category-display-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 44px; overflow-wrap: anywhere; }
+.category-display-row input { accent-color: var(--primary); }
+#project-filter-completed { margin-top: 8px; border-top: 1px solid var(--surface2); }
+#project-filter-completed > summary { gap: 8px; }
+#project-filter-completed > summary::before { content: '▸'; color: var(--muted); }
+#project-filter-completed[open] > summary::before { content: '▾'; }
 .modal-project-filter .modal-actions { margin: 0; padding: 12px 16px; justify-content: space-between; flex-wrap: wrap; }
 .modal-project-filter .modal-actions button { min-height: 44px; padding-inline: 10px; }
 .project-filter-shortcuts { padding: 0 16px 12px; color: var(--muted); font-size: 0.75em; text-align: center; }

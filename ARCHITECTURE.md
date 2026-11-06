@@ -698,12 +698,38 @@ hem/
    as multiple server requests. Matching descendants keep excluded ancestors
    as context only; counts and reasons exclude those ancestors and other
    excluded sessions. Sections are recalculated and sorted after filtering.
+   The derived session's `projectContext` marker labels excluded ancestors as
+   parent context and replaces their execution badge; it participates in row
+   reconciliation signatures and never changes the authoritative cached data.
    `j`/`k` move, Space toggles, Esc closes, `d` deselects all known projects,
    and `q` clears exclusions without
    closing. The list also accepts `q` to clear. Project-management entry reuses
    this filter for single-project navigation; create defaults are only inferred
-   when one named project remains enabled. No persistence/schema/API change;
+   when one named project remains enabled. Selection state stays page-local;
    the old dashboard text-filter control is removed, not the omnibar search.
+
+   Project categories live in Hem's `projects.category` (non-null text, empty
+   default), added through the existing idempotent SQLite migration path.
+   `create/update project --category` sets it (`--category=` explicitly clears);
+   list output appends Category after the existing columns and show includes it.
+   The existing Qew/TUI project forms and lists consume the same field.
+   Qew derives category suggestions/groups from its project cache; there is no
+   separate category entity or Moneypenny responsibility. The project loader
+   initially excludes done projects and detects transitions to done without
+   undoing explicit selection on ordinary refreshes. The picker groups active/
+   paused and completed projects separately; a closed native details element
+   contains completed groups at the bottom. Category controls have native
+   indeterminate state, and j/k navigation uses only visible inputs/summaries.
+   Batch selection reuses the exclusion set and cached dashboard projection.
+   Category Display overrides are stored once per name in
+   `project_category_defaults`; an absent setting means true. `list project`
+   retains its table columns and adds `category_defaults` metadata, while
+   `update category --name NAME --display=true|false` persists the setting.
+   Empty name represents Uncategorized (including No project). Qew's existing
+   Projects page exposes these shared defaults; cache refresh applies them on
+   initial load, new projects, category changes and default changes, but retains
+   manual picker overrides during ordinary refreshes. Completed status takes
+   precedence over default-on. This is visibility policy, not access control.
    Sorting uses parsed timestamps, then session IDs for stable ties.
 
    Both clients extend their existing dashboard models, rows, actions and refresh
@@ -744,6 +770,13 @@ hem/
    travels through Hem's `resolve attention` and Moneypenny's `update_attention`.
    Legacy notify/tags share this setter and deduplicate their transcript turn.
    Final response tags use the same path as streamed tags.
+   Shared run instructions require durable attention before waiting or ending
+   a turn whenever user input, approval, or external action is required, not
+   just while continuing background work. Questions/choices/approvals use
+   `needs_answer`; external steps use `needs_action`. Plain final-reply questions
+   are insufficient; optional offers and routine completion are excluded, and
+   children route requests through their parent. This guidance is injected on
+   each prepared run for all providers, independently of memory/yolo settings.
 
    List/show/history/reconcile responses carry the report, including unchanged
    metadata-only reconcile. A committed update advances the session watermark

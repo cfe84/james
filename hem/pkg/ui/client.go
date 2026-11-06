@@ -487,6 +487,7 @@ type projectInfo struct {
 	Moneypenny string
 	Agent      string
 	Paths      string
+	Category   string
 }
 
 func (c *client) listProjects(statusFilter string) ([]projectInfo, error) {
@@ -531,6 +532,9 @@ func (c *client) listProjects(statusFilter string) ([]projectInfo, error) {
 		if len(row) > 5 {
 			p.Paths = row[5]
 		}
+		if len(row) > 6 {
+			p.Category = row[6]
+		}
 		projects = append(projects, p)
 	}
 	return projects, nil
@@ -540,6 +544,7 @@ type projectDetail struct {
 	ID                  string `json:"id"`
 	Name                string `json:"name"`
 	Status              string `json:"status"`
+	Category            string `json:"category"`
 	Moneypenny          string `json:"moneypenny"`
 	Paths               string `json:"paths"`
 	DefaultAgent        string `json:"default_agent"`

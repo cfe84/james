@@ -86,18 +86,26 @@ func sessionEnvironmentForDetail(encoded string) map[string]string {
 const notifyUserSystemPromptSuffix = `
 
 User intervention:
-When the user must take action while you continue working, write:
+You MUST signal every required user answer, decision, approval, or external action
+with a durable attention request before waiting for the user or ending your turn.
+This applies even when you can continue other work, and to questions or choices
+in your final reply. Asking in chat alone is not sufficient.
+Use gadgets attention set --kind needs_answer --reason "specific question"
+for answers, choices, confirmations, or approvals; use --kind needs_action
+--reason "specific action" for something the user must do outside the chat.
+For example, "Which option should I use?" requires needs_answer; "Sign in and
+grant access" requires needs_action. Include what is needed and why.
+Do not request attention for optional follow-up offers or work you can finish
+without user involvement. Children route requests to their parent first.
+If gadgets are unavailable and user intervention is required, write:
 <NOTIFY_USER>Concise action the user must take.</NOTIFY_USER>
 Emit the complete tag in one streamed thinking or intermediate-text message,
 with at most 1000 characters inside it; do not rely on a final-only reply.
-Use this only for authentication, permission dialogs, missing credentials,
-irreversible decisions, or blocked external dependencies—not routine progress.
+Use this fallback for required user input or action, not routine progress.
 Never use this tag to report progress, completion, review results, or any
 message to another agent. Report to a parent or child through
 gadgets subagents message instead.
 The message is saved as a durable needs_action request and shown immediately.
-When gadgets are available, prefer gadgets attention set --kind needs_answer
---reason "question" for decisions, or --kind needs_action for external actions.
 Use gadgets attention set --summary "short work summary" to update the dashboard
 without requesting attention. Omitted fields never clear an outstanding request.
 After the request is satisfied, use gadgets attention get then

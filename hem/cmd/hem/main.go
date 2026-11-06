@@ -623,6 +623,7 @@ func printResponse(data json.RawMessage, outputFmt string) {
 					{"paths", result.Paths},
 					{"default_agent", result.DefaultAgent},
 					{"default_system_prompt", result.DefaultSystemPrompt},
+					{"category", result.Category},
 				},
 			}
 			showFmt := outputFmt
@@ -1025,11 +1026,12 @@ Defaults:
   list defaults
 
 Project management:
-  create project --name NAME [-m MP] [--path PATH] [--agent AGENT] [--system-prompt TEXT]
+  create project --name NAME [--category CATEGORY] [-m MP] [--path PATH] [--agent AGENT] [--system-prompt TEXT]
   list projects [--status active|paused|done]
   show project NAME_OR_ID
-  update project NAME_OR_ID [--name, --status, -m, --path, --agent, --system-prompt]
+  update project NAME_OR_ID [--name, --category, --status, -m, --path, --agent, --system-prompt]
   delete project NAME_OR_ID
+  update category --name NAME --display=true|false
 
 Session management:
   create session [-m MONEYPENNY] [--project NAME] PROMPT [--name, --system-prompt, --env NAME=VALUE ..., --yolo, --path, --compaction agent|custom, --async]

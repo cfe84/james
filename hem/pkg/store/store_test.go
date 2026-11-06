@@ -1,9 +1,46 @@
 package store
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 )
+
+func TestCategoryDisplayDefaultPersists(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hem.db")
+	s, err := New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaults, err := s.CategoryDisplayDefaults()
+	if err != nil || len(defaults) != 0 {
+		t.Fatalf("new category defaults = %v, %v", defaults, err)
+	}
+	for _, name := range []string{"Work", ""} {
+		if err := s.SetCategoryDisplayDefault(name, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	defaults, err = s.CategoryDisplayDefaults()
+	if err != nil || len(defaults) != 2 || defaults["Work"] || defaults[""] {
+		t.Fatalf("persisted category defaults = %v, %v", defaults, err)
+	}
+	if err := s.SetCategoryDisplayDefault("Work", true); err != nil {
+		t.Fatal(err)
+	}
+	defaults, err = s.CategoryDisplayDefaults()
+	if err != nil || !defaults["Work"] || defaults[""] {
+		t.Fatalf("updated category defaults = %v, %v", defaults, err)
+	}
+}
 
 func newTestStore(t *testing.T) *Store {
 	t.Helper()
@@ -13,6 +50,35 @@ func newTestStore(t *testing.T) *Store {
 	}
 	t.Cleanup(func() { s.Close() })
 	return s
+}
+
+func TestProjectCategoryMigrationAndUpdates(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now()
+	if err := s.CreateProject(&Project{ID: "legacy", Name: "Legacy", Status: "active", Paths: "[]", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec("ALTER TABLE projects DROP COLUMN category"); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := s.migrateSchema(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p, err := s.GetProject("Legacy")
+	if err != nil || p == nil || p.Category != "" || p.Status != "active" {
+		t.Fatalf("migration lost legacy project: %+v, %v", p, err)
+	}
+	for _, category := range []string{"Work", ""} {
+		if err := s.UpdateProject(p.ID, nil, nil, nil, nil, nil, nil, &category); err != nil {
+			t.Fatal(err)
+		}
+		projects, err := s.ListProjects("active")
+		if err != nil || len(projects) != 1 || projects[0].Category != category {
+			t.Fatalf("category update: %+v, %v", projects, err)
+		}
+	}
 }
 
 func TestAddAndGetMoneypenny(t *testing.T) {

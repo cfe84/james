@@ -491,8 +491,9 @@ function dashboardHarness() {
     relativeTime: () => '',
     fuzzyMatch: (query, target) => target.toLowerCase().includes(query.toLowerCase()),
     applyDashSelection() {},
-    excludedProjects: new Set(), projectsCache: [], projectFilterCursor: 0, projectFilterOptions: [],
+    excludedProjects: new Set(), projectsCache: [], categoryDefaults: {}, projectFilterCursor: 0, projectFilterOptions: [],
     dashSelectedId: '',
+    lastDashboardData: null,
     dashEntries: [],
     dashRowSigs: {},
     lastDashRenderSig: null,
@@ -500,7 +501,7 @@ function dashboardHarness() {
   });
   const source = app.slice(app.indexOf('  function renderDashboard(data)'), app.indexOf('  // Open a dashboard entry'));
   const projectFilter = app.slice(app.indexOf('  function dashboardProjectOptions('), app.indexOf('  // fuzzyMatch returns'));
-  const projectLabel = app.slice(app.indexOf('  function updateProjectFilter('), app.indexOf('  // --- Traits ---'));
+  const projectLabel = app.slice(app.indexOf('  function cacheProjects('), app.indexOf('  // --- Traits ---'));
   vm.runInContext(`${source}\n${projectFilter}\n${projectLabel}\nglobalThis.render = renderDashboard;`, context);
   return { context, container, saved };
 }
@@ -587,11 +588,11 @@ test('dashboard h/l reuse directional workstream folding shortcuts', () => {
 });
 
 test('project exclusions keep matching descendants, accurate counts and untouched cached data', () => {
-  const { context } = dashboardHarness();
+  const { context, container } = dashboardHarness();
   const data = { workstreams: [{
     root_session_id: 'parent', section: 'needs_you', active: 3, unread: 1, running: 1, requests: 1,
     sessions: [
-      { session_id: 'parent', name: 'Root', project: 'Hidden', depth: 0, execution: 'idle',
+      { session_id: 'parent', name: 'Root', project: 'Hidden', depth: 0, execution: 'working',
         attention: { kind: 'needs_answer', reason: 'Excluded question', revision: 1 } },
       { session_id: 'child', name: 'Child', project: 'Keep', depth: 1, execution: 'working' },
       { session_id: 'other', name: 'Other', project: 'Hidden', depth: 1, execution: 'idle', unread: true },
@@ -610,6 +611,19 @@ test('project exclusions keep matching descendants, accurate counts and untouche
   assert.equal(filtered.workstreams[0].requests, 0);
   assert.equal(filtered.workstreams[0].section, 'in_progress');
   assert.equal(filtered.workstreams[0].sessions[0].attention, null);
+  assert.equal(filtered.workstreams[0].sessions[0].projectContext, true);
+  data.workstreams[0].sessions[1].execution = 'idle';
+  context.render(data);
+  assert.match(container.innerHTML, /Quiet/);
+  assert.match(container.innerHTML, /Parent context · Hidden \(excluded\)/);
+  assert.match(container.innerHTML, />context<\/span>/);
+  assert.doesNotMatch(container.innerHTML, /session-status working|Excluded question/);
+  context.excludedProjects.clear();
+  context.render(data);
+  assert.doesNotMatch(container.innerHTML, /Parent context|>context<\/span>/);
+  assert.match(container.innerHTML, /session-status working/);
+  context.excludedProjects.add('Hidden');
+  context.excludedProjects.add('');
   context.excludedProjects.add('Keep');
   assert.equal(context.filterDashboardProjects(data).workstreams.length, 0);
   context.dashShowCompleted = true;
@@ -621,9 +635,10 @@ test('project exclusions keep matching descendants, accurate counts and untouche
   assert.equal(context.filterDashboardProjects(data), data);
 });
 
-test('project picker toggles with Space and mouse, navigates with jk, clears with q and closes with Escape', () => {
+test('project picker groups categories, folds completed projects and supports batch and individual selection', () => {
   const { context, container } = dashboardHarness();
-  let inputs = [], rows = [], open = false, focus, markup = '';
+  let controls = [], rows = [], open = false, focus, markup = '';
+  let completed;
   const buttons = new Map();
   const button = id => {
     if (!buttons.has(id)) buttons.set(id, {
@@ -634,7 +649,13 @@ test('project picker toggles with Space and mouse, navigates with jk, clears wit
   };
   const list = {
     closest: () => ({ setAttribute() {} }),
-    querySelectorAll: selector => selector === 'input' ? inputs : rows,
+    querySelectorAll: selector => {
+      if (selector === '.mgmt-row') return rows;
+      if (selector === 'input, summary') return controls;
+      if (selector === 'input') return controls.filter(input => input.tagName === 'INPUT');
+      return controls.filter(input => selector === '[data-project-index]'
+        ? input.dataset.projectIndex !== undefined : input.dataset.projectGroup !== undefined);
+    },
   };
   context.document.getElementById = id => id === 'dash-content' ? container
     : id === 'project-filter-list' ? open ? list : null : button(id);
@@ -644,79 +665,144 @@ test('project picker toggles with Space and mouse, navigates with jk, clears wit
     open = true;
     markup = content;
     modalClass = className;
-    inputs = [...content.matchAll(/data-project-index="(\d+)" (checked)?/g)].map(match => {
-      const row = { classList: { toggle() {} }, scrollIntoView() {} };
+    completed = { open: false };
+    const completedStart = content.indexOf('<details');
+    controls = [...content.matchAll(/<input type="checkbox" data-project-(index|group)="(\d+)"[^>]*>|<summary[^>]*>/g)].map(match => {
+      const summary = match[0].startsWith('<summary');
+      const row = { classList: { toggle() {}, add() {}, remove() {} }, scrollIntoView() {} };
       const handlers = {};
       return {
-        checked: Boolean(match[2]), dataset: { projectIndex: match[1] },
-        closest: () => row,
+        tagName: summary ? 'SUMMARY' : 'INPUT',
+        checked: match[0].includes(' checked'),
+        dataset: summary ? {} : { [match[1] === 'index' ? 'projectIndex' : 'projectGroup']: match[2] },
+        closest: selector => selector === 'details' ? match.index > completedStart ? completed : null : row,
         addEventListener(event, handler) { handlers[event] = handler; },
-        focus() { focus = Number(this.dataset.projectIndex); handlers.focus?.(); },
-        click() { this.checked = !this.checked; handlers.change(); },
+        focus() { focus = this; handlers.focus?.(); },
+        click() {
+          if (summary) completed.open = !completed.open;
+          else { this.checked = !this.checked; handlers.change(); }
+        },
       };
     });
-    rows = inputs.map(input => input.closest());
+    rows = controls.map(input => input.closest('.mgmt-row'));
   };
-  context.projectsCache = [{ name: 'Alpha' }, { name: '<Beta>', status: 'done' }];
-  const data = { rows: [['one', 'One', 'Alpha'], ['two', 'Two', '<Beta>'], ['three', 'Three', '']] };
+  const projects = [
+    ['a', 'Alpha', 'active', '', '', '', 'Work'],
+    ['b', '<Beta>', 'done', '', '', '', 'Work'],
+    ['c', 'Gamma', 'paused', '', '', '', 'Work'],
+  ];
+  context.cacheProjects(projects);
+  const data = { rows: [['one', 'One', 'Alpha'], ['two', 'Two', '<Beta>'], ['three', 'Three', ''], ['four', 'Four', 'Gamma']] };
   context.render(data);
+  assert.equal(context.excludedProjects.has('<Beta>'), true, 'completed projects default off before opening picker');
   const press = (key, extra = {}) => {
     let prevented = false;
     assert.equal(context.handleProjectFilterKey({ key, preventDefault() { prevented = true; }, ...extra }), true);
     return prevented;
   };
   context.openProjectFilter();
+  const project = name => controls.find(input => context.projectFilterOptions[Number(input.dataset.projectIndex)] === name);
+  const groups = () => controls.filter(input => input.dataset.projectGroup !== undefined);
   assert.equal(modalClass, 'modal-project-filter');
   assert.match(markup, /No project/);
   assert.match(markup, /&lt;Beta>/);
-  assert.equal(inputs.length, 3);
-  assert.equal(focus, 0);
+  assert.match(markup, /Completed projects/);
+  assert.ok(markup.indexOf('Completed projects') > markup.indexOf('Gamma'));
+  assert.equal(completed.open, false);
+  assert.equal(context.projectFilterControls().includes(project('<Beta>')), false);
+  assert.equal(focus, groups()[0]);
   assert.equal(press(' ', { target: { tagName: 'BUTTON' } }), false, 'buttons retain native Space activation');
-  assert.ok(inputs.every(input => input.checked));
   press('k');
-  assert.equal(focus, 0);
+  assert.equal(focus, groups()[0]);
+  press('j');
+  assert.equal(focus, project(''));
   press(' ');
   assert.equal(context.excludedProjects.has(''), true);
-  assert.deepEqual(Array.from(context.dashEntries, e => e.sessionId), ['one', 'two']);
+  assert.deepEqual(Array.from(context.dashEntries, e => e.sessionId), ['one', 'four']);
   press(' ', { repeat: true });
-  assert.equal(inputs[0].checked, false, 'held Space must not repeatedly toggle');
+  assert.equal(project('').checked, false, 'held Space must not repeatedly toggle');
   press('j');
-  const name = context.projectFilterOptions[1];
-  inputs[1].click();
-  assert.equal(context.excludedProjects.has(name), true);
-  press('j', { repeat: true });
+  const work = focus;
+  assert.equal(work, groups()[1]);
+  press(' ');
+  assert.equal(context.dashEntries.length, 0, 'category toggles all its active and paused projects');
+  project('Alpha').click();
+  assert.equal(work.indeterminate, true);
+  work.click();
+  assert.equal(work.indeterminate, false);
+  assert.equal(project('Gamma').checked, true);
+  assert.equal(project('<Beta>').checked, false, 'active category does not select hidden completed members');
+  for (let i = 0; i < controls.length && focus.tagName !== 'SUMMARY'; i++) press('j', { repeat: true });
+  assert.equal(focus.tagName, 'SUMMARY', 'navigation reaches completed fold without entering hidden rows');
+  press(' ');
+  assert.equal(completed.open, true);
   press('j');
-  assert.equal(focus, 2, 'cursor clamps at end');
+  press(' ');
+  assert.equal(project('<Beta>').checked, true, 'completed category can be selected explicitly');
   press('Escape');
   assert.equal(open, false);
   assert.equal(focus, 'project-filter');
   context.openProjectFilter();
-  assert.equal(inputs[0].checked, false, 'closing preserves choices');
+  assert.equal(completed.open, false, 'completed fold resets on reopen');
+  assert.equal(project('<Beta>').checked, true, 'closing preserves explicit choices');
   press('q');
   assert.equal(open, true, 'clear does not close the picker');
   assert.equal(context.excludedProjects.size, 0);
-  assert.ok(inputs.every(input => input.checked));
-  assert.equal(context.dashEntries.length, 3);
+  assert.equal(context.dashEntries.length, 4);
+  context.cacheProjects(projects);
+  assert.equal(context.excludedProjects.size, 0, 'refresh does not undo explicit completed selection');
   press('d');
   assert.equal(open, true, 'deselect all does not close the picker');
-  assert.ok(inputs.every(input => !input.checked));
+  assert.ok(controls.filter(input => input.tagName === 'INPUT').every(input => !input.checked));
   assert.equal(context.dashEntries.length, 0);
+  press('j');
   press(' ');
-  assert.equal(inputs.filter(input => input.checked).length, 1, 'a project can be enabled after deselecting all');
+  assert.equal(context.dashEntries.length, 1, 'a project can be enabled after deselecting all');
   press('d', { repeat: true });
-  assert.equal(inputs.filter(input => input.checked).length, 1, 'held d is ignored');
+  assert.equal(context.dashEntries.length, 1, 'held d is ignored');
   buttons.get('project-filter-none').click();
-  assert.ok(inputs.every(input => !input.checked), 'mouse action also deselects all');
+  assert.equal(context.dashEntries.length, 0, 'mouse action also deselects all');
   press('q');
-  assert.equal(context.dashEntries.length, 3);
+  assert.equal(context.dashEntries.length, 4);
   press('Escape');
   context.selectOnlyProject('Alpha');
   assert.deepEqual(Array.from(context.dashEntries, e => e.sessionId), ['one']);
   context.clearProjectFilter();
-  assert.equal(context.dashEntries.length, 3);
+  assert.equal(context.dashEntries.length, 4);
+  context.cacheProjects(projects.map(row => row[1] === 'Alpha' ? [row[0], row[1], 'done', ...row.slice(3)] : row));
+  assert.equal(context.excludedProjects.has('Alpha'), true, 'newly completed projects default off');
+  assert.equal(context.excludedProjects.has('<Beta>'), false, 'existing explicit completed selection is retained');
   assert.doesNotMatch(app, /id="dash-filter"|function openDashFilter|function initDashFilter/);
   assert.match(app, /case '\/': e\.preventDefault\(\); openProjectFilter\(\)/);
   assert.match(app, /case 'q': e\.preventDefault\(\); clearProjectFilter\(\)/);
+});
+
+test('category Display defaults initialize filters without undoing explicit page selections on refresh', () => {
+  const { context } = dashboardHarness();
+  const rows = [
+    ['a', 'Alpha', 'active', '', '', '', 'Work'],
+    ['b', 'Beta', 'done', '', '', '', 'Work'],
+    ['n', 'Notes', 'active', '', '', '', 'Personal'],
+    ['l', 'Loose', 'active', '', '', '', ''],
+  ];
+  context.cacheProjects(rows, { Work: false, '': false });
+  assert.deepEqual([...context.excludedProjects].sort(), ['', 'Alpha', 'Beta', 'Loose']);
+  context.clearProjectFilter();
+  context.cacheProjects(rows, { Work: false, '': false });
+  assert.equal(context.excludedProjects.size, 0, 'manual Show all survives refresh');
+  context.cacheProjects([...rows, ['x', 'New work', 'active', '', '', '', 'Work']], { Work: false, '': false });
+  assert.equal(context.excludedProjects.has('New work'), true, 'new project inherits category default');
+  context.cacheProjects(rows, { Work: true, '': true });
+  assert.equal(context.excludedProjects.has('Alpha'), false);
+  context.cacheProjects(rows, { Work: false });
+  assert.equal(context.excludedProjects.has('Alpha'), true, 'changing the shared default reapplies it');
+  context.cacheProjects(rows, { Work: true });
+  assert.equal(context.excludedProjects.has('Alpha'), false);
+  assert.equal(context.excludedProjects.has(''), false);
+  context.cacheProjects(rows.map(row => row[1] === 'Notes' ? [...row.slice(0, 6), 'Hidden'] : row), { Hidden: false });
+  assert.equal(context.excludedProjects.has('Notes'), true, 'moving a project into a hidden category applies its default');
+  context.cacheProjects(rows, { Hidden: false });
+  assert.equal(context.excludedProjects.has('Notes'), false, 'moving to a displayed category restores default visibility');
 });
 
 test('collapsed workstreams show and refresh child requests, including completed blockers', () => {

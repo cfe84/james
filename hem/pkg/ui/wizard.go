@@ -159,6 +159,7 @@ func newProjectWizardModel(c *client) wizardModel {
 		forProject:  true,
 		fields: []formField{
 			{label: "Name", flag: "--name", value: ""},
+			{label: "Category", flag: "--category", value: ""},
 			{label: "Agent", flag: "--agent", value: "copilot", options: []string{"", "claude", "copilot", "opencode"}},
 			{label: "System Prompt", flag: "--system-prompt", value: ""},
 		},

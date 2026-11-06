@@ -47,6 +47,7 @@ type Project struct {
 	ID                  string
 	Name                string
 	Status              string // active, paused, done
+	Category            string
 	Moneypenny          string
 	Paths               string // JSON array
 	DefaultAgent        string
@@ -109,6 +110,7 @@ CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
     status TEXT NOT NULL DEFAULT 'active',
+    category TEXT NOT NULL DEFAULT '',
     moneypenny TEXT NOT NULL DEFAULT '',
     paths TEXT NOT NULL DEFAULT '[]',
     default_agent TEXT NOT NULL DEFAULT 'claude',
@@ -140,6 +142,11 @@ CREATE TABLE IF NOT EXISTS processed_schedule_ready (
 CREATE TABLE IF NOT EXISTS defaults (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS project_category_defaults (
+    name TEXT PRIMARY KEY,
+    display INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS model_cache (
@@ -748,12 +755,41 @@ func (s *Store) ListDefaults() (map[string]string, error) {
 // Project methods
 // ---------------------------------------------------------------------------
 
+// CategoryDisplayDefaults returns persisted category visibility overrides.
+func (s *Store) CategoryDisplayDefaults() (map[string]bool, error) {
+	rows, err := s.db.Query(`SELECT name, display FROM project_category_defaults`)
+	if err != nil {
+		return nil, fmt.Errorf("list category display defaults: %w", err)
+	}
+	defer rows.Close()
+	result := make(map[string]bool)
+	for rows.Next() {
+		var name string
+		var display bool
+		if err := rows.Scan(&name, &display); err != nil {
+			return nil, fmt.Errorf("scan category display default: %w", err)
+		}
+		result[name] = display
+	}
+	return result, rows.Err()
+}
+
+// SetCategoryDisplayDefault sets the shared default for a category (empty is Uncategorized).
+func (s *Store) SetCategoryDisplayDefault(name string, display bool) error {
+	_, err := s.db.Exec(`INSERT INTO project_category_defaults (name, display) VALUES (?, ?)
+		ON CONFLICT(name) DO UPDATE SET display = excluded.display`, name, display)
+	if err != nil {
+		return fmt.Errorf("set category display default: %w", err)
+	}
+	return nil
+}
+
 // CreateProject inserts a new project.
 func (s *Store) CreateProject(p *Project) error {
 	_, err := s.db.Exec(
-		`INSERT INTO projects (id, name, status, moneypenny, paths, default_agent, default_system_prompt, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		p.ID, p.Name, p.Status, p.Moneypenny, p.Paths, p.DefaultAgent, p.DefaultSystemPrompt, p.CreatedAt, p.UpdatedAt,
+		`INSERT INTO projects (id, name, status, moneypenny, paths, default_agent, default_system_prompt, created_at, updated_at, category)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.ID, p.Name, p.Status, p.Moneypenny, p.Paths, p.DefaultAgent, p.DefaultSystemPrompt, p.CreatedAt, p.UpdatedAt, p.Category,
 	)
 	if err != nil {
 		return fmt.Errorf("create project %q: %w", p.Name, err)
@@ -764,7 +800,7 @@ func (s *Store) CreateProject(p *Project) error {
 // GetProject retrieves a project by ID first, then by name. Returns nil, nil if not found.
 func (s *Store) GetProject(nameOrID string) (*Project, error) {
 	row := s.db.QueryRow(
-		`SELECT id, name, status, moneypenny, paths, default_agent, default_system_prompt, created_at, updated_at
+		`SELECT id, name, status, moneypenny, paths, default_agent, default_system_prompt, created_at, updated_at, category
 		 FROM projects WHERE id = ?`, nameOrID,
 	)
 	p, err := scanProject(row)
@@ -777,7 +813,7 @@ func (s *Store) GetProject(nameOrID string) (*Project, error) {
 
 	// Try by name.
 	row = s.db.QueryRow(
-		`SELECT id, name, status, moneypenny, paths, default_agent, default_system_prompt, created_at, updated_at
+		`SELECT id, name, status, moneypenny, paths, default_agent, default_system_prompt, created_at, updated_at, category
 		 FROM projects WHERE name = ?`, nameOrID,
 	)
 	p, err = scanProject(row)
@@ -796,12 +832,12 @@ func (s *Store) ListProjects(statusFilter string) ([]*Project, error) {
 	var err error
 	if statusFilter == "" {
 		rows, err = s.db.Query(
-			`SELECT id, name, status, moneypenny, paths, default_agent, default_system_prompt, created_at, updated_at
+			`SELECT id, name, status, moneypenny, paths, default_agent, default_system_prompt, created_at, updated_at, category
 			 FROM projects ORDER BY name`,
 		)
 	} else {
 		rows, err = s.db.Query(
-			`SELECT id, name, status, moneypenny, paths, default_agent, default_system_prompt, created_at, updated_at
+			`SELECT id, name, status, moneypenny, paths, default_agent, default_system_prompt, created_at, updated_at, category
 			 FROM projects WHERE status = ? ORDER BY name`, statusFilter,
 		)
 	}
@@ -813,7 +849,7 @@ func (s *Store) ListProjects(statusFilter string) ([]*Project, error) {
 	var result []*Project
 	for rows.Next() {
 		var p Project
-		if err := rows.Scan(&p.ID, &p.Name, &p.Status, &p.Moneypenny, &p.Paths, &p.DefaultAgent, &p.DefaultSystemPrompt, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.Status, &p.Moneypenny, &p.Paths, &p.DefaultAgent, &p.DefaultSystemPrompt, &p.CreatedAt, &p.UpdatedAt, &p.Category); err != nil {
 			return nil, fmt.Errorf("scan project: %w", err)
 		}
 		result = append(result, &p)
@@ -822,10 +858,14 @@ func (s *Store) ListProjects(statusFilter string) ([]*Project, error) {
 }
 
 // UpdateProject updates specified fields of a project. Only non-nil pointer fields are updated.
-func (s *Store) UpdateProject(id string, name, status, moneypenny, paths, defaultAgent, defaultSystemPrompt *string) error {
+func (s *Store) UpdateProject(id string, name, status, moneypenny, paths, defaultAgent, defaultSystemPrompt, category *string) error {
 	var sets []string
 	var args []interface{}
 
+	if category != nil {
+		sets = append(sets, "category = ?")
+		args = append(args, *category)
+	}
 	if name != nil {
 		sets = append(sets, "name = ?")
 		args = append(args, *name)
@@ -992,7 +1032,7 @@ func (s *Store) GetSessionHemStatus(sessionID string) (string, error) {
 // scanProject scans a single row into a Project.
 func scanProject(row *sql.Row) (*Project, error) {
 	var p Project
-	err := row.Scan(&p.ID, &p.Name, &p.Status, &p.Moneypenny, &p.Paths, &p.DefaultAgent, &p.DefaultSystemPrompt, &p.CreatedAt, &p.UpdatedAt)
+	err := row.Scan(&p.ID, &p.Name, &p.Status, &p.Moneypenny, &p.Paths, &p.DefaultAgent, &p.DefaultSystemPrompt, &p.CreatedAt, &p.UpdatedAt, &p.Category)
 	if err != nil {
 		return nil, err
 	}
@@ -1193,6 +1233,7 @@ func scanTrait(row *sql.Row) (*Trait, error) {
 // ignoring "duplicate column name" errors.
 func (s *Store) migrateSchema() error {
 	migrations := []string{
+		`ALTER TABLE projects ADD COLUMN category TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sessions ADD COLUMN project_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sessions ADD COLUMN hem_status TEXT NOT NULL DEFAULT 'active'`,
 		`ALTER TABLE sessions ADD COLUMN reviewed INTEGER NOT NULL DEFAULT 1`,

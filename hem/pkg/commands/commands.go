@@ -668,6 +668,8 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.ShowProject(args)
 	case "update project":
 		return e.UpdateProject(args)
+	case "update category":
+		return e.UpdateCategory(args)
 	case "delete project":
 		return e.DeleteProject(args)
 
@@ -1428,6 +1430,7 @@ type ProjectResult struct {
 	ID                  string `json:"id"`
 	Name                string `json:"name"`
 	Status              string `json:"status"`
+	Category            string `json:"category"`
 	Moneypenny          string `json:"moneypenny"`
 	Paths               string `json:"paths"`
 	DefaultAgent        string `json:"default_agent"`
@@ -3921,10 +3924,11 @@ func (e *Executor) ListSessions(args []string) *protocol.Response {
 // ---------------------------------------------------------------------------
 
 func (e *Executor) CreateProject(args []string) *protocol.Response {
-	var name, mpName, pathArg, agentName, systemPrompt string
+	var name, mpName, pathArg, agentName, systemPrompt, category string
 
 	_, err := parseFlagsFromArgs("create-project", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&name, "name", "", "project name")
+		fs.StringVar(&category, "category", "", "project category")
 		fs.StringVar(&mpName, "m", "", "default moneypenny")
 		fs.StringVar(&mpName, "moneypenny", "", "default moneypenny")
 		fs.StringVar(&pathArg, "path", "", "working directory path")
@@ -3954,6 +3958,7 @@ func (e *Executor) CreateProject(args []string) *protocol.Response {
 		ID:                  generateSessionID(),
 		Name:                name,
 		Status:              "active",
+		Category:            strings.TrimSpace(category),
 		Moneypenny:          mpName,
 		Paths:               paths,
 		DefaultAgent:        agentName,
@@ -3987,15 +3992,53 @@ func (e *Executor) ListProjects(args []string) *protocol.Response {
 	}
 
 	result := TableResult{
-		Headers: []string{"ID", "Name", "Status", "Moneypenny", "Agent", "Paths"},
+		Headers: []string{"ID", "Name", "Status", "Moneypenny", "Agent", "Paths", "Category"},
 	}
 	for _, p := range projects {
 		result.Rows = append(result.Rows, []string{
-			p.ID, p.Name, p.Status, p.Moneypenny, p.DefaultAgent, p.Paths,
+			p.ID, p.Name, p.Status, p.Moneypenny, p.DefaultAgent, p.Paths, p.Category,
 		})
 	}
 
-	return protocol.OKResponse(result)
+	defaults, err := e.store.CategoryDisplayDefaults()
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	return protocol.OKResponse(struct {
+		TableResult
+		CategoryDefaults map[string]bool `json:"category_defaults"`
+	}{result, defaults})
+}
+
+// UpdateCategory updates the shared session-list display default.
+func (e *Executor) UpdateCategory(args []string) *protocol.Response {
+	var name *string
+	var display *bool
+	remaining, err := parseFlagsFromArgs("update-category", args, func(fs *flag.FlagSet) {
+		fs.Func("name", "category name (empty is Uncategorized)", func(value string) error {
+			category := strings.TrimSpace(value)
+			name = &category
+			return nil
+		})
+		fs.Func("display", "display by default (true/false)", func(value string) error {
+			if value != "true" && value != "false" {
+				return fmt.Errorf("--display must be true or false")
+			}
+			enabled := value == "true"
+			display = &enabled
+			return nil
+		})
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if len(remaining) != 0 || display == nil || name == nil {
+		return protocol.ErrResponse("use update category --name NAME --display=true|false")
+	}
+	if err := e.store.SetCategoryDisplayDefault(*name, *display); err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	return protocol.OKResponse(TextResult{Message: "Category display default updated."})
 }
 
 func (e *Executor) ShowProject(args []string) *protocol.Response {
@@ -4027,6 +4070,7 @@ func (e *Executor) ShowProject(args []string) *protocol.Response {
 		ID:                  p.ID,
 		Name:                p.Name,
 		Status:              p.Status,
+		Category:            p.Category,
 		Moneypenny:          p.Moneypenny,
 		Paths:               p.Paths,
 		DefaultAgent:        p.DefaultAgent,
@@ -4036,10 +4080,16 @@ func (e *Executor) ShowProject(args []string) *protocol.Response {
 
 func (e *Executor) UpdateProject(args []string) *protocol.Response {
 	var nameFlag, statusFlag, mpName, pathArg, agentName, systemPrompt string
+	var pCategory *string
 
 	remaining, err := parseFlagsFromArgs("update-project", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&nameFlag, "name", "", "new project name")
 		fs.StringVar(&statusFlag, "status", "", "new status (active, paused, done)")
+		fs.Func("category", "project category (empty clears it)", func(value string) error {
+			category := strings.TrimSpace(value)
+			pCategory = &category
+			return nil
+		})
 		fs.StringVar(&mpName, "m", "", "default moneypenny")
 		fs.StringVar(&mpName, "moneypenny", "", "default moneypenny")
 		fs.StringVar(&pathArg, "path", "", "working directory path")
@@ -4095,11 +4145,11 @@ func (e *Executor) UpdateProject(args []string) *protocol.Response {
 		pSystemPrompt = &systemPrompt
 	}
 
-	if pName == nil && pStatus == nil && pMoneypenny == nil && pPaths == nil && pAgent == nil && pSystemPrompt == nil {
+	if pName == nil && pStatus == nil && pMoneypenny == nil && pPaths == nil && pAgent == nil && pSystemPrompt == nil && pCategory == nil {
 		return protocol.ErrResponse("no fields to update")
 	}
 
-	if err := e.store.UpdateProject(p.ID, pName, pStatus, pMoneypenny, pPaths, pAgent, pSystemPrompt); err != nil {
+	if err := e.store.UpdateProject(p.ID, pName, pStatus, pMoneypenny, pPaths, pAgent, pSystemPrompt, pCategory); err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
 

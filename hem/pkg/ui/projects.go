@@ -137,6 +137,7 @@ func newEditProjectModel(c *client, p *projectInfo) editProjectModel {
 	fields := []formField{
 		{label: "Name", flag: "--name", value: p.Name},
 		{label: "Status", flag: "--status", value: p.Status},
+		{label: "Category", flag: "--category", value: p.Category},
 		{label: "Moneypenny", flag: "-m", value: p.Moneypenny},
 		{label: "Agent", flag: "--agent", value: p.Agent},
 		{label: "Path", flag: "--path", value: p.Paths},
@@ -266,8 +267,8 @@ func (m projectsModel) View() string {
 	var b strings.Builder
 
 	// Header
-	header := fmt.Sprintf("  %-20s %-10s %-14s %-10s %-20s",
-		"Name", "Status", "Moneypenny", "Agent", "Paths")
+	header := fmt.Sprintf("  %-20s %-10s %-14s %-10s %-20s %-16s",
+		"Name", "Status", "Moneypenny", "Agent", "Paths", "Category")
 	b.WriteString(sessionHeaderStyle.Render(header))
 	b.WriteString("\n")
 
@@ -293,8 +294,8 @@ func (m projectsModel) View() string {
 		agent := truncate(p.Agent, 8)
 		paths := truncate(p.Paths, 18)
 
-		line := fmt.Sprintf("  %-20s %-10s %-14s %-10s %-20s",
-			name, status, mp, agent, paths)
+		line := fmt.Sprintf("  %-20s %-10s %-14s %-10s %-20s %-16s",
+			name, status, mp, agent, paths, truncate(p.Category, 14))
 
 		if i == m.cursor {
 			if m.width > 0 && lipgloss.Width(line) < m.width {

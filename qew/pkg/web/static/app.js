@@ -53,6 +53,7 @@
   let projectFilterCursor = 0;
   let projectFilterOptions = [];
   let projectsCache = []; // cached project list
+  let categoryDefaults = {};
   let dashEntries = [];   // dashboard rows in display order (for keyboard nav)
   let dashSelectedId = ''; // session id of keyboard-selected dashboard row
   let lastDashboardData = null; // most recent dashboard payload (for local re-filter)
@@ -199,12 +200,36 @@
     try {
       const resp = await apiCall('list', 'project', []);
       if (resp.status === 'ok' && resp.data && resp.data.rows) {
-        projectsCache = resp.data.rows.map(r => ({
-          id: r[0], name: r[1], status: r[2], moneypenny: r[3], agent: r[4], paths: r[5],
-        }));
+        cacheProjects(resp.data.rows, resp.data.category_defaults);
+      } else if (resp.status === 'error') {
+        console.warn('Unable to load projects:', resp.message);
       }
-    } catch (e) { /* ignore */ }
-    updateProjectFilter();
+    } catch (e) { console.warn('Unable to load projects:', e); }
+    applyProjectFilter();
+  }
+
+  function cacheProjects(rows, defaults = {}) {
+    const previous = new Map(projectsCache.map(p => [p.name, p]));
+    const previousDefaults = categoryDefaults;
+    categoryDefaults = defaults;
+    projectsCache = rows.map(r => ({
+      id: r[0], name: r[1], status: r[2], moneypenny: r[3], agent: r[4], paths: r[5], category: r[6] || '',
+    }));
+    projectsCache.forEach(p => {
+      const old = previous.get(p.name);
+      const display = categoryDefaults[p.category] !== false;
+      const oldDisplay = previousDefaults[old?.category || ''] !== false;
+      const categoryChanged = old && old.category !== p.category;
+      const newlyCompleted = p.status === 'done' && old?.status !== 'done';
+      const newlyHidden = !display && (!old || oldDisplay || categoryChanged);
+      if (newlyCompleted || newlyHidden) {
+        excludedProjects.add(p.name);
+      } else if (old && (!oldDisplay || categoryChanged) && display && p.status !== 'done') {
+        excludedProjects.delete(p.name);
+      }
+    });
+    if (categoryDefaults[''] === false && previousDefaults[''] !== false) excludedProjects.add('');
+    else if (categoryDefaults[''] !== false && previousDefaults[''] === false) excludedProjects.delete('');
   }
 
   function updateProjectFilter() {
@@ -435,6 +460,7 @@
       sessionId: s.session_id, name: s.name, nick: s.nick || '', project: s.project || '',
       moneypenny: s.moneypenny, agent: s.agent || '', model: s.model || '',
       mpStatus: s.execution, hemStatus: s.completed ? 'completed' : 'active',
+      projectContext: s.projectContext || false,
       unread: s.unread && !s.completed,
       summary: s.summary || '', attention: s.attention,
       lastActive: (s.depth === 0 && w.last_activity) || s.last_activity || s.created_at || '',
@@ -510,7 +536,7 @@
       '\x1f' + (e.workstream ? JSON.stringify([e.unread, e.hemStatus, e.hierarchyIssue,
         e.workstream.active, e.workstream.running, e.workstream.unread, e.workstream.unavailable,
         e.workstream.sessions.length, dashExpanded.has(e.rootId), dashAllSessions,
-        e.summary, e.attention, e.workstream.requests,
+        e.summary, e.attention, e.workstream.requests, e.projectContext,
         e.depth === 0 && e.workstream.sessions.map(s => [s.name, s.nick, s.attention])]) : '');
 
     // Update the shared navigation state (cheap; order matches the DOM either path).
@@ -602,7 +628,8 @@
         ${expandable ? `<button class="workstream-expand" data-expand="${escapeAttr(e.rootId)}" aria-expanded="${dashExpanded.has(e.rootId)}" aria-label="Toggle agents in ${escapeAttr(e.name)}">${dashExpanded.has(e.rootId) ? '▾' : '▸'}</button>` : ''}
         <span class="workstream-main" style="padding-left:${(root ? 0 : 44) + Math.min(e.depth, 6) * 16}px">
           <span class="session-name">${nickPrefix}${escapeHtml(displayName)}</span>
-          ${e.project ? `<span class="session-project">${escapeHtml(e.project)}</span>` : ''}
+          ${e.projectContext ? `<span class="workstream-summary">Parent context · ${escapeHtml(e.project || 'No project')} (excluded)</span>`
+            : e.project ? `<span class="session-project">${escapeHtml(e.project)}</span>` : ''}
           ${summary ? `<span class="workstream-summary">${escapeHtml(summary)}</span>` : ''}
           ${e.summary ? `<span class="workstream-summary">${escapeHtml(e.summary)}</span>` : ''}
           ${e.attention && e.attention.kind ? `<span class="workstream-attention">${escapeHtml(attentionLabel(e.attention.kind))}: ${escapeHtml(e.attention.reason)}</span>` : ''}
@@ -610,7 +637,8 @@
             `<span class="workstream-attention">${escapeHtml(s.nick || s.name)} · ${escapeHtml(attentionLabel(s.attention.kind))}: ${escapeHtml(s.attention.reason)}</span>`).join('') : ''}
           ${e.hierarchyIssue ? `<span class="workstream-summary">Hierarchy: ${escapeHtml(e.hierarchyIssue.replaceAll('_', ' '))}</span>` : ''}
         </span>
-        <span class="session-status ${e.mpStatus === 'working' ? 'working' : 'idle'}">${escapeHtml(e.mpStatus)}${e.hemStatus === 'completed' ? ' · completed' : ''}</span>
+        ${e.projectContext ? '<span class="session-status idle">context</span>'
+          : `<span class="session-status ${e.mpStatus === 'working' ? 'working' : 'idle'}">${escapeHtml(e.mpStatus)}${e.hemStatus === 'completed' ? ' · completed' : ''}</span>`}
         ${e.unread ? '<span class="session-status ready">unread</span>' : ''}
         <details class="session-details"><summary aria-label="Session details">Details</summary>
           <span>${escapeHtml([e.agent, e.model, e.moneypenny, e.sessionId].filter(Boolean).join(' · '))}</span>
@@ -773,7 +801,7 @@
       const unread = active.filter(s => s.unread).length;
       const running = active.filter(s => s.execution === 'working').length;
       return [{ ...w, sessions: sessions.map(s => excludedProjects.has(s.project || '')
-        ? { ...s, summary: '', attention: null, unread: false } : s),
+        ? { ...s, projectContext: true, summary: '', attention: null, unread: false } : s),
       active: active.length, requests, unread, running,
       unavailable: active.filter(s => s.execution === 'offline' || s.execution === 'unknown').length,
       section: requests || unread ? 'needs_you' : !active.length ? 'completed' : running ? 'in_progress' : 'quiet' }];
@@ -803,14 +831,40 @@
 
   function openProjectFilter() {
     projectFilterOptions = dashboardProjectOptions();
-    projectFilterCursor = Math.min(projectFilterCursor, projectFilterOptions.length - 1);
+    const metadata = new Map(projectsCache.map(p => [p.name, p]));
+    const groups = [];
+    const renderGroups = completed => {
+      const categories = new Map();
+      projectFilterOptions.forEach((name, i) => {
+        const project = metadata.get(name);
+        if ((project?.status === 'done') !== completed) return;
+        const category = project?.category || '';
+        if (!categories.has(category)) categories.set(category, []);
+        categories.get(category).push(i);
+      });
+      return [...categories].sort(([a], [b]) => a.localeCompare(b)).map(([category, indices]) => {
+        const groupIndex = groups.push(indices) - 1;
+        return `<section class="project-filter-group">
+          <label class="mgmt-row project-filter-category">
+            <input type="checkbox" data-project-group="${groupIndex}">
+            <span class="mgmt-name">${escapeHtml(category || 'Uncategorized')}</span>
+            <span class="project-filter-count">${indices.length}</span>
+          </label>
+          ${indices.map(i => `<label class="mgmt-row project-filter-project">
+            <input type="checkbox" data-project-index="${i}" ${excludedProjects.has(projectFilterOptions[i]) ? '' : 'checked'}>
+            <span class="mgmt-name">${escapeHtml(projectFilterOptions[i] || 'No project')}</span></label>`).join('')}
+        </section>`;
+      }).join('');
+    };
+    const active = renderGroups(false), completed = renderGroups(true);
+    projectFilterCursor = 0;
     renderWizardModal(`<div class="project-filter-header">
       <h3 id="project-filter-title">Projects</h3>
       <p>Choose which projects appear.</p></div>
       <div id="project-filter-list" role="group" aria-labelledby="project-filter-title">
-        ${projectFilterOptions.map((name, i) => `<label class="mgmt-row${i === projectFilterCursor ? ' selected' : ''}">
-          <input type="checkbox" data-project-index="${i}" ${excludedProjects.has(name) ? '' : 'checked'}>
-          <span class="mgmt-name">${escapeHtml(name || 'No project')}</span></label>`).join('')}
+        ${active}
+        ${completed ? `<details id="project-filter-completed"><summary class="mgmt-row">Completed projects
+          <span class="project-filter-count">${projectsCache.filter(p => p.status === 'done').length}</span></summary>${completed}</details>` : ''}
       </div>
       <div class="modal-actions"><button class="btn-muted" id="project-filter-clear">Show all</button>
       <button class="btn-muted" id="project-filter-none">Deselect all</button>
@@ -821,42 +875,68 @@
     modal.setAttribute('role', 'dialog');
     modal.setAttribute('aria-modal', 'true');
     modal.setAttribute('aria-labelledby', 'project-filter-title');
-    list.querySelectorAll('input').forEach(input => {
-      input.addEventListener('focus', () => {
-        projectFilterCursor = Number(input.dataset.projectIndex);
-        list.querySelectorAll('.mgmt-row').forEach((row, i) => row.classList.toggle('selected', i === projectFilterCursor));
+    const syncChecks = () => {
+      list.querySelectorAll('[data-project-index]').forEach(input => {
+        input.checked = !excludedProjects.has(projectFilterOptions[Number(input.dataset.projectIndex)]);
       });
+      list.querySelectorAll('[data-project-group]').forEach(input => {
+        const indices = groups[Number(input.dataset.projectGroup)];
+        const selected = indices.filter(i => !excludedProjects.has(projectFilterOptions[i])).length;
+        input.checked = selected === indices.length;
+        input.indeterminate = selected > 0 && selected < indices.length;
+      });
+    };
+    list.querySelectorAll('input, summary').forEach(input => {
+      input.addEventListener('focus', () => {
+        projectFilterCursor = projectFilterControls().indexOf(input);
+        list.querySelectorAll('.mgmt-row').forEach(row => row.classList.toggle('selected', row === input.closest('.mgmt-row')));
+      });
+    });
+    list.querySelectorAll('input').forEach(input => {
       input.addEventListener('change', () => {
-        projectFilterCursor = Number(input.dataset.projectIndex);
-        const name = projectFilterOptions[projectFilterCursor];
-        if (input.checked) excludedProjects.delete(name); else excludedProjects.add(name);
+        projectFilterCursor = projectFilterControls().indexOf(input);
+        const indices = input.dataset.projectGroup !== undefined
+          ? groups[Number(input.dataset.projectGroup)] : [Number(input.dataset.projectIndex)];
+        indices.forEach(i => {
+          const name = projectFilterOptions[i];
+          if (input.checked) excludedProjects.delete(name); else excludedProjects.add(name);
+        });
+        syncChecks();
         applyProjectFilter();
         focusProjectFilter();
       });
     });
     document.getElementById('project-filter-clear').addEventListener('click', () => {
       clearProjectFilter();
-      list.querySelectorAll('input').forEach(input => { input.checked = true; });
+      syncChecks();
       focusProjectFilter();
     });
     document.getElementById('project-filter-none').addEventListener('click', () => {
       dashboardProjectOptions().forEach(name => excludedProjects.add(name));
       applyProjectFilter();
-      list.querySelectorAll('input').forEach(input => { input.checked = false; });
+      syncChecks();
       focusProjectFilter();
     });
     document.getElementById('project-filter-close').addEventListener('click', () => {
       closeWizard();
       document.getElementById('project-filter').focus();
     });
+    syncChecks();
     focusProjectFilter();
   }
 
+  function projectFilterControls() {
+    return [...document.getElementById('project-filter-list').querySelectorAll('input, summary')]
+      .filter(input => input.tagName === 'SUMMARY' || !input.closest('details') || input.closest('details').open);
+  }
+
   function focusProjectFilter() {
-    const inputs = document.getElementById('project-filter-list').querySelectorAll('input');
-    inputs.forEach((input, i) => input.closest('.mgmt-row').classList.toggle('selected', i === projectFilterCursor));
+    const inputs = projectFilterControls();
+    projectFilterCursor = Math.max(0, Math.min(inputs.length - 1, projectFilterCursor));
+    document.getElementById('project-filter-list').querySelectorAll('.mgmt-row').forEach(row => row.classList.remove('selected'));
     const input = inputs[projectFilterCursor];
     if (input) {
+      input.closest('.mgmt-row').classList.add('selected');
       input.focus();
       input.closest('.mgmt-row').scrollIntoView({ block: 'nearest' });
     }
@@ -869,12 +949,12 @@
     const delta = ({ j: 1, ArrowDown: 1, k: -1, ArrowUp: -1 })[e.key];
     if (delta) {
       e.preventDefault();
-      projectFilterCursor = Math.max(0, Math.min(projectFilterOptions.length - 1, projectFilterCursor + delta));
+      projectFilterCursor += delta;
       focusProjectFilter();
     } else if ([' ', 'q', 'd', 'Escape'].includes(e.key)) {
       e.preventDefault();
       if (!e.repeat) {
-        if (e.key === ' ') document.getElementById('project-filter-list').querySelectorAll('input')[projectFilterCursor]?.click();
+        if (e.key === ' ') projectFilterControls()[projectFilterCursor]?.click();
         else document.getElementById(({ q: 'project-filter-clear', d: 'project-filter-none', Escape: 'project-filter-close' })[e.key]).click();
       }
     }
@@ -5890,16 +5970,20 @@
         return;
       }
       const rows = (resp.data && resp.data.rows) || [];
-      if (rows.length === 0) {
-        container.innerHTML = '<div class="empty-state">No projects</div>';
-        return;
-      }
-      let html = '';
+      cacheProjects(rows, resp.data.category_defaults);
+      const categories = [...new Set(['', ...projectsCache.map(p => p.category)])].sort((a, b) => a.localeCompare(b));
+      let html = `<details class="project-category-defaults"><summary>Category defaults</summary>
+        <p>Display these categories in the session list by default.</p>
+        ${categories.map((category, i) => `<label class="category-display-row">
+          <span>${escapeHtml(category || 'Uncategorized')}</span>
+          <span><input type="checkbox" data-category-display="${i}" ${categoryDefaults[category] === false ? '' : 'checked'}> Display</span>
+        </label>`).join('')}</details>`;
       for (const r of rows) {
-        const id = r[0], name = r[1], status = r[2], mp = r[3], agent = r[4], paths = r[5];
+        const id = r[0], name = r[1], status = r[2], mp = r[3], agent = r[4], paths = r[5], category = r[6] || '';
         html += `
           <div class="mgmt-row" data-project-name="${escapeAttr(name)}" style="cursor:pointer">
             <span class="mgmt-name">${escapeHtml(name)}</span>
+            ${category ? `<span class="mgmt-detail">${escapeHtml(category)}</span>` : ''}
             <span class="mgmt-badge ${status}">${escapeHtml(status)}</span>
             ${mp ? `<span class="mgmt-detail">${escapeHtml(mp)}</span>` : ''}
             ${agent ? `<span class="mgmt-detail">${escapeHtml(agent)}</span>` : ''}
@@ -5909,7 +5993,26 @@
             </span>
           </div>`;
       }
+      if (!rows.length) html += '<div class="empty-state">No projects</div>';
       container.innerHTML = html;
+      container.querySelectorAll('[data-category-display]').forEach(input => {
+        input.addEventListener('change', async () => {
+          const checked = input.checked;
+          input.disabled = true;
+          try {
+            const response = await apiCall('update', 'category', [
+              '--name=' + categories[Number(input.dataset.categoryDisplay)], '--display=' + checked,
+            ]);
+            if (response.status === 'error') throw new Error(response.message);
+            await loadProjects();
+          } catch (error) {
+            input.checked = !checked;
+            alert('Error updating category display: ' + error.message);
+          } finally {
+            input.disabled = false;
+          }
+        });
+      });
       // Click row to filter dashboard by project.
       container.querySelectorAll('.mgmt-row').forEach(row => {
         row.addEventListener('click', (e) => {
@@ -5945,6 +6048,13 @@
 
   let projFormState = { selectedMP: '', currentPath: '', moneypennies: [] };
 
+  function projectCategoryField(id, value = '') {
+    const categories = [...new Set(projectsCache.map(p => p.category).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+    return `<label for="${id}">Category</label>
+      <input id="${id}" list="${id}-options" value="${escapeAttr(value)}" placeholder="Uncategorized">
+      <datalist id="${id}-options">${categories.map(category => `<option value="${escapeAttr(category)}"></option>`).join('')}</datalist>`;
+  }
+
   async function showCreateProjectModal() {
     projFormState = { selectedMP: '', currentPath: '', moneypennies: [] };
 
@@ -5968,6 +6078,7 @@
       <h3>New Project</h3>
       <label for="proj-name">Name *</label>
       <input id="proj-name" type="text" placeholder="my-project">
+      ${projectCategoryField('proj-category')}
       <label for="proj-mp">Default Moneypenny</label>
       <select id="proj-mp"><option value="">(none)</option>${mpOpts}</select>
       <label>Path</label>
@@ -6045,6 +6156,8 @@
     const name = document.getElementById('proj-name').value.trim();
     if (!name) { alert('Name is required'); return; }
     const args = ['--name', name];
+    const category = document.getElementById('proj-category').value.trim();
+    if (category) args.push('--category', category);
     const mp = document.getElementById('proj-mp').value;
     if (mp) args.push('-m', mp);
     const path = document.getElementById('proj-path').value.trim();
@@ -6066,6 +6179,7 @@
         return;
       }
       closeWizard();
+      await loadProjects();
       loadProjectsList();
     } catch (e) {
       alert('Error: ' + e.message);
@@ -6093,6 +6207,7 @@
       <h3>Edit Project</h3>
       <label for="eproj-name">Name</label>
       <input id="eproj-name" type="text" value="${escapeAttr(proj ? proj.name : name)}">
+      ${projectCategoryField('eproj-category', proj?.category || '')}
       <label for="eproj-status">Status</label>
       <select id="eproj-status">
         <option value="active"${proj && proj.status === 'active' ? ' selected' : ''}>Active</option>
@@ -6131,6 +6246,8 @@
       const args = [name];
       const newName = document.getElementById('eproj-name').value.trim();
       if (newName && newName !== name) args.push('--name', newName);
+      const category = document.getElementById('eproj-category').value.trim();
+      if (proj && category !== (proj.category || '')) args.push('--category=' + category);
       const status = document.getElementById('eproj-status').value;
       if (proj && status !== proj.status) args.push('--status', status);
       const mp = document.getElementById('eproj-mp').value;

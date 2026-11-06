@@ -1481,6 +1481,13 @@ including non-yolo Copilot/OpenCode. Each session has a durable short summary
 and one revisioned attention request, independent of execution, unread and
 completion:
 
+Agents must create an attention request for every required user answer,
+decision, confirmation, approval, or external action before waiting or ending
+their turn, even if they can continue other work. Asking only in a final reply
+does not signal the dashboard. Use `needs_answer` for input/approval and
+`needs_action` for actions outside chat. Optional follow-up offers, routine
+progress and completion do not need attention. Children ask their parent first.
+
 - `gadgets attention set --summary TEXT` updates the work summary (at most 240 Unicode characters).
 - `gadgets attention set --kind needs_answer --reason TEXT` asks a question or requests a decision.
 - `gadgets attention set --kind needs_action --reason TEXT` requests authentication, permissions, credentials, an irreversible action, or help with an external dependency.
@@ -1633,10 +1640,24 @@ Method: **get_session_activity**: returns the current activity buffer for a sess
 ## Projects
 
 Projects provide context for organizing sessions — a project groups related sessions with shared defaults.
+Each project may have one optional category, stored in Hem. Categories are plain
+names shared by projects, not a separate registry. Empty means **Uncategorized**.
+The Projects page's **Category defaults** section has a **Display** checkbox per
+category, on by default and persisted in Hem. Turning it off initially excludes
+that category's projects from the Qew session list; it does not delete them or
+remove them from the picker. Uncategorized also covers **No project**.
+Changing a default applies it to the current page; manual picker overrides then
+survive ordinary refreshes. New projects inherit their category's default.
+Completed projects remain initially excluded regardless of category Display.
+`hem update category --name NAME --display=true|false` edits the same setting;
+use `--name=` for Uncategorized.
+Qew's Projects page shows the category; its existing create/edit forms accept a
+category with suggestions from existing projects. The TUI create/edit forms also
+expose it. Renaming a category is done by changing its projects.
 
 ### Create
 
-`hem create project --name NAME [-m MONEYPENNY] [--path PATH] [--agent AGENT] [--system-prompt TEXT]`
+`hem create project --name NAME [--category CATEGORY] [-m MONEYPENNY] [--path PATH] [--agent AGENT] [--system-prompt TEXT]`
 
 - Name must be unique.
 - When creating sessions with `--project NAME`, the project's defaults are used for unspecified flags.
@@ -1651,7 +1672,9 @@ Projects provide context for organizing sessions — a project groups related se
 
 ### Update
 
-`hem update project NAME_OR_ID [--name NAME] [--status active|paused|done] [-m MONEYPENNY] [--path PATH] [--agent AGENT] [--system-prompt TEXT]`
+`hem update project NAME_OR_ID [--name NAME] [--category CATEGORY] [--status active|paused|done] [-m MONEYPENNY] [--path PATH] [--agent AGENT] [--system-prompt TEXT]`
+
+`--category=` clears the category; omitting it preserves the current value.
 
 ### Delete
 
@@ -1977,16 +2000,29 @@ qew --development --listen 127.0.0.1:8077
   The compact picker aligns each checkbox with its project name in a touch-sized
   row, with a scrolling list between a fixed header and Show all/Deselect all/Done actions.
   Keyboard hints sit in the footer and are hidden on touch-first devices.
-  All projects, including **No project**, start enabled. `j`/`k` or arrows move,
-  Space toggles a project, and mouse/touch checkboxes work identically.
+  Active and paused projects, including **No project**, start enabled. Completed
+  (`done`) projects appear at the bottom in a **Completed projects** fold,
+  collapsed on each opening and initially unchecked. Explicit selections survive
+  refreshes; a project newly marked done is excluded by default.
+  Projects are grouped alphabetically by category, with **Uncategorized** for
+  projects without one and **No project**. Category checkboxes select/deselect
+  all projects in that group and show a mixed state for partial selection.
+  Completed category groups are separate, so selecting an active category does
+  not silently include its hidden completed projects.
+  `j`/`k` or arrows move through visible categories, projects and the completed
+  fold; Space toggles a checkbox or opens/closes the fold.
+  Mouse/touch checkboxes work identically.
   `d` or **Deselect all** unchecks every project without closing the picker.
-  Esc
-  closes without clearing; `q` clears exclusions to show all projects, both in
-  the picker and on the session list. Changes apply immediately to cached data,
+  Esc closes without clearing; `q` clears exclusions to show all projects, both
+  in the picker and on the session list, including completed projects.
+  Changes apply immediately to cached data,
   survive refreshes and navigation within the page, and reset on browser reload.
   Matching descendants retain ancestor context, but excluded projects do not
   contribute attention/execution counts or request reasons. The old `/` text
   filter is removed; the `o` session quick switcher still supports name search.
+  Excluded ancestors are explicitly labelled **Parent context · PROJECT
+  (excluded)** and show a **context** badge instead of their own execution state,
+  so their presence does not imply a matching project or a running filtered agent.
 - **Session navigation**: Opening a session adds browser history rather than
   replacing the dashboard. Mobile/browser Back and the chat Back button return
   through nested sessions to the dashboard, not the prior login page. Forward

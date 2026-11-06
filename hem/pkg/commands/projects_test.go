@@ -1,0 +1,67 @@
+package commands
+
+import (
+	"encoding/json"
+	"testing"
+
+	"james/hem/pkg/protocol"
+	"james/hem/pkg/store"
+)
+
+func TestProjectCategoryCommands(t *testing.T) {
+	st, err := store.New(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	e := &Executor{store: st}
+	if resp := e.CreateProject([]string{"--name", "Example", "--category", " Work "}); resp.Status != protocol.StatusOK {
+		t.Fatalf("create: %+v", resp)
+	}
+	for _, category := range []string{"Work", "Personal", ""} {
+		if category != "Work" {
+			if resp := e.UpdateProject([]string{"Example", "--category=" + category}); resp.Status != protocol.StatusOK {
+				t.Fatalf("update category: %+v", resp)
+			}
+			for _, args := range [][]string{{"--display=false"}, {"--name=Work"}, {"--name=Work", "--display=maybe"}} {
+				if resp := e.UpdateCategory(args); resp.Status != protocol.StatusError {
+					t.Fatalf("invalid category setting accepted: %+v", resp)
+				}
+			}
+			for _, category := range []string{"Work", ""} {
+				for _, display := range []bool{false, true} {
+					value := "false"
+					if display {
+						value = "true"
+					}
+					resp := e.UpdateCategory([]string{"--name=" + category, "--display=" + value})
+					if resp.Status != protocol.StatusOK {
+						t.Fatalf("category default update: %+v", resp)
+					}
+					var listed struct {
+						CategoryDefaults map[string]bool `json:"category_defaults"`
+					}
+					if err := json.Unmarshal(e.ListProjects(nil).Data, &listed); err != nil {
+						t.Fatal(err)
+					}
+					if got, exists := listed.CategoryDefaults[category]; !exists || got != display {
+						t.Fatalf("category defaults = %+v", listed.CategoryDefaults)
+					}
+				}
+			}
+		}
+		if resp := e.UpdateProject([]string{"Example", "--status", "paused"}); resp.Status != protocol.StatusOK {
+			t.Fatalf("unrelated update: %+v", resp)
+		}
+		shown := e.ShowProject([]string{"Example"})
+		var project ProjectResult
+		if err := json.Unmarshal(shown.Data, &project); err != nil || project.Category != category || project.Status != "paused" {
+			t.Fatalf("show: %+v, %v", shown, err)
+		}
+		listed := e.ListProjects(nil)
+		var table TableResult
+		if err := json.Unmarshal(listed.Data, &table); err != nil || len(table.Rows) != 1 || len(table.Headers) < 7 || table.Headers[6] != "Category" || table.Rows[0][6] != category {
+			t.Fatalf("list: %+v, %v", listed, err)
+		}
+	}
+}
