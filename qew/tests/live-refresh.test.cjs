@@ -497,7 +497,7 @@ function dashboardHarness() {
     dashEntries: [],
     dashRowSigs: {},
     lastDashRenderSig: null,
-    dashExpanded: new Set(), dashAllSessions: false, dashShowCompleted: false,
+    dashExpanded: new Set(), dashAllSessions: false, dashShowCompleted: false, dashGroupByProject: false,
   });
   const source = app.slice(app.indexOf('  function renderDashboard(data)'), app.indexOf('  // Open a dashboard entry'));
   const projectFilter = app.slice(app.indexOf('  function dashboardProjectOptions('), app.indexOf('  // fuzzyMatch returns'));
@@ -642,6 +642,63 @@ test('dashboard h/l reuse directional workstream folding shortcuts', () => {
     assert.equal(prevented, true);
     assert.deepEqual(calls.pop(), ['parent', expanded]);
   }
+});
+
+test('Manage project grouping affects only Quiet and preserves workstreams, selection and refresh', () => {
+  const { context, container } = dashboardHarness();
+  const workstream = (id, project, section = 'quiet', children = []) => ({
+    root_session_id: id, section, active: 1 + children.length, running: section === 'in_progress' ? 1 : 0,
+    sessions: [
+      { session_id: id, name: id, project, depth: 0, moneypenny: 'mac', execution: 'idle' },
+      ...children,
+    ],
+  });
+  const data = { workstreams: [
+    workstream('attention-z', 'Zulu', 'needs_you'),
+    workstream('attention-a', 'Alpha', 'needs_you'),
+    workstream('running-z', 'Zulu', 'in_progress'),
+    workstream('running-a', 'Alpha', 'in_progress'),
+    workstream('none', ''),
+    workstream('zulu', 'Zulu'),
+    workstream('alpha', 'Alpha', 'quiet', [
+      { session_id: 'child', name: 'child', project: 'Zulu', depth: 1, moneypenny: 'mac', execution: 'idle' },
+    ]),
+    workstream('alpha-two', 'Alpha'),
+    workstream('done', 'Alpha', 'completed'),
+  ] };
+  data.workstreams.at(-1).sessions[0].completed = true;
+  const original = JSON.stringify(data.workstreams);
+  context.render(data);
+  assert.doesNotMatch(container.innerHTML, /session-project-heading/);
+  const button = { addEventListener(event, handler) { this[event] = handler; }, setAttribute(key, value) { this[key] = value; } };
+  context.document.getElementById = id => id === 'dash-group-project-btn' ? button : container;
+  const start = app.indexOf("  document.getElementById('dash-group-project-btn').addEventListener");
+  vm.runInContext(app.slice(start, app.indexOf("  document.getElementById('mp-back-btn')", start)), context);
+  context.dashSelectedId = 'zulu';
+  button.click({ currentTarget: button });
+  assert.equal(button['aria-pressed'], 'true');
+  assert.deepEqual(Array.from(context.dashEntries, e => e.sessionId), [
+    'attention-z', 'attention-a', 'running-z', 'running-a', 'alpha', 'alpha-two', 'zulu', 'none',
+  ]);
+  assert.equal(context.dashSelectedId, 'zulu');
+  assert.equal((container.innerHTML.match(/session-project-heading/g) || []).length, 3);
+  assert.match(container.innerHTML, /session-project-heading">No project/);
+  assert.ok(container.innerHTML.indexOf('session-project-heading') > container.innerHTML.indexOf('data-session-id="running-a"'));
+  context.dashExpanded.add('alpha');
+  context.render(data);
+  assert.deepEqual(Array.from(context.dashEntries, e => e.sessionId).slice(4, 8), ['alpha', 'child', 'alpha-two', 'zulu']);
+  assert.equal((container.innerHTML.match(/session-project-heading/g) || []).length, 3, 'child stays under root project');
+  context.dashAllSessions = true;
+  context.render(data);
+  assert.equal((container.innerHTML.match(/session-project-heading/g) || []).length, 3);
+  data.workstreams.find(w => w.root_session_id === 'alpha').sessions[0].project = '<Beta>';
+  context.render(data);
+  assert.match(container.innerHTML, /session-project-heading">&lt;Beta>/);
+  button.click({ currentTarget: button });
+  assert.equal(button['aria-pressed'], 'false');
+  assert.doesNotMatch(container.innerHTML, /session-project-heading/);
+  data.workstreams.find(w => w.root_session_id === 'alpha').sessions[0].project = 'Alpha';
+  assert.equal(JSON.stringify(data.workstreams), original, 'grouping does not reorder authoritative workstreams');
 });
 
 test('project exclusions keep matching descendants, accurate counts and untouched cached data', () => {

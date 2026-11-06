@@ -63,6 +63,7 @@
   let dashExpanded = new Set((localStorage.getItem('qewExpandedWorkstreams') || '').split(',').filter(Boolean));
   let dashAllSessions = false;
   let dashShowCompleted = false;
+  let dashGroupByProject = false;
   let dashboardLegacy = false;
   let mgmtCursor = 0;      // selected row index in the active mgmt list (moneypennies/traits)
   let cmdPaletteOpen = false; // the in-conversation command palette modal is open
@@ -414,7 +415,7 @@
         throw new Error('Invalid dashboard response');
       }
       if (Array.isArray(resp.data.workstreams)) resp.data.rows = dashboardRows(resp.data);
-      for (const id of ['dash-all-sessions-btn', 'dash-completed-btn']) {
+      for (const id of ['dash-all-sessions-btn', 'dash-completed-btn', 'dash-group-project-btn']) {
         document.getElementById(id).hidden = dashboardLegacy;
       }
       if (Array.isArray(resp.data.workstreams)) {
@@ -446,6 +447,15 @@
     lastDashboardData = data;
     data = filterDashboardProjects(data);
     const grouped = data && Array.isArray(data.workstreams);
+    if (grouped && dashGroupByProject) {
+      const project = w => w.sessions[0]?.project || '';
+      const quiet = data.workstreams.filter(w => w.section === 'quiet').sort((a, b) => {
+        const left = project(a), right = project(b);
+        return left && right ? left.localeCompare(right) : left ? -1 : right ? 1 : 0;
+      });
+      let index = 0;
+      data = { ...data, workstreams: data.workstreams.map(w => w.section === 'quiet' ? quiet[index++] : w) };
+    }
     if (grouped) data.rows = dashboardRows(data);
     const container = document.getElementById('dash-content');
     if (!data || !data.rows || data.rows.length === 0) {
@@ -463,6 +473,7 @@
       moneypenny: s.moneypenny, agent: s.agent || '', model: s.model || '',
       mpStatus: s.execution, hemStatus: s.completed ? 'completed' : 'active',
       projectContext: s.projectContext || false,
+      projectGroup: dashGroupByProject && w.section === 'quiet' ? (w.sessions[0]?.project || '') : null,
       unread: s.unread && !s.completed,
       summary: s.summary || '', attention: s.attention,
       lastActive: (s.depth === 0 && w.last_activity) || s.last_activity || s.created_at || '',
@@ -529,7 +540,7 @@
     // is unchanged we keep every existing row element (and its click handler) and
     // patch only the rows whose mutable content actually changed — so a single
     // status transition touches one row instead of rebuilding the whole list.
-    const structSig = JSON.stringify(filtered.map(e => [e.category, e.sessionId, e.depth, grouped && dashAllSessions]));
+    const structSig = JSON.stringify(filtered.map(e => [e.category, e.sessionId, e.depth, grouped && dashAllSessions, e.projectGroup]));
 
     // Per-row content signature: everything the row's inner HTML depends on.
     const rowSig = e => e.name + '\x1f' + e.nick + '\x1f' + e.project + '\x1f' +
@@ -581,12 +592,18 @@
     const newSigs = {};
     let html = '';
     let lastCat = -1;
+    let lastProject = null;
     for (const e of filtered) {
       if (e.category !== lastCat) {
         if (lastCat !== -1) html += '</div>';
         const cat = catLabels[e.category];
         html += `<div class="category"><span class="category-label ${cat.cls}">${cat.label}</span>`;
         lastCat = e.category;
+        lastProject = null;
+      }
+      if (e.projectGroup !== null && e.projectGroup !== undefined && e.projectGroup !== lastProject) {
+        html += `<h3 class="session-project-heading">${escapeHtml(e.projectGroup || 'No project')}</h3>`;
+        lastProject = e.projectGroup;
       }
       newSigs[e.sessionId] = rowSig(e);
       html += `
@@ -7040,6 +7057,11 @@
   document.getElementById('dash-completed-btn').addEventListener('click', e => {
     dashShowCompleted = !dashShowCompleted;
     e.currentTarget.textContent = dashShowCompleted ? 'Hide completed' : 'Show completed';
+    if (lastDashboardData) renderDashboard(lastDashboardData);
+  });
+  document.getElementById('dash-group-project-btn').addEventListener('click', e => {
+    dashGroupByProject = !dashGroupByProject;
+    e.currentTarget.setAttribute('aria-pressed', String(dashGroupByProject));
     if (lastDashboardData) renderDashboard(lastDashboardData);
   });
   document.getElementById('mp-back-btn').addEventListener('click', hideMoneypenniesView);

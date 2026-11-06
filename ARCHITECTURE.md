@@ -708,6 +708,12 @@ hem/
    this filter for single-project navigation; create defaults are only inferred
    when one named project remains enabled. Selection state stays page-local;
    the old dashboard text-filter control is removed, not the omnibar search.
+   Manage's page-local Group by project toggle orders only Quiet workstreams
+   by root project (unnamed last), adding project headings without splitting
+   workstreams or mutating the authoritative cache. All sessions mode retains
+   the same root-project grouping. The render structural signature includes
+   project grouping so toggles and project changes reconcile headings correctly;
+   keyboard navigation continues to derive from the rendered row order.
 
    Project categories live in Hem's `projects.category` (non-null text, empty
    default), added through the existing idempotent SQLite migration path.
@@ -718,7 +724,7 @@ hem/
    (not completed) and completed counts, including assigned subagents, without
    contacting hosts. It appends Active, Completed and Display Status columns,
    preserving existing column positions and the saved Status. Hem derives
-   `stale` only for active projects with zero active sessions; Qew and the TUI
+   `stale` only for active or paused projects with zero active sessions; Qew and the TUI
    use Display Status in their project lists. Editing, filtering and picker
    defaults still use the saved status; no lifecycle mutation or schema change
    is involved.

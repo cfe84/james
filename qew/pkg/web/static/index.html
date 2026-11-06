@@ -51,6 +51,8 @@ header h1 span { color: var(--primary); }
 .btn-muted:hover { background: var(--primary); }
 
 .category { margin-bottom: 16px; }
+.session-project-heading { margin: 12px 8px 8px; color: var(--muted); font-size: 0.9em; overflow-wrap: anywhere; }
+#dash-group-project-btn[aria-pressed="true"]::before { content: "✓ "; }
 .category-label {
   font-weight: bold; font-size: 0.85em; text-transform: uppercase;
   padding: 4px 8px; border-radius: 4px; display: inline-block; margin-bottom: 8px;
@@ -555,6 +557,7 @@ header h1 span { color: var(--primary); }
         <button class="btn-muted" id="manage-btn" aria-expanded="false" aria-controls="manage-menu">Manage ▾</button>
         <div class="dropdown-menu" id="manage-menu">
           <button id="dash-all-sessions-btn">All sessions</button>
+          <button id="dash-group-project-btn" aria-pressed="false" title="Group Quiet workstreams by project">Group by project</button>
           <button id="dash-completed-btn">Show completed</button>
           <hr>
           <button id="nav-moneypennies-btn">Moneypennies</button>

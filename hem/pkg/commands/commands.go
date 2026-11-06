@@ -3996,7 +3996,7 @@ func (e *Executor) ListProjects(args []string) *protocol.Response {
 	}
 	for _, p := range projects {
 		displayStatus := p.Status
-		if p.Status == "active" && p.ActiveSessions == 0 {
+		if (p.Status == "active" || p.Status == "paused") && p.ActiveSessions == 0 {
 			displayStatus = "stale"
 		}
 		result.Rows = append(result.Rows, []string{

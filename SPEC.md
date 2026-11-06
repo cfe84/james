@@ -1679,8 +1679,8 @@ expose it. Renaming a category is done by changing its projects.
 The Qew and TUI project lists show active and completed agent counts, including
 subagents assigned to each project. Active means not marked completed, regardless
 of whether an agent is currently running or its host is reachable. An active
-project with zero active agents (including an empty project) displays **stale**.
-This is presentation only: its saved status remains active, and editing, status
+or paused project with zero active agents (including an empty project) displays **stale**.
+This is presentation only: its saved status remains unchanged, and editing, status
 filters and project-picker defaults continue to use that saved status.
 
 ### Show
@@ -2013,6 +2013,13 @@ qew --development --listen 127.0.0.1:8077
 ## Features
 
 - **Dashboard**: Uses the same typed, expandable workstreams and attention/execution counts as the TUI dashboard. Existing push/watch refresh and fallback polling are unchanged.
+- **Group by project (Qew)**: The **Manage** menu has an off-by-default toggle
+  grouping only **Quiet** workstreams by their root session's project.
+  Project headings are alphabetical, with **No project** last. Parent/subsession
+  trees remain together even when descendants belong to another project.
+  **Needs you**, **In progress** and **Completed** retain their existing order.
+  The toggle also applies in All sessions mode, survives refreshes within the
+  page, and resets on reload. It does not change project filters.
 - **Project filter (Qew)**: The project toolbar button or `/` opens a checkbox modal.
   The compact picker aligns each checkbox with its project name in a touch-sized
   row, with a scrolling list between a fixed header and Show all/None/Default/Done actions.

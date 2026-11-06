@@ -44,6 +44,13 @@ func TestProjectAgentCounts(t *testing.T) {
 	if err := st.SetSessionHemStatus("child", "completed"); err != nil {
 		t.Fatal(err)
 	}
+	paused, err := st.GetProject("Paused")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.TrackSession("paused-agent", "offline", paused.ID); err != nil {
+		t.Fatal(err)
+	}
 	for _, step := range []struct {
 		status, active, completed, display string
 	}{
@@ -52,6 +59,9 @@ func TestProjectAgentCounts(t *testing.T) {
 		{"active", "1", "1", "active"},
 	} {
 		if err := st.SetSessionHemStatus("parent", step.status); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.SetSessionHemStatus("paused-agent", step.status); err != nil {
 			t.Fatal(err)
 		}
 		response := e.ListProjects(nil)
@@ -69,6 +79,10 @@ func TestProjectAgentCounts(t *testing.T) {
 				active, completed, display = step.active, step.completed, step.display
 			case "Paused":
 				saved, display = "paused", "paused"
+				active = step.active
+				if step.status == "completed" {
+					completed, display = "1", "stale"
+				}
 			case "Done":
 				saved, display = "done", "done"
 			}
