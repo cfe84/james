@@ -55,6 +55,16 @@ type plistData struct {
 	UserName  string
 }
 
+func launchdArguments(cfg *Config) []string {
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/zsh"
+	}
+	// Pass the daemon argv separately so the login shell never interprets it.
+	args := []string{shell, "-l", "-c", `exec "$@"`, "moneypenny", cfg.BinaryPath}
+	return append(args, cfg.BuildArgs()...)
+}
+
 func plistPath(userLevel bool) string {
 	if userLevel {
 		home, _ := os.UserHomeDir()
@@ -109,7 +119,7 @@ func Install(cfg *Config) error {
 
 	data := plistData{
 		Label:     plistLabel,
-		Arguments: append([]string{cfg.BinaryPath}, cfg.BuildArgs()...),
+		Arguments: launchdArguments(cfg),
 		LogFile:   cfg.LogFile,
 	}
 

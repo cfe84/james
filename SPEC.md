@@ -649,8 +649,13 @@ service label after bootstrapping. A failed bootstrap is reported as an
 installation error; the installer does not claim that a service started when
 launchd rejected the plist. Replacing an already-stopped service tolerates
 launchd's `No such process` bootout response before removing the old plist.
-The generated plist uses native `ProgramArguments` entries rather than a shell
-command string, preserving argument boundaries and paths containing spaces.
+The generated plist starts `$SHELL` (or `/bin/zsh` when unset) as a login shell
+to load the user's login-profile PATH for Moneypenny and its agent/MCP children.
+Daemon arguments remain separate `ProgramArguments` entries, forwarded through
+`exec "$@"` without interpreting paths or argument contents as shell code.
+Existing direct-launch plists must be replaced with the updated installer
+(`install --non-interactive --user ... --force`, preserving transport settings);
+updating the daemon binary alone does not rewrite a service definition.
 User-level installation must run as the login user, not via `sudo`, so its
 LaunchAgent is owned by and can be bootstrapped into that user's GUI domain.
 Installation re-enables the exact launchd label before bootstrapping, so a
