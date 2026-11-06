@@ -460,6 +460,10 @@ header h1 span { color: var(--primary); }
 }
 .mgmt-row.selected { background: var(--surface2); outline: 1px solid var(--primary); outline-offset: -1px; }
 .mgmt-row .mgmt-name { flex: 1; font-weight: 500; }
+.project-row { flex-wrap: wrap; gap: 8px; }
+.project-row .mgmt-name { min-width: 120px; overflow-wrap: anywhere; }
+.project-row .project-counts { white-space: nowrap; }
+.project-row .mgmt-actions { margin-left: auto; }
 .modal.modal-project-filter {
   display: flex; flex-direction: column; padding: 0; overflow: hidden;
   width: calc(100% - 32px); max-width: 440px; max-height: 80vh; max-height: 80dvh;
@@ -494,6 +498,13 @@ header h1 span { color: var(--primary); }
 .project-category-defaults p { color: var(--muted); font-size: 0.85em; margin: 8px 0; }
 .category-display-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 44px; overflow-wrap: anywhere; }
 .category-display-row input { accent-color: var(--primary); }
+.category-default-controls { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px 16px; }
+.category-default-controls label { display: flex; align-items: center; gap: 6px; min-height: 44px; cursor: pointer; }
+.project-category-heading { margin: 20px 0 8px; color: var(--muted); font-size: 0.9em; overflow-wrap: anywhere; }
+@media (max-width: 520px) {
+  .category-display-row { flex-direction: column; align-items: stretch; gap: 0; padding-block: 8px; }
+  .category-default-controls { justify-content: flex-start; }
+}
 #project-filter-completed { margin-top: 8px; border-top: 1px solid var(--surface2); }
 #project-filter-completed > summary { gap: 8px; }
 #project-filter-completed > summary::before { content: '▸'; color: var(--muted); }
@@ -512,6 +523,7 @@ header h1 span { color: var(--primary); }
 .mgmt-row .mgmt-badge.active { background: var(--success); color: #000; }
 .mgmt-row .mgmt-badge.paused { background: var(--warning); color: #000; }
 .mgmt-row .mgmt-badge.done { background: var(--muted); color: #000; }
+.mgmt-row .mgmt-badge.stale { background: var(--surface2); color: var(--muted); }
 .mgmt-row .mgmt-badge.danger { background: var(--danger); color: #fff; }
 .mgmt-row.disabled .mgmt-name { opacity: 0.5; }
 .mgmt-row .mgmt-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }

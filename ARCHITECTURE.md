@@ -701,7 +701,8 @@ hem/
    The derived session's `projectContext` marker labels excluded ancestors as
    parent context and replaces their execution badge; it participates in row
    reconciliation signatures and never changes the authoritative cached data.
-   `j`/`k` move, Space toggles, Esc closes, `d` deselects all known projects,
+   `j`/`k` move, Space toggles, Esc closes, `n` deselects all known projects,
+   `d` rebuilds exclusions from category Display defaults and completed status,
    and `q` clears exclusions without
    closing. The list also accepts `q` to clear. Project-management entry reuses
    this filter for single-project navigation; create defaults are only inferred
@@ -713,6 +714,16 @@ hem/
    `create/update project --category` sets it (`--category=` explicitly clears);
    list output appends Category after the existing columns and show includes it.
    The existing Qew/TUI project forms and lists consume the same field.
+   Project listing joins grouped Hem session tracking to return active
+   (not completed) and completed counts, including assigned subagents, without
+   contacting hosts. It appends Active, Completed and Display Status columns,
+   preserving existing column positions and the saved Status. Hem derives
+   `stale` only for active projects with zero active sessions; Qew and the TUI
+   use Display Status in their project lists. Editing, filtering and picker
+   defaults still use the saved status; no lifecycle mutation or schema change
+   is involved.
+   The Qew and TUI project lists group projects by category with non-selectable
+   headings; TUI viewport accounting includes these headings.
    Qew derives category suggestions/groups from its project cache; there is no
    separate category entity or Moneypenny responsibility. The project loader
    initially excludes done projects and detects transitions to done without
@@ -725,6 +736,18 @@ hem/
    `project_category_defaults`; an absent setting means true. `list project`
    retains its table columns and adds `category_defaults` metadata, while
    `update category --name NAME --display=true|false` persists the setting.
+   The same row stores `override_filter`, default false, added through the
+   idempotent migration path. `--override-filter=true|false` updates it without
+   changing Display, and vice versa. The list response adds
+   `category_filter_overrides` alongside the existing boolean defaults map.
+   Qew's existing Category defaults controls expose both settings with save
+   failure rollback. During typed dashboard projection, an excluded session
+   matches only if its category opts in and it has a durable attention kind.
+   Matching request sessions retain their report and counts, while excluded
+   ancestors remain context-only. No exclusion or cached dashboard data is
+   mutated; resolution naturally removes the exception on the next refresh.
+   Completed requests remain eligible; running/unread alone do not qualify.
+   Legacy table responses have no attention metadata and remain project-filtered.
    Empty name represents Uncategorized (including No project). Qew's existing
    Projects page exposes these shared defaults; cache refresh applies them on
    initial load, new projects, category changes and default changes, but retains

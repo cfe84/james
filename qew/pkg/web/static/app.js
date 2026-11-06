@@ -54,6 +54,7 @@
   let projectFilterOptions = [];
   let projectsCache = []; // cached project list
   let categoryDefaults = {};
+  let categoryFilterOverrides = {};
   let dashEntries = [];   // dashboard rows in display order (for keyboard nav)
   let dashSelectedId = ''; // session id of keyboard-selected dashboard row
   let lastDashboardData = null; // most recent dashboard payload (for local re-filter)
@@ -200,7 +201,7 @@
     try {
       const resp = await apiCall('list', 'project', []);
       if (resp.status === 'ok' && resp.data && resp.data.rows) {
-        cacheProjects(resp.data.rows, resp.data.category_defaults);
+        cacheProjects(resp.data.rows, resp.data.category_defaults, resp.data.category_filter_overrides);
       } else if (resp.status === 'error') {
         console.warn('Unable to load projects:', resp.message);
       }
@@ -208,10 +209,11 @@
     applyProjectFilter();
   }
 
-  function cacheProjects(rows, defaults = {}) {
+  function cacheProjects(rows, defaults = {}, overrides = {}) {
     const previous = new Map(projectsCache.map(p => [p.name, p]));
     const previousDefaults = categoryDefaults;
     categoryDefaults = defaults;
+    categoryFilterOverrides = overrides;
     projectsCache = rows.map(r => ({
       id: r[0], name: r[1], status: r[2], moneypenny: r[3], agent: r[4], paths: r[5], category: r[6] || '',
     }));
@@ -783,24 +785,27 @@
     if (!Array.isArray(data.workstreams)) {
       return { ...data, rows: (data.rows || []).filter(row => !excludedProjects.has(row[2] || '')) };
     }
+    const categories = new Map(projectsCache.map(p => [p.name, p.category]));
+    const included = s => !excludedProjects.has(s.project || '') ||
+      (s.attention?.kind && categoryFilterOverrides[categories.get(s.project || '') || ''] === true);
     const workstreams = data.workstreams.flatMap(w => {
       const keep = new Set(), path = [];
       for (const s of w.sessions) {
         path.length = s.depth;
         path[s.depth] = s.session_id;
-        if (!excludedProjects.has(s.project || '') &&
+        if (included(s) &&
             (dashShowCompleted || !s.completed || (s.attention && s.attention.kind))) {
           path.forEach(id => keep.add(id));
         }
       }
       const sessions = w.sessions.filter(s => keep.has(s.session_id));
       if (!sessions.length) return [];
-      const matching = sessions.filter(s => !excludedProjects.has(s.project || ''));
+      const matching = sessions.filter(included);
       const active = matching.filter(s => !s.completed);
       const requests = matching.filter(s => s.attention && s.attention.kind).length;
       const unread = active.filter(s => s.unread).length;
       const running = active.filter(s => s.execution === 'working').length;
-      return [{ ...w, sessions: sessions.map(s => excludedProjects.has(s.project || '')
+      return [{ ...w, sessions: sessions.map(s => !included(s)
         ? { ...s, projectContext: true, summary: '', attention: null, unread: false } : s),
       active: active.length, requests, unread, running,
       unavailable: active.filter(s => s.execution === 'offline' || s.execution === 'unknown').length,
@@ -818,6 +823,16 @@
 
   function clearProjectFilter() {
     excludedProjects.clear();
+    applyProjectFilter();
+  }
+
+  function defaultProjectFilter() {
+    const metadata = new Map(projectsCache.map(p => [p.name, p]));
+    excludedProjects.clear();
+    dashboardProjectOptions().forEach(name => {
+      const project = metadata.get(name);
+      if (project?.status === 'done' || categoryDefaults[project?.category || ''] === false) excludedProjects.add(name);
+    });
     applyProjectFilter();
   }
 
@@ -867,9 +882,10 @@
           <span class="project-filter-count">${projectsCache.filter(p => p.status === 'done').length}</span></summary>${completed}</details>` : ''}
       </div>
       <div class="modal-actions"><button class="btn-muted" id="project-filter-clear">Show all</button>
-      <button class="btn-muted" id="project-filter-none">Deselect all</button>
+      <button class="btn-muted" id="project-filter-none">None</button>
+      <button class="btn-muted" id="project-filter-default">Default</button>
       <button class="btn" id="project-filter-close">Done</button></div>
-      <div class="project-filter-shortcuts">j/k move · Space toggle · q all · d none · Esc done</div>`, 'modal-project-filter');
+      <div class="project-filter-shortcuts">j/k move · Space toggle · q all · n none · d default · Esc done</div>`, 'modal-project-filter');
     const list = document.getElementById('project-filter-list');
     const modal = list.closest('.modal');
     modal.setAttribute('role', 'dialog');
@@ -917,6 +933,11 @@
       syncChecks();
       focusProjectFilter();
     });
+    document.getElementById('project-filter-default').addEventListener('click', () => {
+      defaultProjectFilter();
+      syncChecks();
+      focusProjectFilter();
+    });
     document.getElementById('project-filter-close').addEventListener('click', () => {
       closeWizard();
       document.getElementById('project-filter').focus();
@@ -951,11 +972,11 @@
       e.preventDefault();
       projectFilterCursor += delta;
       focusProjectFilter();
-    } else if ([' ', 'q', 'd', 'Escape'].includes(e.key)) {
+    } else if ([' ', 'q', 'n', 'd', 'Escape'].includes(e.key)) {
       e.preventDefault();
       if (!e.repeat) {
         if (e.key === ' ') projectFilterControls()[projectFilterCursor]?.click();
-        else document.getElementById(({ q: 'project-filter-clear', d: 'project-filter-none', Escape: 'project-filter-close' })[e.key]).click();
+        else document.getElementById(({ q: 'project-filter-clear', n: 'project-filter-none', d: 'project-filter-default', Escape: 'project-filter-close' })[e.key]).click();
       }
     }
     return true;
@@ -5970,21 +5991,28 @@
         return;
       }
       const rows = (resp.data && resp.data.rows) || [];
-      cacheProjects(rows, resp.data.category_defaults);
+      cacheProjects(rows, resp.data.category_defaults, resp.data.category_filter_overrides);
       const categories = [...new Set(['', ...projectsCache.map(p => p.category)])].sort((a, b) => a.localeCompare(b));
       let html = `<details class="project-category-defaults"><summary>Category defaults</summary>
-        <p>Display these categories in the session list by default.</p>
-        ${categories.map((category, i) => `<label class="category-display-row">
+        <p>Display sets initial visibility. Override filter reveals hidden sessions with unresolved attention requests.</p>
+        ${categories.map((category, i) => `<div class="category-display-row">
           <span>${escapeHtml(category || 'Uncategorized')}</span>
-          <span><input type="checkbox" data-category-display="${i}" ${categoryDefaults[category] === false ? '' : 'checked'}> Display</span>
-        </label>`).join('')}</details>`;
-      for (const r of rows) {
-        const id = r[0], name = r[1], status = r[2], mp = r[3], agent = r[4], paths = r[5], category = r[6] || '';
-        html += `
-          <div class="mgmt-row" data-project-name="${escapeAttr(name)}" style="cursor:pointer">
+          <div class="category-default-controls">
+            <label><input type="checkbox" aria-label="Display ${escapeAttr(category || 'Uncategorized')}" data-category-setting="display" data-category-index="${i}" ${categoryDefaults[category] === false ? '' : 'checked'}> Display</label>
+            <label><input type="checkbox" aria-label="Override filter ${escapeAttr(category || 'Uncategorized')}" data-category-setting="override-filter" data-category-index="${i}" ${categoryFilterOverrides[category] === true ? 'checked' : ''}> Override filter</label>
+          </div>
+        </div>`).join('')}</details>`;
+      for (const categoryName of categories) {
+        const projects = rows.filter(r => (r[6] || '') === categoryName);
+        if (!projects.length) continue;
+        html += `<h3 class="project-category-heading">${escapeHtml(categoryName || 'Uncategorized')}</h3>`;
+        for (const r of projects) {
+          const name = r[1], status = r[9] || r[2], mp = r[3], agent = r[4];
+          html += `
+          <div class="mgmt-row project-row" data-project-name="${escapeAttr(name)}" style="cursor:pointer">
             <span class="mgmt-name">${escapeHtml(name)}</span>
-            ${category ? `<span class="mgmt-detail">${escapeHtml(category)}</span>` : ''}
             <span class="mgmt-badge ${status}">${escapeHtml(status)}</span>
+            ${r.length > 8 ? `<span class="mgmt-detail project-counts">${escapeHtml(r[7])} active · ${escapeHtml(r[8])} completed</span>` : ''}
             ${mp ? `<span class="mgmt-detail">${escapeHtml(mp)}</span>` : ''}
             ${agent ? `<span class="mgmt-detail">${escapeHtml(agent)}</span>` : ''}
             <span class="mgmt-actions">
@@ -5992,22 +6020,23 @@
               <button data-proj-name="${escapeAttr(name)}" data-action="delete" class="danger">Delete</button>
             </span>
           </div>`;
+        }
       }
       if (!rows.length) html += '<div class="empty-state">No projects</div>';
       container.innerHTML = html;
-      container.querySelectorAll('[data-category-display]').forEach(input => {
+      container.querySelectorAll('[data-category-setting]').forEach(input => {
         input.addEventListener('change', async () => {
           const checked = input.checked;
           input.disabled = true;
           try {
             const response = await apiCall('update', 'category', [
-              '--name=' + categories[Number(input.dataset.categoryDisplay)], '--display=' + checked,
+              '--name=' + categories[Number(input.dataset.categoryIndex)], '--' + input.dataset.categorySetting + '=' + checked,
             ]);
             if (response.status === 'error') throw new Error(response.message);
             await loadProjects();
           } catch (error) {
             input.checked = !checked;
-            alert('Error updating category display: ' + error.message);
+            alert('Error updating category defaults: ' + error.message);
           } finally {
             input.disabled = false;
           }

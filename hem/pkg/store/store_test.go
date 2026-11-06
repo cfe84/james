@@ -12,14 +12,19 @@ func TestCategoryDisplayDefaultPersists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defaults, err := s.CategoryDisplayDefaults()
+	defaults, err := s.CategoryDefaults()
 	if err != nil || len(defaults) != 0 {
 		t.Fatalf("new category defaults = %v, %v", defaults, err)
 	}
+	on, off := true, false
 	for _, name := range []string{"Work", ""} {
-		if err := s.SetCategoryDisplayDefault(name, false); err != nil {
+		if err := s.SetCategoryDefault(name, &off, nil); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// Simulate the pre-override schema and preserve its Display values.
+	if _, err := s.db.Exec("ALTER TABLE project_category_defaults DROP COLUMN override_filter"); err != nil {
+		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
@@ -29,16 +34,35 @@ func TestCategoryDisplayDefaultPersists(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	defaults, err = s.CategoryDisplayDefaults()
-	if err != nil || len(defaults) != 2 || defaults["Work"] || defaults[""] {
+	defaults, err = s.CategoryDefaults()
+	if err != nil || len(defaults) != 2 || defaults["Work"].Display || defaults[""].Display || defaults["Work"].OverrideFilter {
 		t.Fatalf("persisted category defaults = %v, %v", defaults, err)
 	}
-	if err := s.SetCategoryDisplayDefault("Work", true); err != nil {
+	if err := s.SetCategoryDefault("Work", nil, &on); err != nil {
 		t.Fatal(err)
 	}
-	defaults, err = s.CategoryDisplayDefaults()
-	if err != nil || !defaults["Work"] || defaults[""] {
+	if err := s.SetCategoryDefault("Work", &on, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetCategoryDefault("Background", nil, &on); err != nil {
+		t.Fatal(err)
+	}
+	defaults, err = s.CategoryDefaults()
+	if err != nil || !defaults["Work"].Display || !defaults["Work"].OverrideFilter || defaults[""].Display ||
+		!defaults["Background"].Display || !defaults["Background"].OverrideFilter {
 		t.Fatalf("updated category defaults = %v, %v", defaults, err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	defaults, err = s.CategoryDefaults()
+	if err != nil || !defaults["Work"].OverrideFilter {
+		t.Fatalf("override did not persist: %v, %v", defaults, err)
 	}
 }
 

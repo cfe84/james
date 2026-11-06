@@ -1646,12 +1646,22 @@ The Projects page's **Category defaults** section has a **Display** checkbox per
 category, on by default and persisted in Hem. Turning it off initially excludes
 that category's projects from the Qew session list; it does not delete them or
 remove them from the picker. Uncategorized also covers **No project**.
+Each category also has **Override filter**, off by default. When enabled, Qew
+shows otherwise-excluded sessions with an unresolved durable attention request
+(`needs_answer`, `needs_action` or `failed`), including completed sessions.
+Only those sessions and necessary ancestor context are revealed, not siblings
+or the whole category. They count toward attention totals. Resolving the request
+hides the session again if its project remains excluded. Unread messages or
+running state alone do not override the filter; manual exclusions, including
+None, are also subject to this explicit attention exception.
 Changing a default applies it to the current page; manual picker overrides then
 survive ordinary refreshes. New projects inherit their category's default.
 Completed projects remain initially excluded regardless of category Display.
-`hem update category --name NAME --display=true|false` edits the same setting;
-use `--name=` for Uncategorized.
-Qew's Projects page shows the category; its existing create/edit forms accept a
+`hem update category --name NAME [--display=true|false] [--override-filter=true|false]`
+edits these settings independently; omitted settings are preserved.
+Use `--name=` for Uncategorized.
+Qew and TUI project lists group projects alphabetically by category, with
+Uncategorized for projects without one. Qew's existing create/edit forms accept a
 category with suggestions from existing projects. The TUI create/edit forms also
 expose it. Renaming a category is done by changing its projects.
 
@@ -1665,6 +1675,13 @@ expose it. Renaming a category is done by changing its projects.
 ### List
 
 `hem list projects [--status active|paused|done]` — lists all projects, optionally filtered by status.
+
+The Qew and TUI project lists show active and completed agent counts, including
+subagents assigned to each project. Active means not marked completed, regardless
+of whether an agent is currently running or its host is reachable. An active
+project with zero active agents (including an empty project) displays **stale**.
+This is presentation only: its saved status remains active, and editing, status
+filters and project-picker defaults continue to use that saved status.
 
 ### Show
 
@@ -1998,7 +2015,7 @@ qew --development --listen 127.0.0.1:8077
 - **Dashboard**: Uses the same typed, expandable workstreams and attention/execution counts as the TUI dashboard. Existing push/watch refresh and fallback polling are unchanged.
 - **Project filter (Qew)**: The project toolbar button or `/` opens a checkbox modal.
   The compact picker aligns each checkbox with its project name in a touch-sized
-  row, with a scrolling list between a fixed header and Show all/Deselect all/Done actions.
+  row, with a scrolling list between a fixed header and Show all/None/Default/Done actions.
   Keyboard hints sit in the footer and are hidden on touch-first devices.
   Active and paused projects, including **No project**, start enabled. Completed
   (`done`) projects appear at the bottom in a **Completed projects** fold,
@@ -2012,13 +2029,16 @@ qew --development --listen 127.0.0.1:8077
   `j`/`k` or arrows move through visible categories, projects and the completed
   fold; Space toggles a checkbox or opens/closes the fold.
   Mouse/touch checkboxes work identically.
-  `d` or **Deselect all** unchecks every project without closing the picker.
+  `n` or **None** unchecks every project without closing the picker.
+  `d` or **Default** restores saved category Display defaults and excludes
+  completed projects, discarding manual page selections.
   Esc closes without clearing; `q` clears exclusions to show all projects, both
   in the picker and on the session list, including completed projects.
   Changes apply immediately to cached data,
   survive refreshes and navigation within the page, and reset on browser reload.
   Matching descendants retain ancestor context, but excluded projects do not
-  contribute attention/execution counts or request reasons. The old `/` text
+  contribute attention/execution counts or request reasons unless their category's
+  Override filter admits an unresolved attention request. The old `/` text
   filter is removed; the `o` session quick switcher still supports name search.
   Excluded ancestors are explicitly labelled **Parent context · PROJECT
   (excluded)** and show a **context** badge instead of their own execution state,

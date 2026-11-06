@@ -491,7 +491,7 @@ function dashboardHarness() {
     relativeTime: () => '',
     fuzzyMatch: (query, target) => target.toLowerCase().includes(query.toLowerCase()),
     applyDashSelection() {},
-    excludedProjects: new Set(), projectsCache: [], categoryDefaults: {}, projectFilterCursor: 0, projectFilterOptions: [],
+    excludedProjects: new Set(), projectsCache: [], categoryDefaults: {}, categoryFilterOverrides: {}, projectFilterCursor: 0, projectFilterOptions: [],
     dashSelectedId: '',
     lastDashboardData: null,
     dashEntries: [],
@@ -505,6 +505,63 @@ function dashboardHarness() {
   vm.runInContext(`${source}\n${projectFilter}\n${projectLabel}\nglobalThis.render = renderDashboard;`, context);
   return { context, container, saved };
 }
+
+test('project list displays server counts and stale state without changing saved status', async () => {
+  const { context } = dashboardHarness();
+  const inputs = ['display', 'override-filter'].map(setting => ({
+    dataset: { categorySetting: setting, categoryIndex: '1' },
+    checked: false, disabled: false,
+    addEventListener(event, handler) { this[event] = handler; },
+  }));
+  const container = { innerHTML: '', querySelectorAll: selector => selector === '[data-category-setting]' ? inputs : [] };
+  context.document.getElementById = () => container;
+  const rows = [
+    ['empty', 'Empty', 'active', '', '', '[]', 'Background', '0', '0', 'stale'],
+    ['work', 'Work', 'active', '', '', '[]', 'Background', '2', '3', 'active'],
+    ['done', 'Done', 'done', '', '', '[]', '', '0', '4', 'done'],
+    ['old', 'Older server', 'active', '', '', '[]'],
+  ];
+  const defaults = { Background: false }, overrides = { Background: true }, updates = [], alerts = [];
+  let fail = false;
+  context.apiCall = async (verb, noun, args) => {
+    if (verb === 'update') {
+      updates.push(args);
+      return fail ? { status: 'error', message: 'Save failed' } : { status: 'ok' };
+    }
+    return { status: 'ok', data: { rows, category_defaults: defaults, category_filter_overrides: overrides } };
+  };
+  context.loadProjects = async () => {};
+  context.alert = message => alerts.push(message);
+  context.applyMgmtCursor = () => {};
+  const source = app.slice(app.indexOf('  async function loadProjectsList()'), app.indexOf('  async function deleteProject('));
+  vm.runInContext(source, context);
+  await context.loadProjectsList();
+  assert.match(container.innerHTML, /mgmt-badge stale">stale/);
+  assert.match(container.innerHTML, /0 active · 0 completed/);
+  assert.match(container.innerHTML, /2 active · 3 completed/);
+  assert.match(container.innerHTML, /0 active · 4 completed/);
+  assert.match(container.innerHTML, /Older server/);
+  assert.equal(context.projectsCache.find(p => p.name === 'Empty').status, 'active');
+  assert.equal(context.excludedProjects.has('Empty'), true);
+  assert.equal(context.excludedProjects.has('Done'), true);
+  assert.ok(container.innerHTML.indexOf('data-project-name="Empty"') < container.innerHTML.indexOf('data-project-name="Work"'));
+  assert.ok(container.innerHTML.indexOf('data-project-name="Older server"') < container.innerHTML.indexOf('class="project-category-heading">Background'));
+  assert.match(container.innerHTML, /aria-label="Override filter Background"[^>]+checked/);
+  for (const input of inputs) {
+    input.checked = true;
+    await input.change();
+    assert.equal(input.disabled, false);
+    assert.deepEqual(Array.from(updates.at(-1)), ['--name=Background', '--' + input.dataset.categorySetting + '=true']);
+    fail = true;
+    input.checked = false;
+    await input.change();
+    assert.equal(input.checked, true, 'failed save rolls the checkbox back');
+    assert.equal(input.disabled, false);
+    fail = false;
+  }
+  assert.equal(alerts.length, 2);
+  assert.match(alerts[0], /Save failed/);
+});
 
 test('dashboard shows the selected model and refreshes the row when it changes', () => {
   const { context, container } = dashboardHarness();
@@ -635,6 +692,55 @@ test('project exclusions keep matching descendants, accurate counts and untouche
   assert.equal(context.filterDashboardProjects(data), data);
 });
 
+test('category attention override reveals only unresolved requests and restores exclusions after resolution', () => {
+  const { context } = dashboardHarness();
+  context.cacheProjects([
+    ['p', 'Hidden', 'active', '', '', '', 'Background'],
+    ['q', 'Other', 'active', '', '', '', 'Private'],
+  ], { Background: false, Private: false }, { Background: true });
+  context.excludedProjects.add('');
+  const parent = { session_id: 'parent', project: 'Hidden', depth: 0, execution: 'working', unread: true };
+  const child = { session_id: 'child', project: 'Hidden', depth: 1, completed: true, execution: 'idle',
+    attention: { kind: 'failed', reason: 'Background failed', revision: 1 } };
+  const data = { workstreams: [{
+    root_session_id: 'parent', sessions: [
+      parent, child,
+      { session_id: 'sibling', project: 'Hidden', depth: 1, execution: 'idle' },
+      { session_id: 'private', project: 'Other', depth: 1, attention: { kind: 'needs_action' } },
+    ],
+  }] };
+  for (const kind of ['failed', 'needs_answer', 'needs_action']) {
+    child.attention.kind = kind;
+    const before = JSON.stringify(data);
+    const filtered = context.filterDashboardProjects(data);
+    assert.equal(JSON.stringify(data), before, 'projection must not mutate authoritative data');
+    const w = filtered.workstreams[0];
+    assert.deepEqual(Array.from(w.sessions, s => s.session_id), ['parent', 'child']);
+    assert.equal(w.sessions[0].projectContext, true);
+    assert.equal(w.sessions[0].attention, null);
+    assert.equal(w.sessions[1].attention.kind, kind);
+    assert.equal(w.sessions[1].projectContext, undefined);
+    assert.equal(w.requests, 1);
+    assert.equal(w.active, 0);
+    assert.equal(w.running, 0);
+    assert.equal(w.unread, 0);
+    assert.equal(w.section, 'needs_you');
+    assert.equal(context.excludedProjects.has('Hidden'), true, 'attention does not select the project');
+  }
+  context.cacheProjects([
+    ['p', 'Hidden', 'active', '', '', '', 'Background'],
+    ['q', 'Other', 'active', '', '', '', 'Private'],
+  ], { Background: false, Private: false });
+  assert.equal(context.filterDashboardProjects(data).workstreams.length, 0, 'override defaults off');
+  context.categoryFilterOverrides.Background = true;
+  child.attention = null;
+  assert.equal(context.filterDashboardProjects(data).workstreams.length, 0, 'unread/running are not explicit requests');
+  context.categoryFilterOverrides[''] = true;
+  parent.project = '';
+  parent.attention = { kind: 'needs_action' };
+  assert.equal(context.filterDashboardProjects(data).workstreams[0].requests, 1, 'Uncategorized includes No project');
+});
+
 test('project picker groups categories, folds completed projects and supports batch and individual selection', () => {
   const { context, container } = dashboardHarness();
   let controls = [], rows = [], open = false, focus, markup = '';
@@ -751,19 +857,27 @@ test('project picker groups categories, folds completed projects and supports ba
   assert.equal(context.dashEntries.length, 4);
   context.cacheProjects(projects);
   assert.equal(context.excludedProjects.size, 0, 'refresh does not undo explicit completed selection');
-  press('d');
+  press('n');
   assert.equal(open, true, 'deselect all does not close the picker');
   assert.ok(controls.filter(input => input.tagName === 'INPUT').every(input => !input.checked));
   assert.equal(context.dashEntries.length, 0);
   press('j');
   press(' ');
   assert.equal(context.dashEntries.length, 1, 'a project can be enabled after deselecting all');
-  press('d', { repeat: true });
-  assert.equal(context.dashEntries.length, 1, 'held d is ignored');
+  press('n', { repeat: true });
+  assert.equal(context.dashEntries.length, 1, 'held n is ignored');
   buttons.get('project-filter-none').click();
   assert.equal(context.dashEntries.length, 0, 'mouse action also deselects all');
   press('q');
   assert.equal(context.dashEntries.length, 4);
+  press('d');
+  assert.equal(context.excludedProjects.has('<Beta>'), true, 'defaults exclude completed projects again');
+  assert.equal(context.dashEntries.length, 3);
+  context.categoryDefaults.Work = false;
+  buttons.get('project-filter-default').click();
+  assert.deepEqual([...context.excludedProjects].sort(), ['<Beta>', 'Alpha', 'Gamma']);
+  assert.equal(context.dashEntries.length, 1, 'defaults restore category Display settings');
+  press('q');
   press('Escape');
   context.selectOnlyProject('Alpha');
   assert.deepEqual(Array.from(context.dashEntries, e => e.sessionId), ['one']);

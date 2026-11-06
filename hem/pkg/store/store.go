@@ -54,6 +54,8 @@ type Project struct {
 	DefaultSystemPrompt string
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
+	ActiveSessions      int
+	CompletedSessions   int
 }
 
 // Trait is a reusable, hem-level system-prompt snippet that can be toggled
@@ -146,7 +148,8 @@ CREATE TABLE IF NOT EXISTS defaults (
 
 CREATE TABLE IF NOT EXISTS project_category_defaults (
     name TEXT PRIMARY KEY,
-    display INTEGER NOT NULL DEFAULT 1
+    display INTEGER NOT NULL DEFAULT 1,
+    override_filter INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS model_cache (
@@ -755,29 +758,38 @@ func (s *Store) ListDefaults() (map[string]string, error) {
 // Project methods
 // ---------------------------------------------------------------------------
 
-// CategoryDisplayDefaults returns persisted category visibility overrides.
-func (s *Store) CategoryDisplayDefaults() (map[string]bool, error) {
-	rows, err := s.db.Query(`SELECT name, display FROM project_category_defaults`)
+// CategoryDefault holds the shared session-list policy for a category.
+type CategoryDefault struct {
+	Display        bool
+	OverrideFilter bool
+}
+
+// CategoryDefaults returns persisted category policies; absent categories display by default.
+func (s *Store) CategoryDefaults() (map[string]CategoryDefault, error) {
+	rows, err := s.db.Query(`SELECT name, display, override_filter FROM project_category_defaults`)
 	if err != nil {
 		return nil, fmt.Errorf("list category display defaults: %w", err)
 	}
 	defer rows.Close()
-	result := make(map[string]bool)
+	result := make(map[string]CategoryDefault)
 	for rows.Next() {
 		var name string
-		var display bool
-		if err := rows.Scan(&name, &display); err != nil {
+		var setting CategoryDefault
+		if err := rows.Scan(&name, &setting.Display, &setting.OverrideFilter); err != nil {
 			return nil, fmt.Errorf("scan category display default: %w", err)
 		}
-		result[name] = display
+		result[name] = setting
 	}
 	return result, rows.Err()
 }
 
-// SetCategoryDisplayDefault sets the shared default for a category (empty is Uncategorized).
-func (s *Store) SetCategoryDisplayDefault(name string, display bool) error {
-	_, err := s.db.Exec(`INSERT INTO project_category_defaults (name, display) VALUES (?, ?)
-		ON CONFLICT(name) DO UPDATE SET display = excluded.display`, name, display)
+// SetCategoryDefault updates supplied category settings (empty name is Uncategorized).
+func (s *Store) SetCategoryDefault(name string, display, overrideFilter *bool) error {
+	_, err := s.db.Exec(`INSERT INTO project_category_defaults (name, display, override_filter)
+		VALUES (?, COALESCE(?, 1), COALESCE(?, 0))
+		ON CONFLICT(name) DO UPDATE SET
+		display = COALESCE(?, display), override_filter = COALESCE(?, override_filter)`,
+		name, display, overrideFilter, display, overrideFilter)
 	if err != nil {
 		return fmt.Errorf("set category display default: %w", err)
 	}
@@ -828,19 +840,18 @@ func (s *Store) GetProject(nameOrID string) (*Project, error) {
 
 // ListProjects returns projects, optionally filtered by status.
 func (s *Store) ListProjects(statusFilter string) ([]*Project, error) {
-	var rows *sql.Rows
-	var err error
-	if statusFilter == "" {
-		rows, err = s.db.Query(
-			`SELECT id, name, status, moneypenny, paths, default_agent, default_system_prompt, created_at, updated_at, category
-			 FROM projects ORDER BY name`,
-		)
-	} else {
-		rows, err = s.db.Query(
-			`SELECT id, name, status, moneypenny, paths, default_agent, default_system_prompt, created_at, updated_at, category
-			 FROM projects WHERE status = ? ORDER BY name`, statusFilter,
-		)
+	query := `SELECT p.id, p.name, p.status, p.moneypenny, p.paths, p.default_agent, p.default_system_prompt,
+		p.created_at, p.updated_at, p.category, COALESCE(s.active, 0), COALESCE(s.completed, 0)
+		FROM projects p LEFT JOIN (
+			SELECT project_id, SUM(hem_status != 'completed') AS active, SUM(hem_status = 'completed') AS completed
+			FROM sessions GROUP BY project_id
+		) s ON s.project_id = p.id`
+	var args []interface{}
+	if statusFilter != "" {
+		query += " WHERE p.status = ?"
+		args = append(args, statusFilter)
 	}
+	rows, err := s.db.Query(query+" ORDER BY p.name", args...)
 	if err != nil {
 		return nil, fmt.Errorf("list projects: %w", err)
 	}
@@ -849,7 +860,7 @@ func (s *Store) ListProjects(statusFilter string) ([]*Project, error) {
 	var result []*Project
 	for rows.Next() {
 		var p Project
-		if err := rows.Scan(&p.ID, &p.Name, &p.Status, &p.Moneypenny, &p.Paths, &p.DefaultAgent, &p.DefaultSystemPrompt, &p.CreatedAt, &p.UpdatedAt, &p.Category); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.Status, &p.Moneypenny, &p.Paths, &p.DefaultAgent, &p.DefaultSystemPrompt, &p.CreatedAt, &p.UpdatedAt, &p.Category, &p.ActiveSessions, &p.CompletedSessions); err != nil {
 			return nil, fmt.Errorf("scan project: %w", err)
 		}
 		result = append(result, &p)
@@ -1233,6 +1244,7 @@ func scanTrait(row *sql.Row) (*Trait, error) {
 // ignoring "duplicate column name" errors.
 func (s *Store) migrateSchema() error {
 	migrations := []string{
+		`ALTER TABLE project_category_defaults ADD COLUMN override_filter INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE projects ADD COLUMN category TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sessions ADD COLUMN project_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sessions ADD COLUMN hem_status TEXT NOT NULL DEFAULT 'active'`,

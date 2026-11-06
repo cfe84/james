@@ -481,13 +481,16 @@ func (c *client) stopSession(sessionID string) error {
 
 // projectInfo is a parsed project from list projects.
 type projectInfo struct {
-	ID         string
-	Name       string
-	Status     string
-	Moneypenny string
-	Agent      string
-	Paths      string
-	Category   string
+	ID            string
+	Name          string
+	Status        string
+	Moneypenny    string
+	Agent         string
+	Paths         string
+	Category      string
+	Active        string
+	Completed     string
+	DisplayStatus string
 }
 
 func (c *client) listProjects(statusFilter string) ([]projectInfo, error) {
@@ -534,6 +537,10 @@ func (c *client) listProjects(statusFilter string) ([]projectInfo, error) {
 		}
 		if len(row) > 6 {
 			p.Category = row[6]
+		}
+		p.DisplayStatus = p.Status
+		if len(row) > 9 {
+			p.Active, p.Completed, p.DisplayStatus = row[7], row[8], row[9]
 		}
 		projects = append(projects, p)
 	}

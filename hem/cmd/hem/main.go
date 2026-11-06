@@ -1031,7 +1031,7 @@ Project management:
   show project NAME_OR_ID
   update project NAME_OR_ID [--name, --category, --status, -m, --path, --agent, --system-prompt]
   delete project NAME_OR_ID
-  update category --name NAME --display=true|false
+  update category --name NAME [--display=true|false] [--override-filter=true|false]
 
 Session management:
   create session [-m MONEYPENNY] [--project NAME] PROMPT [--name, --system-prompt, --env NAME=VALUE ..., --yolo, --path, --compaction agent|custom, --async]

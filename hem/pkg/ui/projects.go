@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -57,6 +58,13 @@ func (m projectsModel) Update(msg tea.Msg) (projectsModel, tea.Cmd) {
 	case projectsLoadedMsg:
 		m.loading = false
 		m.projects = msg.projects
+		sort.SliceStable(m.projects, func(i, j int) bool {
+			a, b := m.projects[i], m.projects[j]
+			if a.Category != b.Category {
+				return a.Category < b.Category
+			}
+			return a.Name < b.Name
+		})
 		m.err = msg.err
 		if m.cursor >= len(m.projects) {
 			m.cursor = max(0, len(m.projects)-1)
@@ -97,6 +105,7 @@ var (
 	projectStatusActive = lipgloss.NewStyle().Foreground(colorSuccess).Render("● active")
 	projectStatusPaused = lipgloss.NewStyle().Foreground(colorWarning).Render("◉ paused")
 	projectStatusDone   = lipgloss.NewStyle().Foreground(colorMuted).Render("✓ done")
+	projectStatusStale  = lipgloss.NewStyle().Foreground(colorMuted).Render("◌ stale")
 )
 
 func projectStatusBadge(status string) string {
@@ -107,6 +116,8 @@ func projectStatusBadge(status string) string {
 		return projectStatusPaused
 	case "done":
 		return projectStatusDone
+	case "stale":
+		return projectStatusStale
 	default:
 		return status
 	}
@@ -267,35 +278,57 @@ func (m projectsModel) View() string {
 	var b strings.Builder
 
 	// Header
-	header := fmt.Sprintf("  %-20s %-10s %-14s %-10s %-20s %-16s",
-		"Name", "Status", "Moneypenny", "Agent", "Paths", "Category")
+	header := fmt.Sprintf("  %-20s %-10s %-6s %-9s %-14s %-10s %-20s",
+		"Name", "Status", "Active", "Completed", "Moneypenny", "Agent", "Paths")
 	b.WriteString(sessionHeaderStyle.Render(header))
 	b.WriteString("\n")
 
 	maxRows := m.height - 4
-	if maxRows < 1 {
+	if maxRows < 2 {
 		maxRows = 10
 	}
 
-	start := 0
-	if m.cursor >= maxRows {
-		start = m.cursor - maxRows + 1
-	}
-	end := start + maxRows
-	if end > len(m.projects) {
-		end = len(m.projects)
+	start, used := m.cursor, 2
+	for start > 0 {
+		cost := 1
+		if m.projects[start-1].Category != m.projects[start].Category {
+			cost++
+		}
+		if used+cost > maxRows {
+			break
+		}
+		start--
+		used += cost
 	}
 
-	for i := start; i < end; i++ {
+	end, used := start, 0
+	for i := start; i < len(m.projects); i++ {
 		p := m.projects[i]
-		status := projectStatusBadge(p.Status)
+		newCategory := i == start || p.Category != m.projects[i-1].Category
+		cost := 1
+		if newCategory {
+			cost++
+		}
+		if used+cost > maxRows {
+			break
+		}
+		used += cost
+		end = i + 1
+		if newCategory {
+			category := p.Category
+			if category == "" {
+				category = "Uncategorized"
+			}
+			b.WriteString(sessionHeaderStyle.Render("  "+category) + "\n")
+		}
+		status := projectStatusBadge(p.DisplayStatus)
 		name := truncate(p.Name, 18)
 		mp := truncate(p.Moneypenny, 12)
 		agent := truncate(p.Agent, 8)
 		paths := truncate(p.Paths, 18)
 
-		line := fmt.Sprintf("  %-20s %-10s %-14s %-10s %-20s %-16s",
-			name, status, mp, agent, paths, truncate(p.Category, 14))
+		line := fmt.Sprintf("  %-20s %-10s %-6s %-9s %-14s %-10s %-20s",
+			name, status, p.Active, p.Completed, mp, agent, paths)
 
 		if i == m.cursor {
 			if m.width > 0 && lipgloss.Width(line) < m.width {
@@ -308,7 +341,7 @@ func (m projectsModel) View() string {
 		b.WriteString("\n")
 	}
 
-	if len(m.projects) > maxRows {
+	if start > 0 || end < len(m.projects) {
 		b.WriteString(lipgloss.NewStyle().Foreground(colorMuted).Render(
 			fmt.Sprintf("  showing %d-%d of %d", start+1, end, len(m.projects))))
 		b.WriteString("\n")

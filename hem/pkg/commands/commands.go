@@ -3992,28 +3992,38 @@ func (e *Executor) ListProjects(args []string) *protocol.Response {
 	}
 
 	result := TableResult{
-		Headers: []string{"ID", "Name", "Status", "Moneypenny", "Agent", "Paths", "Category"},
+		Headers: []string{"ID", "Name", "Status", "Moneypenny", "Agent", "Paths", "Category", "Active", "Completed", "Display Status"},
 	}
 	for _, p := range projects {
+		displayStatus := p.Status
+		if p.Status == "active" && p.ActiveSessions == 0 {
+			displayStatus = "stale"
+		}
 		result.Rows = append(result.Rows, []string{
 			p.ID, p.Name, p.Status, p.Moneypenny, p.DefaultAgent, p.Paths, p.Category,
+			strconv.Itoa(p.ActiveSessions), strconv.Itoa(p.CompletedSessions), displayStatus,
 		})
 	}
 
-	defaults, err := e.store.CategoryDisplayDefaults()
+	settings, err := e.store.CategoryDefaults()
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
+	defaults, overrides := make(map[string]bool), make(map[string]bool)
+	for name, setting := range settings {
+		defaults[name], overrides[name] = setting.Display, setting.OverrideFilter
+	}
 	return protocol.OKResponse(struct {
 		TableResult
-		CategoryDefaults map[string]bool `json:"category_defaults"`
-	}{result, defaults})
+		CategoryDefaults        map[string]bool `json:"category_defaults"`
+		CategoryFilterOverrides map[string]bool `json:"category_filter_overrides"`
+	}{result, defaults, overrides})
 }
 
-// UpdateCategory updates the shared session-list display default.
+// UpdateCategory updates shared session-list category settings.
 func (e *Executor) UpdateCategory(args []string) *protocol.Response {
 	var name *string
-	var display *bool
+	var display, overrideFilter *bool
 	remaining, err := parseFlagsFromArgs("update-category", args, func(fs *flag.FlagSet) {
 		fs.Func("name", "category name (empty is Uncategorized)", func(value string) error {
 			category := strings.TrimSpace(value)
@@ -4028,17 +4038,25 @@ func (e *Executor) UpdateCategory(args []string) *protocol.Response {
 			display = &enabled
 			return nil
 		})
+		fs.Func("override-filter", "show attention requests despite the project filter (true/false)", func(value string) error {
+			if value != "true" && value != "false" {
+				return fmt.Errorf("--override-filter must be true or false")
+			}
+			enabled := value == "true"
+			overrideFilter = &enabled
+			return nil
+		})
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
-	if len(remaining) != 0 || display == nil || name == nil {
-		return protocol.ErrResponse("use update category --name NAME --display=true|false")
+	if len(remaining) != 0 || (display == nil && overrideFilter == nil) || name == nil {
+		return protocol.ErrResponse("use update category --name NAME [--display=true|false] [--override-filter=true|false]")
 	}
-	if err := e.store.SetCategoryDisplayDefault(*name, *display); err != nil {
+	if err := e.store.SetCategoryDefault(*name, display, overrideFilter); err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
-	return protocol.OKResponse(TextResult{Message: "Category display default updated."})
+	return protocol.OKResponse(TextResult{Message: "Category defaults updated."})
 }
 
 func (e *Executor) ShowProject(args []string) *protocol.Response {
