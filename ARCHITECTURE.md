@@ -1377,7 +1377,7 @@ qew/
 
 5. **Polling**: Dashboard polls every 5s, chat polls every 3s, matching the TUI behavior.
 
-6. **Chat features**: Chat view fetches session status and schedules alongside history. Shows "working..." indicator when session is active, queued message labels for optimistic sends, and pending schedule times.
+6. **Chat features**: Chat view fetches session status and schedules alongside history. Shows "working..." indicator when session is active, queued message labels for optimistic sends, and pending schedule times. Chat and diff-review sends share response validation: an HTTP-successful Hem error still throws before any optimistic queued entry or draft/comment cleanup. Chat drafts are cleared only after acceptance, without overwriting newer input or updating another session after navigation.
 
 7. **Client-side notifications**: Dashboard/chat metadata supplies durable attention requests; revision-deduplicated delivery uses the existing bundled WAV audio, slide-in pop-over and browser notification. Reading does not dismiss the persistent banner. Sound can be toggled via a header button.
 

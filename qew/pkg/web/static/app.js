@@ -1992,11 +1992,20 @@
     return paths;
   }
 
+  async function sendSessionPrompt(args) {
+    const response = await apiCall('continue', 'session', args);
+    if (response.status !== 'ok') throw new Error(response.message || 'Message was not accepted');
+    return response;
+  }
+
   async function sendMessage() {
     const input = document.getElementById('chat-input');
+    const draft = input.value;
     let text = input.value.trim();
     const hasAttachments = pendingAttachments.length > 0;
     if ((!text && !hasAttachments) || !currentSession || !qewConnected) return;
+    if (sendInFlight) return;
+    const sessionID = currentSession;
 
     // Idle-only gating for attachments (v1): the agent must not be busy.
     if (hasAttachments && currentSessionStatus === 'working') {
@@ -2007,24 +2016,27 @@
     // Image/file-only sends still need a prompt for the agent.
     const promptText = text || 'Please review the attached file(s).';
 
-    input.value = '';
-    input.style.height = 'auto';
-    delete chatInputCache[currentSession];
     sendInFlight = true;
     setConnectionState(qewConnected);
 
     try {
       let attachmentPaths = [];
       if (hasAttachments) {
-        attachmentPaths = await uploadPendingAttachments(currentSession);
+        attachmentPaths = await uploadPendingAttachments(sessionID);
       }
-      const args = [currentSession, '--async', '--operation-id', newOperationID()];
+      const args = [sessionID, '--async', '--operation-id', newOperationID()];
       if (overrideModel) args.push('--model', overrideModel);
       if (overrideEffort) args.push('--effort', overrideEffort);
       if (overrideContext) args.push('--context', overrideContext);
       for (const p of attachmentPaths) args.push('--attachment', p);
       args.push(promptText);
-      await apiCall('continue', 'session', args);
+      await sendSessionPrompt(args);
+      if (currentSession !== sessionID) return;
+      if (input.value === draft) {
+        input.value = '';
+        input.style.height = 'auto';
+        delete chatInputCache[sessionID];
+      }
       // Track as queued and re-render.
       const labelSuffix = hasAttachments ? ` 📎×${attachmentPaths.length}` : '';
       queuedMessages.push({ content: promptText + labelSuffix, core: promptText, since: chatTotal });
@@ -3580,7 +3592,7 @@
     const btn = document.getElementById('diff-send-submit');
     if (btn) { btn.disabled = true; btn.textContent = 'Sending...'; }
     try {
-      await apiCall('continue', 'session', [currentSession, '--async', prompt]);
+      await sendSessionPrompt([currentSession, '--async', prompt]);
       localStorage.removeItem(pendingCommentsStorageKey(currentSession));
       closeWizard();
       queuedMessages.push({ content: prompt, since: chatTotal });

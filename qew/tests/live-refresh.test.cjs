@@ -8,6 +8,71 @@ const thresholds = require('../pkg/web/static/compaction-threshold.js');
 const app = fs.readFileSync(process.env.QEW_APP_SOURCE ||
   path.join(__dirname, '../pkg/web/static/app.js'), 'utf8');
 
+test('message sends only queue accepted prompts and preserve rejected or newer drafts', async () => {
+  for (const scenario of ['accepted', 'rejected', 'transport failure', 'new draft', 'other session']) {
+    const input = { value: 'original prompt', style: {} };
+    const alerts = [];
+    let loads = 0;
+    const context = vm.createContext({
+      currentSession: 'ssrf', currentSessionStatus: 'idle', qewConnected: true,
+      sendInFlight: false, pendingAttachments: [], chatInputCache: { ssrf: input.value },
+      overrideModel: null, overrideEffort: null, overrideContext: null,
+      queuedMessages: [], chatTotal: 10,
+      document: { getElementById: () => input },
+      setConnectionState() {}, newOperationID: () => 'operation',
+      clearPendingAttachments() {}, alert: message => alerts.push(message),
+      loadChat: async () => { loads++; },
+      apiCall: async (verb, noun, args) => {
+        assert.deepEqual([verb, noun, ...args],
+          ['continue', 'session', 'ssrf', '--async', '--operation-id', 'operation', 'original prompt']);
+        if (scenario === 'transport failure') throw new Error('HTTP 502');
+        if (scenario === 'rejected') return { status: 'error', message: 'Session unavailable' };
+        if (scenario === 'new draft') input.value = 'next prompt';
+        if (scenario === 'other session') {
+          context.currentSession = 'other';
+          input.value = 'other draft';
+        }
+        return { status: 'ok', data: { accepted: true } };
+      },
+    });
+    vm.runInContext(app.slice(app.indexOf('  async function sendSessionPrompt('),
+      app.indexOf('  // --- Deploy Agent Wizard ---')), context);
+    await context.sendMessage();
+    const failed = scenario === 'rejected' || scenario === 'transport failure';
+    const queued = !failed && scenario !== 'other session';
+    assert.equal(context.queuedMessages.length, queued ? 1 : 0, scenario);
+    assert.equal(loads, queued ? 1 : 0, scenario);
+    assert.equal(input.value, scenario === 'accepted' ? '' :
+      scenario === 'new draft' ? 'next prompt' : scenario === 'other session' ? 'other draft' : 'original prompt', scenario);
+    assert.equal(context.sendInFlight, false, scenario);
+    assert.deepEqual(alerts, failed ?
+      ['Send error: ' + (scenario === 'rejected' ? 'Session unavailable' : 'HTTP 502')] : [], scenario);
+  }
+});
+
+test('rejected review submissions retain comments and do not appear queued', async () => {
+  const button = {};
+  const alerts = [];
+  const context = vm.createContext({
+    currentSession: 'ssrf', diffReview: { comments: { 1: 'review comment' } },
+    document: { getElementById: id => id === 'diff-send-submit' ? button : { value: 'overall' } },
+    buildReviewPrompt: () => 'review prompt',
+    apiCall: async () => ({ status: 'error', message: 'Session unavailable' }),
+    localStorage: { removeItem: () => assert.fail('must retain review comments') },
+    closeWizard: () => assert.fail('must keep review open'),
+    queuedMessages: [], alert: message => alerts.push(message),
+  });
+  vm.runInContext(app.slice(app.indexOf('  async function sendSessionPrompt('),
+    app.indexOf('  async function sendMessage(')), context);
+  vm.runInContext(app.slice(app.indexOf('  async function submitReview('),
+    app.indexOf('  async function showDiff(')), context);
+  await context.submitReview();
+  assert.deepEqual(alerts, ['Send error: Session unavailable']);
+  assert.equal(context.queuedMessages.length, 0);
+  assert.equal(button.disabled, false);
+  assert.equal(button.textContent, 'Send to agent');
+});
+
 test('session Back/Forward stays in Qew across nested sessions, reloads and deep links', async () => {
   for (const deepLink of [false, true]) {
     const entries = [

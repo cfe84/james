@@ -663,6 +663,11 @@ previously disabled service does not remain disabled after replacement.
 
 ### Create
 
+Qew only displays a sent chat or diff-review prompt as queued after Hem returns
+a successful response. Backend rejections are shown as send errors rather
+than phantom queued messages; rejected chat drafts and review comments remain
+available to retry.
+
 `hem create session -m|--moneypenny NAME PROMPT [flags]`
 
 - `-m` is optional if a default moneypenny is set.
