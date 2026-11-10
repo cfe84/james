@@ -8,6 +8,39 @@ const thresholds = require('../pkg/web/static/compaction-threshold.js');
 const app = fs.readFileSync(process.env.QEW_APP_SOURCE ||
   path.join(__dirname, '../pkg/web/static/app.js'), 'utf8');
 
+test('quick switcher finds completed parents retained for active descendants', () => {
+  const opened = [];
+  const context = vm.createContext({
+    lastDashboardData: { workstreams: [{ sessions: [
+      { session_id: 'doug', name: 'chief-of-staff', nick: 'doug', completed: true,
+        execution: 'idle', depth: 0, last_activity: '2026-11-10T20:00:00Z' },
+      { session_id: 'child', name: 'Chief report', nick: 'helper', parent_session_id: 'doug',
+        execution: 'working', depth: 1, last_activity: '2026-11-10T21:00:00Z' },
+      { session_id: 'chief', name: 'Coordinator', nick: 'chief', execution: 'idle',
+        depth: 0, last_activity: '2026-11-10T19:00:00Z' },
+    ] }] },
+    omnibar: null, window: {},
+    openDashEntry: entry => opened.push(entry),
+    closeWizard() {},
+  });
+  vm.runInContext(app.slice(app.indexOf('  function dashboardRows('),
+    app.indexOf('  function attentionLabel(')), context);
+  vm.runInContext(app.slice(app.indexOf('  function fuzzyMatch('),
+    app.indexOf('  // --- Management list keyboard navigation')), context);
+  vm.runInContext(app.slice(app.indexOf('  function openOmnibar('),
+    app.indexOf('  // a tree of nodes')), context);
+  context.renderOmnibar = () => {};
+  context.lastDashboardData.rows = context.dashboardRows(context.lastDashboardData);
+  context.openOmnibar();
+  assert.deepEqual(Array.from(context.omnibar.items, item => item.sessionId), ['child', 'doug', 'chief']);
+  const matches = context.filterOmnibarItems(context.omnibar.items, 'chief');
+  assert.deepEqual(Array.from(matches, item => item.sessionId), ['chief', 'child', 'doug']);
+  context.omnibar.filtered = context.filterOmnibarItems(context.omnibar.items, 'DOUG');
+  context.omniOpenSelected();
+  assert.equal(opened[0].sessionId, 'doug');
+  assert.equal(context.omnibar, null);
+});
+
 test('message sends only queue accepted prompts and preserve rejected or newer drafts', async () => {
   for (const scenario of ['accepted', 'rejected', 'transport failure', 'new draft', 'other session']) {
     const input = { value: 'original prompt', style: {} };
@@ -655,6 +688,34 @@ test('dashboard shows the selected model and refreshes the row when it changes',
   assert.doesNotMatch(rowElement.innerHTML, /opencode ·/);
   context.render(data('<unsafe>'));
   assert.match(rowElement.innerHTML, /&lt;unsafe>/);
+});
+
+test('workstream arrows follow visible descendants across completion and refresh', () => {
+  const { context, container } = dashboardHarness();
+  const child = { session_id: 'child', name: 'Review', execution: 'idle', depth: 1 };
+  const data = { workstreams: [{
+    root_session_id: 'parent', section: 'quiet', active: 1, running: 0, unread: 0,
+    sessions: [{ session_id: 'parent', name: 'James', execution: 'idle', depth: 0 }, child],
+  }] };
+  context.render(data);
+  const row = container.querySelector();
+  assert.match(container.innerHTML, /data-expand="parent"/);
+  child.completed = true;
+  context.render(data);
+  assert.doesNotMatch(row.innerHTML, /data-expand=/);
+  context.dashShowCompleted = true;
+  context.render(data);
+  assert.match(row.innerHTML, /data-expand="parent"/);
+  context.dashShowCompleted = false;
+  context.render(data);
+  assert.doesNotMatch(row.innerHTML, /data-expand=/);
+  child.attention = { kind: 'needs_action', reason: 'Resolve blocker' };
+  context.render(data);
+  assert.match(row.innerHTML, /data-expand="parent"/);
+  child.attention = null;
+  child.completed = false;
+  context.render(data);
+  assert.match(row.innerHTML, /data-expand="parent"/);
 });
 
 test('workstreams retain hierarchy, independent state, expansion, selection and filter context', () => {

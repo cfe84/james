@@ -548,9 +548,9 @@
       e.moneypenny + '\x1f' + relativeTime(e.lastActive || '') + '\x1f' + (e.lastActive ? '1' : '0') +
       '\x1f' + (e.workstream ? JSON.stringify([e.unread, e.hemStatus, e.hierarchyIssue,
         e.workstream.active, e.workstream.running, e.workstream.unread, e.workstream.unavailable,
-        e.workstream.sessions.length, dashExpanded.has(e.rootId), dashAllSessions,
+        e.workstream.sessions.length, dashExpanded.has(e.rootId), dashAllSessions, dashShowCompleted,
         e.summary, e.attention, e.workstream.requests, e.projectContext,
-        e.depth === 0 && e.workstream.sessions.map(s => [s.name, s.nick, s.attention])]) : '');
+        e.depth === 0 && e.workstream.sessions.map(s => [s.name, s.nick, s.attention, s.completed])]) : '');
 
     // Update the shared navigation state (cheap; order matches the DOM either path).
     dashEntries = filtered.map(e => ({
@@ -639,7 +639,8 @@
     if (e.workstream) {
       const w = e.workstream;
       const root = e.depth === 0;
-      const expandable = root && w.sessions.length > 1 && !dashAllSessions;
+      const expandable = root && !dashAllSessions && w.sessions.some(s =>
+        s.depth > 0 && (dashShowCompleted || !s.completed || s.attention?.kind));
       const summary = root
         ? `${w.active} active · ${w.running} running · ${w.unread} unread${w.requests ? ` · ${w.requests} need attention` : ''}${w.unavailable ? ` · ${w.unavailable} unavailable` : ''}`
         : '';
@@ -4050,7 +4051,7 @@
 
   // --- Session omnibar (quick switcher) ---
   //
-  // A dashboard quick-switcher opened with `o`. Lists all non-archived sessions
+  // A dashboard quick-switcher opened with `o`. Lists all cached sessions
   // (agents) sorted by recency; typing filters by nickname + name; up/down move
   // the selection and Enter opens the highlighted session. Built entirely from
   // the cached dashboard payload (lastDashboardData) — no extra network call.
@@ -4071,8 +4072,6 @@
         agent: row[8] || '',
         nick: row[9] || '',
       }))
-      // Exclude archived (completed) sessions.
-      .filter(it => !it.statusRaw.includes('(completed)'))
       // Sort by recency (most recent first); undated rows sink to the bottom.
       .sort((a, b) => (Date.parse(b.lastActive) || 0) - (Date.parse(a.lastActive) || 0));
     omnibar = { items, filtered: items, cursor: 0, query: '' };
