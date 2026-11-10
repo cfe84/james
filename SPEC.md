@@ -941,18 +941,36 @@ Moneypenny supports an opt-in external provider-plugin transport through
 newline-delimited JSON child process and keeps provider credentials and SDK
 details outside Moneypenny. `james-teams-agency` currently exposes the existing
 Agency Teams operations through this boundary; leaving the variable unset
-preserves the embedded Agency implementation. Future push adapters, including
-`james-teams-trouter`, will use the same protocol.
+preserves the embedded Agency implementation.
 
-The `james-teams-trouter` executable currently provides a testable lifecycle
-probe rather than live message delivery. It accepts `initialize`, `configure`,
-`authenticate`, `status`, `connect`, and `shutdown` JSONL requests and emits
-`status` events. `--dry-run` performs the complete lifecycle without network
-access. On Windows, `JAMES_TEAMS_AUTH_COMMAND` may point to a delegated-auth
-helper that returns JSON with an `account` field; on macOS the helper is optional and the probe uses Azure CLI
-(`az login` plus an IC3 Teams token request) by default. The helper is an explicit
-temporary integration seam for validating authentication before the native
-Trouter client is added. It does not dispatch prompts or send Teams messages.
+`james-teams-trouter` is an opt-in native adapter for commercial-cloud Teams
+chats. Set `MONEYPENNY_CHANNEL_PLUGIN` to its executable on the Moneypenny host.
+It authenticates lazily on the first channel operation and reads/sends existing
+chat messages directly through ChatSvc without Agency. Despite its historical
+binary name, it uses the existing channel manager's polling loop, not Trouter.
+Persisted cursors, owner and mention gates, echo suppression, queued prompts
+and reply outbox remain shared. It does not exchange Skype tokens or require
+push registration.
+
+The adapter accepts lifecycle `initialize`, `configure`, `authenticate`, `status`,
+`connect`, and `shutdown` requests as well as the existing provider operations.
+`--dry-run` validates lifecycle only and rejects message operations. On macOS,
+the default credential source is Azure CLI (`az login`, then a delegated token
+for `https://ic3.teams.office.com`). On Windows, or to override macOS auth,
+`JAMES_TEAMS_AUTH_COMMAND` names an executable returning JSON with `account`
+and `access_token` fields for that same resource. Authentication is bounded to 30 seconds; credentials
+stay inside the child process and are never included in status events.
+Tokens renew on the next channel operation before expiry (at most 45 minutes
+between acquisitions); HTTP 401/403 clears credentials for reauthentication.
+Regional ChatSvc redirects are restricted to its HTTPS origin and service path.
+
+This adapter is experimental: live search, conversation resolution,
+cursor-based reads and self-chat send/read-back without cursor replay are
+verified. Agent dispatch and reply-outbox delivery are covered by local
+integration tests, not yet a live bound-session roundtrip.
+Search covers the first 100 recent conversations; a known chat ID can be bound
+directly. Sovereign clouds, attachments, reactions and threaded replies are not
+implemented; replies go to the bound chat.
 
 Channels bind a session (hem agent) to an external communication channel, letting the
 agent participate in conversations outside the James UI. The first provider is **Microsoft

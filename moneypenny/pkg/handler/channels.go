@@ -225,6 +225,9 @@ func (h *Handler) StartChannelManager(ctx context.Context) {
 			case <-ctx.Done():
 				h.channels.Close()
 				return
+			case <-h.channels.Activity():
+				h.pollChannels(ctx, map[int64]time.Time{})
+				h.drainOutbox(ctx)
 			case <-ticker.C:
 				h.pollChannels(ctx, lastPolled)
 				h.drainOutbox(ctx)
@@ -303,9 +306,20 @@ func (h *Handler) pollChannel(ctx context.Context, ch *store.Channel) {
 	sent, _ := h.store.SentMessageIDs(ch.ID)
 	selfPrefix := h.channelEchoMarker(ch.ID)
 	newestID, newestTS := ch.LastSeenID, ch.LastSeenTS
+	newestAt, err := time.Parse(time.RFC3339Nano, newestTS)
+	if err != nil {
+		_ = h.store.SetChannelError(ch.ID, "invalid channel message cursor")
+		return
+	}
 	var inbound []channel.Message
 	for _, m := range msgs {
-		if m.Timestamp > newestTS {
+		at, err := time.Parse(time.RFC3339Nano, m.Timestamp)
+		if err != nil {
+			_ = h.store.SetChannelError(ch.ID, "provider returned an invalid message timestamp")
+			return
+		}
+		if at.After(newestAt) {
+			newestAt = at
 			newestTS, newestID = m.Timestamp, m.ID
 		}
 		if sent[m.ID] {

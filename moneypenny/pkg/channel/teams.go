@@ -200,12 +200,7 @@ func tsNotNewer(latest, since string) bool {
 // renders; the Markdown body is converted to the HTML subset Teams supports
 // (headings, bold/italic, code, quotes, lists, links).
 func (t *teamsProvider) Send(ctx context.Context, targetID, senderName, content string) (string, error) {
-	body := markdownToTeamsHTML(content)
-	msg := body
-	if strings.TrimSpace(senderName) != "" {
-		prefix := `<i><span style="color:#808080">[🤖 ` + htmlEscape(senderName) + `]</span></i>`
-		msg = prefix + "<br><br>" + body
-	}
+	msg := teamsMessageHTML(senderName, content)
 	out, err := t.mc.callTool(ctx, "SendMessageToChat", map[string]interface{}{
 		"chatId":      targetID,
 		"content":     msg,
@@ -215,6 +210,16 @@ func (t *teamsProvider) Send(ctx context.Context, targetID, senderName, content 
 		return "", err
 	}
 	return parseSentID(out), nil
+}
+
+func teamsMessageHTML(senderName, content string) string {
+	body := markdownToTeamsHTML(content)
+	msg := body
+	if strings.TrimSpace(senderName) != "" {
+		prefix := `<i><span style="color:#808080">[🤖 ` + htmlEscape(senderName) + `]</span></i>`
+		msg = prefix + "<br><br>" + body
+	}
+	return msg
 }
 
 // LatestCursor returns the id and timestamp of the most recent message on a

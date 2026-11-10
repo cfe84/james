@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"runtime"
@@ -26,6 +28,7 @@ type trouterPlugin struct {
 	account   string
 	token     string
 	expiresAt string
+	provider  *nativeTeams
 }
 
 func newTrouterPlugin(dryRun bool, authCommand string) *trouterPlugin {
@@ -36,6 +39,7 @@ func newTrouterPlugin(dryRun bool, authCommand string) *trouterPlugin {
 }
 
 func (p *trouterPlugin) initialize(cfg trouterConfig) {
+	p.close()
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if cfg.AuthCommand != "" {
@@ -45,6 +49,9 @@ func (p *trouterPlugin) initialize(cfg trouterConfig) {
 }
 
 func (p *trouterPlugin) authenticate(ctx context.Context) error {
+	p.close()
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	p.mu.Lock()
 	cfg := p.config
 	p.mu.Unlock()
@@ -76,6 +83,9 @@ func (p *trouterPlugin) authenticate(ctx context.Context) error {
 	if strings.TrimSpace(account) == "" {
 		return fmt.Errorf("delegated authentication returned no account")
 	}
+	if strings.TrimSpace(token) == "" {
+		return fmt.Errorf("delegated authentication returned no access token")
+	}
 	p.mu.Lock()
 	p.authState = "authenticated"
 	p.account = account
@@ -93,9 +103,13 @@ type authResult struct {
 
 func runAuthCommand(ctx context.Context, command string) (authResult, error) {
 	cmd := exec.CommandContext(ctx, command)
+	cmd.WaitDelay = time.Second
 	out, err := cmd.Output()
 	if err != nil {
-		return authResult{}, fmt.Errorf("delegated auth command: %w", err)
+		if ctx.Err() != nil {
+			return authResult{}, ctx.Err()
+		}
+		return authResult{}, fmt.Errorf("delegated auth command failed")
 	}
 	var result struct {
 		Account   string `json:"account"`
@@ -110,10 +124,14 @@ func runAuthCommand(ctx context.Context, command string) (authResult, error) {
 
 func authenticateWithAzureCLI(ctx context.Context) (authResult, error) {
 	tokenCmd := exec.CommandContext(ctx, "az", "account", "get-access-token",
-		"--resource", "https://ic3.teams.office.com", "--output", "json")
+		"--resource", teamsOAuthResource, "--output", "json")
+	tokenCmd.WaitDelay = time.Second
 	out, err := tokenCmd.Output()
 	if err != nil {
-		return authResult{}, fmt.Errorf("Azure CLI Teams token: %w (run az login first)", err)
+		if ctx.Err() != nil {
+			return authResult{}, ctx.Err()
+		}
+		return authResult{}, fmt.Errorf("Azure CLI Teams token unavailable (run az login first)")
 	}
 	var token struct {
 		AccessToken string `json:"accessToken"`
@@ -123,6 +141,7 @@ func authenticateWithAzureCLI(ctx context.Context) (authResult, error) {
 		return authResult{}, fmt.Errorf("Azure CLI returned no Teams access token")
 	}
 	accountCmd := exec.CommandContext(ctx, "az", "account", "show", "--output", "json")
+	accountCmd.WaitDelay = time.Second
 	accountOut, err := accountCmd.Output()
 	if err != nil {
 		return authResult{}, fmt.Errorf("Azure CLI account lookup: %w", err)
@@ -141,16 +160,61 @@ func authenticateWithAzureCLI(ctx context.Context) (authResult, error) {
 func (p *trouterPlugin) status() map[string]string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return map[string]string{"auth": p.authState, "account": p.account, "transport": "trouter"}
+	state := "disconnected"
+	if p.provider != nil && time.Now().Before(p.provider.expiresAt) {
+		state = "connected"
+	}
+	return map[string]string{"auth": p.authState, "account": p.account, "transport": "polling", "connection": state}
+}
+
+func (p *trouterPlugin) close() {
+	p.provider = nil
+	p.mu.Lock()
+	p.token, p.expiresAt, p.account, p.authState = "", "", "", "not_started"
+	p.mu.Unlock()
+}
+
+func (p *trouterPlugin) connect(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if p.provider != nil {
+		if time.Now().Before(p.provider.expiresAt) {
+			return nil
+		}
+		if err := p.authenticate(ctx); err != nil {
+			return err
+		}
+	}
+	p.mu.Lock()
+	auth := authResult{Token: p.token, Account: p.account, ExpiresAt: p.expiresAt}
+	state := p.authState
+	p.mu.Unlock()
+	if state != "authenticated" {
+		return fmt.Errorf("authenticate before connect")
+	}
+	client := &http.Client{Timeout: 30 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	provider, err := newNativeTeams(auth, client)
+	if err != nil {
+		p.close()
+		return err
+	}
+	p.provider = provider
+	return nil
 }
 
 func runTrouterPlugin(ctx context.Context, in io.Reader, out io.Writer, dryRun bool, authCommand string) error {
 	p := newTrouterPlugin(dryRun, authCommand)
+	defer p.close()
 	enc := json.NewEncoder(out)
-	emit := func(event string, payload interface{}) error {
-		return enc.Encode(pluginMessage{Type: "event", Event: event, Payload: payload, Version: ChannelPluginProtocolVersion})
+	write := func(msg pluginMessage) error {
+		return enc.Encode(msg)
 	}
-	if err := emit("status", map[string]string{"state": "starting", "transport": "trouter"}); err != nil {
+	emit := func(event string, payload interface{}) error {
+		return write(pluginMessage{Type: "event", Event: event, Payload: payload, Version: ChannelPluginProtocolVersion})
+	}
+	if err := emit("status", map[string]string{"state": "starting", "transport": "polling"}); err != nil {
 		return err
 	}
 	scanner := bufio.NewScanner(in)
@@ -180,7 +244,7 @@ func runTrouterPlugin(ctx context.Context, in io.Reader, out io.Writer, dryRun b
 				}
 			}
 		}
-		if err := enc.Encode(resp); err != nil {
+		if err := write(resp); err != nil {
 			return err
 		}
 		if req.Method == "shutdown" {
@@ -194,7 +258,8 @@ func runTrouterPlugin(ctx context.Context, in io.Reader, out io.Writer, dryRun b
 func (p *trouterPlugin) handle(ctx context.Context, method string, raw json.RawMessage) (interface{}, error) {
 	switch method {
 	case "initialize":
-		return map[string]interface{}{"protocol_version": ChannelPluginProtocolVersion, "name": "teams-trouter", "caps": map[string]bool{"push": true, "send": false}, "platform": runtime.GOOS}, nil
+		return map[string]interface{}{"protocol_version": ChannelPluginProtocolVersion, "name": "teams-trouter",
+			"caps": map[string]bool{"push": false, "send": true, "Search": true, "ProvideID": true}, "platform": runtime.GOOS}, nil
 	case "configure":
 		var cfg trouterConfig
 		if len(raw) > 0 && string(raw) != "null" {
@@ -218,11 +283,39 @@ func (p *trouterPlugin) handle(ctx context.Context, method string, raw json.RawM
 		if auth != "authenticated" && auth != "dry_run" {
 			return nil, fmt.Errorf("authenticate before connect")
 		}
-		return map[string]string{"state": "probe_ready", "registered_at": time.Now().UTC().Format(time.RFC3339)}, nil
+		if auth == "dry_run" {
+			return map[string]string{"state": "dry_run_ready"}, nil
+		}
+		if err := p.connect(ctx); err != nil {
+			return nil, err
+		}
+		return map[string]string{"state": "connected"}, nil
 	case "shutdown":
+		p.close()
 		return map[string]string{"state": "stopping"}, nil
+	case "search", "resolve", "list_messages", "latest_cursor", "self", "send":
+		p.mu.Lock()
+		state := p.authState
+		p.mu.Unlock()
+		if state == "dry_run" || p.config.DryRun {
+			return nil, fmt.Errorf("Teams message operations are unavailable in dry-run mode")
+		}
+		if state != "authenticated" {
+			if err := p.authenticate(ctx); err != nil {
+				return nil, err
+			}
+		}
+		if err := p.connect(ctx); err != nil {
+			return nil, err
+		}
+		result, err := runPluginMethod(ctx, p.provider, method, raw)
+		var httpErr teamsHTTPError
+		if errors.As(err, &httpErr) && (httpErr == http.StatusUnauthorized || httpErr == http.StatusForbidden) {
+			p.close()
+		}
+		return result, err
 	default:
-		return nil, fmt.Errorf("unsupported Trouter probe method %q", method)
+		return nil, fmt.Errorf("unsupported Trouter method %q", method)
 	}
 }
 

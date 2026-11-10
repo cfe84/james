@@ -10,10 +10,11 @@ import (
 )
 
 type pluginProvider struct {
-	name string
-	cmd  string
-	mu   sync.Mutex
-	cli  *pluginClient
+	name     string
+	cmd      string
+	mu       sync.Mutex
+	cli      *pluginClient
+	activity chan<- struct{}
 }
 
 func newPluginProvider(name, cmd string) *pluginProvider {
@@ -27,6 +28,7 @@ func (p *pluginProvider) client() *pluginClient {
 		return p.cli
 	}
 	c := newPluginClient(p.cmd)
+	c.activity = p.activity
 	c.start = func() (io.ReadWriteCloser, error) {
 		cmd := exec.Command(p.cmd)
 		stdin, err := cmd.StdinPipe()
@@ -124,7 +126,17 @@ func (s structReadWriteCloser) Close() error { return s.Closer() }
 
 type pluginProcess struct {
 	io.ReadWriteCloser
-	cmd *exec.Cmd
+	cmd      *exec.Cmd
+	once     sync.Once
+	closeErr error
+}
+
+func (p *pluginProcess) Close() error {
+	p.once.Do(func() {
+		p.closeErr = p.ReadWriteCloser.Close()
+		_ = p.cmd.Wait()
+	})
+	return p.closeErr
 }
 
 var _ Provider = (*pluginProvider)(nil)

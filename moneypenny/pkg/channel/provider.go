@@ -78,6 +78,7 @@ type Registry struct {
 	command   string // base command, e.g. "agency"
 	pluginCmd string
 	providers map[string]Provider
+	activity  chan struct{}
 }
 
 // NewRegistry returns a registry. command is the executable used to launch
@@ -92,8 +93,11 @@ func NewRegistry(command string) *Registry {
 // NewPluginRegistry returns a registry backed by supervised provider plugins.
 // The plugin executable is started lazily on the first provider operation.
 func NewPluginRegistry(command string) *Registry {
-	return &Registry{pluginCmd: command, providers: map[string]Provider{}}
+	return &Registry{pluginCmd: command, providers: map[string]Provider{}, activity: make(chan struct{}, 1)}
 }
+
+// Activity coalesces plugin notifications; persisted channel cursors own delivery.
+func (r *Registry) Activity() <-chan struct{} { return r.activity }
 
 // resolveCommand turns a bare command name into an absolute path so provider
 // subprocesses can be launched even when the process PATH is minimal (e.g. under
@@ -139,7 +143,9 @@ func (r *Registry) Get(name string) (Provider, error) {
 	switch name {
 	case "teams":
 		if r.pluginCmd != "" {
-			p = newPluginProvider(name, r.pluginCmd)
+			plugin := newPluginProvider(name, r.pluginCmd)
+			plugin.activity = r.activity
+			p = plugin
 		} else {
 			p = newTeamsProvider(newMCPClient(r.command, "mcp", "teams"))
 		}

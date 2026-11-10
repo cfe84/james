@@ -18,41 +18,53 @@ subscriptions, reconnects, and send/reply delivery; Moneypenny retains durable
 channel configuration, authorization and mention policy, session routing,
 queueing, and agent execution.
 
-The plugin protocol is provider-neutral and command/event based: Moneypenny
-sends correlated commands such as `configure`, `send`, and `react`; plugins
-emit normalized inbound `message`, lifecycle `ready`, and structured `error`
-events. Provider bearer tokens stay in the plugin's local credential context
-and are never persisted in Moneypenny's database or sent over this protocol.
-Plugins are supervised children: an EOF or failure marks that provider
-unavailable and is restarted with backoff without interrupting active agent
-sessions.
+The plugin protocol is provider-neutral and command/event based. Moneypenny
+sends correlated provider operations; plugins return results or structured
+errors and may emit lifecycle `status` and coalesced `activity` events.
+Provider bearer tokens stay in the plugin's local credential context and are
+never persisted in Moneypenny's database or sent over this protocol. EOF fails
+pending requests and resets initialization; the child is restarted lazily on
+the next operation without interrupting active agent sessions.
 
 This is the required shape for future channel integrations and for extracting
 existing embedded provider adapters when their lifecycle warrants it. The
-planned `james-teams-trouter` binary is the first intended application: it will
-own Teams delegated authentication, Trouter registration/reconnect, and
-threaded ChatSvc delivery, while Moneypenny keeps the existing channel gates
-and dispatch behavior.
+`james-teams-trouter` binary owns Teams delegated authentication and
+ChatSvc chat delivery, while Moneypenny keeps
+the existing channel gates and dispatch behavior.
 
 The first implementation of this boundary is `james-teams-agency`. It is an
 opt-in compatibility adapter that runs the existing `agency mcp teams` provider
 behind the JSONL plugin protocol (`MONEYPENNY_CHANNEL_PLUGIN`). This keeps the
 default embedded Agency path unchanged while validating process supervision,
-request correlation, credential isolation, and packaging before Trouter is
-added. The adapter exposes the existing search, resolve, list, send, cursor, and
-self operations; asynchronous inbound events and threaded reply metadata remain
-reserved for the Trouter phase.
+request correlation, credential isolation, and packaging. The adapter exposes
+the existing search, resolve, list, send, cursor, and self operations.
 
-`james-teams-trouter` is the first Trouter implementation. In v1.74.1 it is a
-standalone authentication/connection probe only: it exposes lifecycle status
-over the same JSONL protocol, supports a no-network `--dry-run` mode, and
-accepts a platform-neutral delegated-auth helper through
-`JAMES_TEAMS_AUTH_COMMAND`. On macOS, omitting that variable uses the locally
-installed Azure CLI (`az login` followed by an IC3 Teams token request); on
-Windows the helper remains required. Access tokens are held only in memory for
-the future transport implementation and are not persisted.
-Trouter message delivery and agent dispatch are intentionally not enabled by
-this probe.
+`james-teams-trouter` extends the original probe with a native commercial-cloud
+chat provider. Azure CLI on macOS requests the Teams delegated resource
+`https://ic3.teams.office.com`; a `JAMES_TEAMS_AUTH_COMMAND` helper can supply
+`account` and `access_token` instead and is required on Windows. The plugin
+uses that token directly as a Bearer credential against
+`https://teams.cloud.microsoft/api/chatsvc/<region>`, retaining credentials only
+in memory. The old Skype authsvc exchange rejects Azure CLI client tokens, so
+chat operations do not depend on it. Trouter push is not enabled; the historical
+binary name remains for compatibility. Existing channel polling owns delivery
+and catch-up from persisted cursors. Owner IDs normalize to the same MRI form
+as ChatSvc senders; shared mention/echo gates, queueing, outbox and Markdown
+formatting are unchanged.
+
+Automatic HTTP redirects are disabled. Bounded explicit geo redirects accept
+only the HTTPS `teams.cloud.microsoft` origin and ChatSvc regional path,
+preserving the operation and request body. Pagination cannot change origin or
+message path; responses and catch-up content are bounded. Errors omit response
+bodies and bearer tokens. Credentials renew before JWT expiry (at most 45
+minutes) on the next operation; HTTP 401/403 clears them. Failed renewal,
+reconfiguration and shutdown clear identity. Dry-run never performs message
+operations. Live search, conversation resolution, cursor-based reads and
+self-chat send/read-back without cursor replay are verified. Agent dispatch
+and reply-outbox delivery have local integration coverage; a live bound-session
+roundtrip remains unverified. The adapter remains opt-in and experimental;
+search is limited to 100 recent conversations and sends are chat-level, not
+threaded replies. No sovereign-cloud or attachment support is implied.
 
 ## MI6 - Agent Communication Relay
 

@@ -42,6 +42,7 @@ type pluginClient struct {
 	pending     map[string]chan pluginMessage
 	events      chan pluginMessage
 	initialized bool
+	activity    chan<- struct{}
 }
 
 func newPluginClient(cmd string) *pluginClient {
@@ -72,6 +73,12 @@ func (c *pluginClient) serve(r io.Reader, w io.WriteCloser) {
 			continue
 		}
 		if msg.Type == "event" {
+			if msg.Event == "activity" && c.activity != nil {
+				select {
+				case c.activity <- struct{}{}:
+				default:
+				}
+			}
 			select {
 			case c.events <- msg:
 			default:
@@ -81,6 +88,7 @@ func (c *pluginClient) serve(r io.Reader, w io.WriteCloser) {
 	_ = w.Close()
 	c.mu.Lock()
 	c.conn = nil
+	c.initialized = false
 	for id, ch := range c.pending {
 		ch <- pluginMessage{Type: "response", ID: id, Error: &pluginError{Code: "closed", Message: "plugin exited"}}
 		close(ch)
