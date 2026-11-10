@@ -120,7 +120,7 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 	defer out.Close()
 	defer func() { _, _ = in.WriteString("\n") }()
 	writes := make(chan transport.Command, 10)
-	capabilities := envelope.GadgetCapabilities{Subagents: true, Memory: false, Agents: false, Traits: true, Scheduling: false, CreateAgents: true, MoneypennyLogs: true, Hem: true}
+	capabilities := envelope.GadgetCapabilities{Subagents: true, Memory: false, Agents: false, Traits: true, Scheduling: false, CreateAgents: true, MoneypennyLogs: true, Hem: true, Channels: true}
 	var liveCapabilities atomic.Value
 	liveCapabilities.Store(capabilities)
 	var sourceYolo atomic.Bool
@@ -135,6 +135,17 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 			status := envelope.StatusSuccess
 			errorCode := ""
 			switch command.Method {
+			case "list_channels":
+				writes <- command
+				data = map[string]any{"channels": []map[string]any{
+					{"id": 7, "session_id": "source", "provider": "teams", "target_id": "48:notes"},
+					{"id": 8, "session_id": "target", "provider": "teams", "target_id": "other"},
+				}}
+			case "create_channel":
+				writes <- command
+				data = map[string]any{"channel": map[string]any{"id": 7, "provider": "teams"}}
+			case "update_channel", "set_channel_enabled", "delete_channel":
+				writes <- command
 			case "get_session":
 				data = map[string]any{
 					"agent": "copilot", "path": "/parent", "yolo": sourceYolo.Load(), "gadget_capabilities": liveCapabilities.Load(),
@@ -216,6 +227,57 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 			return transport.Command{}
 		}
 	}
+	t.Run("scoped channel configuration", func(t *testing.T) {
+		for _, tc := range []struct {
+			method string
+			data   map[string]any
+			wire   string
+		}{
+			{"channels.create", map[string]any{"target_id": "48:notes", "mention": ""}, "create_channel"},
+			{"channels.set", map[string]any{"channel_id": 7, "allow_anyone": false}, "update_channel"},
+			{"channels.enable", map[string]any{"channel_id": 7}, "set_channel_enabled"},
+			{"channels.disable", map[string]any{"channel_id": 7}, "set_channel_enabled"},
+			{"channels.delete", map[string]any{"channel_id": 7}, "delete_channel"},
+		} {
+			response := gadgetRouteRequest(t, e, "source", tc.method, tc.data)
+			if response.Status != "ok" {
+				t.Fatalf("%s: %+v", tc.method, response)
+			}
+			if tc.method != "channels.create" {
+				if cmd := next(); cmd.Method != "list_channels" || cmd.Data.(map[string]any)["session_id"] != "source" {
+					t.Fatalf("ownership lookup lost source identity: %+v", cmd)
+				}
+			}
+			if cmd := next(); cmd.Method != tc.wire {
+				t.Fatalf("wrong channel operation: %+v", cmd)
+			} else if tc.method == "channels.create" && cmd.Data.(map[string]any)["session_id"] != "source" {
+				t.Fatalf("creation lost authenticated source: %+v", cmd)
+			}
+		}
+		for _, method := range []string{"channels.set", "channels.enable", "channels.disable", "channels.delete"} {
+			if response := gadgetRouteRequest(t, e, "source", method, map[string]any{"channel_id": 8}); response.Status != "error" {
+				t.Fatalf("other session's channel accepted: %s", method)
+			}
+			next()
+		}
+		for _, data := range []json.RawMessage{json.RawMessage(`{"session_id":"target"}`), json.RawMessage(`{"gadget_capabilities":{}}`)} {
+			if response := gadgetRouteRequest(t, e, "source", "channels.list", data); response.Status != "error" {
+				t.Fatalf("forged scope accepted: %s", data)
+			}
+		}
+		denied := capabilities
+		denied.Channels = false
+		liveCapabilities.Store(denied)
+		if response := gadgetRouteRequest(t, e, "source", "channels.list", map[string]any{}); response.Status != "error" {
+			t.Fatal("revoked channel grant accepted")
+		}
+		liveCapabilities.Store(capabilities)
+		select {
+		case cmd := <-writes:
+			t.Fatalf("denied request caused mutation: %+v", cmd)
+		default:
+		}
+	})
 	t.Run("session edits preserve fields and scope", func(t *testing.T) {
 		if err := e.store.SetSessionParent("target", "source"); err != nil {
 			t.Fatal(err)

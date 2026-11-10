@@ -34,6 +34,12 @@ gadgets schedule list
 gadgets schedule create (--cron expr | --at timestamp) --prompt text
 gadgets schedule delete id
 gadgets moneypenny logs [--name registered-host] [--lines N]
+gadgets channels providers
+gadgets channels search --query TEXT [--provider teams]
+gadgets channels list
+gadgets channels create --target-id ID [--provider teams] [--label TEXT] [--mention NAME] [--allow-anyone]
+gadgets channels set ID [--mention NAME] [--allow-anyone=true|false]
+gadgets channels enable|disable|delete ID
 gadgets run-and-callback -- command [args...]
 gadgets run list
 gadgets run status ID
@@ -129,6 +135,15 @@ TUI/Qew permission controls. It defaults off, allows read-only logs on any
 registered host, and may expose other sessions' data. Current permissions are
 checked by both the source daemon and Hem; agents cannot enable it themselves,
 choose arbitrary paths, or override transport configuration.
+
+### Channel configuration (opt-in)
+
+Channel gadgets require the separate default-off `--gadget-channels=true`
+permission, exposed in the existing session permission forms. They configure
+only the authenticated caller's bindings, not other sessions or daemon
+plugins/credentials. `--mention ""` clears mention gating; sender policy defaults
+to owner-only. `channels set ID --allow-anyone=false` restores owner-only.
+Revocation is checked by both the daemon and Hem on subsequent calls.
 
 ### Hem administrative proxy (opt-in)
 

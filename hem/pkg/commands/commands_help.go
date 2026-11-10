@@ -13,6 +13,7 @@ func init() {
 		CommandHelp[command] += "\n  --ponsonbies       Comma-separated shared-store names/IDs; :read disables transcript publication; none/explicit empty opts out. Creation uses defaults, copy inherits, update preserves omitted selection. Publishing shares unprocessed conversation history with the store host/provider."
 		CommandHelp[command] += permissionsHelp
 		CommandHelp[command] += "\n  --gadget-moneypenny-logs Read daemon logs on any registered host, including other sessions' data (default: false)"
+		CommandHelp[command] += "\n  --gadget-channels Configure the agent's own channel bindings (default: false)"
 		CommandHelp[command] += "\n  --gadget-hem Administrative proxy for all Hem server commands, including mutations and permission changes (default: false)"
 		CommandHelp[command] += "\n  --gadget-edit-sessions   Edit any tracked session, except gadget permissions (default: false)\n  --gadget-edit-own-session Edit only this session, except gadget permissions (default: false)\n  --gadget-edit-own-subagents Edit direct-child sessions and lifecycle, except gadget permissions (default: false)"
 	}

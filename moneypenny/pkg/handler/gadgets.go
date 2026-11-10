@@ -69,6 +69,8 @@ func patchedGadgetCapabilities(raw json.RawMessage, base envelope.GadgetCapabili
 			base.EditOwnSubagents = *value
 		case "moneypenny_logs":
 			base.MoneypennyLogs = *value
+		case "channels":
+			base.Channels = *value
 		case "hem":
 			base.Hem = *value
 		case "traits":
@@ -258,6 +260,9 @@ func (h *Handler) prepareGadgets(sessionID string, params *agent.RunParams) erro
 	if caps.MoneypennyLogs {
 		params.SystemPrompt += "Daemon diagnostics: gadgets moneypenny logs [--name registered-host] [--lines N]. Defaults to your host and 100 lines; accepts 1-10000 lines, reads at most the final 2 MiB. Read-only, but logs can contain other sessions' data; retrieve only what is needed.\n"
 	}
+	if caps.Channels {
+		params.SystemPrompt += "Channel configuration (own session only): gadgets channels providers; gadgets channels search --query TEXT [--provider teams]; gadgets channels list; gadgets channels create --target-id ID [--provider teams --label LABEL --mention NAME --allow-anyone=true]; gadgets channels set ID [--mention NAME --allow-anyone=true|false]; gadgets channels enable ID; gadgets channels disable ID; gadgets channels delete ID. This separate permission does not change daemon credentials, plugin configuration, other sessions or gadget permissions. Empty mention forwards all matching-owner messages; allow-anyone permits other senders.\n"
+	}
 	if caps.Hem {
 		params.SystemPrompt += "Hem administrative proxy: gadgets hem VERB [NOUN] [ARGS...]. This explicit grant allows server-side administrative commands, including mutations and permission changes, independently of other gadget grants. Use only for the user's task. No shell execution, stdin forwarding, interactive/local commands, or transport overrides. Results are JSON; use --async for long-running agent operations. Timeouts do not roll back mutations; inspect state before retrying. Diagnostics: gadgets hem diagnose --name HOST [--session-id ID --scan].\n"
 	}
@@ -391,6 +396,8 @@ func (h *Handler) executeGadget(ctx context.Context, sessionID string, request g
 		allowed = caps.Scheduling
 	case "moneypenny.logs":
 		allowed = caps.MoneypennyLogs
+	case "channels.providers", "channels.search", "channels.list", "channels.create", "channels.set", "channels.enable", "channels.disable", "channels.delete":
+		allowed = caps.Channels
 	case "hem.command":
 		allowed = caps.Hem
 	case "notify", "attention.get", "attention.set":
@@ -429,7 +436,7 @@ func (h *Handler) executeGadget(ctx context.Context, sessionID string, request g
 			return nil, &gadgetError{"invalid_request", err.Error()}
 		}
 	}
-	if request.Method == "sessions.edit" || request.Method == "hem.command" || request.Method == "moneypenny.logs" || strings.HasPrefix(request.Method, "agents.") || strings.HasPrefix(request.Method, "subagents.") || strings.HasPrefix(request.Method, "traits.") {
+	if request.Method == "sessions.edit" || request.Method == "hem.command" || request.Method == "moneypenny.logs" || strings.HasPrefix(request.Method, "channels.") || strings.HasPrefix(request.Method, "agents.") || strings.HasPrefix(request.Method, "subagents.") || strings.HasPrefix(request.Method, "traits.") {
 		return h.routeGadget(ctx, sessionID, request.Method, request.Data)
 	}
 	if strings.HasPrefix(request.Method, "schedule.") {

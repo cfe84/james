@@ -45,6 +45,8 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 		return protocol.ErrResponse("gadget source session is not tracked by this Hem")
 	}
 	switch route.Method {
+	case "channels.providers", "channels.search", "channels.list", "channels.create", "channels.set", "channels.enable", "channels.disable", "channels.delete":
+		return e.channelsGadget(source, route.Method, route.Data)
 	case "ponsonby.list", "ponsonby.ask", "ponsonby.result", "ponsonby.ingest":
 		return e.ponsonbyGadget(source, route.Method, route.Data)
 	case "hem.command":
@@ -232,6 +234,7 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 			fmt.Sprintf("--gadget-edit-own-session=%t", capabilities.EditOwnSession),
 			fmt.Sprintf("--gadget-edit-own-subagents=%t", capabilities.EditOwnSubagents),
 			fmt.Sprintf("--gadget-moneypenny-logs=%t", capabilities.MoneypennyLogs),
+			fmt.Sprintf("--gadget-channels=%t", capabilities.Channels),
 			fmt.Sprintf("--gadget-hem=%t", capabilities.Hem),
 			fmt.Sprintf("--gadget-traits=%t", capabilities.Traits),
 			fmt.Sprintf("--gadget-scheduling=%t", capabilities.Scheduling),

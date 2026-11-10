@@ -1180,9 +1180,22 @@ permissions; revocation applies to subsequent calls. Upgrade Hem and the
 source daemon/gadgets client to v1.85.0; target hosts need `get_logs` support.
 
 Capability defaults apply when an older session has no stored capability object.
+`gadgets channels` configures only the authenticated caller's channel bindings.
+The separate `channels` permission defaults off for both new and legacy
+sessions; enable `--gadget-channels=true` or the matching TUI/Qew permission.
+Commands are `providers`, `search --query TEXT [--provider teams]`, `list`,
+`create --target-id ID [--provider teams] [--label TEXT] [--mention NAME]
+[--allow-anyone]`, `set ID [--mention NAME] [--allow-anyone=true|false]`,
+and `enable`, `disable`, or `delete ID`. Clearing the mention forwards all
+eligible messages; sender policy remains owner-only unless explicitly changed.
+Both daemon and Hem recheck the grant on every call. Source identity and host
+are bound by the daemon/Hem, and existing bindings must belong to that session
+before mutation. This grant cannot configure daemon plugins or credentials,
+change other sessions, or grant permissions.
+
 Hem's create/copy/edit and subsession commands expose explicit
 `--gadget-memory`, `--gadget-subagents`, `--gadget-agents`, `--gadget-create-agents`, `--gadget-traits`, and
-`--gadget-scheduling`, `--gadget-moneypenny-logs`, and `--gadget-hem` booleans. The existing TUI wizard/edit forms and Qew
+`--gadget-scheduling`, `--gadget-moneypenny-logs`, `--gadget-channels`, and `--gadget-hem` booleans. The existing TUI wizard/edit forms and Qew
 create/copy/edit dialogs expose matching permission controls and an
 always-available-notifications hint. Copy inherits permissions unless overridden;
 updates preserve unspecified values. `--gadgets` controls only the legacy stored

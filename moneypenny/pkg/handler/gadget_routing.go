@@ -145,6 +145,7 @@ func (h *Handler) routeGadget(ctx context.Context, sessionID, method string, dat
 	case "agents.list", "agents.message", "agents.create", "subagents.list", "subagents.create", "subagents.message",
 		"subagents.edit", "subagents.complete", "subagents.stop", "subagents.delete",
 		"traits.list", "traits.get", "traits.edit", "sessions.edit", "moneypenny.logs", "hem.command",
+		"channels.providers", "channels.search", "channels.list", "channels.create", "channels.set", "channels.enable", "channels.disable", "channels.delete",
 		"ponsonby.list", "ponsonby.ask", "ponsonby.result", "ponsonby.ingest":
 	default:
 		return nil, fmt.Errorf("unsupported routed gadget method %q", method)

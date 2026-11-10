@@ -56,6 +56,12 @@ Usage:
   gadgets subagents delete id
   gadgets sessions edit [session-id] [--name name] [--system-prompt text] [--model model] [--effort value] [--context tier] [--path path] [--compaction mode] [--yolo=true|false] [--env NAME=VALUE]
   gadgets schedule list
+  gadgets channels providers
+  gadgets channels search --query text [--provider teams]
+  gadgets channels list
+  gadgets channels create --target-id id [--provider teams] [--label text] [--mention name] [--allow-anyone]
+  gadgets channels set id [--mention name] [--allow-anyone=true|false]
+  gadgets channels enable|disable|delete id
   gadgets schedule create (--cron expr | --at timestamp) --prompt text
   gadgets schedule delete id
   gadgets moneypenny logs [--name registered-host] [--lines N]

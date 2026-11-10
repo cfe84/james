@@ -102,6 +102,7 @@ func TestGadgetCredentialsAndLiveRevocation(t *testing.T) {
 		t.Fatalf("default memory denied: %+v", response)
 	}
 	requireGadgetError(t, gadgetCall(t, params, "agents.list", map[string]any{}), "permission_denied")
+	requireGadgetError(t, gadgetCall(t, params, "channels.list", map[string]any{}), "permission_denied")
 	requireGadgetError(t, gadgetCall(t, params, "moneypenny.logs", map[string]any{}), "permission_denied")
 	requireGadgetError(t, gadgetCall(t, params, "memory.get", map[string]string{"session_id": gadgetOtherSession}), "invalid_request")
 

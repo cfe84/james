@@ -179,7 +179,7 @@ deadline, and never retries writes. Client-side restrictions are defense in
 depth, not the source of session authorization.
 
 `sessions.gadget_capabilities` in the **operational** database persists
-`memory`, `subagents`, `agents`, `create_agents`, `edit_sessions`, `edit_own_session`, `edit_own_subagents`, `moneypenny_logs`, `hem`, `traits`, and `scheduling`; typed envelope fields carry
+`memory`, `subagents`, `agents`, `create_agents`, `edit_sessions`, `edit_own_session`, `edit_own_subagents`, `moneypenny_logs`, `channels`, `hem`, `traits`, and `scheduling`; typed envelope fields carry
 these through create/update/detail. Missing legacy values use defaults:
 Memory, Subagents, and Scheduling true; all others false. Every gadget request reads
 current capabilities, so revocation does not wait for a new agent invocation.
@@ -192,10 +192,20 @@ recursive revocation of already-created children.
 
 Hem's shared capability flag helper and the existing TUI/Qew form components
 expose explicit `--gadget-memory`, `--gadget-subagents`, `--gadget-agents`,
-`--gadget-create-agents`, `--gadget-traits`, `--gadget-scheduling`, `--gadget-moneypenny-logs`, and `--gadget-hem` true/false controls. Copy inherits the source values
+`--gadget-create-agents`, `--gadget-traits`, `--gadget-scheduling`, `--gadget-moneypenny-logs`, `--gadget-channels`, and `--gadget-hem` true/false controls. Copy inherits the source values
 unless overridden; updates apply only specified settings. Notifications have an
 always-available hint rather than a toggle. The legacy `--gadgets` setting
 persists only an instruction notice; it does not turn tools on or off.
+
+`channels.*` is a default-off daemon-to-Hem capability for the caller's own
+channel bindings. The daemon binds source identity; Hem rechecks current grants,
+strictly decodes typed fields and derives session/host from that source. It
+verifies channel ownership before set/enable/disable/delete, then reuses existing
+channel commands with equals-form arguments. Providers/search/list/create are
+likewise source-scoped. Credentials, plugin configuration, other sessions and
+permission editing are outside this grant; the separate Hem administrative
+proxy retains its existing broader authority. Capabilities are inherited like
+other grants, without upgrading legacy sessions.
 
 `moneypenny.logs` (v1.85.0) is an allowlisted daemon-to-Hem gadget route,
 gated by the separate default-off `MoneypennyLogs` capability. Hem re-reads

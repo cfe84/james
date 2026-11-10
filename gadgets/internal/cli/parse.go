@@ -29,6 +29,7 @@ func command(args []string) (string, []string, error) {
 	method := args[0] + "." + args[1]
 	switch method {
 	case "memory.get", "memory.list", "memory.search", "memory.set", "memory.batch", "memory.delete", "memory.revisions",
+		"channels.providers", "channels.search", "channels.list", "channels.create", "channels.set", "channels.enable", "channels.disable", "channels.delete",
 		"ponsonby.list", "ponsonby.ask", "ponsonby.result",
 		"memory.query", "memory.claim-set", "memory.claim-get", "memory.claim-delete",
 		"agents.list", "agents.message", "agents.create", "subagents.list", "subagents.create", "subagents.message",
@@ -60,6 +61,14 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 	}
 	allowed := map[string]bool{}
 	switch method {
+	case "channels.search":
+		allowed["query"], allowed["provider"] = true, true
+	case "channels.create":
+		for _, key := range []string{"target-id", "provider", "label", "mention", "allow-anyone"} {
+			allowed[key] = true
+		}
+	case "channels.set":
+		allowed["mention"], allowed["allow-anyone"] = true, true
 	case "attention.set":
 		for _, key := range []string{"summary", "kind", "reason", "revision"} {
 			allowed[key] = true
@@ -101,10 +110,19 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 	}
 	data := map[string]any{}
 	for key, value := range flags {
+		if strings.HasPrefix(method, "channels.") {
+			key = strings.ReplaceAll(key, "-", "_")
+		}
 		if method == "memory.query" {
 			key = strings.ReplaceAll(key, "-", "_")
 		}
 		data[key] = value
+		if key == "allow_anyone" {
+			if value != "true" && value != "false" {
+				return Request{}, errors.New("--allow-anyone expects true or false")
+			}
+			data[key] = value == "true"
+		}
 		if key == "stale" {
 			if value != "true" && value != "false" {
 				return Request{}, errors.New("--stale must be true or false")
@@ -253,6 +271,17 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 				data["entries"] = entries
 			}
 		}
+	case "channels.providers", "channels.search", "channels.list", "channels.create":
+		err = arity(0, 0)
+	case "channels.set", "channels.enable", "channels.disable", "channels.delete":
+		if err = arity(1, 1); err == nil {
+			id, parseErr := strconv.ParseInt(pos[0], 10, 64)
+			if parseErr != nil || id < 1 {
+				err = errors.New("channel ID must be a positive integer")
+			} else {
+				data["channel_id"] = id
+			}
+		}
 	case "agents.list", "subagents.list", "schedule.list", "traits.list", "moneypenny.logs":
 		err = arity(0, 0)
 	case "traits.get", "traits.edit":
@@ -390,7 +419,7 @@ func parseFlags(args []string, allowed map[string]bool) (map[string]string, []st
 		if _, exists := flags[name]; exists {
 			return nil, nil, fmt.Errorf("duplicate flag --%s", name)
 		}
-		if name == "recursive" || name == "yolo" {
+		if name == "recursive" || name == "yolo" || name == "allow-anyone" {
 			if !hasValue {
 				value = "true"
 			}

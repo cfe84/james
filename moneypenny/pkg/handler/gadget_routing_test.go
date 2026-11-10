@@ -22,6 +22,7 @@ func TestAdministrativeGateways(t *testing.T) {
 		data         map[string]any
 	}{
 		{"moneypenny.logs", "gadgets moneypenny logs", envelope.GadgetCapabilities{MoneypennyLogs: true}, map[string]any{"name": "remote", "lines": 2000}},
+		{"channels.list", "gadgets channels list", envelope.GadgetCapabilities{Channels: true}, map[string]any{}},
 		{"hem.command", "gadgets hem", envelope.GadgetCapabilities{Hem: true}, map[string]any{"args": []string{"diagnose", "--name", "remote"}}},
 		{"sessions.edit", "gadgets sessions edit", envelope.GadgetCapabilities{EditSessions: true}, map[string]any{"session_id": gadgetOtherSession, "system_prompt": "Ownership\nand scale"}},
 		{"sessions.edit", "gadgets sessions edit", envelope.GadgetCapabilities{EditOwnSession: true}, map[string]any{"system_prompt": "Ownership\nand scale"}},

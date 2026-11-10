@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const controls = require('../pkg/web/static/gadget-capabilities.js');
 const thresholds = require('../pkg/web/static/compaction-threshold.js');
 
-const defaults = { memory: true, subagents: true, agents: false, create_agents: false, edit_sessions: false, edit_own_session: false, edit_own_subagents: false, moneypenny_logs: false, hem: false, traits: false, scheduling: true };
+const defaults = { memory: true, subagents: true, agents: false, create_agents: false, edit_sessions: false, edit_own_session: false, edit_own_subagents: false, moneypenny_logs: false, channels: false, hem: false, traits: false, scheduling: true };
 const allOff = Object.fromEntries(Object.keys(defaults).map(name => [name, false]));
 const documentFor = (values) => ({
   getElementById(id) {
@@ -213,7 +213,7 @@ test('create and copy emit all explicit permissions, including false', () => {
   assert.deepEqual(controls.args('wiz', undefined, documentFor(allOff)), [
     '--gadget-memory=false', '--gadget-subagents=false',
     '--gadget-agents=false', '--gadget-create-agents=false', '--gadget-edit-sessions=false', '--gadget-edit-own-session=false', '--gadget-edit-own-subagents=false',
-    '--gadget-moneypenny-logs=false', '--gadget-hem=false', '--gadget-traits=false', '--gadget-scheduling=false',
+    '--gadget-moneypenny-logs=false', '--gadget-channels=false', '--gadget-hem=false', '--gadget-traits=false', '--gadget-scheduling=false',
   ]);
 });
 
@@ -248,6 +248,13 @@ test('daemon logs opt-in survives copy and can be granted or revoked alone', () 
   assert.ok(controls.args('wiz', undefined, documentFor(granted)).includes('--gadget-moneypenny-logs=true'));
   assert.deepEqual(controls.args('es', defaults, documentFor(granted)), ['--gadget-moneypenny-logs=true']);
   assert.deepEqual(controls.args('es', granted, documentFor(defaults)), ['--gadget-moneypenny-logs=false']);
+});
+
+test('own-channel configuration is independently opt-in and revocable', () => {
+  const granted = { ...defaults, channels: true };
+  assert.ok(controls.args('wiz', undefined, documentFor(granted)).includes('--gadget-channels=true'));
+  assert.deepEqual(controls.args('es', defaults, documentFor(granted)), ['--gadget-channels=true']);
+  assert.deepEqual(controls.args('es', granted, documentFor(defaults)), ['--gadget-channels=false']);
 });
 
 test('reusable controls render accessible toggles and permanent notifications', () => {
