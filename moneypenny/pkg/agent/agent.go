@@ -342,6 +342,8 @@ type RunParams struct {
 	// MarkReady requests that Hem surface this completed scheduled run in its
 	// Ready group after the agent becomes idle.
 	MarkReady bool
+	// SuppressResultReady keeps background turns from creating unread results.
+	SuppressResultReady bool
 	// OperationID identifies the durable caller operation, when applicable.
 	OperationID string
 }

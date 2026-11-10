@@ -1778,3 +1778,26 @@ Hem readiness now uses an explicit visible watermark. Passive history,
 reconcile, and push reads do not mutate readiness. `ack session` records the
 caller-supplied rendered revision/generation and clears Ready only for a
 monotonic generation/revision; lower generations or revisions are ignored.
+
+Moneypenny persists `result_revision` after successful output persistence,
+before queue draining releases execution to idle. The marker references the
+transcript revision, not later status/usage/metadata changes, so a rendered
+result remains reviewed. Empty final replies can still surface unseen tool/
+intermediate output. Auxiliary compaction and opt-out scheduled runs do not
+publish result markers; queue and compaction continuation preserve that policy.
+Agent-originated continuations (identified by `source_session_id`) and callback
+turns also suppress result markers. Hem delivery preserves `reviewed` rather
+than marking these messages unread. Queued groups suppress readiness only when
+every prompt is background work; human prompts still publish results. This
+preserves prior unread results and does not change durable attention or failure
+handling.
+`list_sessions` carries the marker and generation to Hem. Cache refresh and
+sync process new main-session markers atomically against visible watermarks,
+persisting the processed result revision/generation and clearing `reviewed`
+only for an unseen result. Subsessions and completed sessions are excluded.
+Processing also advances the acknowledgement fence, so a delayed ack of the
+working transcript cannot clear a newer result. Duplicate/stale snapshots do
+not reopen a reviewed result. Synchronous CLI results record their consumed
+transcript watermark. Existing Ready/unread projection puts idle main-agent
+results into Needs you without manufacturing durable attention or an urgent
+notification; no new Qew/TUI component is required.

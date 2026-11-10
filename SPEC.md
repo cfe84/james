@@ -2337,3 +2337,18 @@ History reads are passive. A client may acknowledge readiness only through
 monotonic and generation-scoped; stale, lower, failed-render, and push-only
 hints do not clear Ready. A generation change establishes a new watermark only
 through a valid acknowledgement.
+
+Successful main-agent runs also persist a result revision. If the chat was
+reviewed while the agent was still working, a later unseen result makes it
+unread again: an idle main agent displays Ready and its workstream moves to
+Needs you. This is a result to check, not a durable question/action request;
+reading the result clears it without resolving attention. Already-rendered
+results and synchronous CLI responses do not reappear as unread, including
+after refreshes or restarts. Routine subagent completion does not acquire this
+automatic main-agent reminder; existing child unread and attention behavior
+is unchanged. Scheduled runs still honor their explicit Mark Ready setting.
+Agent-to-agent messages and callbacks preserve the recipient's existing unread
+state and do not create a new Ready reminder when their processing finishes.
+An otherwise reviewed session returns to Idle; existing unread human results,
+explicit attention requests, and failures still appear in Needs you. Queued
+groups containing a human prompt retain normal result readiness.

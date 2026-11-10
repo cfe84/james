@@ -163,6 +163,7 @@ type SessionInfo struct {
 	ScheduleReadyAt string `json:"schedule_ready_at,omitempty"`
 	Revision        int64  `json:"revision"`
 	Generation      int64  `json:"generation"`
+	ResultRevision  int64  `json:"result_revision,omitempty"`
 }
 
 // SessionDetail is returned by get_session (metadata only, no conversation).

@@ -338,7 +338,8 @@ func (h *Handler) runCompactionWithParams(sessionID, nextPrompt, effModel, effEf
 		ContextTier: contextTier, Yolo: sess.Yolo, Path: sess.Path,
 		Resume: true, AgentSessionID: resolvedAgentID, Attachments: continuation.Attachments,
 		ReplyChannelID: continuation.ReplyChannelID, MarkReady: continuation.MarkReady,
-		Environment: environment,
+		SuppressResultReady: continuation.SuppressResultReady,
+		Environment:         environment,
 	})
 }
 

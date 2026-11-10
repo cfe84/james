@@ -582,3 +582,94 @@ func TestVisibleAcknowledgementIsMonotonicAndGenerationScoped(t *testing.T) {
 		t.Fatalf("reviewed=%v err=%v", got.Reviewed, err)
 	}
 }
+
+func TestMainSessionResultReadinessPersists(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hem.db")
+	s, err := New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if s != nil {
+			s.Close()
+		}
+	}()
+	if err := s.AddMoneypenny(&Moneypenny{Name: "mp", TransportType: TransportFIFO}); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"main", "child", "completed"} {
+		if err := s.TrackSession(id, "mp"); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.ObserveVisible(id, 4, 1); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.AcknowledgeVisible(id, 4, 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SetSessionParent("child", "main"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSessionHemStatus("completed", "completed"); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"main", "child", "completed"} {
+		changed, err := s.ProcessSessionResult(id, "mp", 7, 1)
+		if err != nil || changed != (id == "main") {
+			t.Fatalf("process %s: changed=%v err=%v", id, changed, err)
+		}
+		session, err := s.GetSession(id)
+		if err != nil || session.Reviewed != (id != "main") {
+			t.Fatalf("readiness %s: %+v, %v", id, session, err)
+		}
+	}
+	if changed, err := s.AcknowledgeVisible("main", 4, 1); err != nil || changed {
+		t.Fatalf("working-transcript ack cleared the new result: %v, %v", changed, err)
+	}
+	if err := s.ObserveVisible("main", 8, 1); err != nil {
+		t.Fatal(err)
+	}
+	session, err := s.GetSession("main")
+	if err != nil || session.Reviewed {
+		t.Fatalf("passive history read cleared the result: %+v, %v", session, err)
+	}
+	if changed, err := s.AcknowledgeVisible("main", 8, 1); err != nil || !changed {
+		t.Fatalf("rendered result ack: %v, %v", changed, err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, revision := range []int64{0, 6, 7} {
+		if changed, err := s.ProcessSessionResult("main", "mp", revision, 1); err != nil || changed {
+			t.Fatalf("stale/duplicate result reopened after restart: %d %v %v", revision, changed, err)
+		}
+	}
+	if changed, err := s.ProcessSessionResult("main", "other-host", 9, 1); err != nil || changed {
+		t.Fatalf("wrong host result accepted: %v, %v", changed, err)
+	}
+	// A user can render the final answer before the idle/list snapshot arrives.
+	if err := s.ObserveVisible("main", 12, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AcknowledgeVisible("main", 12, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ProcessSessionResult("main", "mp", 11, 1); err != nil {
+		t.Fatal(err)
+	}
+	session, err = s.GetSession("main")
+	if err != nil || !session.Reviewed {
+		t.Fatalf("already-rendered result reopened: %+v, %v", session, err)
+	}
+	if changed, err := s.ProcessSessionResult("main", "mp", 1, 2); err != nil || !changed {
+		t.Fatalf("new generation result: %v, %v", changed, err)
+	}
+	if changed, err := s.AcknowledgeVisible("main", 12, 1); err != nil || changed {
+		t.Fatalf("old generation ack cleared result: %v, %v", changed, err)
+	}
+}

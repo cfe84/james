@@ -26,6 +26,102 @@ func newOperationRepairHandler(t *testing.T) (*Handler, *store.Store, string) {
 	return h, s, sessionID
 }
 
+func TestQueuedCompletionPreservesResultReadinessPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		sources   []string
+		markReady bool
+		wantReady bool
+		origins   []string
+	}{
+		{"quiet schedules", []string{"scheduled", "scheduled"}, false, false, nil},
+		{"scheduled and user group", []string{"scheduled", ""}, false, true, nil},
+		{"opt-in schedule", []string{"scheduled"}, true, true, nil},
+		{"callback", []string{"callback"}, false, false, nil},
+		{"agent message", []string{""}, false, false, []string{"agent"}},
+		{"agent and user group", []string{"", ""}, false, true, []string{"agent", ""}},
+		{"callback and user group", []string{"callback", ""}, false, true, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, s, sessionID := newOperationRepairHandler(t)
+			for i, source := range tc.sources {
+				origin := ""
+				if tc.origins != nil {
+					origin = tc.origins[i]
+				}
+				if err := s.QueuePromptChannelFromOperation(sessionID, "check", "", "", "", source, origin, "", 0, tc.markReady, ""); err != nil {
+					t.Fatal(err)
+				}
+			}
+			h.runAgentFunc = func(context.Context, agent.RunParams) (*agent.Result, error) {
+				return &agent.Result{Text: "Checked."}, nil
+			}
+			h.continueQueuedPrompts(sessionID)
+			h.runsWG.Wait()
+			session, err := s.GetSession(sessionID)
+			if err != nil || session.Status != store.StateIdle || (session.ResultRevision > 0) != tc.wantReady {
+				t.Fatalf("queued completion readiness: %+v, %v", session, err)
+			}
+		})
+	}
+}
+
+func TestContinueAgentMessagesDoNotPublishUnreadResults(t *testing.T) {
+	for _, tc := range []struct {
+		name, source, origin, result string
+		wantReady, wantAttention     bool
+		priorResult                  bool
+	}{
+		{"human", "", "", "Done.", true, false, false},
+		{"agent", "", "sender", "Done.", false, false, false},
+		{"callback", "callback", "", "Done.", false, false, false},
+		{"agent with unread result", "", "sender", "Done.", false, false, true},
+		{"agent needs action", "", "sender", "<NOTIFY_USER>Please approve the change.</NOTIFY_USER>", false, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, s, sessionID := newOperationRepairHandler(t)
+			if err := s.UpdateSessionStatus(sessionID, store.StateIdle); err != nil {
+				t.Fatal(err)
+			}
+			if tc.priorResult {
+				if err := s.AddConversationTurn(sessionID, "assistant", "Previous human result."); err != nil {
+					t.Fatal(err)
+				}
+				if err := s.MarkSessionResult(sessionID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			before, err := s.GetSession(sessionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			h.runAgentFunc = func(_ context.Context, params agent.RunParams) (*agent.Result, error) {
+				if params.SuppressResultReady == tc.wantReady {
+					t.Errorf("incorrect completion policy: %+v", params)
+				}
+				return &agent.Result{Text: tc.result}, nil
+			}
+			data, err := json.Marshal(envelope.ContinueSessionData{
+				SessionID: sessionID, Prompt: "Check.", Source: tc.source, SourceSessionID: tc.origin,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			response := h.Handle(context.Background(), &envelope.Command{Method: "continue_session", Data: data})
+			if response.Status != envelope.StatusSuccess {
+				t.Fatalf("continue failed: %+v", response)
+			}
+			h.runsWG.Wait()
+			session, err := s.GetSession(sessionID)
+			if err != nil || session.Status != store.StateIdle ||
+				(session.ResultRevision > before.ResultRevision) != tc.wantReady ||
+				session.ResultRevision < before.ResultRevision || session.Attention.Active() != tc.wantAttention {
+				t.Fatalf("unexpected completion state: %+v, %v", session, err)
+			}
+		})
+	}
+}
+
 func operationCommand(t *testing.T, method, sessionID, prompt, operationID string) *envelope.Command {
 	t.Helper()
 	data, err := json.Marshal(envelope.ContinueSessionData{

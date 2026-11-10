@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log"
@@ -41,6 +42,40 @@ func waitForMPRefresh(t *testing.T, e *Executor) {
 			t.Fatal("refresh did not finish")
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestSynchronousResultDoesNotReopenAsUnread(t *testing.T) {
+	e := newHierarchyExecutor(t)
+	dir := t.TempDir()
+	in, out := filepath.Join(dir, "request.json"), filepath.Join(dir, "response.json")
+	mp := &store.Moneypenny{Name: "mac", Enabled: true, TransportType: store.TransportFIFO, FIFOIn: in, FIFOOut: out}
+	if err := e.store.AddMoneypenny(mp); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.TrackSession("session", "mac"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(in, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Both metadata and conversation requests can consume this authoritative snapshot.
+	response := `{"status":"ok","data":{"status":"idle","conversation":[{"role":"assistant","content":"Review complete."}],"revision":9,"generation":1}}` + "\n"
+	if err := os.WriteFile(out, []byte(response), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	text, err := e.pollUntilIdle(ctx, mp, "session")
+	if err != nil || text != "Review complete." {
+		t.Fatalf("synchronous result = %q, %v", text, err)
+	}
+	e.processSessionReadiness("mac", map[string]mpSessionInfo{
+		"session": {SessionID: "session", Status: "idle", Revision: 9, Generation: 1, ResultRevision: 7},
+	})
+	session, err := e.store.GetSession("session")
+	if err != nil || !session.Reviewed {
+		t.Fatalf("synchronous response reopened as unread: %+v, %v", session, err)
 	}
 }
 
@@ -315,6 +350,15 @@ func TestMPRefreshFailureAndRecovery(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
+			if err := e.store.TrackSession("session", "mac"); err != nil {
+				t.Fatal(err)
+			}
+			if err := e.store.ObserveVisible("session", 2, 1); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := e.store.AcknowledgeVisible("session", 2, 1); err != nil {
+				t.Fatal(err)
+			}
 			old := mpSessionInfo{SessionID: "session", Name: "Original name", Agent: "claude", Status: "working"}
 			e.cacheManager.UpdateMP("mac", map[string]mpSessionInfo{"session": old, "deleted": {SessionID: "deleted"}})
 			var broadcasts atomic.Int32
@@ -366,7 +410,8 @@ func TestMPRefreshFailureAndRecovery(t *testing.T) {
 			e.clientManager.cooldowns["mac"] = time.Now().Add(-time.Second)
 			e.clientManager.mu.Unlock()
 
-			fresh := mpSessionInfo{SessionID: "session", Name: "Updated name", Agent: "copilot", Status: "idle"}
+			fresh := mpSessionInfo{SessionID: "session", Name: "Updated name", Agent: "copilot", Status: "idle",
+				Revision: 5, Generation: 1, ResultRevision: 4}
 			data, err := json.Marshal([]mpSessionInfo{fresh})
 			if err != nil {
 				t.Fatal(err)
@@ -388,6 +433,39 @@ func TestMPRefreshFailureAndRecovery(t *testing.T) {
 			gotData := e.getMPData()["mac"]
 			if len(gotData) != 1 || gotData["session"] != fresh {
 				t.Fatalf("successful refresh must replace obsolete metadata: %#v", gotData)
+			}
+			e.cacheManager.SetRefreshing(true)
+			var dashboard protocol.DashboardResult
+			resp := e.Dashboard([]string{"--view=workstreams"})
+			if resp.Status != protocol.StatusOK || json.Unmarshal(resp.Data, &dashboard) != nil ||
+				len(dashboard.Workstreams) != 1 || dashboard.Workstreams[0].Section != "needs_you" ||
+				dashboard.Workstreams[0].Unread != 1 || dashboard.Workstreams[0].Requests != 0 ||
+				dashboard.Workstreams[0].Sessions[0].Execution != "idle" {
+				t.Fatalf("unseen main-agent result did not surface as non-urgent unread: %s", resp.Data)
+			}
+			rows := dashboardTable(t, e.Dashboard(nil))
+			if !strings.HasPrefix(rows["session"][3], "ready") {
+				t.Fatalf("idle result is not Ready in the table: %v", rows)
+			}
+			if resp := e.AcknowledgeSession([]string{"session", "--revision=2", "--generation=1"}); resp.Status != protocol.StatusOK {
+				t.Fatalf("stale ack: %+v", resp)
+			}
+			session, err := e.store.GetSession("session")
+			if err != nil || session.Reviewed {
+				t.Fatalf("delayed working ack hid result: %+v, %v", session, err)
+			}
+			if err := e.store.ObserveVisible("session", 5, 1); err != nil {
+				t.Fatal(err)
+			}
+			if resp := e.AcknowledgeSession([]string{"session", "--revision=5", "--generation=1"}); resp.Status != protocol.StatusOK {
+				t.Fatalf("rendered result ack: %+v", resp)
+			}
+			refresh()
+			e.cacheManager.SetRefreshing(true)
+			resp = e.Dashboard([]string{"--view=workstreams"})
+			if resp.Status != protocol.StatusOK || json.Unmarshal(resp.Data, &dashboard) != nil ||
+				len(dashboard.Workstreams) != 1 || dashboard.Workstreams[0].Section != "quiet" {
+				t.Fatalf("reviewed result reopened after refresh: %s", resp.Data)
 			}
 			if name == "sync" {
 				e.cacheManager.SetRefreshing(true)

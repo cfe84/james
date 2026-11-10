@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -223,31 +224,37 @@ func TestCompactionSummaryRunnerErrorAndEmptyAreSafeOutcomes(t *testing.T) {
 }
 
 func TestCompactionSuccessfulBootstrapCommitResumePreservesMetadata(t *testing.T) {
-	h, st, sid := newCompactionTestHandler(t)
-	var calls []agent.RunParams
-	h.runAgentFunc = func(_ context.Context, p agent.RunParams) (*agent.Result, error) {
-		calls = append(calls, p)
-		return &agent.Result{Text: "handoff"}, nil
-	}
-	h.runCompactionWithParams(sid, "next", "model-x", "high", compactionContinue, agent.RunParams{
-		ContextTier: "long_context", Attachments: []string{"/a.txt"}, ReplyChannelID: 42, MarkReady: true,
-	})
-	if len(calls) != 3 {
-		t.Fatalf("runner calls = %d, want summary/bootstrap/resume", len(calls))
-	}
-	if !calls[0].Resume || !calls[0].NoPersistTurns {
-		t.Fatalf("summary params invalid: %+v", calls[0])
-	}
-	if calls[1].Resume || !calls[1].NoPersistTurns || calls[1].ReplyChannelID != 0 || calls[1].MarkReady {
-		t.Fatalf("bootstrap leaked continuation metadata: %+v", calls[1])
-	}
-	if !calls[2].Resume || calls[2].Prompt != "next" || calls[2].ReplyChannelID != 42 ||
-		!calls[2].MarkReady || len(calls[2].Attachments) != 1 || calls[2].ContextTier != "long_context" {
-		t.Fatalf("continuation metadata missing: %+v", calls[2])
-	}
-	sess, _ := st.GetSession(sid)
-	if sess.AgentSessionID == "old" || sess.ContextWindow != 200000 {
-		t.Fatalf("handoff metadata not committed: %+v", sess)
+	for _, markReady := range []bool{false, true} {
+		t.Run(fmt.Sprintf("mark-ready=%t", markReady), func(t *testing.T) {
+			h, st, sid := newCompactionTestHandler(t)
+			var calls []agent.RunParams
+			h.runAgentFunc = func(_ context.Context, p agent.RunParams) (*agent.Result, error) {
+				calls = append(calls, p)
+				return &agent.Result{Text: "handoff"}, nil
+			}
+			h.runCompactionWithParams(sid, "next", "model-x", "high", compactionContinue, agent.RunParams{
+				ContextTier: "long_context", Attachments: []string{"/a.txt"}, ReplyChannelID: 42,
+				MarkReady: markReady, SuppressResultReady: !markReady,
+			})
+			if len(calls) != 3 {
+				t.Fatalf("runner calls = %d, want summary/bootstrap/resume", len(calls))
+			}
+			if !calls[0].Resume || !calls[0].NoPersistTurns {
+				t.Fatalf("summary params invalid: %+v", calls[0])
+			}
+			if calls[1].Resume || !calls[1].NoPersistTurns || calls[1].ReplyChannelID != 0 || calls[1].MarkReady {
+				t.Fatalf("bootstrap leaked continuation metadata: %+v", calls[1])
+			}
+			if !calls[2].Resume || calls[2].Prompt != "next" || calls[2].ReplyChannelID != 42 ||
+				calls[2].MarkReady != markReady || calls[2].SuppressResultReady == markReady ||
+				len(calls[2].Attachments) != 1 || calls[2].ContextTier != "long_context" {
+				t.Fatalf("continuation metadata missing: %+v", calls[2])
+			}
+			sess, _ := st.GetSession(sid)
+			if sess.AgentSessionID == "old" || sess.ContextWindow != 200000 {
+				t.Fatalf("handoff metadata not committed: %+v", sess)
+			}
+		})
 	}
 }
 

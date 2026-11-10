@@ -65,6 +65,7 @@ type Session struct {
 	UpdatedAt       time.Time
 	Revision        int64
 	Generation      int64
+	ResultRevision  int64
 }
 
 func (s *Store) GetClientOperation(sessionID, operationID string) (ClientOperation, bool, error) {
@@ -544,6 +545,9 @@ CREATE INDEX IF NOT EXISTS idx_channel_outbox_pending ON channel_outbox(status);
 	db.Exec(`ALTER TABLE sessions ADD COLUMN gadget_route TEXT NOT NULL DEFAULT '{}'`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN revision INTEGER NOT NULL DEFAULT 0`)
 	db.Exec(`ALTER TABLE sessions ADD COLUMN generation INTEGER NOT NULL DEFAULT 1`)
+	if _, err := db.Exec(`ALTER TABLE sessions ADD COLUMN result_revision INTEGER NOT NULL DEFAULT 0`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("migrate result revision: %w", err)
+	}
 	var hasReport int
 	if err := db.QueryRow(`SELECT count(*) FROM pragma_table_info('sessions') WHERE name = 'report'`).Scan(&hasReport); err != nil {
 		return err
@@ -638,7 +642,7 @@ func (s *Store) CreateSession(sess *Session) error {
 // GetSession retrieves a session by ID. Returns nil, nil if not found.
 func (s *Store) GetSession(sessionID string) (*Session, error) {
 	row := s.db.QueryRow(
-		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, gadget_route, gadget_capabilities, status, agent_session_id, compaction_mode, compaction_threshold_tokens, context_tokens, context_window, opencode_cost, schedule_ready_at, created_at, updated_at, revision, generation, report
+		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, gadget_route, gadget_capabilities, status, agent_session_id, compaction_mode, compaction_threshold_tokens, context_tokens, context_window, opencode_cost, schedule_ready_at, created_at, updated_at, revision, generation, report, result_revision
 		 FROM sessions WHERE session_id = ?`, sessionID,
 	)
 
@@ -649,7 +653,7 @@ func (s *Store) GetSession(sessionID string) (*Session, error) {
 	err := row.Scan(
 		&sess.SessionID, &sess.Name, &sess.Agent, &sess.SystemPrompt, &sess.Model, &sess.Effort, &sess.ContextTier,
 		&yolo, &sess.Path, &sess.Environment, &sess.GadgetRoute, &sess.GadgetCapabilities, &sess.Status, &sess.AgentSessionID, &sess.CompactionMode, &sess.CompactionThresholdTokens,
-		&sess.ContextTokens, &sess.ContextWindow, &sess.OpenCodeCost, &scheduleReadyAt, &sess.CreatedAt, &sess.UpdatedAt, &sess.Revision, &sess.Generation, &report,
+		&sess.ContextTokens, &sess.ContextWindow, &sess.OpenCodeCost, &scheduleReadyAt, &sess.CreatedAt, &sess.UpdatedAt, &sess.Revision, &sess.Generation, &report, &sess.ResultRevision,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -677,7 +681,7 @@ func (s *Store) GetSession(sessionID string) (*Session, error) {
 // ListSessions returns all sessions.
 func (s *Store) ListSessions() ([]*Session, error) {
 	rows, err := s.db.Query(
-		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, gadget_route, gadget_capabilities, status, agent_session_id, compaction_mode, compaction_threshold_tokens, context_tokens, context_window, opencode_cost, schedule_ready_at, created_at, updated_at, revision, generation, report
+		`SELECT session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, gadget_route, gadget_capabilities, status, agent_session_id, compaction_mode, compaction_threshold_tokens, context_tokens, context_window, opencode_cost, schedule_ready_at, created_at, updated_at, revision, generation, report, result_revision
 		 FROM sessions ORDER BY created_at`,
 	)
 	if err != nil {
@@ -694,7 +698,7 @@ func (s *Store) ListSessions() ([]*Session, error) {
 		if err := rows.Scan(
 			&sess.SessionID, &sess.Name, &sess.Agent, &sess.SystemPrompt, &sess.Model, &sess.Effort, &sess.ContextTier,
 			&yolo, &sess.Path, &sess.Environment, &sess.GadgetRoute, &sess.GadgetCapabilities, &sess.Status, &sess.AgentSessionID, &sess.CompactionMode, &sess.CompactionThresholdTokens,
-			&sess.ContextTokens, &sess.ContextWindow, &sess.OpenCodeCost, &scheduleReadyAt, &sess.CreatedAt, &sess.UpdatedAt, &sess.Revision, &sess.Generation, &report,
+			&sess.ContextTokens, &sess.ContextWindow, &sess.OpenCodeCost, &scheduleReadyAt, &sess.CreatedAt, &sess.UpdatedAt, &sess.Revision, &sess.Generation, &report, &sess.ResultRevision,
 		); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
@@ -842,6 +846,22 @@ func (s *Store) AddOpenCodeCost(sessionID string, cost float64) error {
 	)
 	if err != nil {
 		return fmt.Errorf("add OpenCode cost: %w", err)
+	}
+	return nil
+}
+
+// MarkSessionResult records which transcript revision contains the successful result.
+func (s *Store) MarkSessionResult(sessionID string) error {
+	result, err := s.db.Exec(`UPDATE sessions SET result_revision = revision WHERE session_id = ?`, sessionID)
+	if err != nil {
+		return fmt.Errorf("mark session result: %w", err)
+	}
+	count, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("mark session result rows affected: %w", err)
+	}
+	if count == 0 {
+		return fmt.Errorf("session %q not found", sessionID)
 	}
 	return nil
 }

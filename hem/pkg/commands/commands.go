@@ -57,6 +57,8 @@ func gadgetsParentID(e *Executor, sessionID string) string {
 type mpSessionInfo struct {
 	envelope.SessionReport
 	Revision        int64  `json:"revision"`
+	Generation      int64  `json:"generation"`
+	ResultRevision  int64  `json:"result_revision"`
 	Status          string `json:"status"`
 	Name            string `json:"name"`
 	Agent           string `json:"agent"`
@@ -173,8 +175,11 @@ func (e *Executor) markMPUnavailable(mpName string) {
 	}
 }
 
-func (e *Executor) processScheduleReady(sessions map[string]mpSessionInfo) {
+func (e *Executor) processSessionReadiness(mpName string, sessions map[string]mpSessionInfo) {
 	for sessionID, session := range sessions {
+		if _, err := e.store.ProcessSessionResult(sessionID, mpName, session.ResultRevision, session.Generation); err != nil {
+			log.Printf("process completed result: moneypenny=%s session=%s error=%v", mpName, sessionID, err)
+		}
 		if session.ScheduleReadyAt == "" {
 			continue
 		}
@@ -261,7 +266,7 @@ func (e *Executor) refreshMPSessions(mpNames []string) {
 	// don't wait for slow/unreachable ones. Emit a broadcast after each
 	// update so connected TUI clients can refresh incrementally.
 	for res := range ch {
-		e.processScheduleReady(res.sessions)
+		e.processSessionReadiness(res.mpName, res.sessions)
 		e.cacheManager.UpdateMP(res.mpName, res.sessions)
 		e.clientManager.ClearCooldown(res.mpName)
 		e.emitDashboardRefresh()
@@ -330,7 +335,7 @@ func (e *Executor) refreshMPSessionsQuick(mpNames []string) {
 		for res := range ch {
 			e.cacheManager.UpdateMP(res.mpName, res.sessions)
 			e.clientManager.ClearCooldown(res.mpName)
-			e.processScheduleReady(res.sessions)
+			e.processSessionReadiness(res.mpName, res.sessions)
 			e.emitDashboardRefresh()
 		}
 		cancel()
@@ -350,7 +355,7 @@ func (e *Executor) refreshMPSessionsQuick(mpNames []string) {
 			}
 			e.cacheManager.UpdateMP(res.mpName, res.sessions)
 			e.clientManager.ClearCooldown(res.mpName)
-			e.processScheduleReady(res.sessions)
+			e.processSessionReadiness(res.mpName, res.sessions)
 		case <-timer.C:
 			// Drain any results that arrived just now.
 			for {
@@ -361,7 +366,7 @@ func (e *Executor) refreshMPSessionsQuick(mpNames []string) {
 					}
 					e.cacheManager.UpdateMP(res.mpName, res.sessions)
 					e.clientManager.ClearCooldown(res.mpName)
-					e.processScheduleReady(res.sessions)
+					e.processSessionReadiness(res.mpName, res.sessions)
 				default:
 					return
 				}
@@ -493,7 +498,7 @@ func (e *Executor) SyncSessions(logger *log.Logger) {
 		}
 		e.cacheManager.UpdateMP(r.mpName, sessions)
 		e.clientManager.ClearCooldown(r.mpName)
-		e.processScheduleReady(sessions)
+		e.processSessionReadiness(r.mpName, sessions)
 		e.emitDashboardRefresh()
 	}
 }
@@ -920,11 +925,19 @@ func (e *Executor) pollUntilIdle(ctx context.Context, mp *store.Moneypenny, sess
 			} else {
 				var convData struct {
 					Conversation []turnInfo `json:"conversation"`
+					Revision     int64      `json:"revision"`
+					Generation   int64      `json:"generation"`
 				}
 				if err := json.Unmarshal(convResp.Data, &convData); err != nil {
 					return "", fmt.Errorf("parsing conversation: %w", err)
 				}
 				turns = convData.Conversation
+				if err := e.store.ObserveVisible(sessionID, convData.Revision, convData.Generation); err != nil {
+					return "", fmt.Errorf("observe synchronous result: %w", err)
+				}
+				if _, err := e.store.AcknowledgeVisible(sessionID, convData.Revision, convData.Generation); err != nil {
+					return "", fmt.Errorf("acknowledge synchronous result: %w", err)
+				}
 			}
 			for i := len(turns) - 1; i >= 0; i-- {
 				if isAgentResponseRole(turns[i].Role) {
@@ -2245,8 +2258,9 @@ func (e *Executor) ContinueSession(args []string) *protocol.Response {
 		_ = e.store.SetSessionHemStatus(sessionID, "active")
 	}
 
-	// Mark as unreviewed — the response hasn't been seen yet.
-	_ = e.store.SetSessionReviewed(sessionID, false)
+	if fromID == "" {
+		_ = e.store.SetSessionReviewed(sessionID, false)
+	}
 
 	cmdData := map[string]interface{}{
 		"session_id": sessionID,
@@ -2369,6 +2383,10 @@ func (e *Executor) CallbackSession(args []string) *protocol.Response {
 		"prompt":     content,
 		"source":     "callback",
 	}
+	if fromID != "" {
+		cmdData["source_session_id"] = fromID
+		cmdData["source_name"] = origin
+	}
 
 	ctx := context.Background()
 
@@ -2376,9 +2394,6 @@ func (e *Executor) CallbackSession(args []string) *protocol.Response {
 	if hemStatus, _ := e.store.GetSessionHemStatus(parentID); hemStatus == "completed" {
 		_ = e.store.SetSessionHemStatus(parentID, "active")
 	}
-	// A callback is new information the parent hasn't seen — mark unreviewed.
-	_ = e.store.SetSessionReviewed(parentID, false)
-
 	// Try to deliver immediately; if the parent is busy, queue it (still tagged
 	// as a callback so it drains with the callback role).
 	_, err = e.sendCommand(ctx, mp, "continue_session", cmdData)

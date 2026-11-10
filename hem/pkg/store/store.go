@@ -973,13 +973,36 @@ func (s *Store) AcknowledgeVisible(sessionID string, revision, generation int64)
 	}
 	res, err := s.db.Exec(`UPDATE sessions SET reviewed = 1,
 		visible_revision = CASE WHEN visible_generation = ? THEN MAX(visible_revision, ?) ELSE ? END,
-		visible_generation = ? WHERE session_id = ?`,
-		generation, revision, revision, generation, sessionID)
+		visible_generation = ? WHERE session_id = ?
+		AND observed_generation = ? AND observed_revision <= ?`,
+		generation, revision, revision, generation, sessionID, generation, revision)
 	if err != nil {
 		return false, fmt.Errorf("acknowledge visible session %q: %w", sessionID, err)
 	}
-	_, _ = res.RowsAffected()
-	return reviewed == 0, nil
+	count, err := res.RowsAffected()
+	return reviewed == 0 && count > 0, err
+}
+
+// ProcessSessionResult surfaces each unseen main-session result once.
+func (s *Store) ProcessSessionResult(sessionID, moneypenny string, revision, generation int64) (bool, error) {
+	if revision <= 0 || generation <= 0 {
+		return false, nil
+	}
+	res, err := s.db.Exec(`UPDATE sessions SET
+		result_revision = ?, result_generation = ?,
+		reviewed = CASE WHEN visible_generation = ? AND visible_revision >= ? THEN reviewed ELSE 0 END,
+		observed_revision = CASE WHEN observed_generation = ? THEN MAX(COALESCE(observed_revision, 0), ?) ELSE ? END,
+		observed_generation = ?
+		WHERE session_id = ? AND moneypenny_name = ? AND parent_session_id = '' AND hem_status != 'completed'
+		AND (result_generation < ? OR (result_generation = ? AND result_revision < ?))
+		AND COALESCE(observed_generation, 0) <= ? AND visible_generation <= ?`,
+		revision, generation, generation, revision, generation, revision, revision, generation,
+		sessionID, moneypenny, generation, generation, revision, generation, generation)
+	if err != nil {
+		return false, fmt.Errorf("process completed result %q: %w", sessionID, err)
+	}
+	count, err := res.RowsAffected()
+	return count > 0, err
 }
 
 // ObserveVisible records an authoritative server response without changing
@@ -1244,6 +1267,8 @@ func scanTrait(row *sql.Row) (*Trait, error) {
 // ignoring "duplicate column name" errors.
 func (s *Store) migrateSchema() error {
 	migrations := []string{
+		`ALTER TABLE sessions ADD COLUMN result_revision INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE sessions ADD COLUMN result_generation INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE project_category_defaults ADD COLUMN override_filter INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE projects ADD COLUMN category TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sessions ADD COLUMN project_id TEXT NOT NULL DEFAULT ''`,

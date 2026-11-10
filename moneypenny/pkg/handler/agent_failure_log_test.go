@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"james/moneypenny/pkg/agent"
+	"james/moneypenny/pkg/envelope"
 	"james/moneypenny/pkg/store"
 )
 
@@ -38,6 +39,45 @@ func TestRunAgentLogsSafeFailureSummaryWithoutVerboseLogging(t *testing.T) {
 	if !session.Attention.Active() || session.Attention.Kind != "failed" || session.Attention.Source != "daemon" ||
 		strings.Contains(session.Attention.Reason, "secret prompt content") {
 		t.Fatalf("missing or unsafe durable failure: %+v", session.Attention)
+	}
+	if session.ResultRevision != 0 {
+		t.Fatalf("failed run manufactured a successful result: %d", session.ResultRevision)
+	}
+}
+
+func TestSuccessfulRunPublishesResultWithoutUrgentAttention(t *testing.T) {
+	for _, tc := range []struct {
+		name, text string
+		suppress   bool
+	}{
+		{"final reply", "Review complete.", false},
+		{"intermediate output only", "", false},
+		{"scheduled opt-out", "Quiet scheduled result.", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, s, sessionID := newOperationRepairHandler(t)
+			h.runAgentFunc = func(context.Context, agent.RunParams) (*agent.Result, error) {
+				if err := s.AddConversationTurn(sessionID, "agent_text", "Checked the PR."); err != nil {
+					t.Fatal(err)
+				}
+				return &agent.Result{Text: tc.text}, nil
+			}
+			h.runAgent(sessionID, agent.RunParams{SessionID: sessionID, Agent: "copilot", SuppressResultReady: tc.suppress})
+			session, err := s.GetSession(sessionID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if session.Status != store.StateIdle || session.Attention.Active() ||
+				(session.ResultRevision > 0) == tc.suppress || session.ResultRevision >= session.Revision {
+				t.Fatalf("unexpected completion state: %+v", session)
+			}
+			resp := h.listSessions(context.Background(), &envelope.Command{})
+			listed, ok := resp.Data.([]envelope.SessionInfo)
+			if resp.Status != envelope.StatusSuccess || !ok || len(listed) != 1 ||
+				listed[0].ResultRevision != session.ResultRevision || listed[0].Generation != session.Generation {
+				t.Fatalf("completion marker missing from list_sessions: %+v", resp)
+			}
+		})
 	}
 }
 

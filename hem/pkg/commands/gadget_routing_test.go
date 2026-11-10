@@ -609,7 +609,18 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 	if data["source_session_id"] != "source" || data["source_name"] != "Trusted source" {
 		t.Fatalf("operator create --from lost attribution: %#v", data)
 	}
-	for _, target := range []string{"target", "parent"} {
+	for _, tc := range []struct {
+		target   string
+		reviewed bool
+	}{
+		{"target", true},
+		{"parent", true},
+		{"parent", false},
+	} {
+		target := tc.target
+		if err := e.store.SetSessionReviewed(target, tc.reviewed); err != nil {
+			t.Fatal(err)
+		}
 		const body = " \n--from=forged\nverbatim body\n "
 		method := "agents.message"
 		if target == "parent" {
@@ -628,6 +639,10 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 			if target == "parent" && data["source"] != "callback" {
 				t.Fatal("parent reply did not use callback role")
 			}
+		}
+		session, err := e.store.GetSession(target)
+		if err != nil || session.Reviewed != tc.reviewed {
+			t.Fatalf("agent message changed existing readiness: %+v, %v", session, err)
 		}
 	}
 	response = gadgetRouteRequest(t, e, "target", "subagents.message", map[string]any{"id": "source", "body": "task result"})

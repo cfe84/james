@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"math"
+	"path/filepath"
 	"sync"
 	"testing"
 
@@ -403,7 +404,16 @@ func TestUpdateSessionStatus(t *testing.T) {
 }
 
 func TestConversationRevisionIsAtomicAndMonotonic(t *testing.T) {
-	s := newTestStore(t)
+	path := filepath.Join(t.TempDir(), "results.db")
+	s, err := New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if s != nil {
+			s.Close()
+		}
+	}()
 	if err := s.CreateSession(&Session{SessionID: "rev", Name: "n", Agent: "a"}); err != nil {
 		t.Fatal(err)
 	}
@@ -419,6 +429,17 @@ func TestConversationRevisionIsAtomicAndMonotonic(t *testing.T) {
 	if got.Revision != 2 || got.Generation != 1 {
 		t.Fatalf("watermark = (%d,%d), want (2,1)", got.Revision, got.Generation)
 	}
+	if err := s.MarkSessionResult("rev"); err != nil {
+		t.Fatal(err)
+	}
+	// Completion metadata must not pretend the user has not seen the final text.
+	if err := s.UpdateSessionStatus("rev", StateIdle); err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := s.ListSessions()
+	if err != nil || len(sessions) != 1 || sessions[0].ResultRevision != 2 || sessions[0].Revision != 3 {
+		t.Fatalf("result marker advanced with metadata: %+v, %v", sessions, err)
+	}
 	deleted, err := s.DeleteLastTurnIfMatches("rev", "assistant", "two")
 	if err != nil || !deleted {
 		t.Fatalf("DeleteLastTurnIfMatches = %v, %v", deleted, err)
@@ -427,8 +448,19 @@ func TestConversationRevisionIsAtomicAndMonotonic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Revision != 3 {
-		t.Errorf("Revision = %d, want 3 after delete", got.Revision)
+	if got.Revision != 4 || got.ResultRevision != 2 {
+		t.Errorf("watermark after delete = %+v, want revision 4 and result revision 2", got)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err = s.GetSession("rev")
+	if err != nil || got.ResultRevision != 2 || got.Revision != 4 {
+		t.Fatalf("result marker lost on reopen: %+v, %v", got, err)
 	}
 }
 

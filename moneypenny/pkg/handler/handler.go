@@ -823,6 +823,7 @@ func (h *Handler) continueSession(ctx context.Context, cmd *envelope.Command) *e
 		h.vlog("context threshold reached for session %s; auto-compacting before continue", data.SessionID)
 		go h.runCompactionWithParams(data.SessionID, prompt, effModel, effEffort, compactionContinue, agent.RunParams{
 			ContextTier: data.ContextTier, Attachments: data.Attachments, OperationID: data.OperationID,
+			SuppressResultReady: suppressPromptResultReady(data.Source, data.SourceSessionID, false),
 		})
 		return envelope.SuccessResponse(cmd.RequestID, envelope.ContinueSessionResponse{
 			SessionID: data.SessionID,
@@ -831,18 +832,19 @@ func (h *Handler) continueSession(ctx context.Context, cmd *envelope.Command) *e
 
 	// Run agent asynchronously with Resume=true.
 	h.startAgent(data.SessionID, agent.RunParams{
-		SessionID:    data.SessionID,
-		Agent:        sess.Agent,
-		Prompt:       prompt,
-		SystemPrompt: sess.SystemPrompt,
-		Model:        effModel,
-		Effort:       effEffort,
-		ContextTier:  effTier,
-		Yolo:         sess.Yolo,
-		Path:         sess.Path,
-		Resume:       true,
-		Attachments:  data.Attachments,
-		OperationID:  data.OperationID,
+		SessionID:           data.SessionID,
+		Agent:               sess.Agent,
+		Prompt:              prompt,
+		SystemPrompt:        sess.SystemPrompt,
+		Model:               effModel,
+		Effort:              effEffort,
+		ContextTier:         effTier,
+		Yolo:                sess.Yolo,
+		Path:                sess.Path,
+		Resume:              true,
+		Attachments:         data.Attachments,
+		OperationID:         data.OperationID,
+		SuppressResultReady: suppressPromptResultReady(data.Source, data.SourceSessionID, false),
 	})
 
 	return envelope.SuccessResponse(cmd.RequestID, envelope.ContinueSessionResponse{
@@ -1320,12 +1322,19 @@ func (h *Handler) runAgentWithContext(ctx context.Context, sessionID string, par
 	// block), result.Text is empty. The chain-of-thought already captured
 	// whatever the agent produced via agent_text turns, so an empty
 	// assistant turn would just render as "(empty)" in the chat.
+	resultPersisted := true
 	if strings.TrimSpace(responseText) != "" {
 		if err := h.store.AddConversationTurn(sessionID, "assistant", responseText); err != nil {
+			resultPersisted = false
 			h.vlog("failed to add conversation turn for session %s: %v", sessionID, err)
 		}
 	} else {
 		h.vlog("skipping empty assistant turn for session %s (agent produced no final text)", sessionID)
+	}
+	if resultPersisted && !params.SuppressResultReady {
+		if err := h.store.MarkSessionResult(sessionID); err != nil {
+			h.errorLog("failed to persist completed result: session=%s error=%v", sessionID, err)
+		}
 	}
 
 	// Mirror the response to an external channel when this run was routed there
@@ -1376,6 +1385,10 @@ func (h *Handler) logAgentFailure(sessionID, agentName string, err error) {
 	h.errorLog("agent run failed: session=%s agent=%s error=%s", sessionID, agentName, message)
 }
 
+func suppressPromptResultReady(source, sourceSessionID string, markReady bool) bool {
+	return !markReady && (sourceSessionID != "" || source == "callback" || source == "scheduled")
+}
+
 func (h *Handler) continueQueuedPrompts(sessionID string) {
 	// Check for queued prompts before going idle. Drain one override-group at a
 	// time: prompts sharing the same per-prompt model/effort override are
@@ -1415,7 +1428,9 @@ func (h *Handler) continueQueuedPrompts(sessionID string) {
 
 		// Process each prompt in the group as its own conversation turn.
 		texts := make([]string, 0, len(group))
+		suppressResultReady := true
 		for _, qp := range group {
+			suppressResultReady = suppressResultReady && suppressPromptResultReady(qp.Source, qp.SourceSessionID, qp.MarkReady)
 			role := "user"
 			if qp.Source == "scheduled" {
 				role = "scheduled"
@@ -1460,24 +1475,26 @@ func (h *Handler) continueQueuedPrompts(sessionID string) {
 			h.vlog("context threshold reached for session %s; auto-compacting before queued group", sessionID)
 			h.runCompactionWithParams(sessionID, combinedPrompt, effModel, effEffort, compactionContinue, agent.RunParams{
 				ContextTier: first.ContextTier, ReplyChannelID: first.ReplyChannelID, MarkReady: first.MarkReady,
+				SuppressResultReady: suppressResultReady,
 			})
 			return
 		}
 
 		h.startAgent(sessionID, agent.RunParams{
-			SessionID:      sessionID,
-			Agent:          sess.Agent,
-			Prompt:         combinedPrompt,
-			SystemPrompt:   sess.SystemPrompt,
-			Model:          effModel,
-			Effort:         effEffort,
-			ContextTier:    effTier,
-			Yolo:           sess.Yolo,
-			Path:           sess.Path,
-			Resume:         true,
-			ReplyChannelID: first.ReplyChannelID,
-			MarkReady:      first.MarkReady,
-			OperationID:    first.OperationID,
+			SessionID:           sessionID,
+			Agent:               sess.Agent,
+			Prompt:              combinedPrompt,
+			SystemPrompt:        sess.SystemPrompt,
+			Model:               effModel,
+			Effort:              effEffort,
+			ContextTier:         effTier,
+			Yolo:                sess.Yolo,
+			Path:                sess.Path,
+			Resume:              true,
+			ReplyChannelID:      first.ReplyChannelID,
+			MarkReady:           first.MarkReady,
+			SuppressResultReady: suppressResultReady,
+			OperationID:         first.OperationID,
 		})
 		return
 	}
@@ -1512,6 +1529,7 @@ func (h *Handler) listSessions(_ context.Context, cmd *envelope.Command) *envelo
 			Model:         s.Model,
 			CreatedAt:     s.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 			Revision:      s.Revision, Generation: s.Generation,
+			ResultRevision: s.ResultRevision,
 		}
 		// Use the last conversation turn as last_accessed, falling back to
 		// the session's updated_at (which tracks status changes like working→idle).
@@ -3303,18 +3321,19 @@ func (h *Handler) processDueSchedules(ctx context.Context) {
 		}
 		if result.Start {
 			h.startAgent(sch.SessionID, agent.RunParams{
-				SessionID:      sch.SessionID,
-				Agent:          sess.Agent,
-				Prompt:         sch.Prompt,
-				SystemPrompt:   sess.SystemPrompt,
-				Model:          sess.Model,
-				Effort:         sess.Effort,
-				ContextTier:    sess.ContextTier,
-				Yolo:           sess.Yolo,
-				Path:           sess.Path,
-				Resume:         true,
-				ReplyChannelID: sch.ReplyChannelID,
-				MarkReady:      sch.MarkReady,
+				SessionID:           sch.SessionID,
+				Agent:               sess.Agent,
+				Prompt:              sch.Prompt,
+				SystemPrompt:        sess.SystemPrompt,
+				Model:               sess.Model,
+				Effort:              sess.Effort,
+				ContextTier:         sess.ContextTier,
+				Yolo:                sess.Yolo,
+				Path:                sess.Path,
+				Resume:              true,
+				ReplyChannelID:      sch.ReplyChannelID,
+				MarkReady:           sch.MarkReady,
+				SuppressResultReady: !sch.MarkReady,
 			})
 		}
 	}

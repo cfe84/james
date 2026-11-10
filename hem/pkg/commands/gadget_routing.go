@@ -406,7 +406,6 @@ func (e *Executor) messageGadgetAgent(source, target *store.Session, body string
 	if target.HemStatus == "completed" {
 		_ = e.store.SetSessionHemStatus(target.SessionID, "active")
 	}
-	_ = e.store.SetSessionReviewed(target.SessionID, false)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	_, err = e.sendCommand(ctx, mp, "continue_session", data)
