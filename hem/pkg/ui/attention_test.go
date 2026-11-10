@@ -31,7 +31,7 @@ func TestChatAttentionPersistsUntilExplicitRevisionResolution(t *testing.T) {
 	if m.statusMsg != "unchanged" {
 		t.Fatal("refresh replayed notification")
 	}
-	updated, cmd := m.updateChat(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'R'}})
+	updated, cmd := m.updateChat(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
 	m = updated.(Model)
 	if cmd == nil {
 		t.Fatal("resolve shortcut did not dispatch")

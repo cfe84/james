@@ -399,13 +399,13 @@ test('Escape on the session list opens its shortcut reference', () => {
   assert.match(app, /function showDashboardShortcuts\(\)/);
   assert.match(app, /aria-label="Session list shortcuts"/);
   assert.match(app, /<kbd>c<\/kbd> Complete selected session/);
-  assert.match(app, /case 'Escape':\s*e\.preventDefault\(\);\s*showDashboardShortcuts\(\);/);
+  assert.match(app, /Escape: dashboardShortcutsOpen \? \(\) => \{\} : showDashboardShortcuts/);
 });
 
 test('Escape closes the session list shortcut reference', () => {
   const app = fs.readFileSync(path.join(__dirname, '../pkg/web/static/app.js'), 'utf8');
   assert.match(app, /const closeRoot = overlay\.querySelector\('\.cmd-palette'\) \|\| overlay\.querySelector\('\.modal'\)/);
-  assert.match(app, /window\._qewCloseDashboardShortcuts = function\(\) \{ closeWizard\(\); \}/);
+  assert.match(app, /window\._qewCloseDashboardShortcuts = function\(\) \{\s*closeWizard\(\);\s*focusDashboard\(\);/);
 });
 
 test('chat connection loss preserves the transcript and gates sending', () => {

@@ -957,7 +957,7 @@
     });
     document.getElementById('project-filter-close').addEventListener('click', () => {
       closeWizard();
-      document.getElementById('project-filter').focus();
+      focusDashboard();
     });
     syncChecks();
     focusProjectFilter();
@@ -2172,6 +2172,7 @@
         <div class="cmd-list">
           <button class="cmd-item" data-cmd="complete"><kbd>c</kbd> Complete session</button>
           <button class="cmd-item" data-cmd="markready"><kbd>u</kbd> Mark as ready</button>
+          <button class="cmd-item" data-cmd="resolveattention"><kbd>r</kbd> Resolve attention</button>
           <button class="cmd-item" data-cmd="edit"><kbd>e</kbd> Edit session</button>
           <button class="cmd-item" data-cmd="duplicate"><kbd>y</kbd> Duplicate session</button>
           <button class="cmd-item" data-cmd="subagent"><kbd>a</kbd> New subagent</button>
@@ -2237,6 +2238,7 @@
     switch (cmd) {
       case 'complete': completeSession(); break;
       case 'markready': markReady(); break;
+      case 'resolveattention': resolveAttention(); break;
       case 'edit':     showEditSessionModal(); break;
       case 'duplicate': openDuplicateWizard(); break;
       case 'subagent': createNewSubagent(); break;
@@ -2362,7 +2364,15 @@
     const palette = document.querySelector('.cmd-palette');
     if (palette) palette.focus();
   }
-  window._qewCloseDashboardShortcuts = function() { closeWizard(); };
+  function focusDashboard() {
+    const list = document.getElementById('dash-content');
+    list.tabIndex = -1;
+    list.focus({ preventScroll: true });
+  }
+  window._qewCloseDashboardShortcuts = function() {
+    closeWizard();
+    focusDashboard();
+  };
 
   function openAllSubagent(index) {
     const sub = allSubagents[index];
@@ -7275,6 +7285,7 @@
       document.getElementById('chat-view').style.display !== 'none';
     const conversationCommandsOpen = cmdPaletteOpen &&
       document.querySelector('.cmd-palette[aria-label="Session commands"]');
+    const dashboardShortcutsOpen = document.querySelector('.cmd-palette[aria-label="Session list shortcuts"]');
     if (chatActive && (conversationCommandsOpen || !document.querySelector('.modal-overlay'))) {
       if (e.ctrlKey && !e.metaKey && !e.altKey && !e.repeat && e.key.toLowerCase() === 'p') {
         e.preventDefault();
@@ -7324,7 +7335,7 @@
         }
         return;
       }
-      const map = { c: 'complete', u: 'markready', e: 'edit', y: 'duplicate', a: 'subagent', l: 'allsubagents', p: 'project', g: 'diff', t: 'thoughts', o: 'model', f: 'effort', w: 'context', m: 'memory', n: 'channels', h: 'schedules', K: 'compact', D: 'distill', s: 'stop', d: 'delete', q: 'back' };
+      const map = { c: 'complete', u: 'markready', r: 'resolveattention', e: 'edit', y: 'duplicate', a: 'subagent', l: 'allsubagents', p: 'project', g: 'diff', t: 'thoughts', o: 'model', f: 'effort', w: 'context', m: 'memory', n: 'channels', h: 'schedules', K: 'compact', D: 'distill', s: 'stop', d: 'delete', q: 'back' };
       const cmd = map[e.key];
       if (cmd) { e.preventDefault(); runCmd(cmd); }
       return;
@@ -7338,7 +7349,7 @@
     // While any other modal is open, Escape triggers its close button; the git
     // diff review modal additionally supports keyboard navigation. All other
     // keys are left to the modal's own handlers.
-    if (document.querySelector('.modal-overlay')) {
+    if (document.querySelector('.modal-overlay') && !dashboardShortcutsOpen) {
       if (handleProjectFilterKey(e)) return;
       if (e.key === 'Escape') {
         if (escapeCloseModal()) e.preventDefault();
@@ -7412,8 +7423,8 @@
     const dashActive = document.getElementById('dashboard-view').style.display !== 'none';
     if (!dashActive) return;
     const tag = (e.target.tagName || '').toLowerCase();
-    const typingText = tag === 'input' || tag === 'textarea' || tag === 'select' ||
-      e.target.isContentEditable;
+    const typingText = !dashboardShortcutsOpen && (tag === 'input' || tag === 'textarea' || tag === 'select' ||
+      e.target.isContentEditable);
     if (!typingText && e.ctrlKey && !e.metaKey && !e.altKey) {
       if (e.key.toLowerCase() === 'j') {
         e.preventDefault();
@@ -7425,7 +7436,7 @@
       return;
     }
     if (e.ctrlKey || e.metaKey || e.altKey) return;
-    const typingFocus = typingText || tag === 'button' || tag === 'a' || tag === 'summary';
+    const typingFocus = !dashboardShortcutsOpen && (typingText || tag === 'button' || tag === 'a' || tag === 'summary');
     // Allow auto-repeat for list navigation (holding j/k scrolls a long list),
     // but ignore it for every other key (action keys must not fire repeatedly).
     const dashIsNav = e.key === 'ArrowDown' || e.key === 'j' || e.key === 'ArrowUp' || e.key === 'k';
@@ -7434,40 +7445,35 @@
     // Enter activates the selected row, but only when focus isn't on a button/link
     // (so toolbar buttons keep their native Enter behaviour).
     if (e.key === 'Enter') {
-      if (!typingFocus) { e.preventDefault(); dashOpenSelected(); }
+      if (!typingFocus) {
+        e.preventDefault();
+        if (dashboardShortcutsOpen) window._qewCloseDashboardShortcuts();
+        dashOpenSelected();
+      }
       return;
     }
     if (typingText) return;
-    switch (e.key) {
-      case 'ArrowDown': case 'j': e.preventDefault(); dashMove(1); break;
-      case 'ArrowUp':   case 'k': e.preventDefault(); dashMove(-1); break;
-      case 'ArrowRight': case 'ArrowLeft': case 'h': case 'l': {
-        const selected = dashEntries.find(entry => entry.sessionId === dashSelectedId);
-        const rootId = (e.target.dataset || {}).expand || (selected && selected.rootId);
-        if (rootId) {
-          e.preventDefault();
-          toggleWorkstream(rootId, e.key === 'ArrowRight' || e.key === 'l');
-        }
-        break;
-      }
-      case 'Escape':
-        e.preventDefault();
-        showDashboardShortcuts();
-        break;
-      case '/': e.preventDefault(); openProjectFilter(); break;
-      case 'q': e.preventDefault(); clearProjectFilter(); break;
-      case 'm': e.preventDefault(); showMoneypenniesView(); break;
-      case 'P': e.preventDefault(); showPonsonbiesView(); break;
-      case 'b': e.preventDefault(); toggleSound(); break;
-      case 'n': e.preventDefault(); openCreateWizard(); break;
-      case 'p': e.preventDefault(); showProjectsView(); break;
-      case 'o': e.preventDefault(); openOmnibar(); break;
-      case 't': e.preventDefault(); showTraitsView(); break;
-      case 'c': case 'C': e.preventDefault(); dashAction('complete'); break;
-      case 'u': e.preventDefault(); dashAction('markready'); break;
-      case 'd': e.preventDefault(); dashAction('delete'); break;
-      case 'e': e.preventDefault(); dashAction('edit'); break;
-      case 'y': e.preventDefault(); dashAction('duplicate'); break;
+    const foldWorkstream = () => {
+      const selected = dashEntries.find(entry => entry.sessionId === dashSelectedId);
+      const rootId = (e.target.dataset || {}).expand || (selected && selected.rootId);
+      if (rootId) toggleWorkstream(rootId, e.key === 'ArrowRight' || e.key === 'l');
+    };
+    const actions = {
+      ArrowDown: () => dashMove(1), j: () => dashMove(1),
+      ArrowUp: () => dashMove(-1), k: () => dashMove(-1),
+      ArrowRight: foldWorkstream, ArrowLeft: foldWorkstream, h: foldWorkstream, l: foldWorkstream,
+      Escape: dashboardShortcutsOpen ? () => {} : showDashboardShortcuts,
+      '/': openProjectFilter, q: clearProjectFilter,
+      m: showMoneypenniesView, P: showPonsonbiesView, b: toggleSound,
+      n: openCreateWizard, p: showProjectsView, o: openOmnibar, t: showTraitsView,
+      c: () => dashAction('complete'), C: () => dashAction('complete'),
+      u: () => dashAction('markready'), d: () => dashAction('delete'),
+      e: () => dashAction('edit'), y: () => dashAction('duplicate'),
+    };
+    if (Object.prototype.hasOwnProperty.call(actions, e.key)) {
+      e.preventDefault();
+      if (dashboardShortcutsOpen) window._qewCloseDashboardShortcuts();
+      actions[e.key]();
     }
   });
 

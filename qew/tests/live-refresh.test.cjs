@@ -203,7 +203,7 @@ test('Markdown preserves literal code and PowerShell continuation backticks', ()
 test('conversation help retains action, compose, focus and scrolling shortcuts', () => {
   const source = app.slice(app.indexOf("  document.addEventListener('keydown', (e) => {"), app.indexOf('  // --- Routing ---'));
   const actions = {
-    c: 'complete', u: 'markready', e: 'edit', y: 'duplicate', a: 'subagent',
+    c: 'complete', u: 'markready', r: 'resolveattention', e: 'edit', y: 'duplicate', a: 'subagent',
     l: 'allsubagents', p: 'project', g: 'diff', t: 'thoughts', o: 'model',
     f: 'effort', w: 'context', m: 'memory', n: 'channels', h: 'schedules',
     K: 'compact', D: 'distill', s: 'stop', d: 'delete', q: 'back',
@@ -263,6 +263,20 @@ test('conversation help retains action, compose, focus and scrolling shortcuts',
     assert.deepEqual(calls, expected, `${modal}: ${JSON.stringify(inputs)}`);
     assert.equal(defaultPrevented, prevented, `${modal}: ${JSON.stringify(inputs)}`);
   }
+});
+
+test('resolve attention command reuses the banner resolver after closing the palette', () => {
+  const calls = [];
+  const context = vm.createContext({
+    cmdPaletteOpen: true,
+    closeWizard: () => calls.push('close'),
+    resolveAttention: () => calls.push('resolve'),
+  });
+  vm.runInContext(app.slice(app.indexOf('  function runCmd('),
+    app.indexOf('  function subagentsFromResponse(')), context);
+  context.runCmd('resolveattention');
+  assert.equal(context.cmdPaletteOpen, false);
+  assert.deepEqual(calls, ['close', 'resolve']);
 });
 
 test('Add subagent opens the shared create wizard with parent host and path', async () => {
@@ -501,7 +515,7 @@ test('dashboard completion selects the next visible session before the request',
     vm.runInContext(`${source}\ndashAction('complete');`, context);
     assert.deepEqual(calls, [['selection', expected], ['complete', selected, expected]]);
   }
-  assert.match(app, /case 'c': case 'C': e\.preventDefault\(\); dashAction\('complete'\)/);
+  assert.match(app, /c: \(\) => dashAction\('complete'\), C: \(\) => dashAction\('complete'\)/);
 });
 
 test('agent-authored messages have their own icon and red role style', () => {
@@ -691,20 +705,75 @@ test('workstreams retain hierarchy, independent state, expansion, selection and 
   assert.match(container.querySelectorAll()[2].innerHTML, /&lt;unsafe>/);
 });
 
-test('dashboard h/l reuse directional workstream folding shortcuts', () => {
+function dashboardKeyboardHarness() {
   const calls = [];
+  let listener, modal = false;
+  const list = { tagName: 'DIV', focus() { context.document.activeElement = list; } };
+  const button = { tagName: 'BUTTON' };
   const context = vm.createContext({
+    currentSession: null, cmdPaletteOpen: false, overridePicker: null,
     dashEntries: [{ sessionId: 'parent', rootId: 'parent' }],
     dashSelectedId: 'parent',
     toggleWorkstream: (id, expanded) => calls.push([id, expanded]),
+    activeMgmtList: () => null,
+    document: {
+      activeElement: list,
+      getElementById: id => id === 'dash-content' ? list : { style: { display: 'flex' } },
+      querySelector: selector => modal && (selector === '.modal-overlay' ||
+        selector === '.cmd-palette[aria-label="Session list shortcuts"]') ? {} : null,
+      addEventListener: (event, handler) => { listener = handler; },
+    },
+    window: {}, closeWizard: () => { modal = false; calls.push(['close']); },
+    showDashboardShortcuts: () => { modal = true; context.document.activeElement = button; },
+    dashMove: delta => calls.push(['move', delta]),
+    dashOpenSelected: () => calls.push(['open']),
+    dashAction: action => calls.push(['action', action]),
+    openProjectFilter: () => calls.push(['filter']),
+    clearProjectFilter: () => calls.push(['clear']),
+    showMoneypenniesView() {}, showPonsonbiesView() {}, toggleSound() {},
+    openCreateWizard: () => calls.push(['new']),
+    showProjectsView() {}, openOmnibar() {}, showTraitsView() {},
   });
-  const start = app.indexOf("      case 'ArrowRight': case 'ArrowLeft':");
-  const end = app.indexOf("      case 'Escape':", start);
-  vm.runInContext(`function press(e) { switch(e.key) { ${app.slice(start, end)} } }`, context);
-  for (const [key, expanded] of [['h', false], ['l', true], ['ArrowLeft', false], ['ArrowRight', true]]) {
+  vm.runInContext(app.slice(app.indexOf('  function focusDashboard('),
+    app.indexOf('  function openAllSubagent(')), context);
+  vm.runInContext(app.slice(app.indexOf("  document.addEventListener('keydown', (e) => {"),
+    app.indexOf('  // --- Routing ---')), context);
+  return { context, calls, list, button, press(key, extra = {}) {
     let prevented = false;
-    context.press({ key, target: {}, preventDefault() { prevented = true; } });
-    assert.equal(prevented, true);
+    listener({ key, target: context.document.activeElement, preventDefault() { prevented = true; }, ...extra });
+    return prevented;
+  } };
+}
+
+test('dashboard help executes list shortcuts and restores list focus on dismissal', () => {
+  for (const [key, expected] of [['c', ['action', 'complete']], ['n', ['new']],
+    ['/', ['filter']], ['j', ['move', 1]], ['Enter', ['open']], ['Escape', null]]) {
+    const { context, calls, list, press } = dashboardKeyboardHarness();
+    assert.equal(press('Escape'), true);
+    for (const extra of [{ ctrlKey: true }, { metaKey: true }, { altKey: true },
+      { repeat: true }, { isComposing: true }]) {
+      assert.equal(press('c', extra), false);
+      assert.deepEqual(calls, []);
+    }
+    assert.equal(press('z'), false);
+    assert.equal(press(key), true);
+    assert.deepEqual(calls, expected ? [['close'], expected] : [['close']]);
+    assert.equal(context.document.activeElement, list);
+    if (key === 'Escape') {
+      assert.equal(press('Enter'), true);
+      assert.deepEqual(calls.at(-1), ['open']);
+    }
+  }
+  const { context, calls, button, press } = dashboardKeyboardHarness();
+  context.document.activeElement = button;
+  assert.equal(press('Enter'), false, 'ordinary toolbar buttons retain native Enter');
+  assert.deepEqual(calls, []);
+});
+
+test('dashboard h/l reuse directional workstream folding shortcuts', () => {
+  const { calls, press } = dashboardKeyboardHarness();
+  for (const [key, expanded] of [['h', false], ['l', true], ['ArrowLeft', false], ['ArrowRight', true]]) {
+    assert.equal(press(key), true);
     assert.deepEqual(calls.pop(), ['parent', expanded]);
   }
 });
@@ -885,6 +954,9 @@ test('project picker groups categories, folds completed projects and supports ba
         ? input.dataset.projectIndex !== undefined : input.dataset.projectGroup !== undefined);
     },
   };
+  container.focus = () => { focus = container; };
+  vm.runInContext(app.slice(app.indexOf('  function focusDashboard('),
+    app.indexOf('  window._qewCloseDashboardShortcuts')), context);
   context.document.getElementById = id => id === 'dash-content' ? container
     : id === 'project-filter-list' ? open ? list : null : button(id);
   context.closeWizard = () => { open = false; };
@@ -969,7 +1041,7 @@ test('project picker groups categories, folds completed projects and supports ba
   assert.equal(project('<Beta>').checked, true, 'completed category can be selected explicitly');
   press('Escape');
   assert.equal(open, false);
-  assert.equal(focus, 'project-filter');
+  assert.equal(focus, container);
   context.openProjectFilter();
   assert.equal(completed.open, false, 'completed fold resets on reopen');
   assert.equal(project('<Beta>').checked, true, 'closing preserves explicit choices');
@@ -1009,8 +1081,7 @@ test('project picker groups categories, folds completed projects and supports ba
   assert.equal(context.excludedProjects.has('Alpha'), true, 'newly completed projects default off');
   assert.equal(context.excludedProjects.has('<Beta>'), false, 'existing explicit completed selection is retained');
   assert.doesNotMatch(app, /id="dash-filter"|function openDashFilter|function initDashFilter/);
-  assert.match(app, /case '\/': e\.preventDefault\(\); openProjectFilter\(\)/);
-  assert.match(app, /case 'q': e\.preventDefault\(\); clearProjectFilter\(\)/);
+  assert.match(app, /'\/': openProjectFilter, q: clearProjectFilter/);
 });
 
 test('category Display defaults initialize filters without undoing explicit page selections on refresh', () => {

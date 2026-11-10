@@ -1671,6 +1671,9 @@ func (m Model) updateChat(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case "r":
 			m.chat.confirmDelete = false
+			if m.chat.attention.Active() {
+				return m, m.chat.resolveAttention()
+			}
 			return m, tea.Batch(m.chat.loadHistory(), m.chat.loadActivity())
 		case "m":
 			m.chat.confirmDelete = false
@@ -2340,7 +2343,7 @@ func (m Model) renderStatusBar() string {
 			}
 		} else if m.chat.commandMode {
 			keys = []string{
-				statusKeyStyle.Render("R") + statusDescStyle.Render(" resolve attention"),
+				statusKeyStyle.Render("r") + statusDescStyle.Render(" resolve attention / refresh"),
 				statusKeyStyle.Render("a") + statusDescStyle.Render(" subagents"),
 				statusKeyStyle.Render("c") + statusDescStyle.Render(" complete"),
 				statusKeyStyle.Render("u") + statusDescStyle.Render(" ready"),

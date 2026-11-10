@@ -797,6 +797,10 @@ hem/
    reject agent-supplied failures. The CLI's `attention resolve` maps to the
    same setter with empty kind and expected revision. Operator resolution
    travels through Hem's `resolve attention` and Moneypenny's `update_attention`.
+   Qew's command palette and TUI command mode bind lowercase `r` to the same
+   revision-safe resolver used by the existing attention controls. TUI `r`
+   falls back to history/activity refresh without attention; uppercase `R`
+   remains a compatibility alias.
    Legacy notify/tags share this setter and deduplicate their transcript turn.
    Final response tags use the same path as streamed tags.
    Shared run instructions require durable attention before waiting or ending
@@ -1623,6 +1627,13 @@ credentials or an external network. The process-boundary checks validate
 lifecycle cleanup, not durable state: watch leases remain optional hints and
 never own agent, scheduler, SQLite, or persisted-output lifetime.
 ### Qew dashboard failure handling
+
+The session-list shortcut palette bypasses generic modal keyboard suppression
+and reuses the dashboard action dispatch rather than maintaining a second key
+map. Recognized keys dismiss it before dispatch; unknown or modified keys leave
+it open. Closing that palette or completing the project filter explicitly
+focuses `#dash-content` with `preventScroll`, preserving selected-session Enter
+behavior without overriding normal toolbar-button activation.
 
 Moneypenny's `list_sessions` metadata includes the configured model alongside
 the agent. Hem carries both through its cached dashboard rows, appending the

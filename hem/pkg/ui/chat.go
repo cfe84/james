@@ -1744,7 +1744,7 @@ func (m chatModel) View() string {
 		width := max(10, m.width-2)
 		text := attentionDescription(m.attention)
 		banner := categoryWorkingStyle.Width(width).Render(
-			truncate(text, width*max(1, m.height/4)) + "  [Esc R: resolve]")
+			truncate(text, width*max(1, m.height/4)) + "  [Esc r: resolve]")
 		b.WriteString(banner + "\n")
 		attentionLines = strings.Count(banner, "\n") + 1
 	}

@@ -663,6 +663,11 @@ previously disabled service does not remain disabled after replacement.
 
 ### Create
 
+Qew's conversation-list help accepts the same shortcuts as the underlying list:
+recognized keys close help and perform the action, while Escape just closes it.
+Closing help or the project filter returns focus to the conversation list, so
+Enter opens the selected conversation rather than activating a toolbar button.
+
 Qew only displays a sent chat or diff-review prompt as queued after Hem returns
 a successful response. Backend rejections are shown as send errors rather
 than phantom queued messages; rejected chat drafts and review comments remain
@@ -1514,7 +1519,11 @@ as `failed`; agents cannot self-report that kind.
 Dashboard rows show the summary, request counts and reasons; the same request
 remains in the conversation banner until resolved. Qew provides **Resolve**,
 the TUI uses `Esc` then `R`, and operators can use
-`hem resolve attention SESSION_ID --revision N`. Completed sessions with
+`hem resolve attention SESSION_ID --revision N`. In a Qew or TUI conversation,
+press Escape then `r` to resolve the current attention request using its displayed
+revision. Without an active request, Qew does nothing and the TUI retains its
+refresh action; the TUI's existing uppercase `R` resolve alias remains available.
+Completed sessions with
 unresolved requests remain in **Needs you** until explicitly resolved.
 New requests and changed reasons use the existing sound/popover notification
 delivery instead of a separate transient state. Qew deduplicates by session and
