@@ -40,14 +40,14 @@ Usage:
   gadgets memory delete path [--recursive]
   gadgets memory revisions [path]
   gadgets agents list
-  gadgets agents create [--name name] [--agent agent] [--model model] [--path path] [--moneypenny name] [--traits names-or-IDs] [--yolo]
+  gadgets agents create [--name name] [--nick nick] [--agent agent] [--model model] [--path path] [--moneypenny name] [--traits names-or-IDs] [--yolo]
                                              (prompt on stdin; creates a top-level agent)
   gadgets agents message id [--body text]     (otherwise reads stdin)
   gadgets traits list
   gadgets traits get ID                      (ID or exact name)
   gadgets traits edit ID                     (complete body on stdin; empty clears; own traits only)
   gadgets subagents list
-  gadgets subagents create [--name name] [--agent agent] [--model model] [--path path] [--moneypenny name] [--traits names-or-IDs] [--yolo]
+  gadgets subagents create [--name name] [--nick nick] [--agent agent] [--model model] [--path path] [--moneypenny name] [--traits names-or-IDs] [--yolo]
                                              (prompt on stdin)
   gadgets subagents message id [--body text]   (otherwise reads stdin)
   gadgets subagents edit id [--name name] [--system-prompt text] [--model model] [--effort value] [--context tier] [--path path] [--compaction mode] [--yolo=true|false] [--env NAME=VALUE]

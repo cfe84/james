@@ -194,8 +194,8 @@ Hem's shared capability flag helper and the existing TUI/Qew form components
 expose explicit `--gadget-memory`, `--gadget-subagents`, `--gadget-agents`,
 `--gadget-create-agents`, `--gadget-traits`, `--gadget-scheduling`, `--gadget-moneypenny-logs`, `--gadget-channels`, and `--gadget-hem` true/false controls. Copy inherits the source values
 unless overridden; updates apply only specified settings. Notifications have an
-always-available hint rather than a toggle. The legacy `--gadgets` setting
-persists only an instruction notice; it does not turn tools on or off.
+always-available hint rather than a toggle. There is no master Gadgets toggle or
+`--gadgets` flag; the daemon supplies tooling directly, gated by each capability.
 
 `channels.*` is a default-off daemon-to-Hem capability for the caller's own
 channel bindings. The daemon binds source identity; Hem rechecks current grants,
@@ -224,7 +224,12 @@ self-grant it; the administrative Hem proxy is the explicit broader exception.
 `agents.create` has a separate opt-in `CreateAgents` capability; neither the
 global discovery/message grant nor Subagents authorizes it. It shares the
 strict `envelope.DecodeCreateAgentGadget` payload decoder with `subagents.create`
-at the daemon and Hem boundaries. The payload allows only prompt/name/agent/model/path/traits.
+at the daemon and Hem boundaries. The payload allows only
+prompt/name/nick/agent/model/path/moneypenny/traits/yolo.
+Nickname values are forwarded as equals-form arguments to the existing creation
+commands; both use `prepareSessionNick` to trim, check case-insensitive uniqueness
+and compose the identity before creation. Successful creation persists the alias
+through the existing store API.
 The optional traits string preserves omitted versus explicit empty selection;
 Hem forwards it as an equals-form `--traits` argument, never parses its value
 as flags. Both creation paths reuse `resolveTraits` and `traitsSystemPrompt`.
@@ -579,10 +584,11 @@ moneypenny/
 
 ## Hem - Agent Orchestration CLI
 
-Hem stores only a minimal daemon-managed gadgets notice, retaining the legacy
-marker for prompt recomposition. `update session --gadgets true` replaces stale
-direct-Hem instructions while preserving surrounding base/traits/nickname and
-memory blocks. Trusted routing is persisted in the hidden `sessions.gadget_route`
+Hem no longer stores a gadgets notice or exposes a master Gadgets session field.
+Legacy markers remain recognized when displaying/copying stored prompts and
+recomposing traits; Moneypenny strips obsolete tooling instructions and injects
+current capability-filtered instructions on every invocation.
+Trusted routing is persisted in the hidden `sessions.gadget_route`
 field—not the editable agent environment—as `JAMES_HEM_ADDRESS` plus
 `JAMES_HEM_FINGERPRINT` for MI6, or `JAMES_HEM_SOCKET` for a local server.
 Create/copy/subsession and daemon-level updates overwrite the route from executor
@@ -965,7 +971,7 @@ changes, queue cleanup, log-rotation changes, or a claim of fixing the live RAM 
 
     Trait composition is **compose-at-write**: selected trait prompts are rendered into the stored system prompt at create/update time. The effective order is **base → traits → gadgets → memory** (with nick first when present), but capability-filtered gadget instructions and current root memory are composed by Moneypenny at invocation time, not stored as fixed Hem command blocks. Arbitrary trait text is bounded by `<!--james:traits:begin-->`/`<!--james:traits:end-->` sentinels; `stripTraitsBlock`/`insertTraitsBlock` preserve surrounding markers. `resolveTraits` parses comma-separated IDs/names, de-duplicates in order, and rejects unknown traits.
 
-    `CreateSession`/`CopySession` append the traits block before gadgets/memory and persist the mapping via `SetSessionTraits`; `CopySession` inherits the source's traits unless `--traits` is given (and strips the inherited traits block to avoid double injection). `UpdateSession` detects an explicit `--traits` (pre-scanning args, like `yoloExplicit`, so an empty value can clear all traits), strips the old block, inserts the new one, persists the mapping, and re-sends the recomposed prompt — so subsequent chat turns use the new traits. A lazily-cached `getCurrentSP()` closure is shared by the traits and gadgets recomposition paths so both operate on the same evolving prompt within a single update. Editing a trait *definition* does NOT retroactively rewrite existing sessions (only a session's selection change recomposes that session). `ShowSession` strips the traits block from the displayed prompt and returns the selected IDs from `session_traits` (not parsed from the prompt).
+    `CreateSession`/`CopySession` append the traits block and persist the mapping via `SetSessionTraits`; the daemon adds gadgets/memory at invocation time. `CopySession` inherits the source's traits unless `--traits` is given (and strips the inherited traits block to avoid double injection). `UpdateSession` detects an explicit `--traits` (pre-scanning args, like `yoloExplicit`, so an empty value can clear all traits), strips the old block, inserts the new one, persists the mapping, and re-sends the recomposed prompt — so subsequent chat turns use the new traits. A lazily-cached `getCurrentSP()` closure is shared by traits and nickname recomposition so both operate on the same evolving prompt within a single update. Editing a trait *definition* does NOT retroactively rewrite existing sessions (only a session's selection change recomposes that session). `ShowSession` strips the traits block from the displayed prompt and returns the selected IDs from `session_traits` (not parsed from the prompt).
 
     TUI: a dedicated traits management view (`traitsModel` + `editTraitModel` in `traits.go`, dashboard key `t`) lists traits with new/edit/delete. Trait selection in the create wizard and edit-session form reuses the existing bool `formField` (rendered as `[x]`/`[ ]`) with a new `traitID` field; trait fields are loaded asynchronously and appended to the form, and the serialization loops collect checked trait IDs into `--traits`. The edit form extends `original[]` so change-detection works and emits `--traits` (possibly empty) only when the selection changed. Qew exposes the same: a **Traits** nav button with a management view, plus trait checkboxes in the create wizard and edit-session dialogs (the generic verb/noun API needs no new endpoints).
 

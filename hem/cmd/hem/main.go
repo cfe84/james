@@ -1078,7 +1078,7 @@ Channels (bind a session to external communication like Teams):
   delete channel CHANNEL_ID --session-id ID
 
 Subagents:
-  create subsession PARENT_SESSION_ID PROMPT [--name, --moneypenny, --agent, --system-prompt, --yolo, --path, --async, --gadgets]
+  create subsession PARENT_SESSION_ID PROMPT [--name, --moneypenny, --agent, --system-prompt, --yolo, --path, --async]
   list subsessions PARENT_SESSION_ID
   show subsession SUBSESSION_ID
   stop subsession SUBSESSION_ID

@@ -24,35 +24,6 @@ import (
 	"james/moneypenny/pkg/envelope"
 )
 
-func gadgetsSystemPrompt(mi6Control, mi6ServerFingerprint, sessionID, parentID string) string {
-	return gadgetsMarker + " daemon-managed gadgets endpoint. Available tools and permissions are supplied by Moneypenny at runtime.\n"
-}
-
-func replaceGadgetsPrompt(current, gadgets string) string {
-	base := current
-	var memorySuffix string
-	if idx := findMemoryMarker(base); idx >= 0 {
-		memorySuffix = base[idx:]
-		base = base[:idx]
-	}
-	if idx := strings.Index(base, gadgetsMarker); idx >= 0 {
-		base = base[:idx]
-	} else if strings.HasPrefix(base, gadgetsMarker[1:]) {
-		base = ""
-	}
-	return base + gadgets + memorySuffix
-}
-
-// gadgetsParentID returns the parent session ID for sessionID if it is a tracked
-// sub-session, else "". Used when recomposing the gadgets prompt on update so a
-// subagent keeps its callback instructions.
-func gadgetsParentID(e *Executor, sessionID string) string {
-	if sess, err := e.store.GetSession(sessionID); err == nil && sess != nil {
-		return sess.ParentSessionID
-	}
-	return ""
-}
-
 // mpSessionInfo holds cached session data from a moneypenny's list_sessions response.
 type mpSessionInfo struct {
 	envelope.SessionReport
@@ -1228,7 +1199,6 @@ type SessionShowResult struct {
 	Effort                    string                      `json:"effort,omitempty"`
 	ContextTier               string                      `json:"context_tier,omitempty"`
 	Yolo                      bool                        `json:"yolo"`
-	Gadgets                   bool                        `json:"gadgets"`
 	Memory                    bool                        `json:"memory"`
 	Path                      string                      `json:"path"`
 	Status                    string                      `json:"status"`
@@ -2048,7 +2018,6 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 		fs.StringVar(&params.SessionName, "name", "", "session name")
 		fs.StringVar(&params.SystemPrompt, "system-prompt", "", "system prompt")
 		fs.BoolVar(&params.Yolo, "yolo", false, "enable yolo mode")
-		fs.BoolVar(&params.Gadgets, "gadgets", false, "include James tooling in system prompt")
 		fs.StringVar(&params.Path, "path", "", "working directory path")
 		fs.StringVar(&params.CompactionMode, "compaction", "", "compaction mode: agent or custom")
 		fs.IntVar(&compactionThresholdTokens, "compaction-threshold-tokens", 0, "custom compaction threshold in tokens (10000-900000)")
@@ -2121,10 +2090,6 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 	}
 	params.SystemPrompt += traitsSystemPrompt(traits)
 
-	// Append gadgets (James tooling instructions) to system prompt when enabled.
-	if params.Gadgets {
-		params.SystemPrompt += gadgetsSystemPrompt(e.MI6Control, e.MI6ServerFingerprint, sessionID, "")
-	}
 	e.addGadgetEnvironmentValues(&params.Environment)
 
 	// Memory instructions are injected by the moneypenny at runtime; clients
@@ -2132,14 +2097,8 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 
 	// Prepend the nickname block at the very top so ordering is
 	// nick → base → traits → gadgets → memory.
-	params.Nick = strings.TrimSpace(params.Nick)
-	if params.Nick != "" {
-		if existing, nerr := e.store.GetSessionByNick(params.Nick); nerr != nil {
-			return protocol.ErrResponse(nerr.Error())
-		} else if existing != nil {
-			return protocol.ErrResponse(fmt.Sprintf("nick %q is already used by another session", params.Nick))
-		}
-		params.SystemPrompt = applyNickBlock(params.SystemPrompt, params.Nick)
+	if err := e.prepareSessionNick(params); err != nil {
+		return protocol.ErrResponse(err.Error())
 	}
 
 	// Build command data.
@@ -2727,7 +2686,6 @@ func (e *Executor) ShowSession(args []string) *protocol.Response {
 		sp = stripTraitsBlock(sp)
 		if idx := strings.Index(sp, gadgetsMarker); idx >= 0 {
 			sp = sp[:idx]
-			result.Gadgets = true
 		}
 		if idx := findMemoryMarker(sp); idx >= 0 {
 			sp = sp[:idx]
@@ -2823,7 +2781,7 @@ func parseCompactionThresholdTokensResponse(value interface{}) (int, error) {
 
 func (e *Executor) UpdateSession(args []string) *protocol.Response {
 	var sessionID, name, systemPrompt, pathArg, modelStr, effortStr, contextStr string
-	var yoloStr, projectNameOrID, gadgetsStr, traitsStr, compactionStr, nickStr string
+	var yoloStr, projectNameOrID, traitsStr, compactionStr, nickStr string
 	var ponsonbiesStr string
 	var compactionThresholdTokens int
 	var environment environmentValues
@@ -2857,7 +2815,6 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 		fs.StringVar(&yoloStr, "yolo", "", "yolo mode (true/false)")
 		fs.StringVar(&pathArg, "path", "", "working directory path")
 		fs.StringVar(&projectNameOrID, "project", "", "move to project (name or ID)")
-		fs.StringVar(&gadgetsStr, "gadgets", "", "enable/disable gadgets (true/false)")
 		fs.StringVar(&traitsStr, "traits", "", "comma-separated trait IDs/names (empty clears all)")
 		fs.StringVar(&ponsonbiesStr, "ponsonbies", "", "shared stores (empty clears; :read disables publication)")
 		fs.StringVar(&compactionStr, "compaction", "", "compaction mode: agent or custom")
@@ -2960,8 +2917,7 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 		hasUpdate = true
 	}
 
-	// Lazily fetch (and cache) the current system prompt; shared by the traits
-	// and gadgets recomposition so they operate on the same evolving string.
+	// Lazily fetch the current system prompt for traits and nickname updates.
 	var fetchedSP string
 	var spFetched bool
 	getCurrentSP := func() (string, error) {
@@ -2969,7 +2925,7 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 			return fetchedSP, nil
 		}
 		// If the caller supplied an explicit --system-prompt in this same
-		// update, recompose traits/gadgets on top of it rather than the stale
+		// update, recompose traits on top of it rather than the stale
 		// prompt stored on the moneypenny.
 		if systemPrompt != "" {
 			fetchedSP = systemPrompt
@@ -3010,7 +2966,7 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 		}
 		cur = stripTraitsBlock(cur)
 		cur = insertTraitsBlock(cur, traitsSystemPrompt(traits))
-		fetchedSP = cur // keep cache current for the gadgets block below
+		fetchedSP = cur
 		systemPrompt = cur
 		cmdData["system_prompt"] = systemPrompt
 		hasUpdate = true
@@ -3019,50 +2975,6 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 			pendingTraitIDs = append(pendingTraitIDs, t.ID)
 		}
 		traitsChanged = true
-	}
-
-	// Handle gadgets toggle — append or strip the gadgets system prompt.
-	if gadgetsStr != "" {
-		currentSP, err := getCurrentSP()
-		if err != nil {
-			return protocol.ErrResponse(fmt.Sprintf("failed to get session for gadgets toggle: %v", err))
-		}
-		if gadgetsStr != "true" && gadgetsStr != "false" {
-			return protocol.ErrResponse("--gadgets must be true or false")
-		}
-		var gadgets string
-		if gadgetsStr == "true" {
-			gadgets = gadgetsSystemPrompt(e.MI6Control, e.MI6ServerFingerprint, sessionID, gadgetsParentID(e, sessionID))
-		}
-		// Regenerate even when already enabled so stored prompts pick up current relay pins.
-		systemPrompt = replaceGadgetsPrompt(currentSP, gadgets)
-		if systemPrompt != currentSP || gadgetsStr == "true" {
-			cmdData["system_prompt"] = systemPrompt
-			fetchedSP = systemPrompt // keep cache current for the nick block below
-			hasUpdate = true
-		}
-		if gadgetsStr == "true" {
-			gadgetEnvironment := map[string]string{}
-			if environmentExplicit {
-				gadgetEnvironment = cmdData["environment"].(map[string]string)
-			} else {
-				ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel2()
-				sessResp, err := e.sendCommand(ctx2, mp, "get_session", map[string]interface{}{"session_id": sessionID})
-				if err != nil {
-					return protocol.ErrResponse(fmt.Sprintf("failed to get session environment for gadgets: %v", err))
-				}
-				var sd struct {
-					Environment map[string]string `json:"environment"`
-				}
-				if err := json.Unmarshal(sessResp.Data, &sd); err != nil {
-					return protocol.ErrResponse(fmt.Sprintf("parsing session environment for gadgets: %v", err))
-				}
-				gadgetEnvironment = sd.Environment
-			}
-			cmdData["environment"] = e.addGadgetEnvironment(gadgetEnvironment)
-			hasUpdate = true
-		}
 	}
 
 	// Handle nickname change — strip the old nick block and prepend the new one
@@ -3112,7 +3024,7 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 		hasUpdate = true
 	}
 	if !hasUpdate {
-		return protocol.ErrResponse("no fields to update (use --name, --system-prompt, --yolo, --path, --project, --gadgets, --traits, --ponsonbies, --nick)")
+		return protocol.ErrResponse("no fields to update (use --name, --system-prompt, --yolo, --path, --project, --traits, --ponsonbies, --nick)")
 	}
 
 	// Only send to moneypenny if there are moneypenny-level fields to update.
@@ -5700,7 +5612,6 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 		fs.StringVar(&params.SessionName, "name", "", "session name")
 		fs.StringVar(&params.SystemPrompt, "system-prompt", "", "system prompt")
 		fs.BoolVar(&params.Yolo, "yolo", false, "enable yolo mode")
-		fs.BoolVar(&params.Gadgets, "gadgets", false, "include James tooling in system prompt")
 		fs.StringVar(&params.Path, "path", "", "working directory path")
 		fs.StringVar(&params.CompactionMode, "compaction", "", "compaction mode: agent or custom (defaults to source's)")
 		fs.IntVar(&compactionThresholdTokens, "compaction-threshold-tokens", 0, "custom compaction threshold in tokens (defaults to source's; 10000-900000)")
@@ -5972,9 +5883,7 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	}
 	prompt := promptB.String()
 
-	// Generate a fresh session ID and apply the same traits/memory/gadgets
-	// injection rules the regular CreateSession path uses, so behaviour stays
-	// consistent. Order: base → traits → gadgets → memory.
+	// Apply the same trait composition as the regular CreateSession path.
 	newSessionID := generateSessionID()
 	traits, err := e.resolveTraits(params.TraitsSpec)
 	if err != nil {
@@ -5984,9 +5893,6 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 		params.TraitIDs = append(params.TraitIDs, t.ID)
 	}
 	params.SystemPrompt += traitsSystemPrompt(traits)
-	if params.Gadgets {
-		params.SystemPrompt += gadgetsSystemPrompt(e.MI6Control, e.MI6ServerFingerprint, newSessionID, "")
-	}
 	e.addGadgetEnvironmentValues(&params.Environment)
 	// Memory instructions are injected by the moneypenny at runtime.
 	// When duplicating within the same moneypenny, ask it to copy the
@@ -7033,7 +6939,7 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 	var projectNameOrID string
 	params := &sessionParams{}
 	var compactionThresholdTokens int
-	var yolo, async, gadgets bool
+	var yolo, async bool
 	var capabilityFlags gadgetCapabilityFlags
 
 	remaining, err := parseFlagsFromArgs("create-subsession", args, func(fs *flag.FlagSet) {
@@ -7056,7 +6962,6 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 		fs.StringVar(&systemPrompt, "system-prompt", "", "system prompt")
 		fs.BoolVar(&yolo, "yolo", false, "enable yolo mode")
 		fs.StringVar(&callbackPrompt, "callback", "", "prompt to queue to parent when subagent completes")
-		fs.BoolVar(&gadgets, "gadgets", false, "include James tooling in system prompt")
 		fs.StringVar(&pathArg, "path", "", "working directory path")
 		fs.BoolVar(&async, "async", false, "return immediately without waiting for response")
 		fs.StringVar(&fromID, "from", "", "originating agent session ID (set automatically by gadgets)")
@@ -7185,15 +7090,12 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 		}
 	}
 
-	if gadgets {
-		systemPrompt += gadgetsSystemPrompt(e.MI6Control, e.MI6ServerFingerprint, sessionID, parentSessionID)
-	}
 	// Memory instructions are injected by the moneypenny at runtime.
 
 	params.Agent, params.SessionName, params.Path = agentName, sessionName, pathArg
 	params.SystemPrompt = systemPrompt
-	if params.Nick != "" {
-		params.SystemPrompt = applyNickBlock(params.SystemPrompt, params.Nick)
+	if err := e.prepareSessionNick(params); err != nil {
+		return protocol.ErrResponse(err.Error())
 	}
 	params.Model, params.Effort, params.ContextTier = modelName, effortName, contextTierName
 	params.Yolo = yolo

@@ -2604,10 +2604,6 @@
         <input type="checkbox" id="wiz-yolo"${copy && src.yolo ? ' checked' : ''}>
         <label for="wiz-yolo" style="margin:0;color:var(--text)">License to Kill (skip permission prompts)</label>
       </div>
-      <div class="toggle-row">
-        <input type="checkbox" id="wiz-gadgets"${copy && src.gadgets ? ' checked' : ''}>
-        <label for="wiz-gadgets" style="margin:0;color:var(--text)">Gadgets (include James tooling in system prompt)</label>
-      </div>
       ${gadgetCapabilities.render('wiz', copy ? src.gadget_capabilities : undefined)}
       <label for="wiz-compaction">Compaction</label>
       <select id="wiz-compaction">
@@ -2754,7 +2750,6 @@
     } else if (parentId || yolo) {
       args.push('--yolo=' + (yolo ? 'true' : 'false'));
     }
-    if (document.getElementById('wiz-gadgets').checked) args.push('--gadgets');
     args.push(...gadgetCapabilities.args('wiz'));
     const compaction = document.getElementById('wiz-compaction').value;
     if (compaction) args.push('--compaction', compaction);
@@ -5214,10 +5209,6 @@
           <input type="checkbox" id="es-yolo" ${s.yolo ? 'checked' : ''}>
           <label for="es-yolo" style="margin:0;color:var(--text)">License to Kill</label>
         </div>
-        <div class="toggle-row">
-          <input type="checkbox" id="es-gadgets" ${s.gadgets ? 'checked' : ''}>
-          <label for="es-gadgets" style="margin:0;color:var(--text)">Gadgets (include James tooling in system prompt)</label>
-        </div>
         ${gadgetCapabilities.render('es', s.gadget_capabilities)}
         <label for="es-compaction">Compaction</label>
         <select id="es-compaction">
@@ -5277,16 +5268,8 @@
         const sysprompt = document.getElementById('es-sysprompt').value.trim();
         const yolo = document.getElementById('es-yolo').checked;
         if (yolo !== !!s.yolo) args.push('--yolo', yolo ? 'true' : 'false');
-        // Gadgets toggle: when it changes, let the backend recompose the system
-        // prompt (append/strip the gadgets block). Sending --system-prompt in the
-        // same call would clobber that recomposition, so they're mutually exclusive
-        // (mirrors the TUI edit form).
-        const gadgets = document.getElementById('es-gadgets').checked;
         args.push(...gadgetCapabilities.args('es', s.gadget_capabilities || null));
-        const gadgetsChanged = gadgets !== !!s.gadgets;
-        if (gadgetsChanged) {
-          args.push('--gadgets', gadgets ? 'true' : 'false');
-        } else if (sysprompt !== (s.system_prompt || '')) {
+        if (sysprompt !== (s.system_prompt || '')) {
           args.push('--system-prompt', sysprompt);
         }
         const environment = document.getElementById('es-env').value;

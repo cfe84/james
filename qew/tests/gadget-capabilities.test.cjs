@@ -287,6 +287,7 @@ test('create, copy and edit surfaces load and use the reusable controls', () => 
   assert.ok(app.includes("gadgetCapabilities.args('wiz')"));
   assert.ok(app.includes("gadgetCapabilities.render('es', s.gadget_capabilities)"));
   assert.ok(app.includes("gadgetCapabilities.args('es', s.gadget_capabilities || null)"));
+  assert.doesNotMatch(app, /wiz-gadgets|es-gadgets|--gadgets/);
 });
 
 test('Moneypenny management renames registrations through Hem', () => {

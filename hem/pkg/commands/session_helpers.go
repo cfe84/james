@@ -24,7 +24,6 @@ type sessionParams struct {
 	ContextTier               string
 	ProjectID                 string
 	Yolo                      bool
-	Gadgets                   bool
 	Async                     bool
 	CompactionMode            string // "agent" or "custom" (empty = moneypenny default)
 	CompactionThresholdTokens *int   // persisted custom-compaction token threshold
@@ -35,6 +34,22 @@ type sessionParams struct {
 	Nick                      string // optional short nickname/alias for the session
 	Environment               environmentValues
 	GadgetCapabilities        *envelope.GadgetCapabilities
+}
+
+func (e *Executor) prepareSessionNick(params *sessionParams) error {
+	params.Nick = strings.TrimSpace(params.Nick)
+	if params.Nick == "" {
+		return nil
+	}
+	existing, err := e.store.GetSessionByNick(params.Nick)
+	if err != nil {
+		return err
+	}
+	if existing != nil {
+		return fmt.Errorf("nick %q is already used by another session", params.Nick)
+	}
+	params.SystemPrompt = applyNickBlock(params.SystemPrompt, params.Nick)
+	return nil
 }
 
 var environmentVariableName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)

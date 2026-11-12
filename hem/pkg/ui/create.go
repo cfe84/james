@@ -187,7 +187,6 @@ func newCreateModel(c *client) createModel {
 			{label: "Shared memory (names; :read; none to opt out)", flag: "--ponsonbies", value: ""},
 			{label: "Path", flag: "--path", value: ""},
 			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
-			{label: "Gadgets (James tooling)", flag: "--gadgets", isBool: true, value: "false"},
 			{label: "Compaction", flag: "--compaction", value: "custom", options: []string{"custom", "agent"}},
 			{label: "Custom compaction threshold (thousands of tokens)", flag: compactionThresholdFlag, value: defaultCompactionThresholdValue(""), defaultDerived: true},
 		}, gadgetCapabilityFields(nil)...),

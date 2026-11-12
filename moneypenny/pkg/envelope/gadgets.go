@@ -11,6 +11,7 @@ import (
 type CreateAgentGadgetData struct {
 	Prompt     string  `json:"prompt"`
 	Name       string  `json:"name"`
+	Nick       string  `json:"nick"`
 	Agent      string  `json:"agent"`
 	Model      string  `json:"model"`
 	Path       string  `json:"path"`

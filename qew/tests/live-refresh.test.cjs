@@ -344,7 +344,6 @@ test('shared create wizard routes creation modes and retains fields on failure',
     };
     const elements = Object.fromEntries(Object.entries(values).map(([id, value]) => [id, { value }]));
     elements['wiz-yolo'] = { checked: false };
-    elements['wiz-gadgets'] = { checked: true };
     elements['wiz-submit'] = {};
     const subagent = mode.startsWith('subagent');
     const events = [];

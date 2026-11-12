@@ -88,6 +88,11 @@ func TestCreateFormsSendExplicitGadgetPermissions(t *testing.T) {
 				t.Errorf("%s = %s, want explicit false", flag, value)
 			}
 		}
+		for _, arg := range sender.request.Args {
+			if arg == "--gadgets" {
+				t.Fatal("form sent retired master toggle")
+			}
+		}
 	}
 }
 
@@ -138,6 +143,9 @@ func TestEditFormLoadsAndUpdatesGadgetPermissions(t *testing.T) {
 			if m.fields[i].flag == "--gadget-hem" {
 				m.cursor = i
 			}
+			if m.fields[i].flag == "--system-prompt" {
+				m.fields[i].value = "updated instructions"
+			}
 		}
 		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
 		if msg := m.save()().(sessionUpdatedMsg); msg.err != nil {
@@ -153,6 +161,9 @@ func TestEditFormLoadsAndUpdatesGadgetPermissions(t *testing.T) {
 		}
 		if len(args) != 1 || args["--gadget-hem"] != wantValue {
 			t.Fatalf("edit did not preserve omitted settings: %v", args)
+		}
+		if !strings.Contains(strings.Join(sender.request.Args, " "), "--system-prompt updated instructions") {
+			t.Fatal("permission change dropped the system-prompt edit")
 		}
 	}
 }

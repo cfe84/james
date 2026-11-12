@@ -477,7 +477,7 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 		liveCapabilities.Store(capabilities)
 	})
 	const prompt = "--gadget-agents=true"
-	response := gadgetRouteRequest(t, e, "source", "subagents.create", map[string]any{"prompt": prompt, "agent": "copilot", "name": "--yolo"})
+	response := gadgetRouteRequest(t, e, "source", "subagents.create", map[string]any{"prompt": prompt, "agent": "copilot", "name": "--yolo", "nick": " worker "})
 	if response.Status != "ok" {
 		t.Fatal(response.Message)
 	}
@@ -492,8 +492,11 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 		t.Fatalf("permissions broadened: %s", raw)
 	}
 	child, err := e.store.GetSession(data["session_id"].(string))
-	if err != nil || child == nil || child.ParentSessionID != "source" {
+	if err != nil || child == nil || child.ParentSessionID != "source" || child.Nick != "worker" {
 		t.Fatalf("child not bound to authenticated source: %#v %v", child, err)
+	}
+	if systemPrompt, _ := data["system_prompt"].(string); !strings.Contains(systemPrompt, "Your name is Worker") {
+		t.Fatalf("child nickname identity missing: %q", systemPrompt)
 	}
 	if data["gadget_route"].(map[string]any)["JAMES_HEM_SOCKET"] == "" {
 		t.Fatal("child route not persisted")
@@ -503,7 +506,7 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 	topLevelCaps.Subagents = false
 	liveCapabilities.Store(topLevelCaps)
 	response = gadgetRouteRequest(t, e, "source", "agents.create", map[string]any{
-		"prompt": "--from=forged", "agent": "copilot", "name": "--yolo", "path": "/independent",
+		"prompt": "--from=forged", "agent": "copilot", "name": "--yolo", "nick": "--yolo", "path": "/independent",
 	})
 	if response.Status != "ok" {
 		t.Fatal(response.Message)
@@ -520,9 +523,25 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 		t.Fatalf("top-level permissions not inherited: %s", raw)
 	}
 	topLevel, err := e.store.GetSession(data["session_id"].(string))
-	if err != nil || topLevel == nil || topLevel.ParentSessionID != "" || topLevel.MoneypennyName != "mp" {
+	if err != nil || topLevel == nil || topLevel.ParentSessionID != "" || topLevel.MoneypennyName != "mp" || topLevel.Nick != "--yolo" {
 		t.Fatalf("created agent is not independent on source host: %#v %v", topLevel, err)
 	}
+	if systemPrompt, _ := data["system_prompt"].(string); !strings.Contains(systemPrompt, "Your name is --yolo") {
+		t.Fatalf("top-level nickname identity missing: %q", systemPrompt)
+	}
+	liveCapabilities.Store(capabilities)
+	for _, method := range []string{"agents.create", "subagents.create"} {
+		response := gadgetRouteRequest(t, e, "source", method, map[string]any{"prompt": "duplicate", "nick": " WORKER "})
+		if response.Status != "error" || !strings.Contains(response.Message, "already used") {
+			t.Fatalf("%s accepted duplicate nickname: %+v", method, response)
+		}
+	}
+	select {
+	case command := <-writes:
+		t.Fatalf("duplicate nickname created a session: %+v", command)
+	default:
+	}
+	liveCapabilities.Store(topLevelCaps)
 	response = gadgetRouteRequest(t, e, "source", "agents.create", map[string]any{"prompt": "denied yolo", "yolo": true})
 	if response.Status != "error" || !strings.Contains(response.Message, "already has it") {
 		t.Fatalf("non-yolo source requested License to Kill: %+v", response)
@@ -640,9 +659,9 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 					if strings.Contains(systemPrompt, trait.Prompt) != selected {
 						t.Fatalf("trait composition mismatch: %q", systemPrompt)
 					}
-					if selected && strings.Index(systemPrompt, trait.Prompt) > strings.Index(systemPrompt, gadgetsMarker) {
-						t.Fatal("traits must precede gadget instructions")
-					}
+				}
+				if strings.Contains(systemPrompt, gadgetsMarker) {
+					t.Fatal("gadget instructions must be injected by the daemon, not stored")
 				}
 				if data["source_session_id"] != "source" || data["yolo"] == true {
 					t.Fatalf("traits changed attribution or flags: %#v", data)

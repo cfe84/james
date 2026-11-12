@@ -22,13 +22,13 @@ gadgets ponsonby list
 gadgets ponsonby ask STORE
 gadgets ponsonby result STORE REQUEST_ID
 gadgets agents list
-gadgets agents create [--name name] [--agent agent] [--model model] [--path path] [--moneypenny name] [--traits names-or-IDs] [--yolo]
+gadgets agents create [--name name] [--nick nick] [--agent agent] [--model model] [--path path] [--moneypenny name] [--traits names-or-IDs] [--yolo]
 gadgets agents message id [--body text]
 gadgets traits list
 gadgets traits get ID
 gadgets traits edit ID
 gadgets subagents list
-gadgets subagents create [--name name] [--agent agent] [--model model] [--path path] [--moneypenny name] [--traits names-or-IDs] [--yolo]
+gadgets subagents create [--name name] [--nick nick] [--agent agent] [--model model] [--path path] [--moneypenny name] [--traits names-or-IDs] [--yolo]
 gadgets subagents message id [--body text]
 gadgets schedule list
 gadgets schedule create (--cron expr | --at timestamp) --prompt text
@@ -175,6 +175,10 @@ A timed-out mutation may still complete: inspect state before retrying.
 
 ### Shared traits (opt-in)
 
+Both creation commands accept `--nick NICK` for the session alias and identity,
+separate from the display title (`--name`). Nicknames are trimmed and must be
+unique case-insensitively; an existing nickname is rejected before creation.
+
 Both `agents create` and `subagents create` accept `--traits "Name,trait-id"`.
 Selection uses Hem's existing name/ID resolver, deduplicates traits, composes their
 text into the new system prompt, and persists the assignments. Unknown traits
@@ -273,7 +277,7 @@ and `Authorization: Bearer <token>`. Body:
 | traits list | `traits.list` | `{}` |
 | traits get | `traits.get` | `{"id":"..."}` |
 | traits edit | `traits.edit` | `{"id":"...","body":"..."}`; complete string body required, empty allowed |
-| agents/subagents create | `agents.create` / `subagents.create` | `{"prompt":"...", "name":"...", "agent":"...", "model":"...", "path":"...", "traits":"Name,id"}`; optional flags omitted unless supplied; empty traits selects none; caller identity and permissions cannot be supplied |
+| agents/subagents create | `agents.create` / `subagents.create` | `{"prompt":"...", "name":"...", "nick":"...", "agent":"...", "model":"...", "path":"...", "traits":"Name,id"}`; optional flags omitted unless supplied; empty traits selects none; caller identity and permissions cannot be supplied |
 | schedule list | `schedule.list` | `{}` |
 | schedule create | `schedule.create` | `{"cron":"...", "prompt":"..."}` or `{"at":"...", "prompt":"..."}` |
 | schedule delete | `schedule.delete` | `{"id":"..."}` |

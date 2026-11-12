@@ -92,7 +92,7 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 	case "memory.delete":
 		allowed["recursive"] = true
 	case "subagents.create", "agents.create":
-		for _, key := range []string{"name", "agent", "model", "path", "moneypenny", "traits", "yolo"} {
+		for _, key := range []string{"name", "nick", "agent", "model", "path", "moneypenny", "traits", "yolo"} {
 			allowed[key] = true
 		}
 	case "sessions.edit", "subagents.edit":

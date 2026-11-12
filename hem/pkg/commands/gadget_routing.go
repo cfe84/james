@@ -225,7 +225,7 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 			return protocol.ErrResponse("License to Kill may be requested only by an agent that already has it")
 		}
 		createArgs := []string{
-			"--from=" + source.SessionID, "--async", "--gadgets",
+			"--from=" + source.SessionID, "--async",
 			fmt.Sprintf("--gadget-memory=%t", capabilities.Memory),
 			fmt.Sprintf("--gadget-subagents=%t", capabilities.Subagents),
 			fmt.Sprintf("--gadget-agents=%t", capabilities.Agents),
@@ -251,7 +251,7 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 				createArgs = append(createArgs, "--moneypenny="+create.Moneypenny)
 			}
 		}
-		for key, value := range map[string]string{"name": create.Name, "agent": create.Agent, "model": create.Model, "path": create.Path} {
+		for key, value := range map[string]string{"name": create.Name, "nick": create.Nick, "agent": create.Agent, "model": create.Model, "path": create.Path} {
 			if value != "" {
 				createArgs = append(createArgs, "--"+key+"="+value)
 			}

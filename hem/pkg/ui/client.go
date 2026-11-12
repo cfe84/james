@@ -70,7 +70,6 @@ type sessionDetail struct {
 	Effort                    string                       `json:"effort"`
 	ContextTier               string                       `json:"context_tier"`
 	Yolo                      bool                         `json:"yolo"`
-	Gadgets                   bool                         `json:"gadgets"`
 	Path                      string                       `json:"path"`
 	Status                    string                       `json:"status"`
 	Project                   string                       `json:"project"`

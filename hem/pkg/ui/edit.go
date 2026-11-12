@@ -72,7 +72,6 @@ func newEditModel(c *client, sessionID string) editModel {
 			{label: "Ponsonby stores (names/IDs; empty clears; :read is read-only)", flag: "--ponsonbies", value: ""},
 			{label: "Path", flag: "--path", value: ""},
 			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
-			{label: "Gadgets (James tooling)", flag: "--gadgets", isBool: true, value: "false"},
 			{label: "Compaction", flag: "--compaction", value: "agent", options: []string{"agent", "custom"}},
 			{label: "Custom compaction threshold (thousands of tokens)", flag: compactionThresholdFlag, value: defaultCompactionThresholdValue(""), defaultDerived: true},
 		}, gadgetCapabilityFields(nil)...),
@@ -162,10 +161,6 @@ func (m editModel) save() tea.Cmd {
 		if v, ok := fields["--context"]; ok && v == "" {
 			fields["--context"] = "none"
 		}
-		// If gadgets changed, don't also send system-prompt (the server handles it).
-		if _, ok := fields["--gadgets"]; ok {
-			delete(fields, "--system-prompt")
-		}
 		// Emit --traits (possibly empty to clear) only when the selection changed.
 		if traitsChanged {
 			fields["--traits"] = strings.Join(selectedTraits, ",")
@@ -243,7 +238,6 @@ func (m editModel) Update(msg tea.Msg) (editModel, tea.Cmd) {
 		values["--env"] = strings.Join(environment, "\n")
 		values["--path"] = d.Path
 		values["--yolo"] = fmt.Sprintf("%t", d.Yolo)
-		values["--gadgets"] = fmt.Sprintf("%t", d.Gadgets)
 		values["--compaction"] = d.CompactionMode
 		if values["--compaction"] == "" {
 			values["--compaction"] = "agent"
