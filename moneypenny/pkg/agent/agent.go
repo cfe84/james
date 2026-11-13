@@ -330,9 +330,8 @@ type RunParams struct {
 	// purely to maintain memory and must not pollute the live transcript.
 	NoPersistTurns bool
 	// Attachments holds absolute paths of files uploaded with this prompt.
-	// Copilot receives them via repeated --attachment flags; Claude has no
-	// attachment flag, so their containing directories are granted via
-	// --add-dir and the paths are referenced in the prompt text.
+	// Copilot receives native images/documents via --attachment; other files
+	// (and all Claude attachments) use --add-dir and paths in the prompt text.
 	Attachments []string
 	// ReplyChannelID, when non-zero, is the id of the channel (external
 	// communication binding) whose reply should receive this run's final
@@ -1732,8 +1731,7 @@ func needsStdin(prompt string) bool {
 }
 
 // attachmentDirs returns the unique parent directories of the given attachment
-// paths, preserving first-seen order. Used to grant Claude read access via
-// --add-dir (it has no native attachment flag).
+// paths, preserving first-seen order. Used to grant file access via --add-dir.
 func attachmentDirs(paths []string) []string {
 	if len(paths) == 0 {
 		return nil
@@ -1779,11 +1777,20 @@ func buildCopilotArgs(params RunParams) agentInvocation {
 	if params.Yolo {
 		args = append(args, "--yolo")
 	}
-	// Copilot ingests attachments natively via a repeatable --attachment flag
-	// (images and documents). Only valid in prompt mode, which is how we invoke
-	// it.
+	var fileAttachments []string
 	for _, p := range params.Attachments {
-		args = append(args, "--attachment", p)
+		switch strings.ToLower(filepath.Ext(p)) {
+		case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp",
+			".tif", ".tiff", ".ico", ".avif", ".heic",
+			".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx", ".rtf", ".odt":
+			args = append(args, "--attachment", p)
+		default:
+			// Copilot rejects other file types before starting the agent.
+			fileAttachments = append(fileAttachments, p)
+		}
+	}
+	for _, dir := range attachmentDirs(fileAttachments) {
+		args = append(args, "--add-dir", dir)
 	}
 
 	inv := agentInvocation{}

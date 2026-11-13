@@ -776,9 +776,8 @@ func (h *Handler) continueSession(ctx context.Context, cmd *envelope.Command) *e
 
 	// Build the effective prompt: when attachments accompany the prompt, append
 	// a human-readable addendum listing their absolute paths. This serves two
-	// purposes: the persisted user turn reflects what was sent, and (for Claude,
-	// which has no native attachment flag) it tells the agent where to find the
-	// files it has been granted access to via --add-dir.
+	// purposes: the persisted user turn reflects what was sent, and the agent
+	// can find files granted via --add-dir rather than a native attachment flag.
 	prompt := data.Prompt
 	if len(data.Attachments) > 0 {
 		prompt += attachmentPromptAddendum(data.Attachments)
@@ -2902,7 +2901,7 @@ func sanitizeAttachmentName(name string) string {
 
 // saveAttachment writes a base64-encoded uploaded file into the session's
 // attachments directory and returns its resolved absolute path. The agent later
-// reads the file from this path (Copilot via --attachment, Claude via --add-dir).
+// reads the file from this path via native attachment or directory access.
 func (h *Handler) saveAttachment(_ context.Context, cmd *envelope.Command) *envelope.Response {
 	var data envelope.SaveAttachmentData
 	if err := json.Unmarshal(cmd.Data, &data); err != nil {
@@ -2958,7 +2957,7 @@ func (h *Handler) saveAttachment(_ context.Context, cmd *envelope.Command) *enve
 
 // attachmentPromptAddendum builds a human-readable trailer listing attachment
 // absolute paths, appended to the user prompt so the persisted turn reflects
-// what was sent and (for Claude) so the agent knows where to find the files.
+// what was sent and so the agent knows where to find the files.
 func attachmentPromptAddendum(paths []string) string {
 	if len(paths) == 0 {
 		return ""
