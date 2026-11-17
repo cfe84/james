@@ -1331,15 +1331,19 @@ func traitsSystemPrompt(traits []*store.Trait) string {
 // stripTraitsBlock removes the traits block (markers inclusive) from a system
 // prompt. Returns the prompt unchanged if no complete block is present.
 func stripTraitsBlock(sp string) string {
-	bi := strings.Index(sp, traitsBeginMarker)
+	bi := strings.Index(sp, strings.TrimPrefix(traitsBeginMarker, "\n"))
 	if bi < 0 {
 		return sp
 	}
-	ei := strings.Index(sp[bi:], traitsEndMarker)
+	endMarker := strings.TrimPrefix(traitsEndMarker, "\n")
+	ei := strings.Index(sp[bi:], endMarker)
 	if ei < 0 {
 		return sp
 	}
-	end := bi + ei + len(traitsEndMarker)
+	end := bi + ei + len(endMarker)
+	if bi > 0 && sp[bi-1] == '\n' {
+		bi--
+	}
 	return sp[:bi] + sp[end:]
 }
 

@@ -8,8 +8,29 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
+	"james/hem/pkg/store"
 	"james/moneypenny/pkg/envelope"
 )
+
+func TestStripTraitsBlockAfterNicknameComposition(t *testing.T) {
+	block := traitsSystemPrompt([]*store.Trait{{Name: "Tools", Prompt: "Shared instructions"}})
+	for _, tc := range []struct {
+		name, prompt, want string
+	}{
+		{"traits only", block, ""},
+		{"nickname and traits", applyNickBlock(block, "dale"), ""},
+		{"nickname base and traits", applyNickBlock("Custom instructions"+block, "dale"), "Custom instructions"},
+		{"trimmed traits with suffix", strings.TrimSpace(block) + "\nSuffix", "\nSuffix"},
+		{"incomplete block", strings.TrimSpace(traitsBeginMarker) + "\nKeep this", strings.TrimSpace(traitsBeginMarker) + "\nKeep this"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := stripTraitsBlock(stripNickBlock(tc.prompt))
+			if got != tc.want {
+				t.Fatalf("base prompt = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
 
 func TestMI6AddKeyRejectsInvalidPublicKeyBeforeConnecting(t *testing.T) {
 	_, private, err := ed25519.GenerateKey(rand.Reader)

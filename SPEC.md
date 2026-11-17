@@ -1781,7 +1781,7 @@ Agents message through `gadgets agents message` (global grant) or `gadgets subag
 
 Traits are reusable, hem-level system-prompt snippets that can be toggled on/off per session. A trait has an `id`, a `name`, and a `prompt` (the snippet text). Selected traits are composed into the agent's system prompt, letting you maintain a shared library of behaviours (e.g. "concise commits", "design-first", "thorough testing") and mix them per agent.
 
-Traits are a hem-level concept (like projects); moneypenny is unaware of them. The selected trait IDs for a session are persisted in hem's SQLite (`session_traits` table). The composed snippet is written into the session's system prompt at create/update time (compose-at-write).
+Traits are a hem-level concept (like projects); moneypenny is unaware of them. The selected trait IDs for a session are persisted in hem's SQLite (`session_traits` table). The composed snippet is written into the session's system prompt at create/update time (compose-at-write). Editors show only the custom base prompt, hiding managed traits even when nickname removal leaves the traits block at the start of the prompt. Agent and subagent creation through gadgets uses the same trait selections, not copied trait text.
 
 ### Create
 
