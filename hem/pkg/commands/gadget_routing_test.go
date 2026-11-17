@@ -31,6 +31,39 @@ func gadgetRouteRequest(t *testing.T, e *Executor, source, method string, data a
 	return e.Dispatch("gadget", "route", []string{string(payload)})
 }
 
+func TestGadgetMoneypennyDiscovery(t *testing.T) {
+	e := newHierarchyExecutor(t)
+	for _, mp := range []*store.Moneypenny{
+		{Name: "source-host", Enabled: true, TransportType: store.TransportFIFO, FIFOIn: "/private/in", FIFOOut: "/private/out"},
+		{Name: "💻 mac", TransportType: store.TransportMI6, MI6Addr: "private-relay/mac"},
+	} {
+		if err := e.store.AddMoneypenny(mp); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := e.store.SetDefaultMoneypenny("source-host"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.TrackSession("source", "source-host"); err != nil {
+		t.Fatal(err)
+	}
+	resp := gadgetRouteRequest(t, e, "source", "moneypenny.list", map[string]any{})
+	var result TableResult
+	if resp.Status != "ok" || json.Unmarshal(resp.Data, &result) != nil ||
+		!reflect.DeepEqual(result.Headers, []string{"Name", "Default", "Enabled"}) ||
+		!reflect.DeepEqual(result.Rows, [][]string{{"source-host", "true", "true"}, {"💻 mac", "false", "false"}}) {
+		t.Fatalf("unexpected discovery metadata: %+v", resp)
+	}
+	for _, data := range []json.RawMessage{json.RawMessage(`null`), json.RawMessage(`{"name":"other"}`), json.RawMessage(`{"gadget_capabilities":{"hem":true}}`)} {
+		if resp := gadgetRouteRequest(t, e, "source", "moneypenny.list", data); resp.Status != "error" {
+			t.Fatalf("invalid discovery accepted: %s", data)
+		}
+	}
+	if resp := gadgetRouteRequest(t, e, "missing", "moneypenny.list", map[string]any{}); resp.Status != "error" {
+		t.Fatal("untracked source accepted")
+	}
+}
+
 func TestGadgetAuthoritativeRelationshipScope(t *testing.T) {
 	e := newHierarchyExecutor(t)
 	if err := e.store.AddMoneypenny(&store.Moneypenny{Name: "mp", TransportType: store.TransportFIFO}); err != nil {

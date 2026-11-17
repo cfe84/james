@@ -16,6 +16,21 @@ func (e *Executor) traitsGadget(source *store.Session, method string, raw json.R
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
+	if method == "traits.list" {
+		traits, err := e.store.ListTraits()
+		if err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		result := TableResult{Headers: []string{"ID", "Name", "Default"}}
+		for _, trait := range traits {
+			def := "no"
+			if trait.EnabledByDefault {
+				def = "yes"
+			}
+			result.Rows = append(result.Rows, []string{trait.ID, trait.Name, def})
+		}
+		return protocol.OKResponse(result)
+	}
 	mp, err := e.store.GetMoneypenny(source.MoneypennyName)
 	if err != nil || mp == nil {
 		return protocol.ErrResponse("gadget source moneypenny is not registered")
@@ -37,9 +52,6 @@ func (e *Executor) traitsGadget(source *store.Session, method string, raw json.R
 	}
 	if !caps.Traits {
 		return protocol.ErrResponse("traits capability is disabled")
-	}
-	if method == "traits.list" {
-		return e.ListTraits(nil)
 	}
 	trait, err := e.store.GetTrait(data.ID)
 	if err != nil {

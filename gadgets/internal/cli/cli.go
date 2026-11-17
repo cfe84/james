@@ -64,6 +64,7 @@ Usage:
   gadgets channels enable|disable|delete id
   gadgets schedule create (--cron expr | --at timestamp) --prompt text
   gadgets schedule delete id
+  gadgets moneypenny list
   gadgets moneypenny logs [--name registered-host] [--lines N]
   gadgets run-and-callback -- command [args...]  (License to Kill required)
   gadgets run list | status ID | stop ID
@@ -100,7 +101,10 @@ otherwise the daemon rejects the request.
 Session editing requires an explicit edit permission. edit-own-session permits
 editing the authenticated session; edit-sessions permits editing any tracked
 session. Neither permission can change gadget permissions or routing.
-Traits require opt-in permission (default: false). Edits replace shared trait
+Host and trait discovery are available to every authenticated session:
+moneypenny list returns names and enabled/default status, without addresses;
+traits list returns IDs, exact names and default status, without prompt contents.
+Trait get/edit require opt-in permission (default: false). Edits replace shared trait
 bodies for future use by all agents, not already-injected session prompts. Agents
 may edit only traits assigned to their own session.
 No trait create/delete, assignment, rename, or default-setting commands exist.

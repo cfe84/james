@@ -45,6 +45,19 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 		return protocol.ErrResponse("gadget source session is not tracked by this Hem")
 	}
 	switch route.Method {
+	case "moneypenny.list":
+		if err := decodeGadgetData(route.Data, &struct{}{}); err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		mps, err := e.store.ListMoneypennies()
+		if err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		result := TableResult{Headers: []string{"Name", "Default", "Enabled"}}
+		for _, mp := range mps {
+			result.Rows = append(result.Rows, []string{mp.Name, fmt.Sprint(mp.IsDefault), fmt.Sprint(mp.Enabled)})
+		}
+		return protocol.OKResponse(result)
 	case "channels.providers", "channels.search", "channels.list", "channels.create", "channels.set", "channels.enable", "channels.disable", "channels.delete":
 		return e.channelsGadget(source, route.Method, route.Data)
 	case "ponsonby.list", "ponsonby.ask", "ponsonby.result", "ponsonby.ingest":

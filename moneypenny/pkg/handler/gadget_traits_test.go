@@ -40,12 +40,14 @@ func TestTraitGadgetGatewayAuthorizationAndRouting(t *testing.T) {
 				}
 				if len(req.Args) != 1 || json.Unmarshal([]byte(req.Args[0]), &route) != nil ||
 					req.Verb != "gadget" || req.Noun != "route" || route.Source != gadgetSession ||
-					(route.Method != "traits.list" && route.Method != "traits.get" && route.Method != "traits.edit") {
+					(route.Method != "moneypenny.list" && route.Method != "traits.list" && route.Method != "traits.get" && route.Method != "traits.edit") {
 					t.Errorf("unbound or unrestricted route: %+v %+v", req, route)
 				}
-				data, err := envelope.DecodeTraitGadget(route.Method, route.Data)
-				if err != nil || (route.Method == "traits.edit" && (data.Body == nil || *data.Body != " \n--name=forged\n")) {
-					t.Errorf("body not preserved: %+v %v", data, err)
+				if route.Method != "moneypenny.list" {
+					data, err := envelope.DecodeTraitGadget(route.Method, route.Data)
+					if err != nil || (route.Method == "traits.edit" && (data.Body == nil || *data.Body != " \n--name=forged\n")) {
+						t.Errorf("body not preserved: %+v %v", data, err)
+					}
 				}
 				_ = json.NewEncoder(conn).Encode(gadgetHemResponse{Status: "ok", RequestID: req.RequestID, Data: json.RawMessage(`{"routed":true}`)})
 			}
@@ -61,15 +63,20 @@ func TestTraitGadgetGatewayAuthorizationAndRouting(t *testing.T) {
 		method string
 		data   any
 	}{
+		{"moneypenny.list", map[string]string{}},
 		{"traits.list", map[string]string{}},
 		{"traits.get", map[string]string{"id": "existing"}},
 		{"traits.edit", map[string]string{"id": "existing", "body": " \n--name=forged\n"}},
 	}
 	for _, tc := range cases {
+		if tc.method == "traits.list" || tc.method == "moneypenny.list" {
+			if resp := gadgetCall(t, params, tc.method, tc.data); !resp.Success {
+				t.Fatalf("discovery without grants failed: %+v", resp)
+			}
+			continue
+		}
 		requireGadgetError(t, gadgetCall(t, params, tc.method, tc.data), "permission_denied")
 	}
-	setGadgetCaps(t, h, envelope.GadgetCapabilities{Agents: true})
-	requireGadgetError(t, gadgetCall(t, params, "traits.list", map[string]string{}), "permission_denied")
 	setGadgetCaps(t, h, envelope.GadgetCapabilities{Traits: true})
 	for _, tc := range cases {
 		if resp := gadgetCall(t, params, tc.method, tc.data); !resp.Success {
@@ -84,6 +91,9 @@ func TestTraitGadgetGatewayAuthorizationAndRouting(t *testing.T) {
 		requireGadgetError(t, gadgetCall(t, params, method, map[string]string{"id": "existing"}), code)
 	}
 	for _, tc := range []struct{ method, data string }{
+		{"moneypenny.list", `null`},
+		{"moneypenny.list", `{"name":"forged"}`},
+		{"moneypenny.list", `{"gadget_capabilities":{"hem":true}}`},
 		{"traits.list", `null`},
 		{"traits.list", `{"method":"traits.edit"}`},
 		{"traits.get", `{}`},
@@ -101,17 +111,28 @@ func TestTraitGadgetGatewayAuthorizationAndRouting(t *testing.T) {
 	}
 	setGadgetCaps(t, h, envelope.GadgetCapabilities{})
 	for _, tc := range cases {
+		if tc.method == "traits.list" || tc.method == "moneypenny.list" {
+			if resp := gadgetCall(t, params, tc.method, tc.data); !resp.Success {
+				t.Fatalf("discovery after revocation failed: %+v", resp)
+			}
+			continue
+		}
 		requireGadgetError(t, gadgetCall(t, params, tc.method, tc.data), "permission_denied")
 	}
-	if calls.Load() != 3 {
+	if calls.Load() != 8 {
 		t.Fatalf("denied or malformed requests reached Hem: %d", calls.Load())
 	}
 }
 
 func TestTraitGadgetPromptReflectsGrantAndRevocation(t *testing.T) {
 	h, params := gadgetTestHandler(t)
-	if strings.Contains(params.SystemPrompt, "gadgets traits") {
-		t.Fatal("traits advertised without opt-in")
+	for _, text := range []string{"gadgets traits list", "gadgets moneypenny list"} {
+		if !strings.Contains(params.SystemPrompt, text) {
+			t.Fatalf("discovery not advertised: %s", text)
+		}
+	}
+	if strings.Contains(params.SystemPrompt, "gadgets traits get") {
+		t.Fatal("trait contents advertised without opt-in")
 	}
 	setGadgetCaps(t, h, envelope.GadgetCapabilities{Traits: true})
 	if err := h.prepareRunInstructions(gadgetSession, &params); err != nil {
@@ -131,7 +152,10 @@ func TestTraitGadgetPromptReflectsGrantAndRevocation(t *testing.T) {
 	if err := h.prepareRunInstructions(gadgetSession, &params); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(params.SystemPrompt, "gadgets traits") {
-		t.Fatal("revoked traits still advertised")
+	if strings.Contains(params.SystemPrompt, "gadgets traits get") || strings.Contains(params.SystemPrompt, "gadgets traits edit") {
+		t.Fatal("revoked trait contents/edit still advertised")
+	}
+	if !strings.Contains(params.SystemPrompt, "gadgets traits list") || !strings.Contains(params.SystemPrompt, "gadgets moneypenny list") {
+		t.Fatal("discovery removed after revocation")
 	}
 }

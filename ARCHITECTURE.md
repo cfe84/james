@@ -252,17 +252,24 @@ already yolo. Daemon runtime instructions advertise the flag only in that case.
 
 Shared traits use only `traits.list`, `traits.get`, and `traits.edit` on the
 existing daemon-to-Hem `gadget route`. The daemon binds source identity from
-credentials, validates the narrowly typed data, and checks the current Traits
-grant before forwarding. Hem's `gadget_traits.go` repeats strict validation using
+credentials and validates the narrowly typed data. `traits.list` and
+`moneypenny.list` require no capability grant: Hem returns metadata-only tables
+(trait ID/name/default; host name/default/enabled), never trait prompts or host
+addresses. Discovery requires a tracked authenticated source and a trusted Hem
+route, but no live source-daemon permission lookup. Other list operations retain
+their existing grants and scope.
+
+For trait get/edit, the daemon checks the current Traits grant before forwarding.
+Hem's `gadget_traits.go` repeats strict validation using
 the shared `envelope.DecodeTraitGadget` decoder and requests fresh `get_session`
 capabilities from the source's registered Moneypenny; missing/disabled grants and
 lookup failures fail closed. No cached or request-asserted grant authorizes an
 edit. Hem treats a trait assigned through `session_traits` as owned by that
-session and permits agent-facing edits only for those traits; list/get remain
-read-only access to all definitions. This extends the existing trusted
+session and permits agent-facing edits only for those traits; get remains
+permission-gated read-only access to all definitions. This extends the existing trusted
 operator-transport boundary, not a general trait-management route.
 
-Trait listing/showing reuse existing commands and name/ID resolution; body-only
+Trait showing reuses the existing command and name/ID resolution; body-only
 edits call the existing `Store.UpdateTrait` with name/default pointers unset.
 Bodies are not interpreted as CLI flags. The body is required, empty strings
 explicitly clear it, and additional fields are rejected. Names, creation times,

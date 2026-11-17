@@ -34,7 +34,7 @@ func command(args []string) (string, []string, error) {
 		"memory.query", "memory.claim-set", "memory.claim-get", "memory.claim-delete",
 		"agents.list", "agents.message", "agents.create", "subagents.list", "subagents.create", "subagents.message",
 		"subagents.edit", "subagents.complete", "subagents.stop", "subagents.delete",
-		"traits.list", "traits.get", "traits.edit", "sessions.edit", "moneypenny.logs",
+		"traits.list", "traits.get", "traits.edit", "sessions.edit", "moneypenny.list", "moneypenny.logs",
 		"schedule.list", "schedule.create", "schedule.delete",
 		"run.list", "run.status", "run.stop", "attention.get", "attention.set", "attention.resolve":
 		return method, args[2:], nil
@@ -282,7 +282,7 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 				data["channel_id"] = id
 			}
 		}
-	case "agents.list", "subagents.list", "schedule.list", "traits.list", "moneypenny.logs":
+	case "agents.list", "subagents.list", "schedule.list", "traits.list", "moneypenny.list", "moneypenny.logs":
 		err = arity(0, 0)
 	case "traits.get", "traits.edit":
 		if err = arity(1, 1); err == nil {

@@ -1204,16 +1204,22 @@ always-available-notifications hint. Copy inherits permissions unless overridden
 updates preserve unspecified values. There is no master Gadgets permission;
 the legacy `schedule-system-prompt` setting does not authorize tools either.
 
+Discovery is available to every authenticated agent, without a capability grant:
+`gadgets moneypenny list` returns registered host names and enabled/default status,
+without transport addresses; `gadgets traits list` returns trait IDs, exact names,
+and default status, without prompt contents. Disabled hosts remain visible so
+agents can distinguish unavailable hosts from unregistered names. Neither command
+grants creation, messaging, or administrative access.
+
 The Traits grant is opt-in (`false` for new and legacy sessions). It permits
-`gadgets traits list`, `gadgets traits get ID`, and `gadgets traits edit ID`.
+`gadgets traits get ID` and `gadgets traits edit ID`.
 IDs or exact names use the existing trait resolver. Edit reads the complete
 replacement prompt body from stdin, preserving whitespace; empty stdin clears
 the body. It does not rename, create, delete, change default-enabled settings,
 assign traits, or change unrelated fields. An agent may edit only a trait
-assigned to its own session; list and get can still view all definitions.
+assigned to its own session; get can still view all definitions.
 Definitions are shared across all agents on the owning Hem: edits affect
-**future use**, not already-composed session prompts. List returns Hem's trait
-table with previews; get/edit return
+**future use**, not already-composed session prompts. Get/edit return
 the full definition. Missing IDs, missing/null body fields, unknown fields,
 and unsupported operations fail without changes. The existing 1 MiB request
 and 4 MiB response limits apply; trait results have no paging.

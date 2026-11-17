@@ -251,8 +251,9 @@ func (h *Handler) prepareGadgets(sessionID string, params *agent.RunParams) erro
 		}
 		params.SystemPrompt += "\n"
 	}
+	params.SystemPrompt += "Discovery (always available): gadgets moneypenny list lists registered host names and enabled/default status; gadgets traits list lists trait IDs, exact names and default status. These omit host addresses and trait prompt contents. Use exact host names with --moneypenny and trait names or IDs with --traits when creating agents.\n"
 	if caps.Traits {
-		params.SystemPrompt += "Shared trait definitions: gadgets traits list; gadgets traits get ID; gadgets traits edit ID (complete replacement body on stdin; empty stdin clears it). IDs or exact names are accepted. You may edit only traits assigned to your own session; edits affect future use by all agents, not already-injected session prompts. No trait creation, deletion, assignment, renaming, or default changes are permitted.\n"
+		params.SystemPrompt += "Shared trait definitions: gadgets traits get ID; gadgets traits edit ID (complete replacement body on stdin; empty stdin clears it). IDs or exact names are accepted. You may edit only traits assigned to your own session; edits affect future use by all agents, not already-injected session prompts. No trait creation, deletion, assignment, renaming, or default changes are permitted.\n"
 	}
 	if caps.Scheduling {
 		params.SystemPrompt += "Your scheduled prompts: gadgets schedule list; gadgets schedule create (--at RFC3339 | --cron 'five fields') --prompt 'task'; gadgets schedule delete ID. These commands act only on your session.\n"
@@ -384,7 +385,9 @@ func (h *Handler) executeGadget(ctx context.Context, sessionID string, request g
 		allowed = caps.CreateAgents
 	case "sessions.edit":
 		allowed = caps.EditSessions || caps.EditOwnSession
-	case "traits.list", "traits.get", "traits.edit":
+	case "traits.list", "moneypenny.list":
+		allowed = true
+	case "traits.get", "traits.edit":
 		allowed = caps.Traits
 	case "subagents.list", "subagents.create":
 		allowed = caps.Subagents
@@ -430,6 +433,13 @@ func (h *Handler) executeGadget(ctx context.Context, sessionID string, request g
 		if _, err := envelope.DecodeTraitGadget(request.Method, request.Data); err != nil {
 			return nil, &gadgetError{"invalid_request", err.Error()}
 		}
+	}
+	if request.Method == "moneypenny.list" {
+		var data map[string]json.RawMessage
+		if err := json.Unmarshal(request.Data, &data); err != nil || data == nil || len(data) != 0 {
+			return nil, &gadgetError{"invalid_request", "host discovery data must be an empty JSON object"}
+		}
+		return h.routeGadget(ctx, sessionID, request.Method, request.Data)
 	}
 	if request.Method == "agents.create" || request.Method == "subagents.create" {
 		if _, err := envelope.DecodeCreateAgentGadget(request.Data); err != nil {

@@ -97,8 +97,12 @@ func TestTraitGadgetPersistenceAndFreshPermissions(t *testing.T) {
 		}
 		if tc.method == "traits.list" {
 			var table TableResult
-			if json.Unmarshal(resp.Data, &table) != nil || len(table.Rows) != 3 {
-				t.Fatalf("list did not reuse trait listing: %s", resp.Data)
+			if json.Unmarshal(resp.Data, &table) != nil || len(table.Rows) != 3 ||
+				!reflect.DeepEqual(table.Headers, []string{"ID", "Name", "Default"}) ||
+				!reflect.DeepEqual(table.Rows, [][]string{
+					{"trait-1", "--default", "yes"}, {"trait-3", "unowned", "no"}, {"trait-2", "unrelated", "no"},
+				}) {
+				t.Fatalf("unexpected trait discovery metadata: %s", resp.Data)
 			}
 		} else {
 			var result TraitResult
@@ -150,7 +154,10 @@ func TestTraitGadgetPersistenceAndFreshPermissions(t *testing.T) {
 	}
 	for _, denied := range []string{`{}`, `{"gadget_capabilities":null}`, `{"gadget_capabilities":{"traits":false,"agents":true}}`, `{"gadget_capabilities":{"traits":"true"}}`} {
 		detail.Store(denied)
-		for _, method := range []string{"traits.list", "traits.get", "traits.edit"} {
+		if resp := gadgetRouteRequest(t, e, "source", "traits.list", map[string]any{}); resp.Status != "ok" {
+			t.Fatalf("discovery requires grant: %s", resp.Message)
+		}
+		for _, method := range []string{"traits.get", "traits.edit"} {
 			data := map[string]string{}
 			if method != "traits.list" {
 				data["id"] = "trait-1"
@@ -186,6 +193,9 @@ func TestTraitGadgetPersistenceAndFreshPermissions(t *testing.T) {
 	}
 	for _, unavailable := range []string{"error", "unexpected"} {
 		status.Store(unavailable)
+		if resp := gadgetRouteRequest(t, e, "source", "traits.list", map[string]any{}); resp.Status != "ok" {
+			t.Fatalf("discovery depends on daemon permission lookup: %s", resp.Message)
+		}
 		if resp := gadgetRouteRequest(t, e, "source", "traits.edit", map[string]string{"id": "trait-1", "body": "must not change"}); resp.Status != "error" {
 			t.Fatalf("failed permission lookup allowed edit: %s", unavailable)
 		}

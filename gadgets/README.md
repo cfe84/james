@@ -25,6 +25,7 @@ gadgets agents list
 gadgets agents create [--name name] [--nick nick] [--agent agent] [--model model] [--path path] [--moneypenny name] [--traits names-or-IDs] [--yolo]
 gadgets agents message id [--body text]
 gadgets traits list
+gadgets moneypenny list
 gadgets traits get ID
 gadgets traits edit ID
 gadgets subagents list
@@ -173,7 +174,13 @@ not forwarded. Existing request/response caps and the 30-second client timeout
 apply; no automatic retry is made. Use `--async` for long-running agent operations.
 A timed-out mutation may still complete: inspect state before retrying.
 
-### Shared traits (opt-in)
+### Host/trait discovery and shared trait editing
+
+Every authenticated agent can run `gadgets moneypenny list` and `gadgets traits list`.
+Host discovery returns exact registered names and enabled/default status, including
+disabled hosts, without transport addresses. Trait discovery returns IDs, exact
+names and default status, without prompt contents. These commands do not grant
+agent creation, messaging, or administrative permissions.
 
 Both creation commands accept `--nick NICK` for the session alias and identity,
 separate from the display title (`--name`). Nicknames are trimmed and must be
@@ -188,10 +195,10 @@ none for subagents (neither inherits the creator's selection).
 Selecting traits for a new session uses the relevant creation permission,
 not the separate shared-trait editing permission described below.
 
-`traits list` lists existing shared definitions. `traits get ID` returns the full
+`traits list` lists metadata for existing shared definitions. `traits get ID` returns the full
 definition; IDs or exact names are accepted. `traits edit ID` replaces only its
 prompt body, reading the complete text verbatim from stdin (empty stdin clears
-the body). Agents may edit only traits assigned to their own session; list and
+the body). Agents may edit only traits assigned to their own session;
 get can view all definitions. It returns the updated definition. No `--body`
 flag is accepted:
 
@@ -201,11 +208,11 @@ gadgets traits get 'Clean code'
 printf 'Reuse existing implementations.\n' | gadgets traits edit 'Clean code'
 ```
 
-The `traits` permission defaults to **false**, including legacy sessions. Operators
+The `traits` permission gates get/edit, not discovery, and defaults to **false**, including legacy sessions. Operators
 grant it with `hem update session SESSION_ID --gadget-traits=true`, or the existing
 TUI/Qew permission controls; create/copy/subsession commands also accept that flag.
 Gadget-created children inherit the parent's current permissions. Revocation is
-checked on every request by Moneypenny and again through a fresh daemon lookup
+checked on every get/edit request by Moneypenny and again through a fresh daemon lookup
 at Hem. Hem must be reachable via the operator-configured route.
 
 Definitions are shared across agents managed by that Hem. Editing affects their
@@ -275,6 +282,7 @@ and `Authorization: Bearer <token>`. Body:
 | agents/subagents list | `agents.list` / `subagents.list` | `{}` |
 | agents/subagents message | `agents.message` / `subagents.message` | `{"id":"...","body":"..."}` |
 | traits list | `traits.list` | `{}` |
+| moneypenny list | `moneypenny.list` | `{}`; metadata-only discovery, no capability grant |
 | traits get | `traits.get` | `{"id":"..."}` |
 | traits edit | `traits.edit` | `{"id":"...","body":"..."}`; complete string body required, empty allowed |
 | agents/subagents create | `agents.create` / `subagents.create` | `{"prompt":"...", "name":"...", "nick":"...", "agent":"...", "model":"...", "path":"...", "traits":"Name,id"}`; optional flags omitted unless supplied; empty traits selects none; caller identity and permissions cannot be supplied |
