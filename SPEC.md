@@ -705,7 +705,7 @@ available to retry.
 
 ### Stop
 
-`hem stop session SESSION_ID` — stops a working session (cancels the run, kills the agent, drains queued prompts, and returns the session to idle). A result that arrives after cancellation is discarded and cannot restart queued work.
+`hem stop session SESSION_ID` — stops a working session (cancels the run, terminates the agent launcher and its child processes, waits for the run to exit, drains queued prompts, and returns the session to idle). This releases native Copilot sessions launched through Node/npm wrappers instead of leaving them locked by orphan processes. Cleanup timeouts are reported as errors rather than successful stops. A result that arrives after cancellation is discarded and cannot restart queued work. Context cancellation, including daemon shutdown and one-shot timeouts, also terminates the agent process tree.
 
 ### Delete
 

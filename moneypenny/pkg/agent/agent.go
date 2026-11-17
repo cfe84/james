@@ -362,17 +362,23 @@ type PersistentActivityFunc func(sessionID, eventType, content string)
 // Runner manages agent subprocess execution.
 type Runner struct {
 	mu                   sync.Mutex
-	procs                map[string]*exec.Cmd       // sessionID -> running process
+	procs                map[string]*runningProcess
 	activity             map[string]*activityBuffer // sessionID -> recent activity
 	vlog                 *log.Logger
 	notifyWriter         *envelope.NotificationWriter
 	onPersistentActivity PersistentActivityFunc
 }
 
+type runningProcess struct {
+	cmd    *exec.Cmd
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
 // New creates a new Runner.
 func New(vlog *log.Logger) *Runner {
 	return &Runner{
-		procs:    make(map[string]*exec.Cmd),
+		procs:    make(map[string]*runningProcess),
 		activity: make(map[string]*activityBuffer),
 		vlog:     vlog,
 	}
@@ -431,7 +437,7 @@ func (r *Runner) RunOneShot(ctx context.Context, params RunParams) (string, erro
 		defer inv.cleanup()
 	}
 
-	cmd := exec.CommandContext(ctx, agentPath, inv.args...)
+	cmd := agentCommand(ctx, agentPath, inv.args...)
 	if params.Path != "" {
 		cmd.Dir = params.Path
 	}
@@ -473,6 +479,8 @@ func (r *Runner) RunOneShot(ctx context.Context, params RunParams) (string, erro
 
 // Run invokes an agent with the given parameters. It blocks until the agent completes.
 func (r *Runner) Run(ctx context.Context, params RunParams) (*Result, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	agentPath, err := FindAgent(params.Agent)
 	if err != nil {
 		return nil, err
@@ -517,7 +525,7 @@ func (r *Runner) Run(ctx context.Context, params RunParams) (*Result, error) {
 		}
 		defer cleanup()
 	}
-	cmd := exec.CommandContext(ctx, agentPath, inv.args...)
+	cmd := agentCommand(ctx, agentPath, inv.args...)
 	if params.Path != "" {
 		cmd.Dir = params.Path
 	}
@@ -541,7 +549,7 @@ func (r *Runner) Run(ctx context.Context, params RunParams) (*Result, error) {
 	}
 
 	buf := newActivityBuffer(30)
-	if !r.reserveProcess(params.SessionID, cmd, buf) {
+	if !r.reserveProcess(params.SessionID, cmd, buf, cancel) {
 		return nil, fmt.Errorf("agent session %s already has a running agent", params.SessionID)
 	}
 
@@ -559,13 +567,13 @@ func (r *Runner) Run(ctx context.Context, params RunParams) (*Result, error) {
 	return r.runStreaming(cmd, buf, params.SessionID, stderrBuf, !params.NoPersistTurns)
 }
 
-func (r *Runner) reserveProcess(sessionID string, cmd *exec.Cmd, activity *activityBuffer) bool {
+func (r *Runner) reserveProcess(sessionID string, cmd *exec.Cmd, activity *activityBuffer, cancel context.CancelFunc) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if existing, ok := r.procs[sessionID]; ok && existing != nil {
 		return false
 	}
-	r.procs[sessionID] = cmd
+	r.procs[sessionID] = &runningProcess{cmd: cmd, cancel: cancel, done: make(chan struct{})}
 	r.activity[sessionID] = activity
 	return true
 }
@@ -573,9 +581,10 @@ func (r *Runner) reserveProcess(sessionID string, cmd *exec.Cmd, activity *activ
 func (r *Runner) releaseProcess(sessionID string, owner *exec.Cmd) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if existing, ok := r.procs[sessionID]; ok && existing == owner {
+	if existing, ok := r.procs[sessionID]; ok && existing.cmd == owner {
 		delete(r.procs, sessionID)
 		delete(r.activity, sessionID)
+		close(existing.done)
 	}
 }
 
@@ -1832,17 +1841,23 @@ func buildCopilotArgs(params RunParams) agentInvocation {
 	return inv
 }
 
-// Stop kills the subprocess for the given session.
+// Stop cancels the agent process tree and waits for the run to release its reservation.
 func (r *Runner) Stop(sessionID string) error {
 	r.mu.Lock()
-	cmd, ok := r.procs[sessionID]
-	if !ok {
-		r.mu.Unlock()
-		return fmt.Errorf("no running process for session %s", sessionID)
-	}
-	delete(r.procs, sessionID)
+	process := r.procs[sessionID]
 	r.mu.Unlock()
-	return cmd.Process.Kill()
+	if process == nil {
+		return nil
+	}
+	process.cancel()
+	timer := time.NewTimer(10 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-process.done:
+		return nil
+	case <-timer.C:
+		return fmt.Errorf("timed out stopping agent process tree for session %s", sessionID)
+	}
 }
 
 // IsRunning returns true if a subprocess is currently running for the session.

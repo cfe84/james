@@ -1744,7 +1744,10 @@ func (h *Handler) deleteSession(_ context.Context, cmd *envelope.Command) *envel
 	// A command job can claim an idle session while deletion is waiting for
 	// its process to exit; stop any newly launched callback run as well.
 	h.cancelActiveRun(data.SessionID)
-	_ = h.runner.Stop(data.SessionID)
+	if err := h.runner.Stop(data.SessionID); err != nil {
+		h.errorLog("failed to stop agent before deleting session %s: %v", data.SessionID, err)
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to stop agent: %v", err))
+	}
 
 	if err := h.store.DeleteSession(data.SessionID); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to delete session: %v", err))
@@ -2524,8 +2527,10 @@ func (h *Handler) stopSession(_ context.Context, cmd *envelope.Command) *envelop
 	// outlive its parent process long enough to return a late response.
 	h.cancelActiveRun(data.SessionID)
 
-	// Try to kill the process if running; ignore errors (process may already be gone).
-	_ = h.runner.Stop(data.SessionID)
+	if err := h.runner.Stop(data.SessionID); err != nil {
+		h.errorLog("failed to stop agent for session %s: %v", data.SessionID, err)
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to stop agent: %v", err))
+	}
 
 	// Drain queued prompts so they don't restart the session.
 	_, _ = h.store.DrainQueue(data.SessionID)
