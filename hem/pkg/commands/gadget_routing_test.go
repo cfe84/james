@@ -101,30 +101,12 @@ func TestGadgetAuthoritativeRelationshipScope(t *testing.T) {
 
 func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 	e := newHierarchyExecutor(t)
-	dir := t.TempDir()
-	inPath, outPath := filepath.Join(dir, "in"), filepath.Join(dir, "out")
-	for _, path := range []string{inPath, outPath} {
-		if err := syscall.Mkfifo(path, 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	in, err := os.OpenFile(inPath, os.O_RDWR, 0600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer in.Close()
-	out, err := os.OpenFile(outPath, os.O_RDWR, 0600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer out.Close()
-	defer func() { _, _ = in.WriteString("\n") }()
 	writes := make(chan transport.Command, 10)
 	capabilities := envelope.GadgetCapabilities{Subagents: true, Memory: false, Agents: false, Traits: true, Scheduling: false, CreateAgents: true, MoneypennyLogs: true, Hem: true, Channels: true}
 	var liveCapabilities atomic.Value
 	liveCapabilities.Store(capabilities)
 	var sourceYolo atomic.Bool
-	go func() {
+	serve := func(in, out *os.File) {
 		scanner := bufio.NewScanner(in)
 		for scanner.Scan() {
 			var command transport.Command
@@ -196,12 +178,38 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 				return
 			}
 		}
-	}()
-	if err := e.store.AddMoneypenny(&store.Moneypenny{Name: "mp", Enabled: true, TransportType: store.TransportFIFO, FIFOIn: inPath, FIFOOut: outPath}); err != nil {
-		t.Fatal(err)
 	}
-	if err := e.store.AddMoneypenny(&store.Moneypenny{Name: "remote", Enabled: true, TransportType: store.TransportFIFO, FIFOIn: inPath, FIFOOut: outPath}); err != nil {
-		t.Fatal(err)
+	// Each host needs its own pipes: transport clients serialize per host.
+	for _, name := range []string{"mp", "remote"} {
+		dir := t.TempDir()
+		inPath, outPath := filepath.Join(dir, "in"), filepath.Join(dir, "out")
+		for _, path := range []string{inPath, outPath} {
+			if err := syscall.Mkfifo(path, 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		in, err := os.OpenFile(inPath, os.O_RDWR, 0600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = in.Close() })
+		out, err := os.OpenFile(outPath, os.O_RDWR, 0600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = out.Close() })
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			serve(in, out)
+		}()
+		t.Cleanup(func() {
+			_, _ = in.WriteString("\n")
+			<-done
+		})
+		if err := e.store.AddMoneypenny(&store.Moneypenny{Name: name, Enabled: true, TransportType: store.TransportFIFO, FIFOIn: inPath, FIFOOut: outPath}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for _, id := range []string{"source", "target", "parent"} {
 		if err := e.store.TrackSession(id, "mp"); err != nil {
