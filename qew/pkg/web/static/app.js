@@ -2679,7 +2679,7 @@
     const agentOpts = agents.map(a => `<option value="${escapeAttr(a)}"${a === srcAgent ? ' selected' : ''}>${escapeHtml(a)}</option>`).join('');
 
     const defName = copy ? ('Copy of ' + (src.name || '')) : '';
-    const sourceCompactionMode = copy ? (src.compaction_mode || 'custom') : 'custom';
+    const sourceCompactionMode = (copy && src.compaction_mode) || 'agent';
     const sourceCompactionThreshold = copy
       ? effectiveCompactionThreshold(src.compaction_threshold_tokens, src.context_tier || '')
       : COMPACTION_THRESHOLD_DEFAULT;
@@ -2726,8 +2726,8 @@
       ${gadgetCapabilities.render('wiz', copy ? src.gadget_capabilities : undefined)}
       <label for="wiz-compaction">Compaction</label>
       <select id="wiz-compaction">
-        <option value="custom"${sourceCompactionMode === 'custom' ? ' selected' : ''}>Custom (distill to memory, then summarize)</option>
         <option value="agent"${sourceCompactionMode === 'agent' ? ' selected' : ''}>Agent (rely on the agent's own compaction)</option>
+        <option value="custom"${sourceCompactionMode === 'custom' ? ' selected' : ''}>Custom (distill to memory, then summarize)</option>
       </select>
       <label for="wiz-compaction-threshold" id="wiz-compaction-threshold-label">Custom compaction threshold</label>
       <div id="wiz-compaction-threshold-control" style="display:flex;align-items:center;gap:8px"><input id="wiz-compaction-threshold" type="number" min="${COMPACTION_THRESHOLD_MIN}" max="${COMPACTION_THRESHOLD_MAX}" step="0.001" value="${sourceCompactionThreshold}"><span>k tokens</span></div>

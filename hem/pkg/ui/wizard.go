@@ -143,7 +143,7 @@ func newWizardModel(c *client) wizardModel {
 			{label: "Environment (NAME=VALUE per line)", flag: "--env", value: ""},
 			{label: "Ponsonby stores (names/IDs; none opts out; :read is read-only)", flag: "--ponsonbies", value: ""},
 			{label: "License to Kill", flag: "--yolo", isBool: true, value: "true"},
-			{label: "Compaction", flag: "--compaction", value: "custom", options: []string{"custom", "agent"}},
+			{label: "Compaction", flag: "--compaction", value: "agent", options: []string{"agent", "custom"}},
 			{label: "Custom compaction threshold (thousands of tokens)", flag: compactionThresholdFlag, value: defaultCompactionThresholdValue(""), defaultDerived: true},
 		}, gadgetCapabilityFields(nil)...),
 	}

@@ -226,6 +226,26 @@ func TestAddOpenCodeCost(t *testing.T) {
 	}
 }
 
+func TestCreateSessionCompactionMode(t *testing.T) {
+	s := newTestStore(t)
+	for _, tc := range []struct{ mode, want string }{
+		{"", CompactionAgent},
+		{CompactionCustom, CompactionCustom},
+	} {
+		id := "compaction-" + tc.want
+		if err := s.CreateSession(&Session{SessionID: id, Agent: "copilot", CompactionMode: tc.mode}); err != nil {
+			t.Fatal(err)
+		}
+		got, err := s.GetSession(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.CompactionMode != tc.want {
+			t.Errorf("compaction mode with input %q = %q, want %q", tc.mode, got.CompactionMode, tc.want)
+		}
+	}
+}
+
 func TestCompactionThresholdValidationAndPersistence(t *testing.T) {
 	s := newTestStore(t)
 	for _, threshold := range []int{envelope.MinCompactionThresholdTokens, envelope.MaxCompactionThresholdTokens} {

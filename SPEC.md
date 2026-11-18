@@ -1924,8 +1924,8 @@ the `--compaction agent|custom` and optional
 `update session`, the TUI create/edit/wizard **Compaction** controls, or the
 Qew create/edit dialogs.
 
-- **`agent`** (default for pre-existing sessions): rely on the underlying agent's own automatic compaction. James does nothing special.
-- **`custom`** (default for new sessions): when context reaches the session's
+- **`agent`** (default for new sessions): rely on the underlying agent's own automatic compaction. James does nothing special. Existing sessions keep their saved mode.
+- **`custom`** (opt-in): when context reaches the session's
   configured absolute threshold (default **150,000** tokens, or **800,000** for
   explicit `long_context`; inclusive range **10,000–900,000**), James runs a
   custom compaction before the next turn so session knowledge is preserved.

@@ -511,9 +511,8 @@ CREATE INDEX IF NOT EXISTS idx_channel_outbox_pending ON channel_outbox(status);
 	// underlying agent CLI session from the James session so it can be
 	// substituted on compaction; non-OpenCode rows default to their own
 	// session_id. OpenCode generates its ID after execution starts.
-	// compaction_mode defaults to 'agent' for
-	// existing sessions (business as usual); new sessions are created as
-	// 'custom'. context_tokens/context_window track context size.
+	// compaction_mode defaults to 'agent'. context_tokens/context_window
+	// track context size.
 	db.Exec(`ALTER TABLE sessions ADD COLUMN agent_session_id TEXT NOT NULL DEFAULT ''`)
 	if _, err := db.Exec(`UPDATE sessions SET agent_session_id = session_id WHERE agent_session_id = '' AND agent != 'opencode'`); err != nil {
 		return fmt.Errorf("initialize agent session IDs: %w", err)
@@ -620,7 +619,7 @@ func (s *Store) CreateSession(sess *Session) error {
 		sess.AgentSessionID = sess.SessionID
 	}
 	if sess.CompactionMode == "" {
-		sess.CompactionMode = CompactionCustom
+		sess.CompactionMode = CompactionAgent
 	}
 	if sess.CompactionThresholdTokens == 0 {
 		sess.CompactionThresholdTokens = envelope.DefaultCompactionThresholdTokensForContext(sess.ContextTier)

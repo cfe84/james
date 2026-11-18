@@ -58,7 +58,7 @@ type CreateSessionData struct {
 	// CompactionMode selects how context is compacted: "agent" (rely on the
 	// underlying agent's built-in compaction) or "custom" (James-managed
 	// distillation + summary + fresh-session substitution). Empty defaults to
-	// "custom" for new sessions.
+	// "agent" for new sessions.
 	CompactionMode string `json:"compaction_mode,omitempty"`
 	// CompactionThresholdTokens is the absolute context-token count at which
 	// custom compaction runs. Omitted values use the context-tier default.

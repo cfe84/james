@@ -562,10 +562,6 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 
 	systemPrompt := data.SystemPrompt
 
-	compactionMode := data.CompactionMode
-	if compactionMode == "" {
-		compactionMode = store.CompactionCustom
-	}
 	compactionThresholdTokens := envelope.DefaultCompactionThresholdTokensForContext(data.ContextTier)
 	if data.CompactionThresholdTokens != nil {
 		if err := envelope.ValidateCompactionThresholdTokens(*data.CompactionThresholdTokens); err != nil {
@@ -596,7 +592,7 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 		Environment:               environment,
 		GadgetRoute:               gadgetRoute,
 		AgentSessionID:            initialAgentSessionID(data.Agent, data.SessionID),
-		CompactionMode:            compactionMode,
+		CompactionMode:            data.CompactionMode,
 		CompactionThresholdTokens: compactionThresholdTokens,
 	}
 	if data.GadgetCapabilities != nil {
