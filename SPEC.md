@@ -1245,7 +1245,9 @@ Qew renders artifact cards using the existing conversation components:
 
 View/Download fetch bytes on demand from the MP through Hem's existing
 transport; publishing does not transfer file contents. Hem relays bounded
-chunks without retaining them. Qew verifies the snapshot's SHA-256 checksum
+chunks without retaining them. The combined James image builds Qew with the
+shared Moneypenny artifact module available at build time.
+Qew verifies the snapshot's SHA-256 checksum
 and temporarily stores the transfer on its own host. Download offers the
 unchanged file with its original filename to the user's browser/device, then
 removes the temporary transfer. It never writes to the Hem server's Downloads

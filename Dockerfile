@@ -19,10 +19,12 @@ RUN CGO_ENABLED=0 go build -ldflags "-X main.Version=${VERSION}" -o mi6-client .
 
 FROM golang:1.25-alpine AS qew-builder
 ARG VERSION=dev
-WORKDIR /build
+WORKDIR /build/qew
 COPY qew/go.mod qew/go.sum ./
+COPY moneypenny/go.mod moneypenny/go.sum /build/moneypenny/
 RUN go mod download
 COPY qew/ .
+COPY moneypenny/ /build/moneypenny/
 RUN CGO_ENABLED=0 go build -ldflags "-X main.Version=${VERSION}" -o qew ./cmd/qew/
 
 FROM golang:1.25-alpine AS gadgets-builder
@@ -36,7 +38,7 @@ RUN apk add --no-cache ca-certificates tzdata
 ENV TZ=America/Denver
 COPY --from=hem-builder /build/hem/hem /usr/local/bin/hem
 COPY --from=mi6-builder /build/mi6-client /usr/local/bin/mi6-client
-COPY --from=qew-builder /build/qew /usr/local/bin/qew
+COPY --from=qew-builder /build/qew/qew /usr/local/bin/qew
 COPY --from=gadgets-builder /build/gadgets /usr/local/bin/gadgets
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

@@ -269,7 +269,9 @@ errors are surfaced.
 
 The shared `moneypenny/pkg/artifact` package owns wire types, quotas, ZIP
 inspection and bounded extraction. Qew imports this local module alongside Hem
-to avoid separate archive rules/limits. `read_artifact` serves at most 192 KiB
+to avoid separate archive rules/limits. Both Docker builder stages preserve the
+sibling module layout, copying Moneypenny manifests before dependency download
+and its source before compilation. `read_artifact` serves at most 192 KiB
 per operator request, or metadata only; `read artifact` on Hem routes only
 tracked sessions to their registered MP. Neither accepts arbitrary source paths.
 Files are never pushed through the conversation/event channel.
