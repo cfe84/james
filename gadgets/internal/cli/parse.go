@@ -35,6 +35,7 @@ func command(args []string) (string, []string, error) {
 		"agents.list", "agents.message", "agents.create", "subagents.list", "subagents.create", "subagents.message",
 		"subagents.edit", "subagents.complete", "subagents.stop", "subagents.delete",
 		"traits.list", "traits.get", "traits.edit", "sessions.edit", "moneypenny.list", "moneypenny.logs", "artifacts.publish",
+		"questionnaire.publish",
 		"schedule.list", "schedule.create", "schedule.delete",
 		"run.list", "run.status", "run.stop", "attention.get", "attention.set", "attention.resolve":
 		return method, args[2:], nil
@@ -292,6 +293,17 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 				err = errors.New("artifact path is required")
 			}
 			data["path"] = pos[0]
+		}
+	case "questionnaire.publish":
+		if err = arity(0, 0); err == nil {
+			var b []byte
+			b, err = readBounded(stdin, MaxRequestBytes)
+			if err == nil {
+				err = json.Unmarshal(b, &data)
+				if err == nil && data == nil {
+					err = errors.New("questionnaire input must be a JSON object")
+				}
+			}
 		}
 	case "traits.get", "traits.edit":
 		if err = arity(1, 1); err == nil {

@@ -13,6 +13,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 
 	"james/moneypenny/pkg/envelope"
+	"james/moneypenny/pkg/questionnaire"
 )
 
 // Session states
@@ -989,11 +990,20 @@ func (s *Store) AddConversationTurn(sessionID string, role string, content strin
 // AddConversationTurnFrom records a turn and, when supplied, the James agent
 // session that originated it through a gadget command.
 func (s *Store) AddConversationTurnFrom(sessionID, role, content, sourceSessionID, sourceName string) error {
+	return s.addConversationTurn(sessionID, role, content, sourceSessionID, sourceName, nil)
+}
+
+func (s *Store) addConversationTurn(sessionID, role, content, sourceSessionID, sourceName string, validate func(*sql.Tx) error) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("begin conversation turn tx: %w", err)
 	}
 	defer tx.Rollback()
+	if validate != nil {
+		if err := validate(tx); err != nil {
+			return err
+		}
+	}
 	result, err := tx.Exec(
 		`INSERT INTO conversation_turns (session_id, role, content, source_session_id, source_name) VALUES (?, ?, ?, ?, ?)`,
 		sessionID, role, content, sourceSessionID, sourceName,
@@ -1336,7 +1346,7 @@ func (s *Store) DrainQueueGroup(sessionID string) ([]QueuedPrompt, error) {
 			// reply channel in the grouping key ensures a group's response is routed
 			// to exactly one channel (or none).
 			break
-		} else if firstOperationID != "" || qp.OperationID != firstOperationID {
+		} else if firstOperationID != "" || qp.OperationID != firstOperationID || qp.Source == questionnaire.Role || prompts[0].Source == questionnaire.Role {
 			// Durable operation-ID prompts must execute independently so each
 			// operation owns exactly one terminal transition. Legacy prompts
 			// (empty IDs) retain override-group batching.

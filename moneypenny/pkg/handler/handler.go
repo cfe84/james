@@ -475,6 +475,8 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.saveAttachment(ctx, cmd)
 	case "read_artifact":
 		return h.readArtifact(ctx, cmd)
+	case "resolve_questionnaire":
+		return h.resolveQuestionnaire(cmd)
 	case "schedule":
 		return h.schedule(ctx, cmd)
 	case "list_schedules":
@@ -1551,7 +1553,10 @@ func (h *Handler) listSessions(_ context.Context, cmd *envelope.Command) *envelo
 }
 
 func (h *Handler) getSession(_ context.Context, cmd *envelope.Command) *envelope.Response {
-	var data envelope.SessionIDData
+	var data struct {
+		envelope.SessionIDData
+		Questionnaires bool `json:"questionnaires"`
+	}
 	if err := json.Unmarshal(cmd.Data, &data); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
 	}
@@ -1590,6 +1595,14 @@ func (h *Handler) getSession(_ context.Context, cmd *envelope.Command) *envelope
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
 	}
 	detail.GadgetCapabilities = &capabilities
+	if data.Questionnaires {
+		cards, err := h.store.PendingQuestionnaires(data.SessionID)
+		if err != nil {
+			h.errorLog("list questionnaires for session %s: %v", data.SessionID, err)
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, "failed to list questionnaires")
+		}
+		detail.Questionnaires = &cards
+	}
 
 	if ts, err := h.store.GetSessionTimestamps(data.SessionID); err == nil && ts != nil {
 		detail.LastAccessed = ts.LastTurn.UTC().Format("2006-01-02T15:04:05Z")

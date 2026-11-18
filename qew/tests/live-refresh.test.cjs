@@ -59,6 +59,32 @@ test('artifact cards offer View only for supported bundles and escape metadata',
   assert.ok(context.renderArtifactCard('{"id":"../../api"}', 'session').includes('could not be read'));
 });
 
+test('questionnaires require every answer and count Other as text only when selected', () => {
+  const context = vm.createContext({ TextEncoder });
+  vm.runInContext(app.slice(app.indexOf('  function questionnaireAnswers('),
+    app.indexOf('  function renderQuestionnaires(')), context);
+  const field = (isText, value = '', selection = null) => ({
+    text: { value },
+    selection,
+    hasAttribute: () => isText,
+    querySelector(selector) {
+      return selector === 'textarea' ? this.text : this.selection;
+    },
+  });
+  const binary = field(false, 'stale Other draft', { value: '0' });
+  const choice = field(false, ' ', { value: 'other' });
+  const text = field(true, ' Exclude weekends ');
+  const form = { querySelectorAll: () => [binary, choice, text] };
+  const answers = () => JSON.parse(JSON.stringify(context.questionnaireAnswers(form)));
+  assert.deepEqual(answers(), [{ choice: 0 }, null, { text: 'Exclude weekends' }]);
+  assert.equal(binary.text.hidden, true);
+  assert.equal(choice.text.hidden, false);
+  choice.text.value = 'Use the pilot scope';
+  assert.deepEqual(answers(), [{ choice: 0 }, { text: 'Use the pilot scope' }, { text: 'Exclude weekends' }]);
+  text.text.value = 'é'.repeat(1001);
+  assert.equal(answers()[2], null);
+});
+
 test('quick switcher finds completed parents retained for active descendants', () => {
   const opened = [];
   const context = vm.createContext({
@@ -169,7 +195,7 @@ test('session Back/Forward stays in Qew across nested sessions, reloads and deep
       currentSession: null, currentSessionStatus: '', parentSessionStack: [], chatGeneration: 0,
       chatInputCache: {}, localStorage: { getItem: () => null },
       document: { getElementById(id) {
-        if (!elements.has(id)) elements.set(id, { style: {}, value: '', focus() {} });
+        if (!elements.has(id)) elements.set(id, { style: {}, value: '', focus() {}, replaceChildren() {} });
         return elements.get(id);
       } },
       releaseActiveWatch() {}, stopDashboardPoll() {}, stopChatPoll() {},

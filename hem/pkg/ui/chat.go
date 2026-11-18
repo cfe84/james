@@ -21,6 +21,7 @@ import (
 	"james/hem/pkg/protocol"
 	"james/moneypenny/pkg/artifact"
 	"james/moneypenny/pkg/envelope"
+	"james/moneypenny/pkg/questionnaire"
 )
 
 type chatSessionStoppedMsg struct{ err error }
@@ -1900,6 +1901,8 @@ func (m chatModel) View() string {
 		switch turn.Role {
 		case "artifact":
 			prefix = assistantMsgStyle.Render("Artifact")
+		case questionnaire.Role, questionnaire.SubmittedRole, questionnaire.DiscardedRole:
+			prefix = assistantMsgStyle.Render("Questionnaire")
 		case "user":
 			userLabel := turn.SourceName
 			if userLabel == "" {
@@ -1941,6 +1944,23 @@ func (m chatModel) View() string {
 				content = "Artifact metadata could not be read."
 			} else {
 				content = fmt.Sprintf("%s (%s, %d bytes)\nOpen this conversation in Qew to view or download.", meta.Title, meta.Name, meta.Size)
+			}
+		}
+		switch turn.Role {
+		case questionnaire.Role, questionnaire.SubmittedRole, questionnaire.DiscardedRole:
+			var definition questionnaire.Definition
+			if err := json.Unmarshal([]byte(content), &definition); err != nil {
+				content = "Questionnaire could not be read."
+			} else {
+				content = definition.Title
+				switch turn.Role {
+				case questionnaire.Role:
+					content += "\nOpen this conversation in Qew to answer or discard."
+				case questionnaire.SubmittedRole:
+					content += " (submitted)"
+				case questionnaire.DiscardedRole:
+					content += " (discarded)"
+				}
 			}
 		}
 		if strings.TrimSpace(content) == "" {

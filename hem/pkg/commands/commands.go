@@ -22,6 +22,7 @@ import (
 	"james/hem/pkg/store"
 	"james/hem/pkg/transport"
 	"james/moneypenny/pkg/envelope"
+	"james/moneypenny/pkg/questionnaire"
 )
 
 // mpSessionInfo holds cached session data from a moneypenny's list_sessions response.
@@ -555,6 +556,8 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 	switch verb + " " + noun {
 	case "read artifact":
 		return e.ReadArtifact(args)
+	case "resolve questionnaire":
+		return e.resolveQuestionnaire(args)
 	case "create ponsonby", "list ponsonby", "show ponsonby", "update ponsonby", "retry ponsonby", "delete ponsonby":
 		return e.PonsonbyCommand(verb, args)
 	case "gadget route":
@@ -1193,6 +1196,7 @@ type SessionLastResult struct {
 
 type SessionShowResult struct {
 	envelope.SessionReport
+	Questionnaires            *[]questionnaire.Card       `json:"questionnaires,omitempty"`
 	GadgetCapabilities        envelope.GadgetCapabilities `json:"gadget_capabilities"`
 	SessionID                 string                      `json:"session_id"`
 	Moneypenny                string                      `json:"moneypenny"`
@@ -2635,9 +2639,11 @@ func (e *Executor) LastSession(args []string) *protocol.Response {
 
 func (e *Executor) ShowSession(args []string) *protocol.Response {
 	var sessionID string
+	var questionnaires bool
 
 	remaining, err := parseFlagsFromArgs("show-session", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&sessionID, "session-id", "", "session ID")
+		fs.BoolVar(&questionnaires, "questionnaires", false, "include pending questionnaires")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -2658,6 +2664,9 @@ func (e *Executor) ShowSession(args []string) *protocol.Response {
 	cmdData := map[string]interface{}{
 		"session_id": sessionID,
 	}
+	if questionnaires {
+		cmdData["questionnaires"] = true
+	}
 
 	ctx := context.Background()
 	resp, err := e.sendCommand(ctx, mp, "get_session", cmdData)
@@ -2674,9 +2683,14 @@ func (e *Executor) ShowSession(args []string) *protocol.Response {
 		SessionID:  sessionID,
 		Moneypenny: mp.Name,
 	}
-	if err := json.Unmarshal(resp.Data, &result.SessionReport); err != nil {
+	detail := struct {
+		*envelope.SessionReport
+		Questionnaires *[]questionnaire.Card `json:"questionnaires,omitempty"`
+	}{SessionReport: &result.SessionReport}
+	if err := json.Unmarshal(resp.Data, &detail); err != nil {
 		return protocol.ErrResponse(fmt.Sprintf("parsing session report: %v", err))
 	}
+	result.Questionnaires = detail.Questionnaires
 	result.GadgetCapabilities, err = sessionGadgetCapabilities(resp.Data)
 	if err != nil {
 		return protocol.ErrResponse(fmt.Sprintf("parsing session capabilities: %v", err))

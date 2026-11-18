@@ -175,6 +175,21 @@ not forwarded. Existing request/response caps and the 30-second client timeout
 apply; no automatic retry is made. Use `--async` for long-running agent operations.
 A timed-out mutation may still complete: inspect state before retrying.
 
+### Questionnaires
+
+Publish a question card to your own conversation by passing one JSON object on
+stdin. For example:
+
+```sh
+printf '%s\n' '{"title":"Release decision","questions":[{"prompt":"Proceed?","type":"yes_no"},{"prompt":"Which scope?","type":"choice","options":["Pilot","Full"]},{"prompt":"Any constraints?","type":"text"}]}' |
+  gadgets questionnaire publish
+```
+
+Qew offers an Other text answer for both choice types. The user can answer all
+questions in one submission or discard the card without sending a turn. Chat
+remains available and publishing does not set attention. Up to four cards may
+be pending at once, with up to eight questions per card.
+
 ### Conversation artifacts
 
 `gadgets artifacts publish report.zip --title "Review report"` copies a snapshot

@@ -1,5 +1,7 @@
 package envelope
 
+import "james/moneypenny/pkg/questionnaire"
+
 // Notification events
 const (
 	EventSessionStateChanged  = "session_state_changed"
@@ -169,6 +171,7 @@ type SessionInfo struct {
 
 // SessionDetail is returned by get_session (metadata only, no conversation).
 type SessionDetail struct {
+	Questionnaires *[]questionnaire.Card `json:"questionnaires,omitempty"`
 	SessionReport
 	SessionID    string `json:"session_id"`
 	Name         string `json:"name"`

@@ -1224,6 +1224,25 @@ the full definition. Missing IDs, missing/null body fields, unknown fields,
 and unsupported operations fail without changes. The existing 1 MiB request
 and 4 MiB response limits apply; trait results have no paging.
 
+### Questionnaires
+
+`gadgets questionnaire publish` reads a JSON object with a `title` and a
+`questions` array from stdin. Any authenticated agent can publish to its own
+conversation. A questionnaire contains 1–8 questions with a `prompt` and a
+`type`: `yes_no`, `choice` (2–8 distinct `options`), or `text`. Yes/No and
+single-select choice questions both offer **Other…** with a written response.
+Each session can have four pending questionnaires; each definition is limited
+to 8 KiB and each written answer to 2,000 UTF-8 bytes.
+
+Qew shows pending questionnaires in cards near the chat composer, even if the
+original card has scrolled into older history. **Submit** is disabled until
+every question is answered; answers are delivered together as one new human
+turn and wait in the normal queue if the agent is busy. **Discard** closes the
+card with no answer turn. History retains a read-only record; submitting or
+discarding the same card again is rejected. Normal chat remains available,
+and publishing or resolving a questionnaire does not change operator attention.
+Hem TUI shows the card's status and directs users to Qew to respond.
+
 ### Conversation artifacts
 
 Agents can publish a file to their own conversation with

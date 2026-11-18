@@ -256,6 +256,19 @@ The same fresh source-session detail is the authorization source for optional
 `--yolo`: gadget creation forwards it only when that authenticated source is
 already yolo. Daemon runtime instructions advertise the flag only in that case.
 
+Questionnaires live in the owning MP's conversation store. The authenticated
+publish gadget validates the definition and checks the pending limit inside
+the normal conversation-insert transaction. Qew requests pending cards via
+`show session --questionnaires`, independently of the transcript page, and
+keeps their DOM separate from transcript refreshes so typing is not interrupted.
+An authenticated operator's resolution is routed by Hem to the tracked session.
+MP checks the session and pending card, validates answers against the stored
+questions, and closes the card and enqueues the answer in one SQLite transaction.
+Submission claims an idle queue runner or waits behind existing work. The queue
+drains questionnaire answers as standalone human rounds; discard just updates
+the card and conversation revision. No separate attention request or storage
+lifecycle is introduced; conversation deletion removes the cards.
+
 Conversation artifacts are MP-owned immutable snapshots. The session-authenticated
 `artifacts.publish` gadget accepts only path/title, resolves relative paths against
 the stored working directory, serializes publication/capacity checks with session

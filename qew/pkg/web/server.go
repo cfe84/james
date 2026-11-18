@@ -178,7 +178,7 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.vlog.Printf("API: %s %s %v", req.Verb, req.Noun, req.Args)
+	s.logRequest("API", req)
 
 	resp, err := s.hem.Send(&req)
 	if err != nil {
@@ -188,6 +188,14 @@ func (s *Server) handleAPI(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+func (s *Server) logRequest(transport string, req Request) {
+	if req.Verb == "resolve" && req.Noun == "questionnaire" {
+		s.vlog.Printf("%s: resolve questionnaire", transport)
+	} else {
+		s.vlog.Printf("%s: %s %s %v", transport, req.Verb, req.Noun, req.Args)
+	}
 }
 
 // handleWSUpgrade checks the Origin header before upgrading to WebSocket.
@@ -403,7 +411,7 @@ func (s *Server) handleWS(ws *websocket.Conn, deadline time.Time) {
 			continue
 		}
 
-		s.vlog.Printf("WS: %s %s %v", req.Verb, req.Noun, req.Args)
+		s.logRequest("WS", req)
 
 		resp, err := s.hem.Send(&req)
 		if err != nil {

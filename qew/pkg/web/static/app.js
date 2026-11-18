@@ -1231,6 +1231,7 @@
   }
 
   async function openChat(sessionId, name, mp) {
+    document.getElementById('chat-questionnaires')?.replaceChildren();
     cacheChatDraft();
     releaseActiveWatch();
     chatGeneration++;
@@ -1408,7 +1409,7 @@
         : apiCall('history', 'session', historyArgs);
       const calls = [
         historyCall,
-        optionalCall('show', 'session', [currentSession]),
+        optionalCall('show', 'session', [currentSession, '--questionnaires']),
         optionalCall('list', 'schedule', ['--session-id', currentSession, '--status', 'pending', '--limit', '50']),
         optionalCall('list', 'subsession', [currentSession]),
       ];
@@ -1453,6 +1454,7 @@
       }
       // Extract session status and moneypenny.
       if (showResp && showResp.status === 'ok' && showResp.data) {
+        if (Array.isArray(showResp.data.questionnaires)) renderQuestionnaires(showResp.data.questionnaires);
         currentSessionStatus = showResp.data.status || '';
         // Backfill the session name/nick when we opened without one (e.g. via a
         // deep-link/hash route or the parent-stack), so the title shows the
@@ -1770,6 +1772,10 @@
         html += renderArtifactCard(content, currentSession);
         continue;
       }
+      if (['questionnaire', 'questionnaire_submitted', 'questionnaire_discarded'].includes(turn.role)) {
+        html += renderQuestionnaireHistory(content, turn.role);
+        continue;
+      }
       // Subagent callbacks stay visible independently of the thought toggle.
       if (turn.role === 'callback') {
         const callbackSource = escapeHtml(turn.source_name || 'subagent');
@@ -1965,6 +1971,99 @@
       return `<div class="msg"><div class="msg-role">Artifact</div><div class="msg-content"><strong>${escapeHtml(artifact.title)}</strong><br>${escapeHtml(artifact.name)} · ${Math.ceil(artifact.size / 1024)} KiB<br>${view}<a class="btn" href="${base}/download" download>Download</a></div></div>`;
     } catch (error) {
       return '<div class="msg system-note">Artifact metadata could not be read.</div>';
+    }
+  }
+
+  function renderQuestionnaireHistory(content, role) {
+    let card;
+    try { card = JSON.parse(content); } catch { /* Show the unavailable card below. */ }
+    const state = role === 'questionnaire_submitted' ? ' · Submitted'
+      : role === 'questionnaire_discarded' ? ' · Discarded' : '';
+    const questions = Array.isArray(card?.questions)
+      ? card.questions.filter(q => typeof q?.prompt === 'string').map(q => `<li>${escapeHtml(q.prompt)}</li>`).join('')
+      : '';
+    return `<div class="msg"><div class="msg-role">Questionnaire${state}</div><details class="msg-content">
+      <summary>${escapeHtml(card?.title || 'Unavailable')}</summary><ol>${questions}</ol>
+    </details></div>`;
+  }
+
+  function questionnaireAnswers(form) {
+    return Array.from(form.querySelectorAll('fieldset'), field => {
+      const text = field.querySelector('textarea');
+      const selection = field.querySelector('input:checked');
+      text.hidden = !field.hasAttribute('data-text') && selection?.value !== 'other';
+      if (text.hidden) return selection ? { choice: Number(selection.value) } : null;
+      const value = text.value.trim();
+      return value && new TextEncoder().encode(value).length <= 2000 ? { text: value } : null;
+    });
+  }
+
+  function renderQuestionnaires(cards) {
+    const panel = document.getElementById('chat-questionnaires');
+    const pending = new Set(cards.map(card => String(card.id)));
+    for (const element of Array.from(panel.children)) {
+      if (!pending.has(element.dataset.questionnaireId)) element.remove();
+    }
+    const existing = new Set(Array.from(panel.children, element => element.dataset.questionnaireId));
+    for (const card of cards) {
+      if (!Number.isSafeInteger(card.id) || existing.has(String(card.id))) continue;
+      const details = document.createElement('details');
+      details.className = 'msg';
+      details.dataset.questionnaireId = String(card.id);
+      details.innerHTML = `<summary>Questionnaire: ${escapeHtml(card.title)}</summary>
+        <form class="questionnaire-form">
+          ${card.questions.map((q, index) => {
+            const choices = q.type === 'yes_no' ? ['Yes', 'No'] : q.options || [];
+            const isText = q.type === 'text';
+            return `<fieldset${isText ? ' data-text' : ''}><legend>${escapeHtml(q.prompt)}</legend>
+              ${isText ? '' : choices.map((choice, i) =>
+                `<label><input type="radio" name="q${index}" value="${i}"> ${escapeHtml(choice)}</label>`).join('') +
+                `<label><input type="radio" name="q${index}" value="other"> Other…</label>`}
+              <textarea aria-label="${isText ? 'Answer' : 'Other answer'} for question ${index + 1}" rows="2" maxlength="2000"${isText ? '' : ' hidden'}></textarea>
+            </fieldset>`;
+          }).join('')}
+          <div class="questionnaire-error" role="status"></div>
+          <div><button type="submit" class="btn" disabled>Submit</button>
+          <button type="button" class="btn-muted">Discard</button></div>
+        </form>`;
+      const form = details.querySelector('form');
+      const submit = form.querySelector('button[type="submit"]');
+      const discard = form.querySelector('button[type="button"]');
+      const error = form.querySelector('.questionnaire-error');
+      const session = currentSession;
+      const generation = chatGeneration;
+      let sending = false;
+      form.addEventListener('keydown', event => event.stopPropagation());
+      form.addEventListener('input', () => {
+        submit.disabled = sending || questionnaireAnswers(form).some(answer => !answer);
+      });
+      async function resolve(action) {
+        if (sending || session !== currentSession || generation !== chatGeneration) return;
+        const answers = action === 'submit' ? questionnaireAnswers(form) : [];
+        if (answers.some(answer => !answer)) return;
+        sending = submit.disabled = discard.disabled = true;
+        error.textContent = '';
+        try {
+          const response = await apiCall('resolve', 'questionnaire', [JSON.stringify({
+            session_id: session, id: card.id, action, answers,
+          })]);
+          if (response.status !== 'ok') throw new Error(response.message || 'Could not resolve questionnaire');
+          if (session === currentSession && generation === chatGeneration) {
+            const restoreFocus = details.contains(document.activeElement);
+            details.hidden = true;
+            if (restoreFocus) document.getElementById('chat-input')?.focus();
+          }
+        } catch (e) {
+          error.textContent = e.message;
+          sending = discard.disabled = false;
+          submit.disabled = questionnaireAnswers(form).some(answer => !answer);
+        } finally {
+          if (session === currentSession && generation === chatGeneration) loadChat();
+        }
+      }
+      form.addEventListener('submit', event => { event.preventDefault(); resolve('submit'); });
+      discard.addEventListener('click', () => resolve('discard'));
+      panel.append(details);
     }
   }
 

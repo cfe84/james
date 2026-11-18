@@ -103,7 +103,11 @@ func (s *Server) handleConn(conn net.Conn) {
 		return
 	}
 
-	s.vlog.Printf("request: %s %s %v", req.Verb, req.Noun, req.Args)
+	if req.Verb == "resolve" && req.Noun == "questionnaire" {
+		s.vlog.Printf("request: resolve questionnaire")
+	} else {
+		s.vlog.Printf("request: %s %s %v", req.Verb, req.Noun, req.Args)
+	}
 
 	if req.Verb == "subscribe" && req.Noun == "events" {
 		subscriber, ok := s.dispatcher.(EventSubscriber)

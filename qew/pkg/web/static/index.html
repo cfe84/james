@@ -98,6 +98,19 @@ header h1 span { color: var(--primary); }
 .workstream-attention { display: block; color: var(--warning); margin-top: 4px; }
 .chat-attention { padding: 12px; margin-bottom: 8px; border: 1px solid var(--warning); border-radius: 6px; overflow-wrap: anywhere; flex-shrink: 0; max-height: 35vh; overflow-y: auto; }
 .chat-attention .btn-muted { margin-left: 8px; }
+.chat-questionnaires:not(:empty) { max-height: 45vh; overflow-y: auto; flex-shrink: 0; }
+.chat-questionnaires summary { cursor: pointer; font-weight: 600; }
+.questionnaire-form { display: grid; gap: 12px; margin-top: 12px; }
+.questionnaire-form fieldset { display: grid; gap: 6px; min-width: 0; border: 0; }
+.questionnaire-form legend { font-weight: 600; padding-bottom: 4px; overflow-wrap: anywhere; }
+.questionnaire-form label { display: block; padding: 4px 0; overflow-wrap: anywhere; }
+.questionnaire-form textarea {
+  width: 100%; padding: 8px; resize: vertical; font: inherit;
+  background: var(--bg); color: var(--text); border: 1px solid var(--muted); border-radius: 6px;
+}
+.questionnaire-form [hidden] { display: none; }
+.questionnaire-form .btn:disabled, .questionnaire-form .btn-muted:disabled { opacity: 0.6; cursor: not-allowed; }
+.questionnaire-error { color: var(--warning); }
 .workstream-expand {
   align-self: stretch; min-width: 36px; border: 0; border-radius: 6px;
   background: var(--surface2); color: var(--text); cursor: pointer; margin-right: 8px;
@@ -674,6 +687,7 @@ header h1 span { color: var(--primary); }
     </div>
     <div class="chat-attention" id="chat-attention" role="status" tabindex="0" hidden></div>
     <div class="chat-messages" id="chat-messages"></div>
+    <div class="chat-questionnaires" id="chat-questionnaires" aria-label="Pending questionnaires"></div>
     <div class="chat-attachments" id="chat-attachments"></div>
     <div class="chat-input-row">
       <input type="file" id="chat-file-input" multiple style="display:none">
