@@ -2,6 +2,8 @@ package commands
 
 func init() {
 	CommandHelp["update category"] = "Usage: hem update category --name NAME [--display=true|false] [--override-filter=true|false]\n\nSets shared Qew category defaults. Display defaults to true. Override filter defaults to false and reveals excluded sessions with unresolved attention requests. Omitted settings are preserved. Empty --name= targets Uncategorized, including No project."
+	CommandHelp["reorder project"] = "Usage: hem reorder project --order='[\"PROJECT_ID\",...]'\n\nSaves project display order within categories. Supply every current project ID exactly once. Category assignments are unchanged."
+	CommandHelp["reorder category"] = "Usage: hem reorder category --order='[\"CATEGORY\",...,\"\"]'\n\nSaves category display order. Supply every current category exactly once, including empty-name Uncategorized. Other category settings are preserved."
 	CommandHelp["create project"] += "\n  --category         Optional project category"
 	CommandHelp["update project"] += "\n  --category         Project category (empty clears it)"
 	CommandHelp["diagnose"] += "\n\nTargeted daemon instrumentation (no local checks or all-host fanout):\n  hem diagnose --name HOST [--session-id ID --scan]\n  --name / -n HOST  Registered Moneypenny name\n  --session-id ID   Exact daemon session ID (requires --scan)\n  --scan           Opt in to database row/byte aggregates (requires --session-id)\nReturns bounded JSON runtime/process, file, dispatcher and optional database metrics.\nScan errors appear in diagnostics.session_error; they are not zero row counts.\nRequires a diagnostics-capable Moneypenny. Also available via gadgets hem diagnose\nwith --gadget-hem=true (administrative access, including mutations)."

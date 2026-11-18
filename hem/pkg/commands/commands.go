@@ -648,6 +648,8 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.UpdateProject(args)
 	case "update category":
 		return e.UpdateCategory(args)
+	case "reorder project", "reorder category":
+		return e.ReorderProjects(noun, args)
 	case "delete project":
 		return e.DeleteProject(args)
 
@@ -3946,11 +3948,47 @@ func (e *Executor) ListProjects(args []string) *protocol.Response {
 	for name, setting := range settings {
 		defaults[name], overrides[name] = setting.Display, setting.OverrideFilter
 	}
+	categories, err := e.store.CategoryOrder()
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
 	return protocol.OKResponse(struct {
 		TableResult
 		CategoryDefaults        map[string]bool `json:"category_defaults"`
 		CategoryFilterOverrides map[string]bool `json:"category_filter_overrides"`
-	}{result, defaults, overrides})
+		CategoryOrder           []string        `json:"category_order"`
+	}{result, defaults, overrides, categories})
+}
+
+// ReorderProjects saves project IDs or category names in the supplied order.
+func (e *Executor) ReorderProjects(noun string, args []string) *protocol.Response {
+	var value string
+	remaining, err := parseFlagsFromArgs("reorder-"+noun, args, func(fs *flag.FlagSet) {
+		fs.StringVar(&value, "order", "", "complete JSON array of project IDs or category names")
+	})
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	var entries []*string
+	if len(remaining) != 0 || json.Unmarshal([]byte(value), &entries) != nil || entries == nil {
+		return protocol.ErrResponse("use reorder " + noun + " --order='[\"first\",\"second\",...]'")
+	}
+	order := make([]string, len(entries))
+	for i, entry := range entries {
+		if entry == nil {
+			return protocol.ErrResponse("order entries must be strings")
+		}
+		order[i] = *entry
+	}
+	if noun == "category" {
+		err = e.store.ReorderCategories(order)
+	} else {
+		err = e.store.ReorderProjects(order)
+	}
+	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	return protocol.OKResponse(TextResult{Message: "Order saved."})
 }
 
 // UpdateCategory updates shared session-list category settings.

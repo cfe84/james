@@ -2,6 +2,7 @@ package store
 
 import (
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -85,6 +86,11 @@ func TestProjectCategoryMigrationAndUpdates(t *testing.T) {
 	if _, err := s.db.Exec("ALTER TABLE projects DROP COLUMN category"); err != nil {
 		t.Fatal(err)
 	}
+	for _, table := range []string{"projects", "project_category_defaults"} {
+		if _, err := s.db.Exec("ALTER TABLE " + table + " DROP COLUMN sort_order"); err != nil {
+			t.Fatal(err)
+		}
+	}
 	for range 2 {
 		if err := s.migrateSchema(); err != nil {
 			t.Fatal(err)
@@ -103,6 +109,100 @@ func TestProjectCategoryMigrationAndUpdates(t *testing.T) {
 			t.Fatalf("category update: %+v, %v", projects, err)
 		}
 	}
+}
+
+func TestProjectOrderingPersists(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hem.db")
+	s, err := New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if s != nil {
+			s.Close()
+		}
+	}()
+	now := time.Now()
+	for _, p := range []Project{
+		{ID: "b", Name: "Beta", Category: "Work"},
+		{ID: "a", Name: "Alpha", Category: "Work"},
+		{ID: "p", Name: "Personal", Category: "Home"},
+		{ID: "u", Name: "Uncategorized"},
+	} {
+		p.Status, p.Paths, p.CreatedAt, p.UpdatedAt = "active", "[]", now, now
+		if err := s.CreateProject(&p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	check := func(want ...string) {
+		t.Helper()
+		projects, err := s.ListProjects("active")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, p := range projects {
+			got = append(got, p.ID)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("project order = %v, want %v", got, want)
+		}
+	}
+	check("u", "p", "a", "b")
+	display, override := false, true
+	if err := s.SetCategoryDefault("Work", &display, &override); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ReorderCategories([]string{"Work", "", "Home"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ReorderProjects([]string{"b", "a", "u", "p"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range [][]string{{"a"}, {"a", "a", "p", "u"}, {"a", "b", "p", "missing"}} {
+		if err := s.ReorderProjects(invalid); err == nil {
+			t.Fatalf("invalid ordering accepted: %v", invalid)
+		}
+		check("b", "a", "u", "p")
+	}
+	for _, invalid := range [][]string{{"Work", "Home"}, {"Work", "Work", ""}, {"Work", "", "Missing"}} {
+		if err := s.ReorderCategories(invalid); err == nil {
+			t.Fatalf("invalid category ordering accepted: %v", invalid)
+		}
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = New(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	check("b", "a", "u", "p")
+	order, err := s.CategoryOrder()
+	if err != nil || !reflect.DeepEqual(order, []string{"Work", "", "Home"}) {
+		t.Fatalf("category order = %v, %v", order, err)
+	}
+	settings, err := s.CategoryDefaults()
+	if err != nil || settings["Work"].Display || !settings["Work"].OverrideFilter {
+		t.Fatalf("reorder changed category defaults: %v, %v", settings, err)
+	}
+	if err := s.CreateProject(&Project{ID: "new", Name: "A new project", Category: "Work", Status: "active", Paths: "[]", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	check("b", "a", "new", "u", "p")
+	if err := s.ReorderProjects([]string{"b", "a", "u", "p"}); err == nil {
+		t.Fatal("stale project membership accepted")
+	}
+	name, category := "A renamed project", "Work"
+	if err := s.UpdateProject("b", &name, nil, nil, nil, nil, nil, &category); err != nil {
+		t.Fatal(err)
+	}
+	check("b", "a", "new", "u", "p")
+	category = "Home"
+	if err := s.UpdateProject("b", nil, nil, nil, nil, nil, nil, &category); err != nil {
+		t.Fatal(err)
+	}
+	check("a", "new", "u", "p", "b")
 }
 
 func TestAddAndGetMoneypenny(t *testing.T) {

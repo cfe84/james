@@ -1780,8 +1780,18 @@ Completed projects remain initially excluded regardless of category Display.
 `hem update category --name NAME [--display=true|false] [--override-filter=true|false]`
 edits these settings independently; omitted settings are preserved.
 Use `--name=` for Uncategorized.
-Qew and TUI project lists group projects alphabetically by category, with
-Uncategorized for projects without one. Qew's existing create/edit forms accept a
+Qew and TUI project lists group projects by category, with Uncategorized for
+projects without one. In Qew's Projects window, drag a project's handle to move it
+within its category, or drag a category handle to move the entire group. Focus a
+handle and use Up/Down for keyboard reordering; touch dragging is supported.
+Order is saved in Hem and shared across clients and restarts. Categories and
+projects without a saved rank follow ranked entries alphabetically. Moving a
+project to another category places it among that category's unranked entries.
+`hem reorder project --order='["ID",...]'` and
+`hem reorder category --order='["category",...,""]'` accept complete current lists;
+invalid, duplicate or stale membership is rejected without partial updates.
+Project ranking never changes category assignments or session ordering.
+Qew's existing create/edit forms accept a
 category with suggestions from existing projects. The TUI create/edit forms also
 expose it. Renaming a category is done by changing its projects.
 

@@ -815,7 +815,19 @@ hem/
    defaults still use the saved status; no lifecycle mutation or schema change
    is involved.
    The Qew and TUI project lists group projects by category with non-selectable
-   headings; TUI viewport accounting includes these headings.
+   headings; TUI viewport accounting includes these headings and preserves
+   server ordering. Nullable `sort_order` columns on `projects` and
+   `project_category_defaults` persist ranks through idempotent migrations.
+   Listing sorts by category rank/name, then project rank/name, with unranked
+   entries last; changing a project's category clears its rank.
+   `list project` adds `category_order` without changing table columns.
+   `reorder project/category --order JSON` validates complete, unique current
+   membership inside the same transaction that writes ranks. Category reorder
+   upserts only rank, preserving Display and Override filter.
+   Qew extends existing project rows/category headings with pointer-captured
+   drag handles and Up/Down keyboard support. Projects move only within their
+   category; category moves keep groups intact. Saving reloads authoritative
+   state; errors leave the displayed order unchanged and are surfaced.
    Qew derives category suggestions/groups from its project cache; there is no
    separate category entity or Moneypenny responsibility. The project loader
    initially excludes done projects and detects transitions to done without

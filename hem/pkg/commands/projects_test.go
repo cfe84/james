@@ -102,6 +102,53 @@ func TestProjectAgentCounts(t *testing.T) {
 	}
 }
 
+func TestProjectOrderCommands(t *testing.T) {
+	st, err := store.New(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	e := &Executor{store: st}
+	for _, name := range []string{"Alpha", "Beta"} {
+		if resp := e.CreateProject([]string{"--name", name, "--category=Work"}); resp.Status != protocol.StatusOK {
+			t.Fatalf("create: %+v", resp)
+		}
+	}
+	projects, err := st.ListProjects("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, noun := range []string{"project", "category"} {
+		for _, args := range [][]string{nil, {"--order=null"}, {"--order={}"}, {"--order=[1]"}, {"--order=[null,\"Work\"]"}, {"--order=[]", "extra"}, {"--order=[\"missing\"]"}} {
+			if resp := e.Dispatch("reorder", noun, args); resp.Status != protocol.StatusError {
+				t.Fatalf("invalid reorder %s %v: %+v", noun, args, resp)
+			}
+		}
+		order := []string{projects[1].ID, projects[0].ID}
+		if noun == "category" {
+			order = []string{"Work", ""}
+		}
+		value, err := json.Marshal(order)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp := e.Dispatch("reorder", noun, []string{"--order=" + string(value)}); resp.Status != protocol.StatusOK {
+			t.Fatalf("reorder %s: %+v", noun, resp)
+		}
+	}
+	resp := e.ListProjects(nil)
+	var listed struct {
+		TableResult
+		CategoryOrder []string `json:"category_order"`
+	}
+	if err := json.Unmarshal(resp.Data, &listed); err != nil || resp.Status != protocol.StatusOK {
+		t.Fatalf("list: %+v, %v", resp, err)
+	}
+	if len(listed.Rows) != 2 || listed.Rows[0][1] != "Beta" || len(listed.CategoryOrder) != 2 || listed.CategoryOrder[0] != "Work" {
+		t.Fatalf("order missing from project response: %+v", listed)
+	}
+}
+
 func TestProjectCategoryCommands(t *testing.T) {
 	st, err := store.New(":memory:")
 	if err != nil {

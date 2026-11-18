@@ -1033,6 +1033,8 @@ Project management:
   update project NAME_OR_ID [--name, --category, --status, -m, --path, --agent, --system-prompt]
   delete project NAME_OR_ID
   update category --name NAME [--display=true|false] [--override-filter=true|false]
+  reorder project --order='["PROJECT_ID",...]'
+  reorder category --order='["CATEGORY",...,""]'
 
 Session management:
   create session [-m MONEYPENNY] [--project NAME] PROMPT [--name, --system-prompt, --env NAME=VALUE ..., --yolo, --path, --compaction agent|custom, --async]

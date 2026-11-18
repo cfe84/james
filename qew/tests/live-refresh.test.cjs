@@ -654,12 +654,13 @@ test('project list displays server counts and stale state without changing saved
   ];
   const defaults = { Background: false }, overrides = { Background: true }, updates = [], alerts = [];
   let fail = false;
+  let categoryOrder;
   context.apiCall = async (verb, noun, args) => {
     if (verb === 'update') {
       updates.push(args);
       return fail ? { status: 'error', message: 'Save failed' } : { status: 'ok' };
     }
-    return { status: 'ok', data: { rows, category_defaults: defaults, category_filter_overrides: overrides } };
+    return { status: 'ok', data: { rows, category_defaults: defaults, category_filter_overrides: overrides, category_order: categoryOrder } };
   };
   context.loadProjects = async () => {};
   context.alert = message => alerts.push(message);
@@ -676,7 +677,7 @@ test('project list displays server counts and stale state without changing saved
   assert.equal(context.excludedProjects.has('Empty'), true);
   assert.equal(context.excludedProjects.has('Done'), true);
   assert.ok(container.innerHTML.indexOf('data-project-name="Empty"') < container.innerHTML.indexOf('data-project-name="Work"'));
-  assert.ok(container.innerHTML.indexOf('data-project-name="Older server"') < container.innerHTML.indexOf('class="project-category-heading">Background'));
+  assert.ok(container.innerHTML.indexOf('data-project-name="Older server"') < container.innerHTML.indexOf('aria-label="Reorder category Background"'));
   assert.match(container.innerHTML, /aria-label="Override filter Background"[^>]+checked/);
   for (const input of inputs) {
     input.checked = true;
@@ -692,6 +693,96 @@ test('project list displays server counts and stale state without changing saved
   }
   assert.equal(alerts.length, 2);
   assert.match(alerts[0], /Save failed/);
+  categoryOrder = ['Background', ''];
+  rows.reverse();
+  await context.loadProjectsList();
+  assert.ok(container.innerHTML.indexOf('aria-label="Reorder category Background"') < container.innerHTML.indexOf('data-project-name="Older server"'));
+  assert.ok(container.innerHTML.indexOf('data-project-name="Work"') < container.innerHTML.indexOf('data-project-name="Empty"'));
+});
+
+test('project and category handles save drag and keyboard order without changing groups', async () => {
+  const categories = ['Work', '', 'Home'];
+  const rows = [['a', 'Alpha', '', '', '', '', 'Work'], ['b', 'Beta', '', '', '', '', 'Work'], ['c', 'Personal', '', '', '', '', 'Home']];
+  const makeNode = dataset => {
+    const classes = new Set();
+    return {
+      dataset,
+      classList: { add: name => classes.add(name), remove: (...names) => names.forEach(name => classes.delete(name)) },
+      getBoundingClientRect: () => ({ top: 0, height: 100 }),
+    };
+  };
+  const groups = categories.map((_, i) => makeNode({ categoryIndex: String(i) }));
+  const projectRows = rows.map(row => makeNode({ projectId: row[0] }));
+  groups.forEach((group, i) => {
+    group.querySelectorAll = () => projectRows.filter((_, j) => rows[j][6] === categories[i]);
+    group.querySelector = () => group;
+  });
+  projectRows.forEach((row, i) => { row.parentElement = groups[categories.indexOf(rows[i][6])]; });
+  const handles = [...projectRows, ...groups].map((source, i) => ({
+    dataset: { reorderKind: i < rows.length ? 'project' : 'category', reorderId: i < rows.length ? rows[i][0] : String(i - rows.length) },
+    closest: () => source,
+    addEventListener(event, handler) { this[event] = handler; },
+    setPointerCapture() {}, focus() {},
+  }));
+  const container = {
+    parentElement: { scrollTop: 10, getBoundingClientRect: () => ({ top: 0, bottom: 100 }) },
+    querySelectorAll: selector => selector === '.project-reorder-handle' ? handles : groups,
+  };
+  const calls = [], alerts = [];
+  let hit, fail = false, reloads = 0, frame;
+  const context = vm.createContext({
+    document: { elementFromPoint: () => ({ closest: () => hit }) },
+    requestAnimationFrame: callback => { frame = callback; return 1; },
+    cancelAnimationFrame() { frame = null; },
+    apiCall: async (verb, noun, args) => {
+      calls.push({ verb, noun, order: JSON.parse(args[0].slice('--order='.length)) });
+      return fail ? { status: 'error', message: 'Save failed' } : { status: 'ok' };
+    },
+    loadProjectsList: async () => { reloads++; },
+    alert: message => alerts.push(message),
+  });
+  vm.runInContext(app.slice(app.indexOf('  function setupProjectReordering('), app.indexOf('  async function deleteProject(')), context);
+  context.setupProjectReordering(container, rows, categories);
+  const event = fields => ({ preventDefault() {}, stopPropagation() {}, pointerId: 1, button: 0, clientX: 10, clientY: 10, ...fields });
+  await handles[0].keydown(event({ key: 'ArrowDown' }));
+  assert.deepEqual(calls.at(-1), { verb: 'reorder', noun: 'project', order: ['b', 'a', 'c'] });
+  await handles[3].keydown(event({ key: 'ArrowDown' }));
+  assert.deepEqual(calls.at(-1), { verb: 'reorder', noun: 'category', order: ['', 'Work', 'Home'] });
+  const drag = async (handle, target, type = 'pointerup', y = 90) => {
+    handle.pointerdown(event());
+    hit = target;
+    handle.pointermove(event({ clientY: y }));
+    await handle[type](event());
+  };
+  await drag(handles[1], projectRows[0], 'pointerup', 20);
+  assert.deepEqual(calls.at(-1), { verb: 'reorder', noun: 'project', order: ['b', 'a', 'c'] });
+  await drag(handles[3], groups[2]);
+  assert.deepEqual(calls.at(-1), { verb: 'reorder', noun: 'category', order: ['', 'Home', 'Work'] });
+  const count = calls.length;
+  await drag(handles[0], projectRows[2]);
+  await drag(handles[0], projectRows[1], 'pointercancel');
+  await handles[0].keydown(event({ key: 'ArrowUp' }));
+  assert.equal(calls.length, count, 'cross-category drops, cancelled drags and boundary keys do not save');
+  handles[0].pointerdown(event());
+  hit = projectRows[1];
+  handles[0].pointermove(event({ clientY: 90 }));
+  hit = projectRows[0];
+  handles[0].pointermove(event());
+  await handles[0].pointerup(event());
+  assert.equal(calls.length, count, 'returning to the source clears the previous drop target');
+  handles[0].pointerdown(event());
+  hit = projectRows[1];
+  handles[0].pointermove(event({ clientY: 90 }));
+  frame();
+  assert.equal(container.parentElement.scrollTop, 22, 'dragging near the lower edge scrolls the list');
+  handles[0].pointercancel(event());
+  assert.equal(frame, null, 'cancelling stops the animation loop');
+  fail = true;
+  await handles[0].keydown(event({ key: 'ArrowDown' }));
+  assert.equal(reloads, count, 'failed saves do not change the displayed order');
+  assert.match(alerts[0], /Save failed/);
+  assert.ok(handles.every(handle => !handle.disabled));
+  assert.deepEqual(rows.map(row => row[0]), ['a', 'b', 'c'], 'authoritative source rows remain unchanged');
 });
 
 test('dashboard shows the selected model and refreshes the row when it changes', () => {

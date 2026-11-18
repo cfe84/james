@@ -6033,7 +6033,8 @@
       }
       const rows = (resp.data && resp.data.rows) || [];
       cacheProjects(rows, resp.data.category_defaults, resp.data.category_filter_overrides);
-      const categories = [...new Set(['', ...projectsCache.map(p => p.category)])].sort((a, b) => a.localeCompare(b));
+      const categories = resp.data.category_order ||
+        [...new Set(['', ...projectsCache.map(p => p.category)])].sort((a, b) => a.localeCompare(b));
       let html = `<details class="project-category-defaults"><summary>Category defaults</summary>
         <p>Display sets initial visibility. Override filter reveals hidden sessions with unresolved attention requests.</p>
         ${categories.map((category, i) => `<div class="category-display-row">
@@ -6043,14 +6044,18 @@
             <label><input type="checkbox" aria-label="Override filter ${escapeAttr(category || 'Uncategorized')}" data-category-setting="override-filter" data-category-index="${i}" ${categoryFilterOverrides[category] === true ? 'checked' : ''}> Override filter</label>
           </div>
         </div>`).join('')}</details>`;
-      for (const categoryName of categories) {
+      for (const [categoryIndex, categoryName] of categories.entries()) {
         const projects = rows.filter(r => (r[6] || '') === categoryName);
-        if (!projects.length) continue;
-        html += `<h3 class="project-category-heading">${escapeHtml(categoryName || 'Uncategorized')}</h3>`;
+        if (!rows.length) continue;
+        html += `<section class="project-category" data-category-index="${categoryIndex}">
+          <h3 class="project-category-heading"><button class="project-reorder-handle" data-reorder-kind="category" data-reorder-id="${categoryIndex}"
+            aria-label="Reorder category ${escapeAttr(categoryName || 'Uncategorized')}" title="Drag to reorder, or use Up and Down arrow keys">&#9776;</button>${escapeHtml(categoryName || 'Uncategorized')}</h3>`;
         for (const r of projects) {
           const name = r[1], status = r[9] || r[2], mp = r[3], agent = r[4];
           html += `
-          <div class="mgmt-row project-row" data-project-name="${escapeAttr(name)}" style="cursor:pointer">
+          <div class="mgmt-row project-row" data-project-name="${escapeAttr(name)}" data-project-id="${escapeAttr(r[0])}" style="cursor:pointer">
+            <button class="project-reorder-handle" data-reorder-kind="project" data-reorder-id="${escapeAttr(r[0])}"
+              aria-label="Reorder project ${escapeAttr(name)}" title="Drag within category, or use Up and Down arrow keys">&#9776;</button>
             <span class="mgmt-name">${escapeHtml(name)}</span>
             <span class="mgmt-badge ${status}">${escapeHtml(status)}</span>
             ${r.length > 8 ? `<span class="mgmt-detail project-counts">${escapeHtml(r[7])} active · ${escapeHtml(r[8])} completed</span>` : ''}
@@ -6062,6 +6067,7 @@
             </span>
           </div>`;
         }
+        html += '</section>';
       }
       if (!rows.length) html += '<div class="empty-state">No projects</div>';
       container.innerHTML = html;
@@ -6084,9 +6090,9 @@
         });
       });
       // Click row to filter dashboard by project.
-      container.querySelectorAll('.mgmt-row').forEach(row => {
+      container.querySelectorAll('.project-row').forEach(row => {
         row.addEventListener('click', (e) => {
-          if (e.target.closest('.mgmt-actions')) return;
+          if (e.target.closest('.mgmt-actions, .project-reorder-handle')) return;
           const projName = row.dataset.projectName;
           selectOnlyProject(projName);
           hideProjectsView();
@@ -6101,10 +6107,113 @@
           else if (action === 'delete') deleteProject(projName);
         });
       });
+      setupProjectReordering(container, rows, categories);
       applyMgmtCursor(container, false);
     } catch (e) {
       container.innerHTML = `<div class="empty-state">Error: ${escapeHtml(e.message)}</div>`;
     }
+  }
+
+  function setupProjectReordering(container, rows, categories) {
+    let saving = false;
+    const scroller = container.parentElement;
+    const handles = container.querySelectorAll('.project-reorder-handle');
+    handles.forEach(handle => {
+      const kind = handle.dataset.reorderKind;
+      const id = handle.dataset.reorderId;
+      const source = handle.closest(kind === 'project' ? '.project-row' : '.project-category');
+      const peers = kind === 'project'
+        ? Array.from(source.parentElement.querySelectorAll('.project-row'))
+        : Array.from(container.querySelectorAll('.project-category'));
+      const itemID = element => kind === 'project' ? element.dataset.projectId : element.dataset.categoryIndex;
+      let drag = null;
+      const clearTarget = () => {
+        drag?.target?.classList.remove('reorder-before', 'reorder-after');
+      };
+      const updateTarget = () => {
+        clearTarget();
+        const target = document.elementFromPoint(drag.x, drag.y)?.closest(
+          kind === 'project' ? '.project-row' : '.project-category');
+        drag.target = peers.includes(target) && target !== source ? target : null;
+        if (drag.target) {
+          const rect = (kind === 'category' ? target.querySelector('.project-category-heading') : target).getBoundingClientRect();
+          drag.after = drag.y > rect.top + rect.height / 2;
+          target.classList.add(drag.after ? 'reorder-after' : 'reorder-before');
+        }
+      };
+      const scroll = () => {
+        const rect = scroller.getBoundingClientRect();
+        const delta = drag.y < rect.top + 44 ? -12 : drag.y > rect.bottom - 44 ? 12 : 0;
+        if (delta) {
+          scroller.scrollTop += delta;
+          updateTarget();
+        }
+        drag.frame = requestAnimationFrame(scroll);
+      };
+      const cancel = () => {
+        clearTarget();
+        if (drag) cancelAnimationFrame(drag.frame);
+        drag = null;
+      };
+      const save = async (target, after) => {
+        if (saving || target === source) return;
+        const order = kind === 'project' ? rows.map(row => row[0]) : categories.map((_, i) => String(i));
+        order.splice(order.indexOf(id), 1);
+        order.splice(order.indexOf(itemID(target)) + Number(after), 0, id);
+        saving = true;
+        handles.forEach(button => { button.disabled = true; });
+        const scrollTop = scroller.scrollTop;
+        try {
+          const response = await apiCall('reorder', kind, [
+            '--order=' + JSON.stringify(kind === 'project' ? order : order.map(index => categories[Number(index)])),
+          ]);
+          if (response.status === 'error') throw new Error(response.message);
+          await loadProjectsList();
+          scroller.scrollTop = scrollTop;
+          Array.from(container.querySelectorAll('.project-reorder-handle')).find(button =>
+            button.dataset.reorderKind === kind && button.dataset.reorderId ===
+              (kind === 'project' ? id : String(order.indexOf(id))))?.focus({ preventScroll: true });
+        } catch (error) {
+          alert('Error saving order: ' + error.message);
+        } finally {
+          saving = false;
+          handles.forEach(button => { button.disabled = false; });
+        }
+      };
+      handle.addEventListener('click', event => event.stopPropagation());
+      handle.addEventListener('keydown', event => {
+        if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+        event.preventDefault();
+        event.stopPropagation();
+        const after = event.key === 'ArrowDown';
+        const target = peers[peers.indexOf(source) + (after ? 1 : -1)];
+        if (target) return save(target, after);
+      });
+      handle.addEventListener('pointerdown', event => {
+        if (event.button !== 0 || saving || drag) return;
+        event.stopPropagation();
+        drag = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, active: false, target: null, after: false };
+        handle.setPointerCapture(event.pointerId);
+      });
+      handle.addEventListener('pointermove', event => {
+        if (!drag || event.pointerId !== drag.pointerId) return;
+        if (!drag.active && Math.hypot(event.clientX - drag.x, event.clientY - drag.y) < 5) return;
+        if (!drag.active) drag.frame = requestAnimationFrame(scroll);
+        drag.active = true;
+        drag.x = event.clientX;
+        drag.y = event.clientY;
+        event.preventDefault();
+        updateTarget();
+      });
+      handle.addEventListener('pointerup', event => {
+        if (!drag || event.pointerId !== drag.pointerId) return;
+        const { target, after } = drag;
+        cancel();
+        if (target) return save(target, after);
+      });
+      handle.addEventListener('pointercancel', cancel);
+      handle.addEventListener('lostpointercapture', cancel);
+    });
   }
 
   async function deleteProject(name) {

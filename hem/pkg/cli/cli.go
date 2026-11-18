@@ -20,6 +20,7 @@ var nounAliases = map[string]string{
 	"sessions":          "session",
 	"defaults":          "default",
 	"projects":          "project",
+	"categories":        "category",
 	"traits":            "trait",
 	"ponsonbies":        "ponsonby",
 	"channels":          "channel",

@@ -845,13 +845,15 @@ func (s *Store) ListProjects(statusFilter string) ([]*Project, error) {
 		FROM projects p LEFT JOIN (
 			SELECT project_id, SUM(hem_status != 'completed') AS active, SUM(hem_status = 'completed') AS completed
 			FROM sessions GROUP BY project_id
-		) s ON s.project_id = p.id`
+		) s ON s.project_id = p.id
+		LEFT JOIN project_category_defaults c ON c.name = p.category`
 	var args []interface{}
 	if statusFilter != "" {
 		query += " WHERE p.status = ?"
 		args = append(args, statusFilter)
 	}
-	rows, err := s.db.Query(query+" ORDER BY p.name", args...)
+	rows, err := s.db.Query(query+` ORDER BY c.sort_order IS NULL, c.sort_order,
+		p.category, p.sort_order IS NULL, p.sort_order, p.name`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list projects: %w", err)
 	}
@@ -874,6 +876,8 @@ func (s *Store) UpdateProject(id string, name, status, moneypenny, paths, defaul
 	var args []interface{}
 
 	if category != nil {
+		sets = append(sets, "sort_order = CASE WHEN category = ? THEN sort_order ELSE NULL END")
+		args = append(args, *category)
 		sets = append(sets, "category = ?")
 		args = append(args, *category)
 	}
@@ -1269,6 +1273,8 @@ func (s *Store) migrateSchema() error {
 	migrations := []string{
 		`ALTER TABLE sessions ADD COLUMN result_revision INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE sessions ADD COLUMN result_generation INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE projects ADD COLUMN sort_order INTEGER`,
+		`ALTER TABLE project_category_defaults ADD COLUMN sort_order INTEGER`,
 		`ALTER TABLE project_category_defaults ADD COLUMN override_filter INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE projects ADD COLUMN category TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE sessions ADD COLUMN project_id TEXT NOT NULL DEFAULT ''`,

@@ -2,7 +2,6 @@ package ui
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -58,13 +57,6 @@ func (m projectsModel) Update(msg tea.Msg) (projectsModel, tea.Cmd) {
 	case projectsLoadedMsg:
 		m.loading = false
 		m.projects = msg.projects
-		sort.SliceStable(m.projects, func(i, j int) bool {
-			a, b := m.projects[i], m.projects[j]
-			if a.Category != b.Category {
-				return a.Category < b.Category
-			}
-			return a.Name < b.Name
-		})
 		m.err = msg.err
 		if m.cursor >= len(m.projects) {
 			m.cursor = max(0, len(m.projects)-1)
