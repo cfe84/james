@@ -71,6 +71,13 @@ header h1 span { color: var(--primary); }
 .session-row.selected { background: var(--surface2); outline: 1px solid var(--primary); outline-offset: -1px; }
 .session-name { flex: 1; font-weight: 400; }
 .session-nick { color: #60a5fa; font-weight: 700; margin-right: 4px; }
+.agent-face {
+  --cp-bg: var(--surface2); --cp-text: var(--text); --cp-text-muted: var(--muted);
+  --cp-accent: var(--primary); --cp-success: var(--success);
+  --cp-warning: var(--warning); --cp-link: var(--info);
+  display: inline-block; width: 32px; height: 32px; flex-shrink: 0;
+  vertical-align: middle; margin-right: 8px; image-rendering: pixelated;
+}
 .session-project { color: var(--muted); margin-right: 12px; font-size: 0.9em; }
 .session-mp { color: var(--muted); font-size: 0.85em; }
 .session-agent { font-size: 0.75em; padding: 2px 8px; border-radius: 10px; margin-left: 8px; font-weight: 600; background: var(--surface2); color: var(--muted); overflow-wrap: anywhere; }
@@ -670,6 +677,7 @@ header h1 span { color: var(--primary); }
 </div>
 <script src="compaction-threshold.js"></script>
 <script src="gadget-capabilities.js"></script>
+<script src="agent-face.js"></script>
 <script src="app.js"></script>
 </body>
 </html>
