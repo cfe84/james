@@ -93,7 +93,8 @@ Use disproven/superseded status for corrections; claim-delete permanently erases
 Creating top-level agents requires separate opt-in permission (default: false).
 Creation uses your moneypenny unless --moneypenny names another registered host, inherits your current gadget permissions, and
 automatically attributes the initial prompt to you. No --from override is accepted.
-Discovery and managing your own subagents require separate permissions. Replying to your parent is always available.
+Discovery and managing your own subagents require separate permissions.
+Reply with gadgets subagents message parent; Hem resolves your current parent without discovery.
 Creation --traits accepts comma-separated names or IDs; --traits="" selects none.
 Omitting it applies default traits for top-level agents and none for subagents.
 Selecting traits during creation does not require permission to edit shared traits.

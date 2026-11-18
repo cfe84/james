@@ -129,6 +129,12 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 		if err := decodeGadgetData(route.Data, &message); err != nil {
 			return protocol.ErrResponse(err.Error())
 		}
+		if route.Method == "subagents.message" && message.ID == "parent" {
+			if source.ParentSessionID == "" {
+				return protocol.ErrResponse("this session has no parent; use the invoking session ID for an invocation callback")
+			}
+			message.ID = source.ParentSessionID
+		}
 		target, err := e.store.GetSession(message.ID)
 		if err != nil || target == nil {
 			return protocol.ErrResponse("gadget target session is not tracked by this Hem")

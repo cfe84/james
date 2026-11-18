@@ -221,6 +221,12 @@ registered host, potentially including other sessions' content; it is inherited
 by gadget-created agents and copies like other capabilities. Scoped gadgets cannot
 self-grant it; the administrative Hem proxy is the explicit broader exception.
 
+For `subagents.message`, the literal target `parent` is resolved from the
+authenticated source's current Hem tracking record before existing relationship
+checks and callback delivery. No parent identity is copied into MP state or
+required in agent prompts, and no discovery grant is needed. Missing/deleted
+parents fail explicitly; explicit targets retain existing authorization.
+
 `agents.create` has a separate opt-in `CreateAgents` capability; neither the
 global discovery/message grant nor Subagents authorizes it. It shares the
 strict `envelope.DecodeCreateAgentGadget` payload decoder with `subagents.create`

@@ -767,6 +767,33 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 			t.Fatalf("agent message changed existing readiness: %+v, %v", session, err)
 		}
 	}
+	liveCapabilities.Store(envelope.GadgetCapabilities{})
+	for _, parentID := range []string{"parent", "target", ""} {
+		if err := e.store.SetSessionParent("source", parentID); err != nil {
+			t.Fatal(err)
+		}
+		response = gadgetRouteRequest(t, e, "source", "subagents.message", map[string]any{"id": "parent", "body": "review result"})
+		if parentID == "" {
+			if response.Status != "error" || !strings.Contains(response.Message, "no parent") {
+				t.Fatalf("parentless callback did not fail explicitly: %+v", response)
+			}
+			continue
+		}
+		if response.Status != "ok" {
+			t.Fatalf("parent alias failed without discovery permission: %s", response.Message)
+		}
+		for _, wantMethod := range []string{"continue_session", "queue_prompt"} {
+			command = next()
+			data = command.Data.(map[string]any)
+			if command.Method != wantMethod || data["session_id"] != parentID || data["source"] != "callback" || data["source_session_id"] != "source" || data["prompt"] != "review result" {
+				t.Fatalf("parent alias lost current routing or provenance: %+v", command)
+			}
+		}
+	}
+	if err := e.store.SetSessionParent("source", "parent"); err != nil {
+		t.Fatal(err)
+	}
+	liveCapabilities.Store(capabilities)
 	response = gadgetRouteRequest(t, e, "target", "subagents.message", map[string]any{"id": "source", "body": "task result"})
 	if response.Status != "ok" {
 		t.Fatalf("invocation callback rejected: %s", response.Message)

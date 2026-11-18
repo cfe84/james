@@ -365,7 +365,7 @@ func TestGadgetPromptShowsOnlyGrantedCommands(t *testing.T) {
 		"generic task tools, runtime/background workers, or other delegation mechanisms do not satisfy the request",
 		"verify the child appears in `gadgets subagents list`",
 		"Use `gadgets subagents message` for direct children and parent replies",
-		"you may use the same command to send exactly one callback to that invoking session",
+		"you may use gadgets subagents message ID to send exactly one callback to that invoking session",
 		"Send completion reports, review results, and blockers through this callback path",
 		"Never use operator attention for completion reports, review results, or messages to another agent",
 	} {
@@ -384,7 +384,7 @@ func TestGadgetPromptShowsOnlyGrantedCommands(t *testing.T) {
 			t.Fatalf("revoked/stale instructions remain: %s", text)
 		}
 	}
-	for _, text := range []string{"Base instructions.", "gadgets agents list", "gadgets subagents message PARENT_ID", "gadgets notify"} {
+	for _, text := range []string{"Base instructions.", "gadgets agents list", "gadgets subagents message parent", "no parent ID or discovery permission is needed", "gadgets notify"} {
 		if !strings.Contains(params.SystemPrompt, text) {
 			t.Fatalf("missing allowed instruction: %s", text)
 		}

@@ -260,7 +260,11 @@ required, not inferred from old notes. `claim-delete` is explicit permanent
 erasure; normal corrections retain disproven/superseded claims with links.
 
 `memory set` and both `message` commands read stdin verbatim unless `--body`
-is present (including an explicitly empty value). `agents create` and
+is present (including an explicitly empty value). Use `gadgets subagents message parent`
+to reply without knowing the parent ID or having discovery permission. Hem resolves
+the current parent from the authenticated session; sessions without a parent get
+an explicit error. Explicit session IDs still work for children and permitted
+invocation callbacks. `agents create` and
 `subagents create` always read their prompt from stdin. `notify` reads stdin when text is omitted.
 `memory batch` reads a JSON array of objects with string `path` and `body`
 fields; the entire array is submitted in one request. It never performs
