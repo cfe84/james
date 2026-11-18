@@ -142,6 +142,7 @@ type Handler struct {
 	runsClosing          bool
 	runsWG               sync.WaitGroup
 	gadgetsMu            sync.Mutex
+	artifactsMu          sync.Mutex
 	gadgetsServer        *http.Server
 	gadgetsURL           string
 	gadgetsTokens        map[[32]byte]string
@@ -472,6 +473,8 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.transferFile(ctx, cmd)
 	case "save_attachment":
 		return h.saveAttachment(ctx, cmd)
+	case "read_artifact":
+		return h.readArtifact(ctx, cmd)
 	case "schedule":
 		return h.schedule(ctx, cmd)
 	case "list_schedules":
@@ -1749,6 +1752,18 @@ func (h *Handler) deleteSession(_ context.Context, cmd *envelope.Command) *envel
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to stop agent: %v", err))
 	}
 
+	h.artifactsMu.Lock()
+	defer h.artifactsMu.Unlock()
+	if h.dataDir != "" {
+		artifactSessionDir, err := h.sessionDirPath(data.SessionID)
+		if err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
+		}
+		if err := os.RemoveAll(filepath.Join(artifactSessionDir, "artifacts")); err != nil {
+			h.errorLog("failed to delete artifacts for session %s: %v", data.SessionID, err)
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, "failed to delete session artifacts")
+		}
+	}
 	if err := h.store.DeleteSession(data.SessionID); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to delete session: %v", err))
 	}

@@ -6,7 +6,10 @@ require (
 	github.com/go-webauthn/webauthn v0.17.4
 	golang.org/x/crypto v0.52.0
 	golang.org/x/net v0.55.0
+	james/moneypenny v0.0.0
 )
+
+replace james/moneypenny => ../moneypenny
 
 require (
 	github.com/fxamacker/cbor/v2 v2.9.2 // indirect

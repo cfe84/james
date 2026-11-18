@@ -8,6 +8,26 @@ const thresholds = require('../pkg/web/static/compaction-threshold.js');
 const app = fs.readFileSync(process.env.QEW_APP_SOURCE ||
   path.join(__dirname, '../pkg/web/static/app.js'), 'utf8');
 
+test('artifact cards offer View only for supported bundles and escape metadata', () => {
+  const context = vm.createContext({
+    encodeURIComponent,
+    escapeHtml: text => String(text).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;'),
+  });
+  vm.runInContext(app.slice(app.indexOf('  function renderArtifactCard('),
+    app.indexOf('  function removePendingAttachment(')), context);
+  for (const view of ['html', 'pdf', 'zip', '', 'exe']) {
+    const result = context.renderArtifactCard(JSON.stringify({
+      id: '00000000-0000-0000-0000-000000000001', name: '<report>', title: '<script>', size: 1024, view,
+    }), 'session');
+    assert.ok(result.includes('>Download</a>'));
+    assert.equal(result.includes('>View</a>'), ['html', 'pdf', 'zip'].includes(view));
+    assert.ok(result.includes('&lt;script>'));
+    assert.ok(!result.includes('<script>'));
+  }
+  assert.ok(context.renderArtifactCard('invalid', 'session').includes('could not be read'));
+  assert.ok(context.renderArtifactCard('{"id":"../../api"}', 'session').includes('could not be read'));
+});
+
 test('quick switcher finds completed parents retained for active descendants', () => {
   const opened = [];
   const context = vm.createContext({

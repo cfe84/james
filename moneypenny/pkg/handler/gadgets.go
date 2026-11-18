@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"james/moneypenny/pkg/agent"
+	"james/moneypenny/pkg/artifact"
 	"james/moneypenny/pkg/envelope"
 	"james/moneypenny/pkg/memory"
 )
@@ -252,6 +253,7 @@ func (h *Handler) prepareGadgets(sessionID string, params *agent.RunParams) erro
 		params.SystemPrompt += "\n"
 	}
 	params.SystemPrompt += "Discovery (always available): gadgets moneypenny list lists registered host names and enabled/default status; gadgets traits list lists trait IDs, exact names and default status. These omit host addresses and trait prompt contents. Use exact host names with --moneypenny and trait names or IDs with --traits when creating agents.\n"
+	params.SystemPrompt += fmt.Sprintf("Conversation artifacts: gadgets artifacts publish PATH [--title TITLE] publishes an immutable file snapshot to your own conversation. Relative paths resolve from your session working directory. Files stay on this MP and transfer only when the user clicks View or Download. View supports HTML, PDF, and safe ZIPs with root index.html; other files are download-only. Maximum %d MiB per file, %d files and %d MiB per session. Do not publish secrets or content the user should not receive.\n", artifact.MaxFileSize/(1024*1024), artifact.MaxFiles, artifact.MaxSessionSize/(1024*1024))
 	if caps.Traits {
 		params.SystemPrompt += "Shared trait definitions: gadgets traits get ID; gadgets traits edit ID (complete replacement body on stdin; empty stdin clears it). IDs or exact names are accepted. You may edit only traits assigned to your own session; edits affect future use by all agents, not already-injected session prompts. No trait creation, deletion, assignment, renaming, or default changes are permitted.\n"
 	}
@@ -385,7 +387,7 @@ func (h *Handler) executeGadget(ctx context.Context, sessionID string, request g
 		allowed = caps.CreateAgents
 	case "sessions.edit":
 		allowed = caps.EditSessions || caps.EditOwnSession
-	case "traits.list", "moneypenny.list":
+	case "traits.list", "moneypenny.list", "artifacts.publish":
 		allowed = true
 	case "traits.get", "traits.edit":
 		allowed = caps.Traits
@@ -428,6 +430,9 @@ func (h *Handler) executeGadget(ctx context.Context, sessionID string, request g
 	}
 	if strings.HasPrefix(request.Method, "memory.") {
 		return h.memoryGadget(sessionID, request)
+	}
+	if request.Method == "artifacts.publish" {
+		return h.publishArtifact(ctx, sessionID, request.Data)
 	}
 	if strings.HasPrefix(request.Method, "traits.") {
 		if _, err := envelope.DecodeTraitGadget(request.Method, request.Data); err != nil {

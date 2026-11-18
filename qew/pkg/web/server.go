@@ -61,10 +61,14 @@ type Server struct {
 
 	// WebAuthn passkeys (additive auth alongside the password). nil when no
 	// password is configured (passkeys require the password bootstrap path).
-	passkeys     *PasskeyStore
-	waMu         sync.Mutex
-	waChallenges map[string]*waChallenge
-	watchHub     *watchHub
+	passkeys         *PasskeyStore
+	waMu             sync.Mutex
+	waChallenges     map[string]*waChallenge
+	watchHub         *watchHub
+	artifactMu       sync.Mutex
+	artifacts        map[string]*artifactPreview
+	artifactSlots    chan struct{}
+	artifactCacheDir string
 }
 
 type loginTracker struct {
@@ -97,6 +101,8 @@ func NewServer(hem HemClient, listenAddr, password string, development bool, vlo
 		secret:        derived[:],
 		loginAttempts: make(map[string]*loginTracker),
 		passkeys:      passkeys,
+		artifacts:     make(map[string]*artifactPreview),
+		artifactSlots: make(chan struct{}, 4),
 		waChallenges:  make(map[string]*waChallenge),
 	}
 	s.watchHub = newWatchHub(hem)
@@ -113,6 +119,10 @@ func (s *Server) Run() error {
 
 	// API endpoint: POST /api — proxy to Hem.
 	mux.HandleFunc("/api", s.requireAuth(s.csrfProtect(s.handleAPI)))
+	mux.HandleFunc("/artifacts/", s.requireAuth(s.handleArtifact))
+	// Preview assets use a short-lived, artifact-scoped capability URL because
+	// sandboxed documents have an opaque origin and cannot send login cookies.
+	mux.HandleFunc("/artifact-view/", s.handleArtifactPreview)
 
 	// Version endpoint (unauthenticated): returns the Qew version string.
 	mux.HandleFunc("/version", func(w http.ResponseWriter, r *http.Request) {
@@ -150,6 +160,7 @@ func (s *Server) Run() error {
 }
 
 func (s *Server) Close() {
+	s.closeArtifactPreviews()
 	if s.watchHub != nil {
 		s.watchHub.closeHub()
 	}

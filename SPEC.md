@@ -1224,6 +1224,59 @@ the full definition. Missing IDs, missing/null body fields, unknown fields,
 and unsupported operations fail without changes. The existing 1 MiB request
 and 4 MiB response limits apply; trait results have no paging.
 
+### Conversation artifacts
+
+Agents can publish a file to their own conversation with
+`gadgets artifacts publish PATH [--title TITLE]`. This is available to every
+authenticated session without granting filesystem or session access to other
+agents. Relative paths resolve from the session working directory. Publication
+copies an immutable snapshot into the owning MP's session storage and records
+an artifact turn; only metadata travels with conversation history. The source
+file can subsequently change or disappear without changing the published copy.
+
+Qew renders artifact cards using the existing conversation components:
+
+| File | View | Download |
+|------|------|----------|
+| HTML (`.html`, `.htm`) | Browser preview | Original file |
+| PDF | Native browser PDF viewer | Original file |
+| Safe ZIP with root `index.html` | Extracted static-site preview | Original ZIP |
+| Other files, invalid/unsafe ZIPs, ZIPs without root `index.html` | Not offered | Original file |
+
+View/Download fetch bytes on demand from the MP through Hem's existing
+transport; publishing does not transfer file contents. Hem relays bounded
+chunks without retaining them. Qew verifies the snapshot's SHA-256 checksum
+and temporarily stores the transfer on its own host. Download offers the
+unchanged file with its original filename to the user's browser/device, then
+removes the temporary transfer. It never writes to the Hem server's Downloads
+folder. The TUI shows a readable artifact summary and directs users to Qew
+for View/Download.
+
+ZIP viewing extracts into a private temporary directory. Traversal, absolute
+paths, symlinks, duplicate/case-colliding paths, and excessive expansion are
+rejected. HTML previews permit bundled JavaScript, modules, styles, images,
+fonts and media, but run with an opaque sandboxed origin; CSP blocks remote
+subresources, fetch/XHR, forms, frames and plugins. No backend, package
+installation, or dev server is started. PDF uses the browser's native renderer.
+This is browser isolation, not an operating-system sandbox or a guarantee that
+active documents cannot navigate their own tab.
+
+View creation and downloads require Qew authentication when configured. Static
+preview resources use unguessable, artifact-scoped capability URLs so sandboxed
+documents need no Qew login cookie; possession of that URL grants read-only
+access to that preview until expiry/eviction. Preview responses prohibit browser
+caching and referrer disclosure. Preview access rechecks the owning session
+through Hem, so MP/Hem availability is still required. Deleted/unavailable
+artifacts invalidate their preview on the next access.
+
+Limits: 25 MiB per artifact, 100 artifacts/100 MiB per session; ZIP previews
+allow at most 1,000 entries and 100 MiB expanded content. Qew admits at most four
+transfers/previews together, evicting the oldest preview when necessary.
+Previews expire after 30 minutes and are removed on Qew shutdown; abandoned
+expired cache directories from a previous process are removed on the next
+artifact transfer. Session deletion removes durable MP artifacts, reporting
+cleanup failures rather than silently deleting their session tracking.
+
 ### Transport and permission boundary
 
 Moneypenny starts a daemon-local HTTP endpoint on `127.0.0.1` with an ephemeral

@@ -19,6 +19,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"james/hem/pkg/protocol"
+	"james/moneypenny/pkg/artifact"
 	"james/moneypenny/pkg/envelope"
 )
 
@@ -1897,6 +1898,8 @@ func (m chatModel) View() string {
 
 		var prefix string
 		switch turn.Role {
+		case "artifact":
+			prefix = assistantMsgStyle.Render("Artifact")
 		case "user":
 			userLabel := turn.SourceName
 			if userLabel == "" {
@@ -1932,6 +1935,14 @@ func (m chatModel) View() string {
 			contentWidth = 80
 		}
 		content := turn.Content
+		if turn.Role == "artifact" {
+			var meta artifact.Metadata
+			if err := json.Unmarshal([]byte(content), &meta); err != nil {
+				content = "Artifact metadata could not be read."
+			} else {
+				content = fmt.Sprintf("%s (%s, %d bytes)\nOpen this conversation in Qew to view or download.", meta.Title, meta.Name, meta.Size)
+			}
+		}
 		if strings.TrimSpace(content) == "" {
 			content = "(empty)"
 		}

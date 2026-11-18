@@ -1766,6 +1766,10 @@
       const agentName = currentSessionNick || currentSessionName || 'agent';
       const content = turn.content || '(empty)';
 
+      if (turn.role === 'artifact') {
+        html += renderArtifactCard(content, currentSession);
+        continue;
+      }
       // Subagent callbacks stay visible independently of the thought toggle.
       if (turn.role === 'callback') {
         const callbackSource = escapeHtml(turn.source_name || 'subagent');
@@ -1945,6 +1949,22 @@
     renderAttachmentChips();
     if (rejected.length > 0) {
       alert('Some files were not attached (max 10MB each):\n' + rejected.join('\n'));
+    }
+  }
+
+  function renderArtifactCard(content, sessionID) {
+    try {
+      const artifact = JSON.parse(content);
+      if (!/^[a-f0-9-]{36}$/.test(artifact.id) || typeof artifact.name !== 'string' ||
+          typeof artifact.title !== 'string' || !Number.isSafeInteger(artifact.size) || artifact.size < 0) {
+        throw new Error('Invalid artifact metadata');
+      }
+      const base = `/artifacts/${encodeURIComponent(sessionID)}/${encodeURIComponent(artifact.id)}`;
+      const view = ['html', 'pdf', 'zip'].includes(artifact.view) ?
+        `<a class="btn" href="${base}/view" target="_blank" rel="noopener noreferrer">View</a> ` : '';
+      return `<div class="msg"><div class="msg-role">Artifact</div><div class="msg-content"><strong>${escapeHtml(artifact.title)}</strong><br>${escapeHtml(artifact.name)} · ${Math.ceil(artifact.size / 1024)} KiB<br>${view}<a class="btn" href="${base}/download" download>Download</a></div></div>`;
+    } catch (error) {
+      return '<div class="msg system-note">Artifact metadata could not be read.</div>';
     }
   }
 

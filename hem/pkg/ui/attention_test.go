@@ -1,13 +1,30 @@
 package ui
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"james/hem/pkg/protocol"
+	"james/moneypenny/pkg/artifact"
 	"james/moneypenny/pkg/envelope"
 )
+
+func TestChatArtifactReadableSummary(t *testing.T) {
+	m := newChatModel(nil, "session", "Review", "remote")
+	m.width, m.height = 100, 30
+	m.loading = false
+	raw, err := json.Marshal(artifact.Metadata{ID: "artifact", Name: "report.zip", Title: "Review report", Size: 1024, View: "zip"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.conversation = []conversationTurn{{Role: "artifact", Content: string(raw)}}
+	view := m.View()
+	if !strings.Contains(view, "Review report") || !strings.Contains(view, "report.zip") || !strings.Contains(view, "Qew") || strings.Contains(view, `"sha256"`) {
+		t.Fatalf("artifact not presented as readable metadata: %s", view)
+	}
+}
 
 func TestChatAttentionPersistsUntilExplicitRevisionResolution(t *testing.T) {
 	request := &envelope.SessionAttention{Kind: "needs_answer", Reason: "Which region?", Revision: 2}

@@ -553,6 +553,8 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 	}
 
 	switch verb + " " + noun {
+	case "read artifact":
+		return e.ReadArtifact(args)
 	case "create ponsonby", "list ponsonby", "show ponsonby", "update ponsonby", "retry ponsonby", "delete ponsonby":
 		return e.PonsonbyCommand(verb, args)
 	case "gadget route":

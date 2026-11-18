@@ -65,6 +65,7 @@ Usage:
   gadgets schedule create (--cron expr | --at timestamp) --prompt text
   gadgets schedule delete id
   gadgets moneypenny list
+  gadgets artifacts publish PATH [--title TITLE]
   gadgets moneypenny logs [--name registered-host] [--lines N]
   gadgets run-and-callback -- command [args...]  (License to Kill required)
   gadgets run list | status ID | stop ID
@@ -104,6 +105,10 @@ session. Neither permission can change gadget permissions or routing.
 Host and trait discovery are available to every authenticated session:
 moneypenny list returns names and enabled/default status, without addresses;
 traits list returns IDs, exact names and default status, without prompt contents.
+Artifacts publish copies a file snapshot into your own conversation on this MP;
+relative paths use the session working directory. Qew fetches only on View/Download.
+View supports HTML, PDF, and safe ZIPs with root index.html. Other files are
+download-only. Limits: 25 MiB/file, 100 files and 100 MiB/session.
 Trait get/edit require opt-in permission (default: false). Edits replace shared trait
 bodies for future use by all agents, not already-injected session prompts. Agents
 may edit only traits assigned to their own session.

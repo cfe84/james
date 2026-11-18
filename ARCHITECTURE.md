@@ -250,6 +250,49 @@ The same fresh source-session detail is the authorization source for optional
 `--yolo`: gadget creation forwards it only when that authenticated source is
 already yolo. Daemon runtime instructions advertise the flag only in that case.
 
+Conversation artifacts are MP-owned immutable snapshots. The session-authenticated
+`artifacts.publish` gadget accepts only path/title, resolves relative paths against
+the stored working directory, serializes publication/capacity checks with session
+deletion, copies a bounded regular file, hashes it, and saves metadata/content
+under `sessions/<id>/artifacts/<artifact-id>/`. Interrupted staging directories
+are removed before the next publication. A normal `artifact` conversation turn
+contains metadata only and uses the existing history/revision/watch pipeline.
+Artifacts survive provider session replacement and daemon restarts. Session
+deletion removes artifact storage before deleting its database record; cleanup
+errors are surfaced.
+
+The shared `moneypenny/pkg/artifact` package owns wire types, quotas, ZIP
+inspection and bounded extraction. Qew imports this local module alongside Hem
+to avoid separate archive rules/limits. `read_artifact` serves at most 192 KiB
+per operator request, or metadata only; `read artifact` on Hem routes only
+tracked sessions to their registered MP. Neither accepts arbitrary source paths.
+Files are never pushed through the conversation/event channel.
+
+Qew's authenticated View/Download endpoints retrieve the snapshot into private
+temporary cache storage and verify a stable manifest and SHA-256 across chunks.
+Downloads serve the original bytes with attachment disposition and discard the
+cache. View independently inspects eligibility; ZIP extraction rejects unsafe
+paths, special files, collisions and expansion beyond shared limits. Existing
+chat rendering supplies cards; TUI chat supplies a textual summary.
+
+HTML/static assets use short-lived, random 192-bit capability URLs bound to a
+single preview. Those asset URLs intentionally do not require Qew cookies:
+opaque-origin HTML sandboxing strips same-origin access, and CORS permits bundled
+module scripts to load without credentials. CSP allows bundled resources only,
+not APIs/remote subresources/forms/frames/plugins; HTML cannot access Qew storage.
+PDF responses instead permit the native embedded PDF renderer. Capability paths
+are never logged by the API logger, use no-referrer/no-store, and revalidate
+session/artifact existence through Hem before serving cached content. They are
+read-only bearer URLs, not a new account/session credential. Browser sandboxing
+does not prevent an active document from navigating its own tab.
+
+Four Qew admission slots bound concurrent transfers and retained previews;
+oldest-preview eviction and 30-minute timers release files/slots. Active file
+serves finish before deletion, shutdown clears retained previews, and subsequent
+transfers sweep expired directories left by an interrupted process. Hem retains
+no artifact cache. No report-specific MP listener or external application server
+is started.
+
 Shared traits use only `traits.list`, `traits.get`, and `traits.edit` on the
 existing daemon-to-Hem `gadget route`. The daemon binds source identity from
 credentials and validates the narrowly typed data. `traits.list` and
