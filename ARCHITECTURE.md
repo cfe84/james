@@ -282,6 +282,7 @@ Downloads serve the original bytes with attachment disposition and discard the
 cache. View independently inspects eligibility; ZIP extraction rejects unsafe
 paths, special files, collisions and expansion beyond shared limits. Existing
 chat rendering supplies cards; TUI chat supplies a textual summary.
+Artifact action links override message-link text styling to preserve button contrast.
 
 HTML/static assets use short-lived, random 192-bit capability URLs bound to a
 single preview. Those asset URLs intentionally do not require Qew cookies:

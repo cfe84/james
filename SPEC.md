@@ -1235,6 +1235,7 @@ an artifact turn; only metadata travels with conversation history. The source
 file can subsequently change or disappear without changing the published copy.
 
 Qew renders artifact cards using the existing conversation components:
+View/Download buttons retain contrasting text rather than inheriting message-link colors.
 
 | File | View | Download |
 |------|------|----------|
