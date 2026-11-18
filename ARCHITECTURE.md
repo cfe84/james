@@ -1079,6 +1079,10 @@ changes, queue cleanup, log-rotation changes, or a claim of fixing the live RAM 
 
 35c. **Agent-to-agent message attribution**: The authenticated gadgets endpoint supplies the source James session ID server-side; identity is not trusted from an agent-provided `--from` flag or environment override. Hem resolves the source display label from nick/name/short ID and sends `source_session_id` and `source_name` on `ContinueSessionData` or `CreateSessionData`. These persist with conversation turns and queued prompts, preserving provenance for messages and initial subagent prompts. Parent replies use the `callback` role. Renderers use `source_session_id` to distinguish agent-authored user turns, rendering their source label with a red `🕴️` rather than the human blue `🧑‍💻`; `source_name` supplies the name. Qew retains its browser-local `qewUserLabel` preference for human messages. Legacy administrative Hem attribution support is not gadget authorization and is not advertised to agents.
 
+Qew renders attributed user turns and callbacks with native disclosure controls.
+The first line previews the body; open disclosures survive transcript refreshes
+by their persisted turn IDs without changing the saved conversation.
+
 Moneypenny builds agent failure system notes in the handler, so the existing
 conversation/history transport and Qew/TUI system-note renderers show the same
 readable diagnostic without separate UI parsing. Notes use allowlisted OpenCode

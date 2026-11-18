@@ -1776,10 +1776,16 @@
         html += renderQuestionnaireHistory(content, turn.role);
         continue;
       }
-      // Subagent callbacks stay visible independently of the thought toggle.
-      if (turn.role === 'callback') {
-        const callbackSource = escapeHtml(turn.source_name || 'subagent');
-        html += `<div class="msg callback">↩️ <strong>${callbackSource}:</strong> ${formatContent(content)}</div>`;
+      if (turn.role === 'callback' || (turn.role === 'user' && turn.source_session_id)) {
+        const callback = turn.role === 'callback';
+        const sender = escapeHtml(turn.source_name || (callback ? 'subagent' : 'agent'));
+        const body = callback ? content.replace(/^↩️ Callback from [^\r\n]*:\r?\n\r?\n/, '') : content;
+        const preview = escapeHtml(body.trimStart().split(/\r?\n/, 1)[0] || '(empty)');
+        const timestamp = turn.created_at ? ` <span class="agent-message-time">${escapeHtml(formatTurnTime(turn.created_at))}</span>` : '';
+        html += `<details class="msg agent-message${callback ? ' callback' : ''}" data-agent-turn="${Number(turn.id)}">
+          <summary class="msg-role${callback ? '' : ' agent-user'}">${callback ? '↩️' : '🕴️'} ${sender}${timestamp}<span class="agent-message-preview">: ${preview}</span></summary>
+          <div class="msg-content">${formatContent(content)}</div>
+        </details>`;
         continue;
       }
       if (turn.role === 'notification') {
@@ -1816,14 +1822,13 @@
 
       let roleLabel;
       switch (turn.role) {
-        case 'user':       roleLabel = (turn.source_session_id ? '🕴️ ' : '🧑‍💻 ') + escapeHtml(turn.source_name || userLabel); break;
+        case 'user':       roleLabel = '🧑‍💻 ' + escapeHtml(turn.source_name || userLabel); break;
         case 'assistant':  roleLabel = '🕴️ ' + escapeHtml(agentName); break;
         default:           roleLabel = turn.role;
       }
-      const roleClass = turn.role === 'user' && turn.source_session_id ? 'agent-user' : turn.role;
       html += `
         <div class="msg">
-          <div class="msg-role ${roleClass}">${roleLabel}${turn.created_at ? ` <span style="color:var(--muted);font-weight:normal">${escapeHtml(formatTurnTime(turn.created_at))}</span>` : ''}</div>
+          <div class="msg-role ${turn.role}">${roleLabel}${turn.created_at ? ` <span style="color:var(--muted);font-weight:normal">${escapeHtml(formatTurnTime(turn.created_at))}</span>` : ''}</div>
           <div class="msg-content">${formatContent(content)}</div>
         </div>`;
     }
@@ -1879,7 +1884,14 @@
     const prevHeight = container.scrollHeight;
     const prevTop = container.scrollTop;
     const atBottom = prevHeight - prevTop - container.clientHeight < 80;
+    const openAgentTurns = new Set(Array.from(container.querySelectorAll('details.agent-message[open]'),
+      details => details.dataset.agentTurn));
     container.innerHTML = html;
+    if (openAgentTurns.size) {
+      for (const details of container.querySelectorAll('details.agent-message')) {
+        details.open = openAgentTurns.has(details.dataset.agentTurn);
+      }
+    }
 
     if (chatForceScrollBottom) {
       // After sending a message, always reveal it at the bottom.

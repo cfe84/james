@@ -627,31 +627,54 @@ test('dashboard completion selects the next visible session before the request',
   assert.match(app, /c: \(\) => dashAction\('complete'\), C: \(\) => dashAction\('complete'\)/);
 });
 
-test('agent-authored messages have their own icon and red role style', () => {
-  const container = { innerHTML: '', scrollHeight: 0, scrollTop: 0, clientHeight: 0 };
+test('agent messages and callbacks collapse to a first-line preview without collapsing human chat', () => {
+  const disclosures = [
+    { dataset: { agentTurn: '1' }, open: false },
+    { dataset: { agentTurn: '2' }, open: false },
+  ];
+  const container = {
+    html: '', scrollHeight: 0, scrollTop: 0, clientHeight: 0,
+    get innerHTML() { return this.html; },
+    set innerHTML(html) {
+      this.html = html;
+      disclosures.forEach(details => { details.open = false; });
+    },
+    querySelectorAll(selector) {
+      return selector.endsWith('[open]') ? disclosures.filter(details => details.open) : disclosures;
+    },
+  };
   const context = vm.createContext({
     document: { getElementById: () => container },
     chatConversation: [
-      { role: 'user', content: 'agent prompt', source_session_id: 'sender', source_name: 'cecil' },
+      { id: 1, role: 'user', content: 'agent <prompt>\nmore details', source_session_id: 'sender', source_name: 'cecil' },
+      { id: 2, role: 'callback', content: '↩️ Callback from cecil:\r\n\r\nFinished\r\nresult details', source_name: 'cecil' },
       { role: 'user', content: 'human prompt' },
       { role: 'assistant', content: 'reply' },
     ],
-    lastSubagents: [], lastActivity: [], queuedMessages: [], chatTotal: 3,
+    lastSubagents: [], lastActivity: [], queuedMessages: [], chatTotal: 4,
     currentSessionNick: '', currentSessionName: 'receiver', currentSessionStatus: 'idle',
     showThoughts: false, expandedActivity: false, userLabel: 'you',
     lastChatHTML: '', chatForceScrollBottom: false,
     collapseSupersededActivityTurns: turns => turns,
-    formatContent: text => text,
-    escapeHtml: text => text,
+    formatContent: text => text.replaceAll('<', '&lt;').replaceAll('>', '&gt;'),
+    escapeHtml: text => text.replaceAll('<', '&lt;').replaceAll('>', '&gt;'),
     ensureChatScrollable() {},
   });
   const source = app.slice(app.indexOf('  function renderChat(prepend)'), app.indexOf('  // --- Attachments ---'));
   vm.runInContext(`${source}\nrenderChat(false);`, context);
-  assert.match(container.innerHTML, /msg-role agent-user">🕴️ cecil/);
+  assert.match(container.innerHTML, /<details class="msg agent-message" data-agent-turn="1">\s*<summary class="msg-role agent-user">🕴️ cecil<span class="agent-message-preview">: agent &lt;prompt&gt;<\/span><\/summary>\s*<div class="msg-content">agent &lt;prompt&gt;\nmore details<\/div>/);
+  assert.match(container.innerHTML, /<details class="msg agent-message callback" data-agent-turn="2">\s*<summary class="msg-role">↩️ cecil<span class="agent-message-preview">: Finished<\/span><\/summary>/);
   assert.match(container.innerHTML, /msg-role user">🧑‍💻 you/);
   assert.match(container.innerHTML, /msg-role assistant">🕴️ receiver/);
+
+  disclosures[1].open = true;
+  context.chatConversation.push({ role: 'assistant', content: 'another reply' });
+  context.renderChat(false);
+  assert.deepEqual(disclosures.map(details => details.open), [false, true]);
+
   const css = fs.readFileSync(path.join(__dirname, '../pkg/web/static/index.html'), 'utf8');
   assert.match(css, /\.msg-role\.agent-user\s*\{\s*color:\s*var\(--danger\)/);
+  assert.match(css, /\.msg\.callback \{ color: var\(--muted\);/);
 });
 
 function dashboardHarness() {
