@@ -4,9 +4,40 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const thresholds = require('../pkg/web/static/compaction-threshold.js');
+const agentFace = require('../pkg/web/static/agent-face.js');
 
 const app = fs.readFileSync(process.env.QEW_APP_SOURCE ||
   path.join(__dirname, '../pkg/web/static/app.js'), 'utf8');
+
+test('nickname faces are deterministic, normalized and safe for inline rendering', () => {
+  const face = agentFace.render('Ian');
+  assert.equal(face, agentFace.render(' ian '));
+  assert.equal(agentFace.render('Re\u0301mi'), agentFace.render('Rémi'));
+  assert.equal(agentFace.render('  '), '');
+  assert.notEqual(face, agentFace.render('Doug'));
+  assert.equal(new Set(['Ian', 'Doug', 'Bob', 'Dale', 'Lumni', 'quantin'].map(agentFace.render)).size, 6);
+  assert.match(face, /width="32" height="32" viewBox="0 0 32 32"/);
+  assert.match(face, /aria-hidden="true" focusable="false"/);
+  assert.doesNotMatch(agentFace.render('"><script>alert(1)</script>'), /<script|alert|onload|href=/);
+});
+
+test('chat header shares the nickname face and preserves escaped labels', () => {
+  const title = {};
+  const context = vm.createContext({
+    window: { jamesAgentFace: agentFace },
+    document: { getElementById: () => title },
+    parentSessionStack: [], currentSessionNick: 'Ian', currentSessionName: '<Review>',
+    escapeHtml: text => text.replaceAll('<', '&lt;'),
+  });
+  vm.runInContext(app.slice(app.indexOf('  function setChatTitle()'),
+    app.indexOf('  async function openChat(')), context);
+  context.setChatTitle();
+  assert.ok(title.innerHTML.startsWith(agentFace.render('Ian')));
+  assert.match(title.innerHTML, /&lt;Review>/);
+  context.currentSessionNick = '';
+  context.setChatTitle();
+  assert.doesNotMatch(title.innerHTML, /<svg/);
+});
 
 test('artifact cards offer View only for supported bundles and escape metadata', () => {
   const context = vm.createContext({
@@ -615,6 +646,7 @@ function dashboardHarness() {
   };
   const saved = new Map();
   const context = vm.createContext({
+    window: { jamesAgentFace: agentFace },
     document: { getElementById: () => container },
     localStorage: { setItem: (key, value) => saved.set(key, value) },
     escapeAttr: value => String(value).replaceAll('"', '&quot;'),
@@ -843,6 +875,7 @@ test('workstreams retain hierarchy, independent state, expansion, selection and 
   assert.deepEqual(Array.from(context.dashEntries, e => e.sessionId), ['parent']);
   assert.match(container.innerHTML, /Needs you/);
   assert.match(container.innerHTML, /<span class="session-nick">ian<\/span> Research/);
+  assert.ok(container.innerHTML.includes(agentFace.render('ian')));
   assert.doesNotMatch(container.innerHTML, /workstream-nick/);
   assert.match(container.innerHTML, /3 active · 1 running · 1 unread/);
   assert.match(container.innerHTML, /class="session-status idle">idle<\/span>/);

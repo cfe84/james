@@ -1832,6 +1832,15 @@ filters and project-picker defaults continue to use that saved status.
 
 A session may have an optional short **nickname** (e.g. `ian`) — a hem-level alias that makes sessions easier to reference and identify.
 
+Qew displays an automatic 32×32 pixel face beside nicknamed agents in the
+dashboard/session list, quick switcher and chat header. Faces are generated
+locally from the trimmed, Unicode-normalized, case-insensitive nickname: the
+same nickname has the same face across clients and refreshes. Changing the
+nickname changes the face; changing only its case or the session title does
+not. Sessions without a nickname keep their existing text-only presentation.
+Faces are decorative and retain readable names for accessibility. This first
+phase has no uploads, reroll controls, external image service or TUI images.
+
 Nicknames serve three purposes:
 
 1. **Targeting sessions in hem CLI:** any session-targeting command accepts `--nick NICK` in place of `--session-id`. Hem resolves the nick to the underlying session ID before dispatching (e.g. `hem continue session --nick ian "do X"`, `hem show session --nick ian`). Resolution is nick-only — there is no fallback to matching session names. An unknown nick is an error. The two assignment commands (`create session`, `update session`) treat `--nick` as a value to write, not a selector.

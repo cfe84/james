@@ -635,7 +635,7 @@
   // Inner HTML of a single dashboard session row (everything inside .session-row).
   function dashRowInner(e) {
     const displayName = e.name || e.sessionId.substring(0, 12);
-    const nickPrefix = e.nick ? `<span class="session-nick">${escapeHtml(e.nick)}</span> ` : '';
+    const nickPrefix = e.nick ? `${window.jamesAgentFace.render(e.nick)}<span class="session-nick">${escapeHtml(e.nick)}</span> ` : '';
     if (e.workstream) {
       const w = e.workstream;
       const root = e.depth === 0;
@@ -1224,7 +1224,7 @@
   function setChatTitle() {
     const prefix = parentSessionStack.length > 0 ? 'Subagent: ' : '';
     const nickHtml = currentSessionNick
-      ? `<span class="session-nick">${escapeHtml(currentSessionNick)}</span> · `
+      ? `${window.jamesAgentFace.render(currentSessionNick)}<span class="session-nick">${escapeHtml(currentSessionNick)}</span> · `
       : '';
     document.getElementById('chat-title').innerHTML =
       escapeHtml(prefix) + nickHtml + escapeHtml(currentSessionName);
@@ -4179,7 +4179,7 @@
     }
     list.innerHTML = omnibar.filtered.map((it, i) => {
       const display = it.name || (it.sessionId ? it.sessionId.substring(0, 12) : '?');
-      const nick = it.nick ? `<span class="session-nick">${escapeHtml(it.nick)}</span> ` : '';
+      const nick = it.nick ? `${window.jamesAgentFace.render(it.nick)}<span class="session-nick">${escapeHtml(it.nick)}</span> ` : '';
       const sub = [it.agent, it.moneypenny, relativeTime(it.lastActive || '')]
         .filter(Boolean).join(' · ');
       return `<button class="cmd-item omni-item${i === omnibar.cursor ? ' selected' : ''}" data-omni-idx="${i}">
