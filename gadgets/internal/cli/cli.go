@@ -67,6 +67,8 @@ Usage:
   gadgets moneypenny list
   gadgets artifacts publish PATH [--title TITLE]
   gadgets artifacts update ARTIFACT_ID PATH
+  gadgets artifacts list SESSION_ID
+  gadgets artifacts download SESSION_ID ARTIFACT_ID DESTINATION
   gadgets questionnaire publish  (reads questionnaire JSON from stdin)
   gadgets moneypenny logs [--name registered-host] [--lines N]
   gadgets run-and-callback -- command [args...]  (License to Kill required)
@@ -112,6 +114,9 @@ Artifacts publish copies a file snapshot into your own conversation on this MP;
 relative paths use the session working directory. Qew fetches only on View/Download.
 View supports HTML, PDF, and safe ZIPs with root index.html. Other files are
 download-only. Limits: 25 MiB/file, 100 files and 100 MiB/session.
+With the Agents grant, list and download published artifacts from tracked
+sessions. Download writes verified bytes to a new local file; it never
+overwrites an existing destination.
 Trait get/edit require opt-in permission (default: false). Edits replace shared trait
 bodies for future use by all agents, not already-injected session prompts. Agents
 may edit only traits assigned to their own session.
@@ -175,7 +180,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(s
 		return 0
 	}
 	if args[0] != "hem" && (len(args) == 2 || len(args) == 3) && (args[len(args)-1] == "--help" || args[len(args)-1] == "-h") {
-		groupHelp := len(args) == 2 && (args[0] == "memory" || args[0] == "agents" || args[0] == "traits" || args[0] == "subagents" || args[0] == "schedule" || args[0] == "moneypenny" || args[0] == "notify" || args[0] == "attention")
+		groupHelp := len(args) == 2 && (args[0] == "memory" || args[0] == "agents" || args[0] == "traits" || args[0] == "subagents" || args[0] == "schedule" || args[0] == "moneypenny" || args[0] == "notify" || args[0] == "attention" || args[0] == "artifacts")
 		_, rest, err := command(args)
 		if groupHelp || (len(args) == 3 && err == nil && len(rest) == 1) {
 			_, _ = io.WriteString(stdout, Help)
@@ -194,17 +199,6 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(s
 	if token == "" || strings.ContainsAny(token, "\r\n") {
 		return fail(stderr, "configuration", "JAMES_GADGETS_TOKEN must contain a bearer token")
 	}
-	payload, err := json.Marshal(req)
-	if err != nil || len(payload) > MaxRequestBytes {
-		return fail(stderr, "request_too_large", "JSON request exceeds 1 MiB")
-	}
-	httpReq, err := http.NewRequest(http.MethodPost, endpoint.String(), bytes.NewReader(payload))
-	if err != nil {
-		return fail(stderr, "configuration", "invalid daemon endpoint")
-	}
-	httpReq.Header.Set("Authorization", "Bearer "+token)
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept", "application/json")
 	transport := &http.Transport{
 		Proxy:                  nil,
 		DialContext:            (&net.Dialer{Timeout: 5 * time.Second}).DialContext,
@@ -218,35 +212,61 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(s
 			return http.ErrUseLastResponse
 		},
 	}
+	call := func(req Request) (response, int) {
+		return callDaemon(client, endpoint.String(), token, req, stderr)
+	}
+	var result response
+	var status int
+	if req.Method == "artifacts.download" {
+		result, status = downloadArtifact(req, call, stderr)
+	} else {
+		result, status = call(req)
+	}
+	if status != 0 {
+		return status
+	}
+	if err := json.NewEncoder(stdout).Encode(result); err != nil {
+		return fail(stderr, "output", "cannot write response")
+	}
+	return 0
+}
+
+func callDaemon(client *http.Client, endpoint, token string, req Request, stderr io.Writer) (response, int) {
+	var envelope response
+	payload, err := json.Marshal(req)
+	if err != nil || len(payload) > MaxRequestBytes {
+		return envelope, fail(stderr, "request_too_large", "JSON request exceeds 1 MiB")
+	}
+	httpReq, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(payload))
+	if err != nil {
+		return envelope, fail(stderr, "configuration", "invalid daemon endpoint")
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+token)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "application/json")
 	res, err := client.Do(httpReq)
 	if err != nil {
-		return fail(stderr, "transport", "cannot reach local gadget daemon")
+		return envelope, fail(stderr, "transport", "cannot reach local gadget daemon")
 	}
 	defer res.Body.Close()
 	body, err := readBounded(res.Body, MaxResponseBytes)
 	if err != nil {
-		return fail(stderr, "protocol", "cannot read daemon response (maximum 4 MiB)")
+		return envelope, fail(stderr, "protocol", "cannot read daemon response (maximum 4 MiB)")
 	}
-	var envelope response
 	if err := json.Unmarshal(body, &envelope); err != nil || envelope.Success == nil {
-		return fail(stderr, "protocol", "daemon returned an invalid response envelope")
+		return envelope, fail(stderr, "protocol", "daemon returned an invalid response envelope")
 	}
 	if !*envelope.Success {
 		if envelope.Error == nil || envelope.Error.Code == "" || envelope.Error.Message == "" {
-			return fail(stderr, "protocol", "daemon returned a failure without an error")
+			return envelope, fail(stderr, "protocol", "daemon returned a failure without an error")
 		}
-		if err := json.NewEncoder(stderr).Encode(envelope); err != nil {
-			return 1
-		}
-		return 1
+		_ = json.NewEncoder(stderr).Encode(envelope)
+		return envelope, 1
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 || envelope.Error != nil {
-		return fail(stderr, "protocol", fmt.Sprintf("inconsistent daemon response (HTTP %d)", res.StatusCode))
+		return envelope, fail(stderr, "protocol", fmt.Sprintf("inconsistent daemon response (HTTP %d)", res.StatusCode))
 	}
-	if err := json.NewEncoder(stdout).Encode(envelope); err != nil {
-		return fail(stderr, "output", "cannot write response")
-	}
-	return 0
+	return envelope, 0
 }
 
 func localURL(raw string) (*url.URL, error) {

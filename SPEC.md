@@ -1096,7 +1096,7 @@ back; use `--async` for agent operations and inspect state before retrying.
 | --- | --- | --- |
 | Memory | On, revocable | Get/list/search/set/batch/delete memory; inspect current revision |
 | Subagents | On, revocable | Create, list, and message James child sessions |
-| Agents | Off, explicit combined grant | Discover and message all Hem-tracked agents |
+| Agents | Off, explicit combined grant | Discover and message all Hem-tracked agents; list and download their published artifacts |
 | Create agents | Off, separate explicit grant | Create independent top-level agents on the caller's Moneypenny |
 | Traits | Off, explicit grant | List/view existing shared traits and replace their prompt bodies |
 | Moneypenny logs | Off, explicit grant | Read bounded daemon logs from any registered Moneypenny |
@@ -1256,6 +1256,15 @@ file can subsequently change or disappear without changing the published copy.
 the caller's own session using the ID returned by publish. It keeps the same
 card, title, download filename and preview format. A failed update leaves the
 previous snapshot available. Use publish for another card or preview format.
+
+To share a file, publish it and message the peer your session ID and artifact
+ID. The **Agents** grant lets a session use `gadgets artifacts list SESSION_ID`
+and `gadgets artifacts download SESSION_ID ARTIFACT_ID DESTINATION` on any
+session tracked by its Hem, including sessions on a different MP. The grant
+applies to all published artifacts, not just IDs shared in a message. The
+destination is a new local file; relative paths use the gadget CLI's current
+directory. Download verifies the whole snapshot before making it available
+and never overwrites an existing file. Unpublished working files are not accessible.
 
 Qew renders artifact cards using the existing conversation components:
 View/Download buttons retain contrasting text rather than inheriting message-link colors.

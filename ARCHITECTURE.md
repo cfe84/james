@@ -183,7 +183,7 @@ depth, not the source of session authorization.
 these through create/update/detail. Missing legacy values use defaults:
 Memory, Subagents, and Scheduling true; all others false. Every gadget request reads
 current capabilities, so revocation does not wait for a new agent invocation.
-`notify` is always allowed for a valid session. Agents is a single list/message
+`notify` is always allowed for a valid session. Agents is a single list/message/artifact-read
 grant across Hem-tracked agents, **never** session edit/delete authority.
 Subagents permits creation plus direct-child/parent list and messaging, not
 arbitrary siblings or descendants. Created children inherit the parent's current
@@ -291,6 +291,13 @@ and its source before compilation. `read_artifact` serves at most 192 KiB
 per operator request, or metadata only; `read artifact` on Hem routes only
 tracked sessions to their registered MP. Neither accepts arbitrary source paths.
 Files are never pushed through the conversation/event channel.
+
+Agent artifact list/download calls use the authenticated gadget relay, not
+the administrative proxy. The caller MP and Hem check the existing Agents
+grant on each request. Hem resolves the specified target against tracked
+sessions, then relays metadata listing or bounded `read_artifact` chunks from
+the owning MP. The CLI keeps the destination path local and stages bytes beside
+it, validates the manifest and SHA-256, then publishes without overwriting.
 
 Qew's authenticated View page keeps a stable URL and frames the authenticated
 preview endpoint, which reuses a temporary preview only if its checksum still

@@ -261,6 +261,47 @@ func (h *Handler) removeArtifactFile(sessionID, filename string) {
 	}
 }
 
+func (h *Handler) listArtifacts(cmd *envelope.Command) *envelope.Response {
+	var request envelope.SessionIDData
+	if err := decodeGadget(cmd.Data, &request); err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
+	}
+	dir, err := h.sessionDirPath(request.SessionID)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
+	}
+	h.artifactsMu.Lock()
+	defer h.artifactsMu.Unlock()
+	fail := func(err error) *envelope.Response {
+		h.errorLog("listing artifacts for session %s: %v", request.SessionID, err)
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, "could not list session artifacts")
+	}
+	session, err := h.store.GetSession(request.SessionID)
+	if err != nil {
+		return fail(err)
+	}
+	if session == nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, "artifact session not found")
+	}
+	root := filepath.Join(dir, "artifacts")
+	entries, err := os.ReadDir(root)
+	if err != nil && !os.IsNotExist(err) {
+		return fail(err)
+	}
+	items := []artifact.Metadata{}
+	for _, entry := range entries {
+		if !entry.IsDir() || !sessionIDPattern.MatchString(entry.Name()) {
+			continue
+		}
+		meta, err := loadStoredArtifact(filepath.Join(root, entry.Name()))
+		if err != nil {
+			return fail(err)
+		}
+		items = append(items, meta.Metadata)
+	}
+	return envelope.SuccessResponse(cmd.RequestID, items)
+}
+
 func (h *Handler) readArtifact(_ context.Context, cmd *envelope.Command) *envelope.Response {
 	var request artifact.ReadRequest
 	if err := json.Unmarshal(cmd.Data, &request); err != nil || !sessionIDPattern.MatchString(request.ID) || request.Offset < 0 {

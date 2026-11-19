@@ -28,6 +28,8 @@ gadgets traits list
 gadgets moneypenny list
 gadgets artifacts publish PATH [--title TITLE]
 gadgets artifacts update ARTIFACT_ID PATH
+gadgets artifacts list SESSION_ID
+gadgets artifacts download SESSION_ID ARTIFACT_ID DESTINATION
 gadgets traits get ID
 gadgets traits edit ID
 gadgets subagents list
@@ -201,6 +203,12 @@ returned `id`; `gadgets artifacts update ARTIFACT_ID PATH` replaces that
 snapshot without posting another card. The title, download filename and
 preview format stay the same. Editing the source file alone has no effect.
 
+Share the publishing session ID and artifact ID in an agent message. Agents
+with the **Agents** grant can list or download any tracked session's published
+artifacts, even across hosts. Download saves the verified snapshot to a new
+file at `DESTINATION` on the calling host (relative to the current directory
+if not absolute). It does not overwrite existing files.
+
 The file stays on the MP until session deletion. Qew transfers it through Hem
 on demand. Reload an open View page to see the latest update, or use Download
 for the latest original file. View is available for HTML, PDF,
@@ -329,6 +337,8 @@ and `Authorization: Bearer <token>`. Body:
 | traits list | `traits.list` | `{}` |
 | artifacts publish | `artifacts.publish` | `{"path":"report.zip","title":"Review report"}`; title optional; authenticated session only |
 | artifacts update | `artifacts.update` | `{"id":"...","path":"report.zip"}`; authenticated owner only |
+| artifacts list | `artifacts.list` | `{"session_id":"..."}`; Agents grant |
+| artifacts download | `artifacts.download` | `{"session_id":"...","id":"...","offset":0}`; Agents grant; one chunk per request, assembled locally by the CLI |
 | moneypenny list | `moneypenny.list` | `{}`; metadata-only discovery, no capability grant |
 | traits get | `traits.get` | `{"id":"..."}` |
 | traits edit | `traits.edit` | `{"id":"...","body":"..."}`; complete string body required, empty allowed |

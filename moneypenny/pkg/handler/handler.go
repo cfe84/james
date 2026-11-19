@@ -475,6 +475,8 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.saveAttachment(ctx, cmd)
 	case "read_artifact":
 		return h.readArtifact(ctx, cmd)
+	case "list_artifacts":
+		return h.listArtifacts(cmd)
 	case "resolve_questionnaire":
 		return h.resolveQuestionnaire(cmd)
 	case "schedule":

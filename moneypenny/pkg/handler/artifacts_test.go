@@ -18,6 +18,22 @@ import (
 func TestArtifactPublicationSnapshotAndSessionScope(t *testing.T) {
 	h, params := gadgetTestHandler(t)
 	setGadgetCaps(t, h, envelope.GadgetCapabilities{})
+	for _, method := range []string{"artifacts.list", "artifacts.download"} {
+		requireGadgetError(t, gadgetCall(t, params, method, map[string]string{"session_id": gadgetOtherSession}), "permission_denied")
+	}
+	list := func(sessionID string) []artifact.Metadata {
+		t.Helper()
+		data, _ := json.Marshal(envelope.SessionIDData{SessionID: sessionID})
+		resp := h.Handle(context.Background(), &envelope.Command{Method: "list_artifacts", Data: data})
+		items, ok := resp.Data.([]artifact.Metadata)
+		if resp.Status != envelope.StatusSuccess || !ok {
+			t.Fatalf("listing failed: %+v", resp)
+		}
+		return items
+	}
+	if items := list(gadgetSession); len(items) != 0 {
+		t.Fatalf("empty session returned artifacts: %+v", items)
+	}
 	session, err := h.store.GetSession(gadgetSession)
 	if err != nil {
 		t.Fatal(err)
@@ -154,6 +170,9 @@ func TestArtifactPublicationSnapshotAndSessionScope(t *testing.T) {
 	files, err := os.ReadDir(filepath.Join(root, "artifacts", meta.ID))
 	if err != nil || len(files) != 2 {
 		t.Fatalf("superseded snapshots were not cleaned: %v %v", files, err)
+	}
+	if items := list(gadgetSession); len(items) != 1 || items[0].ID != meta.ID || items[0].Size != int64(len("next update")) {
+		t.Fatalf("list did not return current artifact metadata: %+v", items)
 	}
 	data, _ := json.Marshal(envelope.SessionIDData{SessionID: gadgetSession})
 	if resp := h.Handle(context.Background(), &envelope.Command{Method: "delete_session", Data: data}); resp.Status != envelope.StatusSuccess {

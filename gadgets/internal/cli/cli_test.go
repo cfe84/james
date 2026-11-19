@@ -2,11 +2,15 @@ package cli
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -73,6 +77,7 @@ func TestParseCommands(t *testing.T) {
 		{"moneypenny list", []string{"moneypenny", "list"}, "", "moneypenny.list", `{}`},
 		{"artifact publish", []string{"artifacts", "publish", "report.zip", "--title", "Review"}, "", "artifacts.publish", `{"path":"report.zip","title":"Review"}`},
 		{"artifact update", []string{"artifacts", "update", "artifact-id", "report.zip"}, "", "artifacts.update", `{"id":"artifact-id","path":"report.zip"}`},
+		{"artifact list", []string{"artifacts", "list", "peer"}, "", "artifacts.list", `{"session_id":"peer"}`},
 		{"questionnaire publish", []string{"questionnaire", "publish"}, `{"title":"Review","questions":[{"prompt":"Proceed?","type":"yes_no"}]}`, "questionnaire.publish", `{"title":"Review","questions":[{"prompt":"Proceed?","type":"yes_no"}]}`},
 		{"traits get", []string{"traits", "get", "clean code"}, "", "traits.get", `{"id":"clean code"}`},
 		{"traits edit", []string{"traits", "edit", "id"}, " \n--name=forged\n🕴\n", "traits.edit", `{"id":"id","body":" \n--name=forged\n🕴\n"}`},
@@ -268,6 +273,74 @@ func TestHTTPProtocol(t *testing.T) {
 	code := Run([]string{"memory", "batch"}, strings.NewReader(`[{"path":"a","body":"A"},{"path":"b","body":"B"}]`), &stdout, &stderr, environment(server.URL+"/gadgets"), "test")
 	if code != 0 || calls != 1 || stderr.Len() != 0 || stdout.String() != "{\"success\":true,\"data\":{\"written\":2}}\n" {
 		t.Fatalf("code=%d calls=%d stdout=%s stderr=%s", code, calls, &stdout, &stderr)
+	}
+}
+
+func TestArtifactDownloadCommitsOnlyVerifiedBytes(t *testing.T) {
+	const content = "binary\x00data"
+	for _, mode := range []string{"valid", "corrupt", "revoked", "exists"} {
+		t.Run(mode, func(t *testing.T) {
+			dir := t.TempDir()
+			dest := filepath.Join(dir, "download")
+			if mode == "exists" {
+				if err := os.WriteFile(dest, []byte("keep"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					Method string                     `json:"method"`
+					Data   map[string]json.RawMessage `json:"data"`
+				}
+				var offset int
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Method != "artifacts.download" ||
+					string(req.Data["session_id"]) != `"peer"` || string(req.Data["id"]) != `"report"` ||
+					len(req.Data) != 3 || json.Unmarshal(req.Data["offset"], &offset) != nil || (offset != 0 && offset != 4) {
+					t.Error("invalid download request or local destination leaked")
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				if mode == "revoked" && offset > 0 {
+					fmt.Fprint(w, `{"success":false,"error":{"code":"permission_denied","message":"revoked"}}`)
+					return
+				}
+				sum := fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
+				if mode == "corrupt" {
+					sum = strings.Repeat("0", 64)
+				}
+				end := len(content)
+				if offset == 0 {
+					end = 4
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"success": true, "data": map[string]any{
+					"artifact": map[string]any{"id": "report", "size": len(content), "sha256": sum},
+					"content":  []byte(content[offset:end]),
+				}})
+			}))
+			defer server.Close()
+			env := map[string]string{"JAMES_GADGETS_URL": server.URL, "JAMES_GADGETS_TOKEN": "token"}
+			var out, errOut bytes.Buffer
+			code := Run([]string{"artifacts", "download", "peer", "report", dest}, nil, &out, &errOut, func(key string) string { return env[key] }, "test")
+			got, err := os.ReadFile(dest)
+			switch mode {
+			case "valid":
+				if code != 0 || err != nil || string(got) != content || strings.Contains(out.String(), `"content"`) {
+					t.Fatalf("download failed: %d %v %q %s", code, err, got, errOut.String())
+				}
+			case "exists":
+				if code == 0 || err != nil || string(got) != "keep" {
+					t.Fatalf("existing file changed: %d %v %q", code, err, got)
+				}
+			default:
+				if code == 0 || !os.IsNotExist(err) {
+					t.Fatalf("failed transfer published a file: %d %v", code, err)
+				}
+			}
+			files, err := filepath.Glob(filepath.Join(dir, ".gadgets-artifact-*"))
+			if err != nil || len(files) != 0 {
+				t.Fatalf("temporary files were not cleaned: %v %v", files, err)
+			}
+		})
 	}
 }
 

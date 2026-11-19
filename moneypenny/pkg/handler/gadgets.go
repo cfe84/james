@@ -227,7 +227,7 @@ func (h *Handler) prepareGadgets(sessionID string, params *agent.RunParams) erro
 		params.SystemPrompt += "\n"
 	}
 	if caps.Agents {
-		params.SystemPrompt += "All-agent discovery and messaging: gadgets agents list; gadgets agents message ID (body on stdin). This does not grant session editing or deletion.\n"
+		params.SystemPrompt += "All-agent discovery and messaging: gadgets agents list; gadgets agents message ID (body on stdin). Share published files by messaging the publishing session ID and artifact ID. Use gadgets artifacts list SESSION_ID and gadgets artifacts download SESSION_ID ARTIFACT_ID DESTINATION. This grant allows reading all published artifacts of tracked sessions, not their working files or session management.\n"
 	}
 	if caps.EditSessions || caps.EditOwnSession {
 		params.SystemPrompt += "Session editing: gadgets sessions edit [SESSION_ID] [--name name] [--system-prompt text] [--model model] [--effort value] [--context tier] [--path path] [--compaction mode] [--compaction-threshold-tokens tokens] [--yolo=true|false]. "
@@ -382,7 +382,7 @@ func (h *Handler) executeGadget(ctx context.Context, sessionID string, request g
 	case "memory.get", "memory.list", "memory.search", "memory.set", "memory.batch", "memory.delete", "memory.revisions",
 		"memory.query", "memory.claim-set", "memory.claim-get", "memory.claim-delete":
 		allowed = caps.Memory
-	case "agents.list", "agents.message":
+	case "agents.list", "agents.message", "artifacts.list", "artifacts.download":
 		allowed = caps.Agents
 	case "agents.create":
 		allowed = caps.CreateAgents
@@ -437,6 +437,9 @@ func (h *Handler) executeGadget(ctx context.Context, sessionID string, request g
 	}
 	if request.Method == "artifacts.update" {
 		return h.updateArtifact(ctx, sessionID, request.Data)
+	}
+	if request.Method == "artifacts.list" || request.Method == "artifacts.download" {
+		return h.routeGadget(ctx, sessionID, request.Method, request.Data)
 	}
 	if request.Method == "questionnaire.publish" {
 		return h.publishQuestionnaire(sessionID, request.Data)

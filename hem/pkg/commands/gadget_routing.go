@@ -116,6 +116,8 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 		return e.GetMoneypennyLogs(args)
 	case "traits.list", "traits.get", "traits.edit":
 		return e.traitsGadget(source, route.Method, route.Data)
+	case "artifacts.list", "artifacts.download":
+		return e.artifactGadget(source, route.Method, route.Data)
 	case "agents.list", "subagents.list":
 		if err := decodeGadgetData(route.Data, &struct{}{}); err != nil {
 			return protocol.ErrResponse(err.Error())

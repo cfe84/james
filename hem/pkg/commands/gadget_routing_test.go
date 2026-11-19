@@ -139,7 +139,7 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 	var liveCapabilities atomic.Value
 	liveCapabilities.Store(capabilities)
 	var sourceYolo atomic.Bool
-	serve := func(in, out *os.File) {
+	serve := func(host string, in, out *os.File) {
 		scanner := bufio.NewScanner(in)
 		for scanner.Scan() {
 			var command transport.Command
@@ -150,6 +150,9 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 			status := envelope.StatusSuccess
 			errorCode := ""
 			switch command.Method {
+			case "list_artifacts", "read_artifact":
+				writes <- command
+				data = host
 			case "list_channels":
 				writes <- command
 				data = map[string]any{"channels": []map[string]any{
@@ -234,7 +237,7 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			serve(in, out)
+			serve(name, in, out)
 		}()
 		t.Cleanup(func() {
 			_, _ = in.WriteString("\n")
@@ -268,6 +271,37 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 			return transport.Command{}
 		}
 	}
+	t.Run("artifact access uses the current Agents grant and target host", func(t *testing.T) {
+		if err := e.store.TrackSession("artifact-peer", "remote"); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			liveCapabilities.Store(capabilities)
+			if err := e.store.DeleteTrackedSession("artifact-peer"); err != nil {
+				t.Error(err)
+			}
+		})
+		for _, tc := range []struct {
+			method string
+			wire   string
+			data   map[string]any
+		}{
+			{"artifacts.list", "list_artifacts", map[string]any{"session_id": "artifact-peer"}},
+			{"artifacts.download", "read_artifact", map[string]any{"session_id": "artifact-peer", "id": "artifact", "offset": float64(192)}},
+		} {
+			liveCapabilities.Store(envelope.GadgetCapabilities{Subagents: true})
+			if resp := gadgetRouteRequest(t, e, "source", tc.method, tc.data); resp.Status != "error" {
+				t.Fatal("artifact access allowed without Agents grant")
+			}
+			liveCapabilities.Store(envelope.GadgetCapabilities{Agents: true})
+			if resp := gadgetRouteRequest(t, e, "source", tc.method, tc.data); resp.Status != "ok" || string(resp.Data) != `"remote"` {
+				t.Fatalf("artifact request failed: %+v", resp)
+			}
+			if cmd := next(); cmd.Method != tc.wire || !reflect.DeepEqual(cmd.Data, tc.data) {
+				t.Fatalf("wrong artifact command: %+v", cmd)
+			}
+		}
+	})
 	t.Run("scoped channel configuration", func(t *testing.T) {
 		for _, tc := range []struct {
 			method string

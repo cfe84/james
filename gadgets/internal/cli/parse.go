@@ -35,7 +35,7 @@ func command(args []string) (string, []string, error) {
 		"agents.list", "agents.message", "agents.create", "subagents.list", "subagents.create", "subagents.message",
 		"subagents.edit", "subagents.complete", "subagents.stop", "subagents.delete",
 		"traits.list", "traits.get", "traits.edit", "sessions.edit", "moneypenny.list", "moneypenny.logs", "artifacts.publish",
-		"artifacts.update", "questionnaire.publish",
+		"artifacts.update", "artifacts.list", "artifacts.download", "questionnaire.publish",
 		"schedule.list", "schedule.create", "schedule.delete",
 		"run.list", "run.status", "run.stop", "attention.get", "attention.set", "attention.resolve":
 		return method, args[2:], nil
@@ -300,6 +300,22 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 				err = errors.New("artifact ID and path are required")
 			}
 			data["id"], data["path"] = pos[0], pos[1]
+		}
+	case "artifacts.list", "artifacts.download":
+		n := 1
+		if method == "artifacts.download" {
+			n = 3
+		}
+		if err = arity(n, n); err == nil {
+			for _, value := range pos {
+				if strings.TrimSpace(value) == "" {
+					return Request{}, errors.New("session ID, artifact ID and destination must not be blank")
+				}
+			}
+			data["session_id"] = pos[0]
+			if n == 3 {
+				data["id"], data["destination"] = pos[1], pos[2]
+			}
 		}
 	case "questionnaire.publish":
 		if err = arity(0, 0); err == nil {
