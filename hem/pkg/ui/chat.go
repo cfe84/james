@@ -1943,7 +1943,7 @@ func (m chatModel) View() string {
 			if err := json.Unmarshal([]byte(content), &meta); err != nil {
 				content = "Artifact metadata could not be read."
 			} else {
-				content = fmt.Sprintf("%s (%s, %d bytes)\nOpen this conversation in Qew to view or download.", meta.Title, meta.Name, meta.Size)
+				content = fmt.Sprintf("%s (%s)\nOpen this conversation in Qew to view or download.", meta.Title, meta.Name)
 			}
 		}
 		switch turn.Role {

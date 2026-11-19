@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"mime"
 	"net/http"
@@ -28,6 +29,7 @@ type artifactPreview struct {
 	root      string
 	session   string
 	id        string
+	sha256    string
 	timer     *time.Timer
 	created   time.Time
 	entryName string
@@ -167,15 +169,30 @@ func (s *Server) handleArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/artifacts/"), "/")
-	if len(parts) != 3 || (parts[2] != "view" && parts[2] != "download") {
+	if len(parts) != 3 || (parts[2] != "view" && parts[2] != "preview" && parts[2] != "download") {
 		http.NotFound(w, r)
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if parts[2] == "view" {
+		src := "/artifacts/" + url.PathEscape(parts[0]) + "/" + url.PathEscape(parts[1]) + "/preview"
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-src 'self'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'")
+		fmt.Fprintf(w, `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Artifact preview</title><style>body{margin:0}iframe{display:block;width:100%%;height:100vh;border:0}</style><iframe title="Artifact preview" src="%s"></iframe></html>`, html.EscapeString(src))
+		return
+	}
+	if parts[2] == "preview" {
+		chunk, err := s.artifactChunk(parts[0], parts[1], 0, true)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+			return
+		}
 		s.artifactMu.Lock()
 		var existing string
 		for token, entry := range s.artifacts {
-			if entry.session == parts[0] && entry.id == parts[1] {
+			if entry.session == parts[0] && entry.id == parts[1] && entry.sha256 == chunk.Artifact.SHA256 {
 				existing = "/artifact-view/" + token + "/" + entry.entryName
 				break
 			}
@@ -228,8 +245,6 @@ func (s *Server) handleArtifact(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
-	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if parts[2] == "download" {
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": meta.Name}))
@@ -271,7 +286,7 @@ func (s *Server) handleArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token := hex.EncodeToString(random[:])
-	entry := &artifactPreview{dir: dir, root: root, session: parts[0], id: parts[1], created: time.Now(), entryName: entryName}
+	entry := &artifactPreview{dir: dir, root: root, session: parts[0], id: parts[1], sha256: meta.SHA256, created: time.Now(), entryName: entryName}
 	s.artifactMu.Lock()
 	entry.timer = time.AfterFunc(artifactPreviewTTL, func() { s.expireArtifact(token) })
 	s.artifacts[token] = entry

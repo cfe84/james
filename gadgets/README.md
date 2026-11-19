@@ -27,6 +27,7 @@ gadgets agents message id [--body text]
 gadgets traits list
 gadgets moneypenny list
 gadgets artifacts publish PATH [--title TITLE]
+gadgets artifacts update ARTIFACT_ID PATH
 gadgets traits get ID
 gadgets traits edit ID
 gadgets subagents list
@@ -195,18 +196,21 @@ be pending at once, with up to eight questions per card.
 `gadgets artifacts publish report.zip --title "Review report"` copies a snapshot
 into your own session's MP storage and adds a conversation card. Every
 authenticated session can publish; callers cannot select another session.
-Relative paths resolve from the stored session working directory.
+Relative paths resolve from the stored session working directory. Save the
+returned `id`; `gadgets artifacts update ARTIFACT_ID PATH` replaces that
+snapshot without posting another card. The title, download filename and
+preview format stay the same. Editing the source file alone has no effect.
 
 The file stays on the MP until session deletion. Qew transfers it through Hem
-only when the user clicks View or Download. View is available for HTML, PDF,
+on demand. Reload an open View page to see the latest update, or use Download
+for the latest original file. View is available for HTML, PDF,
 and safe ZIPs with root `index.html`. Other files remain downloadable. Download
 offers the original bytes/filename to the user's browser, including the original
 ZIP. Bundle CSS, JavaScript and other assets: HTML previews cannot call APIs,
 load remote resources, access Qew storage or run a backend.
 
 Limits are 25 MiB per file, 100 files/100 MiB per session; viewable ZIPs have at
-most 1,000 entries/100 MiB expanded content. MP snapshots are immutable; publish
-again to produce a new card. Qew previews are temporary (30 minutes, up to four
+most 1,000 entries/100 MiB expanded content. Qew previews are temporary (30 minutes, up to four
 transfers/previews, oldest-preview eviction). Keep the MP reachable for retrieval
 and preview validation. Do not publish secrets or content the user should not
 receive.
@@ -324,6 +328,7 @@ and `Authorization: Bearer <token>`. Body:
 | agents/subagents message | `agents.message` / `subagents.message` | `{"id":"...","body":"..."}` |
 | traits list | `traits.list` | `{}` |
 | artifacts publish | `artifacts.publish` | `{"path":"report.zip","title":"Review report"}`; title optional; authenticated session only |
+| artifacts update | `artifacts.update` | `{"id":"...","path":"report.zip"}`; authenticated owner only |
 | moneypenny list | `moneypenny.list` | `{}`; metadata-only discovery, no capability grant |
 | traits get | `traits.get` | `{"id":"..."}` |
 | traits edit | `traits.edit` | `{"id":"...","body":"..."}`; complete string body required, empty allowed |

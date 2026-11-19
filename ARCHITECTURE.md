@@ -269,13 +269,16 @@ drains questionnaire answers as standalone human rounds; discard just updates
 the card and conversation revision. No separate attention request or storage
 lifecycle is introduced; conversation deletion removes the cards.
 
-Conversation artifacts are MP-owned immutable snapshots. The session-authenticated
-`artifacts.publish` gadget accepts only path/title, resolves relative paths against
-the stored working directory, serializes publication/capacity checks with session
+Conversation artifacts are MP-owned snapshots with stable IDs. The session-authenticated
+`artifacts.publish` and `artifacts.update` gadgets resolve relative paths against
+the stored working directory, serialize writes/capacity checks with session
 deletion, copies a bounded regular file, hashes it, and saves metadata/content
 under `sessions/<id>/artifacts/<artifact-id>/`. Interrupted staging directories
-are removed before the next publication. A normal `artifact` conversation turn
-contains metadata only and uses the existing history/revision/watch pipeline.
+are removed before the next write. Update stages new bytes and commits them by
+atomically replacing metadata that points at the active content file, then
+unlinks superseded bytes. A normal `artifact` conversation turn contains
+publication metadata only; updates preserve the displayed card fields and
+do not create conversation turns.
 Artifacts survive provider session replacement and daemon restarts. Session
 deletion removes artifact storage before deleting its database record; cleanup
 errors are surfaced.
@@ -289,7 +292,9 @@ per operator request, or metadata only; `read artifact` on Hem routes only
 tracked sessions to their registered MP. Neither accepts arbitrary source paths.
 Files are never pushed through the conversation/event channel.
 
-Qew's authenticated View/Download endpoints retrieve the snapshot into private
+Qew's authenticated View page keeps a stable URL and frames the authenticated
+preview endpoint, which reuses a temporary preview only if its checksum still
+matches MP metadata. Preview and Download retrieve the snapshot into private
 temporary cache storage and verify a stable manifest and SHA-256 across chunks.
 Downloads serve the original bytes with attachment disposition and discard the
 cache. View independently inspects eligibility; ZIP extraction rejects unsafe

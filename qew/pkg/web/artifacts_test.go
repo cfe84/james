@@ -116,6 +116,11 @@ func TestArtifactHTTPViewDownloadAndExpiry(t *testing.T) {
 				t.Fatalf("download changed original or retained transfer: %+v", download)
 			}
 			view := artifactRequest(s, mux, base+"/view", true)
+			if view.Code != http.StatusOK || view.Header().Get("Cache-Control") != "no-store" ||
+				!strings.Contains(view.Body.String(), `src="`+base+`/preview"`) {
+				t.Fatalf("stable viewer missing preview frame: %d %s", view.Code, view.Body)
+			}
+			view = artifactRequest(s, mux, base+"/preview", true)
 			if !tc.view {
 				if view.Code != http.StatusUnsupportedMediaType || len(s.artifactSlots) != 0 {
 					t.Fatalf("download-only artifact view accepted: %+v", view)
@@ -145,7 +150,8 @@ func TestArtifactHTTPViewDownloadAndExpiry(t *testing.T) {
 				}
 			}
 			count := len(hem.requests)
-			if resp := artifactRequest(s, mux, base+"/view", true); resp.Header().Get("Location") != location || len(hem.requests) != count {
+			if resp := artifactRequest(s, mux, base+"/preview", true); resp.Header().Get("Location") != location ||
+				len(hem.requests) != count+1 || !hem.requests[count].MetadataOnly {
 				t.Fatal("repeat view fetched the file again")
 			}
 			for _, target := range []string{"/artifact-view/unknown/index.html", "/artifact-view/" + token + "/%2e%2e/private"} {
@@ -167,7 +173,7 @@ func TestArtifactHTTPViewDownloadAndExpiry(t *testing.T) {
 func TestArtifactTransferFailureAndCacheEviction(t *testing.T) {
 	s, hem, mux := artifactWebServer(t, "report.html", []byte("report"))
 	hem.meta.SHA256 = strings.Repeat("0", 64)
-	base := "/artifacts/session/" + hem.meta.ID + "/view"
+	base := "/artifacts/session/" + hem.meta.ID + "/preview"
 	if resp := artifactRequest(s, mux, base, true); resp.Code != http.StatusBadGateway || len(s.artifactSlots) != 0 {
 		t.Fatal("corrupt transfer succeeded or leaked capacity")
 	}
@@ -176,10 +182,11 @@ func TestArtifactTransferFailureAndCacheEviction(t *testing.T) {
 	var firstLocation, firstDir string
 	for i := 0; i < 5; i++ {
 		hem.meta.ID = fmt.Sprintf("00000000-0000-0000-0000-%012d", i)
-		resp := artifactRequest(s, mux, "/artifacts/session/"+hem.meta.ID+"/view", true)
+		resp := artifactRequest(s, mux, "/artifacts/session/"+hem.meta.ID+"/preview", true)
 		if resp.Code != http.StatusSeeOther {
 			t.Fatalf("cache did not evict: %d %s", resp.Code, resp.Body)
 		}
+
 		if i == 0 {
 			firstLocation = resp.Header().Get("Location")
 			firstDir = s.artifacts[strings.Split(firstLocation, "/")[2]].dir
@@ -197,5 +204,37 @@ func TestArtifactTransferFailureAndCacheEviction(t *testing.T) {
 	s.closeArtifactPreviews()
 	if len(s.artifactSlots) != 0 {
 		t.Fatal("shutdown retained previews")
+	}
+}
+
+func TestArtifactViewerRefreshLoadsReplacement(t *testing.T) {
+	s, hem, mux := artifactWebServer(t, "report.html", []byte("first status"))
+	base := "/artifacts/session/" + hem.meta.ID
+	viewer := artifactRequest(s, mux, base+"/view", true)
+	first := artifactRequest(s, mux, base+"/preview", true)
+	if first.Code != http.StatusSeeOther {
+		t.Fatalf("initial preview: %d %s", first.Code, first.Body)
+	}
+	hem.content = []byte("newer status")
+	sum := sha256.Sum256(hem.content)
+	hem.meta.SHA256 = hex.EncodeToString(sum[:])
+	hem.meta.Size = int64(len(hem.content))
+	if refreshed := artifactRequest(s, mux, base+"/view", true); refreshed.Code != http.StatusOK || refreshed.Body.String() != viewer.Body.String() {
+		t.Fatal("viewer address changed after replacement")
+	}
+	next := artifactRequest(s, mux, base+"/preview", true)
+	location := next.Header().Get("Location")
+	if next.Code != http.StatusSeeOther || location == first.Header().Get("Location") {
+		t.Fatalf("refresh reused stale preview: %d %s", next.Code, next.Body)
+	}
+	for _, target := range []string{location, base + "/download"} {
+		resp := artifactRequest(s, mux, target, true)
+		if resp.Code != http.StatusOK || resp.Body.String() != string(hem.content) {
+			t.Fatalf("%s: got %d %s", target, resp.Code, resp.Body)
+		}
+	}
+	s.closeArtifactPreviews()
+	if resp := artifactRequest(s, mux, base+"/preview", true); resp.Code != http.StatusSeeOther {
+		t.Fatalf("stable viewer did not recover after preview expiry: %d %s", resp.Code, resp.Body)
 	}
 }

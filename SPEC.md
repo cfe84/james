@@ -1249,9 +1249,13 @@ Agents can publish a file to their own conversation with
 `gadgets artifacts publish PATH [--title TITLE]`. This is available to every
 authenticated session without granting filesystem or session access to other
 agents. Relative paths resolve from the session working directory. Publication
-copies an immutable snapshot into the owning MP's session storage and records
+copies a snapshot into the owning MP's session storage and records
 an artifact turn; only metadata travels with conversation history. The source
 file can subsequently change or disappear without changing the published copy.
+`gadgets artifacts update ARTIFACT_ID PATH` explicitly replaces a snapshot in
+the caller's own session using the ID returned by publish. It keeps the same
+card, title, download filename and preview format. A failed update leaves the
+previous snapshot available. Use publish for another card or preview format.
 
 Qew renders artifact cards using the existing conversation components:
 View/Download buttons retain contrasting text rather than inheriting message-link colors.
@@ -1263,8 +1267,10 @@ View/Download buttons retain contrasting text rather than inheriting message-lin
 | Safe ZIP with root `index.html` | Extracted static-site preview | Original ZIP |
 | Other files, invalid/unsafe ZIPs, ZIPs without root `index.html` | Not offered | Original file |
 
-View/Download fetch bytes on demand from the MP through Hem's existing
-transport; publishing does not transfer file contents. Hem relays bounded
+View opens a stable Qew page; reloading it checks for the current snapshot,
+including after the temporary preview expires. Download always fetches the
+latest snapshot. Both fetch bytes on demand from the MP through Hem's existing
+transport; publishing and updating do not transfer file contents. Hem relays bounded
 chunks without retaining them. The combined James image builds Qew with the
 shared Moneypenny artifact module available at build time.
 Qew verifies the snapshot's SHA-256 checksum
@@ -1281,7 +1287,7 @@ fonts and media, but run with an opaque sandboxed origin; CSP blocks remote
 subresources, fetch/XHR, forms, frames and plugins. No backend, package
 installation, or dev server is started. PDF uses the browser's native renderer.
 This is browser isolation, not an operating-system sandbox or a guarantee that
-active documents cannot navigate their own tab.
+active documents cannot navigate within their own preview frame.
 
 View creation and downloads require Qew authentication when configured. Static
 preview resources use unguessable, artifact-scoped capability URLs so sandboxed

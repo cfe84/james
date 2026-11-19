@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"james/moneypenny/pkg/agent"
 	"james/moneypenny/pkg/artifact"
 	"james/moneypenny/pkg/envelope"
 )
@@ -111,6 +112,48 @@ func TestArtifactPublicationSnapshotAndSessionScope(t *testing.T) {
 	}
 	if resp := gadgetCall(t, params, "artifacts.publish", map[string]string{"path": oversized}); resp.Success {
 		t.Fatal("oversized publication accepted")
+	}
+	update := func(id, path string) {
+		t.Helper()
+		if resp := gadgetCall(t, params, "artifacts.update", map[string]string{"id": id, "path": path}); resp.Success {
+			t.Fatalf("invalid update unexpectedly succeeded: %s %s", id, path)
+		}
+	}
+	update("../content", filename)
+	update(newAgentSessionID(), filename)
+	update(meta.ID, oversized)
+	other := agent.RunParams{}
+	if err := h.prepareRunInstructions(gadgetOtherSession, &other); err != nil {
+		t.Fatal(err)
+	}
+	if resp := gadgetCall(t, other, "artifacts.update", map[string]string{"id": meta.ID, "path": filename}); resp.Success {
+		t.Fatal("another session replaced the artifact")
+	}
+	if resp := read(gadgetSession, meta.ID, 0); resp.Status != envelope.StatusSuccess || resp.Data.(artifact.Chunk).Artifact != meta {
+		t.Fatalf("failed updates changed the original snapshot: %+v", resp)
+	}
+	for _, body := range []string{"changed", "next update"} {
+		if err := os.WriteFile(filename, []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+		resp := gadgetCall(t, params, "artifacts.update", map[string]string{"id": meta.ID, "path": "report.html"})
+		if !resp.Success {
+			t.Fatalf("update failed: %+v", resp)
+		}
+		result := read(gadgetSession, meta.ID, 0)
+		chunk, ok := result.Data.(artifact.Chunk)
+		if result.Status != envelope.StatusSuccess || !ok || string(chunk.Content) != body ||
+			chunk.Artifact.Title != meta.Title || chunk.Artifact.Name != meta.Name || chunk.Artifact.View != meta.View {
+			t.Fatalf("replacement was not served under the original identity: %+v", result)
+		}
+	}
+	turns, err = h.store.GetConversation(gadgetSession)
+	if err != nil || len(turns) != 1 || turns[0].Role != "artifact" {
+		t.Fatalf("update added a conversation card: %+v %v", turns, err)
+	}
+	files, err := os.ReadDir(filepath.Join(root, "artifacts", meta.ID))
+	if err != nil || len(files) != 2 {
+		t.Fatalf("superseded snapshots were not cleaned: %v %v", files, err)
 	}
 	data, _ := json.Marshal(envelope.SessionIDData{SessionID: gadgetSession})
 	if resp := h.Handle(context.Background(), &envelope.Command{Method: "delete_session", Data: data}); resp.Status != envelope.StatusSuccess {

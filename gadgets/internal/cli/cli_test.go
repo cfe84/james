@@ -72,6 +72,7 @@ func TestParseCommands(t *testing.T) {
 		{"traits list", []string{"traits", "list"}, "", "traits.list", `{}`},
 		{"moneypenny list", []string{"moneypenny", "list"}, "", "moneypenny.list", `{}`},
 		{"artifact publish", []string{"artifacts", "publish", "report.zip", "--title", "Review"}, "", "artifacts.publish", `{"path":"report.zip","title":"Review"}`},
+		{"artifact update", []string{"artifacts", "update", "artifact-id", "report.zip"}, "", "artifacts.update", `{"id":"artifact-id","path":"report.zip"}`},
 		{"questionnaire publish", []string{"questionnaire", "publish"}, `{"title":"Review","questions":[{"prompt":"Proceed?","type":"yes_no"}]}`, "questionnaire.publish", `{"title":"Review","questions":[{"prompt":"Proceed?","type":"yes_no"}]}`},
 		{"traits get", []string{"traits", "get", "clean code"}, "", "traits.get", `{"id":"clean code"}`},
 		{"traits edit", []string{"traits", "edit", "id"}, " \n--name=forged\n🕴\n", "traits.edit", `{"id":"id","body":" \n--name=forged\n🕴\n"}`},

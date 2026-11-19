@@ -16,9 +16,6 @@ import (
 )
 
 func (h *Handler) publishArtifact(ctx context.Context, sessionID string, raw json.RawMessage) (any, error) {
-	if !json.Valid(raw) {
-		return nil, &gadgetError{"invalid_request", "artifact publication requires one JSON object"}
-	}
 	var request struct {
 		Path  string `json:"path"`
 		Title string `json:"title"`
@@ -26,7 +23,61 @@ func (h *Handler) publishArtifact(ctx context.Context, sessionID string, raw jso
 	if err := decodeGadget(raw, &request); err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(request.Path) == "" || len(request.Title) > 240 {
+	return h.snapshotArtifact(ctx, sessionID, "", request.Path, request.Title)
+}
+
+func (h *Handler) updateArtifact(ctx context.Context, sessionID string, raw json.RawMessage) (any, error) {
+	var request struct {
+		ID   string `json:"id"`
+		Path string `json:"path"`
+	}
+	if err := decodeGadget(raw, &request); err != nil {
+		return nil, err
+	}
+	if !sessionIDPattern.MatchString(request.ID) {
+		return nil, &gadgetError{"invalid_request", "invalid artifact ID"}
+	}
+	return h.snapshotArtifact(ctx, sessionID, request.ID, request.Path, "")
+}
+
+type storedArtifact struct {
+	artifact.Metadata
+	Revision string `json:"revision,omitempty"`
+}
+
+func (a storedArtifact) contentName() string {
+	if a.Revision == "" {
+		return "content"
+	}
+	return "content-" + a.Revision
+}
+
+func loadStoredArtifact(dir string) (storedArtifact, error) {
+	var meta storedArtifact
+	f, err := os.Open(filepath.Join(dir, "metadata.json"))
+	if err != nil {
+		return meta, err
+	}
+	defer f.Close()
+	raw, err := io.ReadAll(io.LimitReader(f, 4097))
+	if err != nil {
+		return meta, err
+	}
+	if len(raw) > 4096 {
+		return meta, fmt.Errorf("artifact metadata exceeds size limit")
+	}
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		return meta, err
+	}
+	if meta.ID != filepath.Base(dir) || meta.Size < 0 || meta.Size > artifact.MaxFileSize ||
+		(meta.Revision != "" && !sessionIDPattern.MatchString(meta.Revision)) {
+		return meta, fmt.Errorf("invalid artifact metadata")
+	}
+	return meta, nil
+}
+
+func (h *Handler) snapshotArtifact(ctx context.Context, sessionID, id, source, title string) (any, error) {
+	if strings.TrimSpace(source) == "" || len(title) > 240 {
 		return nil, fmt.Errorf("artifact path is required and title must not exceed 240 bytes")
 	}
 	h.artifactsMu.Lock()
@@ -38,7 +89,6 @@ func (h *Handler) publishArtifact(ctx context.Context, sessionID string, raw jso
 	if session == nil {
 		return nil, fmt.Errorf("session no longer exists")
 	}
-	source := request.Path
 	if !filepath.IsAbs(source) {
 		source = filepath.Join(session.Path, source)
 	}
@@ -66,6 +116,26 @@ func (h *Handler) publishArtifact(ctx context.Context, sessionID string, raw jso
 		return nil, err
 	}
 	root = filepath.Join(root, "artifacts")
+	var previous storedArtifact
+	if id != "" {
+		dir := filepath.Join(root, id)
+		previous, err = loadStoredArtifact(dir)
+		if err != nil {
+			return nil, fmt.Errorf("looking up artifact in this session: %w", err)
+		}
+		files, err := os.ReadDir(dir)
+		if err != nil {
+			return nil, err
+		}
+		for _, file := range files {
+			name := file.Name()
+			if name != previous.contentName() && (name == "content" || strings.HasPrefix(name, "content-")) {
+				if err := os.Remove(filepath.Join(dir, name)); err != nil {
+					return nil, fmt.Errorf("cleaning superseded artifact content: %w", err)
+				}
+			}
+		}
+	}
 	if err := os.MkdirAll(root, 0700); err != nil {
 		return nil, err
 	}
@@ -83,7 +153,15 @@ func (h *Handler) publishArtifact(ctx context.Context, sessionID string, raw jso
 			}
 			continue
 		}
-		stat, err := os.Stat(filepath.Join(root, entry.Name(), "content"))
+		if entry.Name() == id {
+			continue
+		}
+		dir := filepath.Join(root, entry.Name())
+		saved, err := loadStoredArtifact(dir)
+		if err != nil {
+			return nil, fmt.Errorf("checking artifact capacity: %w", err)
+		}
+		stat, err := os.Stat(filepath.Join(dir, saved.contentName()))
 		if err != nil {
 			return nil, fmt.Errorf("checking artifact capacity: %w", err)
 		}
@@ -97,7 +175,11 @@ func (h *Handler) publishArtifact(ctx context.Context, sessionID string, raw jso
 	if name == "" || strings.ContainsAny(name, "\r\n") {
 		return nil, fmt.Errorf("invalid artifact filename")
 	}
-	meta := artifact.Metadata{ID: newAgentSessionID(), Name: name, Title: request.Title}
+	meta := storedArtifact{Metadata: artifact.Metadata{ID: newAgentSessionID(), Name: name, Title: title}}
+	if id != "" {
+		meta = previous
+		meta.Revision = newAgentSessionID()
+	}
 	if meta.Title == "" {
 		meta.Title = meta.Name
 	}
@@ -113,7 +195,7 @@ func (h *Handler) publishArtifact(ctx context.Context, sessionID string, raw jso
 			}
 		}
 	}()
-	target := filepath.Join(dir, "content")
+	target := filepath.Join(dir, meta.contentName())
 	out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return nil, err
@@ -135,6 +217,9 @@ func (h *Handler) publishArtifact(ctx context.Context, sessionID string, raw jso
 	}
 	meta.SHA256 = hex.EncodeToString(hash.Sum(nil))
 	meta.View = artifact.Inspect(target, meta.Name)
+	if id != "" && meta.View != previous.View {
+		return nil, fmt.Errorf("replacement must keep the original artifact's preview format")
+	}
 	encoded, err := json.Marshal(meta)
 	if err != nil {
 		return nil, err
@@ -142,7 +227,23 @@ func (h *Handler) publishArtifact(ctx context.Context, sessionID string, raw jso
 	if err := os.WriteFile(filepath.Join(dir, "metadata.json"), encoded, 0600); err != nil {
 		return nil, err
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	destination := filepath.Join(root, meta.ID)
+	if id != "" {
+		replacement := filepath.Join(destination, meta.contentName())
+		if err := os.Rename(target, replacement); err != nil {
+			return nil, err
+		}
+		// Metadata is the commit point: readers see either complete snapshot.
+		if err := os.Rename(filepath.Join(dir, "metadata.json"), filepath.Join(destination, "metadata.json")); err != nil {
+			h.removeArtifactFile(sessionID, replacement)
+			return nil, err
+		}
+		h.removeArtifactFile(sessionID, filepath.Join(destination, previous.contentName()))
+		return meta.Metadata, nil
+	}
 	if err := os.Rename(dir, destination); err != nil {
 		return nil, err
 	}
@@ -151,7 +252,13 @@ func (h *Handler) publishArtifact(ctx context.Context, sessionID string, raw jso
 		return nil, err
 	}
 	committed = true
-	return meta, nil
+	return meta.Metadata, nil
+}
+
+func (h *Handler) removeArtifactFile(sessionID, filename string) {
+	if err := os.Remove(filename); err != nil {
+		h.errorLog("failed to remove superseded artifact content for session %s: %v", sessionID, err)
+	}
 }
 
 func (h *Handler) readArtifact(_ context.Context, cmd *envelope.Command) *envelope.Response {
@@ -176,29 +283,17 @@ func (h *Handler) readArtifact(_ context.Context, cmd *envelope.Command) *envelo
 	fail := func(err error) *envelope.Response {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("reading artifact: %v", err))
 	}
-	metadataFile, err := os.Open(filepath.Join(root, "metadata.json"))
+	meta, err := loadStoredArtifact(root)
 	if err != nil {
 		return fail(err)
 	}
-	defer metadataFile.Close()
-	raw, err := io.ReadAll(io.LimitReader(metadataFile, 4097))
-	if err != nil {
-		return fail(err)
-	}
-	if len(raw) > 4096 {
-		return fail(fmt.Errorf("artifact metadata exceeds size limit"))
-	}
-	var meta artifact.Metadata
-	if err := json.Unmarshal(raw, &meta); err != nil {
-		return fail(err)
-	}
-	if meta.ID != request.ID || meta.Size < 0 || meta.Size > artifact.MaxFileSize || request.Offset > meta.Size {
-		return fail(fmt.Errorf("invalid artifact metadata or offset"))
+	if request.Offset > meta.Size {
+		return fail(fmt.Errorf("invalid artifact offset"))
 	}
 	if request.MetadataOnly {
-		return envelope.SuccessResponse(cmd.RequestID, artifact.Chunk{Artifact: meta})
+		return envelope.SuccessResponse(cmd.RequestID, artifact.Chunk{Artifact: meta.Metadata})
 	}
-	in, err := os.Open(filepath.Join(root, "content"))
+	in, err := os.Open(filepath.Join(root, meta.contentName()))
 	if err != nil {
 		return fail(err)
 	}
@@ -210,5 +305,5 @@ func (h *Handler) readArtifact(_ context.Context, cmd *envelope.Command) *envelo
 	if err != nil {
 		return fail(err)
 	}
-	return envelope.SuccessResponse(cmd.RequestID, artifact.Chunk{Artifact: meta, Content: content})
+	return envelope.SuccessResponse(cmd.RequestID, artifact.Chunk{Artifact: meta.Metadata, Content: content})
 }

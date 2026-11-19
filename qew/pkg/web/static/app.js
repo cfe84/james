@@ -1980,7 +1980,7 @@
       const base = `/artifacts/${encodeURIComponent(sessionID)}/${encodeURIComponent(artifact.id)}`;
       const view = ['html', 'pdf', 'zip'].includes(artifact.view) ?
         `<a class="btn" href="${base}/view" target="_blank" rel="noopener noreferrer">View</a> ` : '';
-      return `<div class="msg"><div class="msg-role">Artifact</div><div class="msg-content"><strong>${escapeHtml(artifact.title)}</strong><br>${escapeHtml(artifact.name)} · ${Math.ceil(artifact.size / 1024)} KiB<br>${view}<a class="btn" href="${base}/download" download>Download</a></div></div>`;
+      return `<div class="msg"><div class="msg-role">Artifact</div><div class="msg-content"><strong>${escapeHtml(artifact.title)}</strong><br>${escapeHtml(artifact.name)}<br>${view}<a class="btn" href="${base}/download" download>Download</a></div></div>`;
     } catch (error) {
       return '<div class="msg system-note">Artifact metadata could not be read.</div>';
     }

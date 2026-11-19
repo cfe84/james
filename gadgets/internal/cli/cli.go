@@ -66,6 +66,7 @@ Usage:
   gadgets schedule delete id
   gadgets moneypenny list
   gadgets artifacts publish PATH [--title TITLE]
+  gadgets artifacts update ARTIFACT_ID PATH
   gadgets questionnaire publish  (reads questionnaire JSON from stdin)
   gadgets moneypenny logs [--name registered-host] [--lines N]
   gadgets run-and-callback -- command [args...]  (License to Kill required)
