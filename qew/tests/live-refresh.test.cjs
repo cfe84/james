@@ -9,19 +9,15 @@ const agentFace = require('../pkg/web/static/agent-face.js');
 const app = fs.readFileSync(process.env.QEW_APP_SOURCE ||
   path.join(__dirname, '../pkg/web/static/app.js'), 'utf8');
 
-test('nickname faces are deterministic, normalized and safe for inline rendering', () => {
-  const face = agentFace.render('Ian');
-  assert.equal(face, agentFace.render(' ian '));
-  assert.equal(agentFace.render('Re\u0301mi'), agentFace.render('Rémi'));
-  assert.equal(agentFace.render('  '), '');
-  assert.notEqual(face, agentFace.render('Doug'));
-  assert.equal(new Set(['Ian', 'Doug', 'Bob', 'Dale', 'Lumni', 'quantin'].map(agentFace.render)).size, 6);
-  assert.match(face, /width="32" height="32" viewBox="0 0 32 32"/);
-  assert.match(face, /aria-hidden="true" focusable="false"/);
-  assert.doesNotMatch(agentFace.render('"><script>alert(1)</script>'), /<script|alert|onload|href=/);
+test('conversation photos render only bounded PNG data URLs', () => {
+  const png = 'data:image/png;base64,AAAA';
+  assert.match(agentFace.renderPhoto(png), /<img class="user-face" src="data:image\/png;base64,AAAA"/);
+  for (const invalid of ['https://example.test/photo', 'data:image/svg+xml;base64,AAAA', `${png}" onerror="x`, png.repeat(30000)]) {
+    assert.equal(agentFace.renderPhoto(invalid), '');
+  }
 });
 
-test('chat header shares the nickname face and preserves escaped labels', () => {
+test('chat header preserves escaped labels without repeating the message face', () => {
   const title = {};
   const context = vm.createContext({
     window: { jamesAgentFace: agentFace },
@@ -32,8 +28,9 @@ test('chat header shares the nickname face and preserves escaped labels', () => 
   vm.runInContext(app.slice(app.indexOf('  function setChatTitle()'),
     app.indexOf('  async function openChat(')), context);
   context.setChatTitle();
-  assert.ok(title.innerHTML.startsWith(agentFace.render('Ian')));
+  assert.match(title.innerHTML, /class="session-nick">Ian/);
   assert.match(title.innerHTML, /&lt;Review>/);
+  assert.doesNotMatch(title.innerHTML, /<svg/);
   context.currentSessionNick = '';
   context.setChatTitle();
   assert.doesNotMatch(title.innerHTML, /<svg/);
@@ -645,6 +642,7 @@ test('agent messages and callbacks collapse to a first-line preview without coll
   };
   const context = vm.createContext({
     document: { getElementById: () => container },
+    window: { jamesAgentFace: agentFace },
     chatConversation: [
       { id: 1, role: 'user', content: 'agent <prompt>\nmore details', source_session_id: 'sender', source_name: 'cecil' },
       { id: 2, role: 'callback', content: '↩️ Callback from cecil:\r\n\r\nFinished\r\nresult details', source_name: 'cecil' },
@@ -652,8 +650,8 @@ test('agent messages and callbacks collapse to a first-line preview without coll
       { role: 'assistant', content: 'reply' },
     ],
     lastSubagents: [], lastActivity: [], queuedMessages: [], chatTotal: 4,
-    currentSessionNick: '', currentSessionName: 'receiver', currentSessionStatus: 'idle',
-    showThoughts: false, expandedActivity: false, userLabel: 'you',
+    currentSession: 'receiver-id', currentSessionNick: '', currentSessionName: 'receiver', currentSessionStatus: 'idle',
+    showThoughts: false, expandedActivity: false, userLabel: 'you', userPhoto: 'data:image/png;base64,AAAA',
     lastChatHTML: '', chatForceScrollBottom: false,
     collapseSupersededActivityTurns: turns => turns,
     formatContent: text => text.replaceAll('<', '&lt;').replaceAll('>', '&gt;'),
@@ -662,15 +660,20 @@ test('agent messages and callbacks collapse to a first-line preview without coll
   });
   const source = app.slice(app.indexOf('  function renderChat(prepend)'), app.indexOf('  // --- Attachments ---'));
   vm.runInContext(`${source}\nrenderChat(false);`, context);
-  assert.match(container.innerHTML, /<details class="msg agent-message" data-agent-turn="1">\s*<summary class="msg-role agent-user">🕴️ cecil<span class="agent-message-preview">: agent &lt;prompt&gt;<\/span><\/summary>\s*<div class="msg-content">agent &lt;prompt&gt;\nmore details<\/div>/);
+  assert.match(container.innerHTML, /<details class="msg agent-message" data-agent-turn="1">\s*<summary class="msg-role agent-user">cecil<span class="agent-message-preview">: agent &lt;prompt&gt;<\/span><\/summary>\s*<div class="msg-content">agent &lt;prompt&gt;\nmore details<\/div>/);
   assert.match(container.innerHTML, /<details class="msg agent-message callback" data-agent-turn="2">\s*<summary class="msg-role">↩️ cecil<span class="agent-message-preview">: Finished<\/span><\/summary>/);
-  assert.match(container.innerHTML, /msg-role user">🧑‍💻 you/);
-  assert.match(container.innerHTML, /msg-role assistant">🕴️ receiver/);
+  assert.ok(container.innerHTML.includes(`${agentFace.render('sender')}<details`));
+  assert.ok(container.innerHTML.includes(agentFace.renderPhoto(context.userPhoto)));
+  assert.ok(container.innerHTML.includes(agentFace.render('receiver-id')));
+  assert.match(container.innerHTML, /msg-role user">you/);
+  assert.match(container.innerHTML, /msg-role assistant">receiver/);
 
   disclosures[1].open = true;
+  context.currentSessionNick = 'New nickname';
   context.chatConversation.push({ role: 'assistant', content: 'another reply' });
   context.renderChat(false);
   assert.deepEqual(disclosures.map(details => details.open), [false, true]);
+  assert.ok(container.innerHTML.includes(agentFace.render('receiver-id')));
 
   const css = fs.readFileSync(path.join(__dirname, '../pkg/web/static/index.html'), 'utf8');
   assert.match(css, /\.msg-role\.agent-user\s*\{\s*color:\s*var\(--danger\)/);
@@ -924,7 +927,7 @@ test('workstreams retain hierarchy, independent state, expansion, selection and 
   assert.deepEqual(Array.from(context.dashEntries, e => e.sessionId), ['parent']);
   assert.match(container.innerHTML, /Needs you/);
   assert.match(container.innerHTML, /<span class="session-nick">ian<\/span> Research/);
-  assert.ok(container.innerHTML.includes(agentFace.render('ian')));
+  assert.ok(container.innerHTML.includes(agentFace.render('parent')));
   assert.doesNotMatch(container.innerHTML, /workstream-nick/);
   assert.match(container.innerHTML, /3 active · 1 running · 1 unread/);
   assert.match(container.innerHTML, /class="session-status idle">idle<\/span>/);

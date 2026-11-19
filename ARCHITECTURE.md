@@ -1074,13 +1074,13 @@ changes, queue cleanup, log-rotation changes, or a claim of fixing the live RAM 
 
     (3) **Identity in the system prompt.** When a nick is set, `nickSystemPrompt` composes `Your name is <Title>, you may refer to yourself as such.` wrapped in `<!--james:nick:begin-->`/`<!--james:nick:end-->` markers and `applyNickBlock` prepends it at the **very top** (order becomes nick → base → traits → gadgets → memory). `CreateSession` prepends after traits/gadgets are appended (so nick stays at index 0) and persists via `SetSessionNick` only after the moneypenny accepts the create. `UpdateSession` detects an explicit `--nick` (pre-scan, like `traitsExplicit`), recomposes through the shared `getCurrentSP()` closure via `applyNickBlock`, and persists the mapping only after the prompt update lands. `ShowSession` strips the nick block from the displayed prompt and returns the stored nick; `CopySession` strips any inherited nick block and does not carry the nick over (nicks are unique). The nick is settable in the TUI create wizard / edit form and the Qew create/edit dialogs (a **Nick** field; the copy wizard omits it since `copy session` has no `--nick`).
 
-    Qew's shared `agent-face.js` renderer hashes NFC-normalized, trimmed,
-    lower-case nicknames into deterministic pixel-face features. Dashboard rows,
-    the quick switcher and chat titles reuse it to emit decorative 32×32 inline
-    SVGs with crisp scaling and existing theme colors. Only generated
-    coordinates and fixed color tokens enter SVG markup, never nickname text.
-    No database field, image fetch or dependency is required; nickname changes
-    intentionally change the portrait in this initial phase.
+    Qew's shared `agent-face.js` renderer hashes the James session ID, not
+    the nickname or provider session ID. Dashboard rows, the quick switcher,
+    and conversation messages reuse its decorative 32×32 SVGs. Conversation
+    turns use the current session ID for assistant replies and the source ID
+    for attributed agent messages. The profile dialog center-crops and
+    re-encodes the human photo as a 128×128 PNG in browser-local storage;
+    no image bytes or metadata are sent to the server.
 
 35c. **Agent-to-agent message attribution**: The authenticated gadgets endpoint supplies the source James session ID server-side; identity is not trusted from an agent-provided `--from` flag or environment override. Hem resolves the source display label from nick/name/short ID and sends `source_session_id` and `source_name` on `ContinueSessionData` or `CreateSessionData`. These persist with conversation turns and queued prompts, preserving provenance for messages and initial subagent prompts. Parent replies use the `callback` role. Renderers use `source_session_id` to distinguish agent-authored user turns, rendering their source label with a red `🕴️` rather than the human blue `🧑‍💻`; `source_name` supplies the name. Qew retains its browser-local `qewUserLabel` preference for human messages. Legacy administrative Hem attribution support is not gadget authorization and is not advertised to agents.
 

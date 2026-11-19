@@ -44,6 +44,7 @@
   let parentSessionStack = []; // stack for subagent navigation
   let soundEnabled = true;
   let userLabel = localStorage.getItem('qewUserLabel') || 'you';
+  let userPhoto = localStorage.getItem('qewUserPhoto') || '';
   // Show persisted train-of-thought (thinking/agent_text) turns. When off, those
   // turns are hidden; live activity for the in-progress turn is still shown while
   // the agent is working. Persisted across reloads.
@@ -635,7 +636,8 @@
   // Inner HTML of a single dashboard session row (everything inside .session-row).
   function dashRowInner(e) {
     const displayName = e.name || e.sessionId.substring(0, 12);
-    const nickPrefix = e.nick ? `${window.jamesAgentFace.render(e.nick)}<span class="session-nick">${escapeHtml(e.nick)}</span> ` : '';
+    const nickPrefix = window.jamesAgentFace.render(e.sessionId) +
+      (e.nick ? `<span class="session-nick">${escapeHtml(e.nick)}</span> ` : '');
     if (e.workstream) {
       const w = e.workstream;
       const root = e.depth === 0;
@@ -1224,7 +1226,7 @@
   function setChatTitle() {
     const prefix = parentSessionStack.length > 0 ? 'Subagent: ' : '';
     const nickHtml = currentSessionNick
-      ? `${window.jamesAgentFace.render(currentSessionNick)}<span class="session-nick">${escapeHtml(currentSessionNick)}</span> · `
+      ? `<span class="session-nick">${escapeHtml(currentSessionNick)}</span> · `
       : '';
     document.getElementById('chat-title').innerHTML =
       escapeHtml(prefix) + nickHtml + escapeHtml(currentSessionName);
@@ -1762,6 +1764,10 @@
     }
 
     const activityTurns = collapseSupersededActivityTurns(serverTurns);
+    const faces = window.jamesAgentFace;
+    const assistantFace = faces.render(currentSession);
+    const humanFace = faces.renderPhoto(userPhoto);
+    const withFace = (face, message) => face ? `<div class="msg-with-face">${face}${message}</div>` : message;
     let html = '';
     let skippedThoughts = false;
     for (const turn of activityTurns) {
@@ -1782,10 +1788,12 @@
         const body = callback ? content.replace(/^↩️ Callback from [^\r\n]*:\r?\n\r?\n/, '') : content;
         const preview = escapeHtml(body.trimStart().split(/\r?\n/, 1)[0] || '(empty)');
         const timestamp = turn.created_at ? ` <span class="agent-message-time">${escapeHtml(formatTurnTime(turn.created_at))}</span>` : '';
-        html += `<details class="msg agent-message${callback ? ' callback' : ''}" data-agent-turn="${Number(turn.id)}">
-          <summary class="msg-role${callback ? '' : ' agent-user'}">${callback ? '↩️' : '🕴️'} ${sender}${timestamp}<span class="agent-message-preview">: ${preview}</span></summary>
+        const face = faces.render(turn.source_session_id);
+        const icon = callback ? '↩️ ' : face ? '' : '🕴️ ';
+        html += withFace(face, `<details class="msg agent-message${callback ? ' callback' : ''}" data-agent-turn="${Number(turn.id)}">
+          <summary class="msg-role${callback ? '' : ' agent-user'}">${icon}${sender}${timestamp}<span class="agent-message-preview">: ${preview}</span></summary>
           <div class="msg-content">${formatContent(content)}</div>
-        </details>`;
+        </details>`);
         continue;
       }
       if (turn.role === 'notification') {
@@ -1822,23 +1830,24 @@
 
       let roleLabel;
       switch (turn.role) {
-        case 'user':       roleLabel = '🧑‍💻 ' + escapeHtml(turn.source_name || userLabel); break;
-        case 'assistant':  roleLabel = '🕴️ ' + escapeHtml(agentName); break;
+        case 'user':       roleLabel = (humanFace ? '' : '🧑‍💻 ') + escapeHtml(turn.source_name || userLabel); break;
+        case 'assistant':  roleLabel = (assistantFace ? '' : '🕴️ ') + escapeHtml(agentName); break;
         default:           roleLabel = turn.role;
       }
-      html += `
+      const face = turn.role === 'user' ? humanFace : turn.role === 'assistant' ? assistantFace : '';
+      html += withFace(face, `
         <div class="msg">
           <div class="msg-role ${turn.role}">${roleLabel}${turn.created_at ? ` <span style="color:var(--muted);font-weight:normal">${escapeHtml(formatTurnTime(turn.created_at))}</span>` : ''}</div>
           <div class="msg-content">${formatContent(content)}</div>
-        </div>`;
+        </div>`);
     }
     // Show queued (optimistic) messages.
     for (const qm of queuedMessages) {
-      html += `
+      html += withFace(humanFace, `
         <div class="msg">
           <div class="msg-role user">⏳ ${escapeHtml(userLabel)} <span style="color:var(--muted);font-weight:normal">[Queued]</span></div>
           <div class="msg-content">${formatContent(qm.content)}</div>
-        </div>`;
+        </div>`);
     }
     // Working indicator with activity events.
     if (currentSessionStatus === 'working') {
@@ -4290,7 +4299,8 @@
     }
     list.innerHTML = omnibar.filtered.map((it, i) => {
       const display = it.name || (it.sessionId ? it.sessionId.substring(0, 12) : '?');
-      const nick = it.nick ? `${window.jamesAgentFace.render(it.nick)}<span class="session-nick">${escapeHtml(it.nick)}</span> ` : '';
+      const nick = window.jamesAgentFace.render(it.sessionId) +
+        (it.nick ? `<span class="session-nick">${escapeHtml(it.nick)}</span> ` : '');
       const sub = [it.agent, it.moneypenny, relativeTime(it.lastActive || '')]
         .filter(Boolean).join(' · ');
       return `<button class="cmd-item omni-item${i === omnibar.cursor ? ' selected' : ''}" data-omni-idx="${i}">
@@ -7165,9 +7175,13 @@
 
   function openUserLabelModal() {
     renderWizardModal(`
-      <h3>Your conversation name</h3>
+      <h3>Your conversation profile</h3>
       <label for="user-label-input">Name</label>
       <input id="user-label-input" type="text" value="${escapeAttr(userLabel === 'you' ? '' : userLabel)}" placeholder="you">
+      <label for="user-photo-input">Photo (PNG, JPEG or WebP, up to 5 MiB)</label>
+      <input id="user-photo-input" type="file" accept="image/png,image/jpeg,image/webp">
+      ${userPhoto ? `<label class="toggle-row"><input id="user-photo-remove" type="checkbox"> Remove current photo</label>` : ''}
+      <div id="user-profile-error" role="status"></div>
       <div class="modal-actions">
         <button class="btn-muted" id="user-label-cancel">Cancel</button>
         <button class="btn" id="user-label-save">Save</button>
@@ -7175,9 +7189,29 @@
     const input = document.getElementById('user-label-input');
     input.focus();
     document.getElementById('user-label-cancel').addEventListener('click', closeWizard);
-    document.getElementById('user-label-save').addEventListener('click', () => {
-      userLabel = input.value.trim() || 'you';
-      localStorage.setItem('qewUserLabel', userLabel);
+    const photoInput = document.getElementById('user-photo-input');
+    const remove = document.getElementById('user-photo-remove');
+    const error = document.getElementById('user-profile-error');
+    const save = document.getElementById('user-label-save');
+    save.addEventListener('click', async () => {
+      save.disabled = true;
+      error.textContent = '';
+      const label = input.value.trim() || 'you';
+      const file = photoInput.files[0];
+      let photo = remove?.checked ? '' : userPhoto;
+      try {
+        if (file) photo = await window.jamesAgentFace.readPhoto(file);
+        if (!save.isConnected) return;
+        if (photo) localStorage.setItem('qewUserPhoto', photo);
+        else localStorage.removeItem('qewUserPhoto');
+        localStorage.setItem('qewUserLabel', label);
+      } catch (e) {
+        error.textContent = e.message;
+        save.disabled = false;
+        return;
+      }
+      userLabel = label;
+      userPhoto = photo;
       closeWizard();
       lastChatHTML = '';
       renderChat();

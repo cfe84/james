@@ -1857,14 +1857,15 @@ filters and project-picker defaults continue to use that saved status.
 
 A session may have an optional short **nickname** (e.g. `ian`) — a hem-level alias that makes sessions easier to reference and identify.
 
-Qew displays an automatic 32×32 pixel face beside nicknamed agents in the
-dashboard/session list, quick switcher and chat header. Faces are generated
-locally from the trimmed, Unicode-normalized, case-insensitive nickname: the
-same nickname has the same face across clients and refreshes. Changing the
-nickname changes the face; changing only its case or the session title does
-not. Sessions without a nickname keep their existing text-only presentation.
-Faces are decorative and retain readable names for accessibility. This first
-phase has no uploads, reroll controls, external image service or TUI images.
+Qew displays an automatic 32×32 pixel face in the dashboard, quick switcher
+and beside conversation messages. Faces are generated from the stable James
+session ID, including for unnamed sessions. Renames and compaction preserve
+the face; a copied session gets its own. Attributed agent messages use the
+sender's face. Faces are decorative and retain readable names.
+
+The Qew chat's person button lets you choose or remove your own photo for
+human messages. PNG, JPEG and WebP files up to 5 MiB are accepted. Like your
+conversation name, the photo is stored in this browser and is not sent to James.
 
 Nicknames serve three purposes:
 

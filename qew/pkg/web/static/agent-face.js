@@ -5,11 +5,10 @@
     root.jamesAgentFace = factory();
   }
 })(typeof window !== 'undefined' ? window : globalThis, function () {
-  function render(nickname) {
-    const seed = nickname.trim().normalize('NFC').toLowerCase();
-    if (!seed) return '';
+  function render(sessionID) {
+    if (!sessionID) return '';
     let state = 2166136261;
-    for (const character of seed) {
+    for (const character of sessionID) {
       state = Math.imul(state ^ character.codePointAt(0), 16777619) >>> 0;
     }
     const next = limit => {
@@ -47,5 +46,32 @@
     return `<svg class="agent-face" xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" shape-rendering="crispEdges" aria-hidden="true" focusable="false">${pixels}</svg>`;
   }
 
-  return Object.freeze({ render });
+  function renderPhoto(data) {
+    if (!data || data.length > 100000 || !/^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/.test(data)) return '';
+    return `<img class="user-face" src="${data}" width="32" height="32" alt="">`;
+  }
+
+  async function readPhoto(file) {
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type) || file.size > 5 * 1024 * 1024) {
+      throw new Error('Choose a PNG, JPEG or WebP image up to 5 MiB.');
+    }
+    let bitmap;
+    try {
+      bitmap = await createImageBitmap(file);
+    } catch {
+      throw new Error('Could not read the selected image.');
+    }
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 128;
+      const size = Math.min(bitmap.width, bitmap.height);
+      canvas.getContext('2d').drawImage(bitmap, (bitmap.width - size) / 2, (bitmap.height - size) / 2,
+        size, size, 0, 0, canvas.width, canvas.height);
+      return canvas.toDataURL('image/png');
+    } finally {
+      bitmap.close();
+    }
+  }
+
+  return Object.freeze({ render, renderPhoto, readPhoto });
 });
