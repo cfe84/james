@@ -243,15 +243,18 @@ func TestArtifactHTTPViewDownloadAndExpiry(t *testing.T) {
 func TestArtifactReviewSubmission(t *testing.T) {
 	s, hem, mux := artifactWebServer(t, "report.md", []byte("first\nsecond\nanother quote"))
 	target := "/artifacts/session/" + hem.meta.ID + "/review"
-	submit := func(hash, comment string, authenticated, csrf bool) *httptest.ResponseRecorder {
+	submit := func(hash, general string, inline bool, comment string, authenticated, csrf bool) *httptest.ResponseRecorder {
 		t.Helper()
-		body, err := json.Marshal(map[string]any{
-			"sha256": hash, "operation_id": "review-id",
-			"comments": []map[string]string{
+		payload := map[string]any{"sha256": hash, "operation_id": "review-id", "general_comment": general}
+		if inline {
+			payload["comments"] = []map[string]string{
 				{"quote": "first\nsecond", "comment": comment},
 				{"quote": "another quote", "comment": "Clarify this."},
-			},
-		})
+			}
+		} else {
+			payload["operation_id"] = "general-review-id"
+		}
+		body, err := json.Marshal(payload)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -280,7 +283,7 @@ func TestArtifactReviewSubmission(t *testing.T) {
 		{"complete review", hem.meta.SHA256, "Explain this.", true, true, http.StatusNoContent},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			response := submit(tc.hash, tc.comment, tc.authenticated, tc.csrf)
+			response := submit(tc.hash, "Overall feedback.", true, tc.comment, tc.authenticated, tc.csrf)
 			if response.Code != tc.status {
 				t.Fatalf("submit got %d: %s", response.Code, response.Body)
 			}
@@ -295,10 +298,23 @@ func TestArtifactReviewSubmission(t *testing.T) {
 	}
 	prompt := args[len(args)-1]
 	for _, want := range []string{"Artifact review: report.md", hem.meta.ID, hem.meta.SHA256,
+		"### General comment\nOverall feedback.",
 		"> first\n> second\n\nExplain this.", "> another quote\n\nClarify this."} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("review prompt missing %q: %s", want, prompt)
 		}
+	}
+	for _, general := range []string{" \n", strings.Repeat("é", 2001)} {
+		if resp := submit(hem.meta.SHA256, general, false, "", true, true); resp.Code != http.StatusBadRequest {
+			t.Fatalf("invalid general-only review accepted: %d", resp.Code)
+		}
+	}
+	if resp := submit(hem.meta.SHA256, "General only.", false, "", true, true); resp.Code != http.StatusNoContent || len(hem.reviews) != 2 {
+		t.Fatalf("general-only review failed: %d %s", resp.Code, resp.Body)
+	}
+	args = hem.reviews[1].Args
+	if prompt := args[len(args)-1]; !strings.Contains(prompt, "### General comment\nGeneral only.") || strings.Contains(prompt, "### Comment 1") {
+		t.Fatalf("invalid general-only prompt: %s", prompt)
 	}
 }
 

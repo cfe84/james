@@ -34,6 +34,8 @@
         <button id="add-comment" type="button" disabled>Add comment</button>
         <form id="review-form">
           <ol id="review-comments"></ol>
+          <label for="review-general">General comment (optional)</label>
+          <textarea id="review-general" rows="3" maxlength="{{.MaxBytes}}"></textarea>
           <button id="submit-review" type="submit" disabled>Submit review</button>
         </form>
         <p id="review-status" role="status"></p>

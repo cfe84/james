@@ -333,8 +333,11 @@ passive document from its entry file. Qew escapes plain text and rebuilds
 HTML from an allowlist of attribute-free elements. The review iframe permits
 same-origin selection reads from the trusted viewer but disables scripts and
 external resources through sandbox and CSP. The normal preview is unchanged.
+The viewer highlights draft quotes using selection ranges in the review frame,
+without modifying the reviewed text.
 The authenticated, CSRF-protected review endpoint validates the bounded comment
-batch and checks its checksum against current MP metadata at submission.
+batch and optional general comment, and checks the checksum against current MP
+metadata at submission.
 It sends one ordinary async `continue session` request to the publishing
 session with a retry operation ID; review data does not require separate storage.
 

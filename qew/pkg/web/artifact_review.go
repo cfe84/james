@@ -96,7 +96,7 @@ func serveArtifactReviewDocument(w http.ResponseWriter, target string, entry *ar
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Security-Policy", "sandbox allow-same-origin; default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'")
-	fmt.Fprintf(w, `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Review document</title><style>:root{color-scheme:light dark}body{max-width:85ch;margin:1.5rem auto;padding:0 1rem;font:1rem/1.6 sans-serif;overflow-wrap:anywhere}pre{white-space:pre-wrap}table{border-collapse:collapse}td,th{border:1px solid;padding:.25rem .5rem}</style><main id="review-document" data-sha="%s">%s</main></html>`, template.HTMLEscapeString(entry.sha256), body.String())
+	fmt.Fprintf(w, `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Review document</title><style>:root{color-scheme:light dark}body{max-width:85ch;margin:1.5rem auto;padding:0 1rem;font:1rem/1.6 sans-serif;overflow-wrap:anywhere}pre{white-space:pre-wrap}table{border-collapse:collapse}td,th{border:1px solid;padding:.25rem .5rem}::highlight(artifact-comment){background:#ffe287;color:#252014}</style><main id="review-document" data-sha="%s">%s</main></html>`, template.HTMLEscapeString(entry.sha256), body.String())
 }
 
 // Keep only passive document structure. The viewer can read the frame's
@@ -134,9 +134,10 @@ func writeReviewMarkup(out *strings.Builder, node *html.Node) {
 }
 
 type artifactReview struct {
-	SHA256      string `json:"sha256"`
-	OperationID string `json:"operation_id"`
-	Comments    []struct {
+	SHA256         string `json:"sha256"`
+	OperationID    string `json:"operation_id"`
+	GeneralComment string `json:"general_comment"`
+	Comments       []struct {
 		Quote   string `json:"quote"`
 		Comment string `json:"comment"`
 	} `json:"comments"`
@@ -149,11 +150,16 @@ func (s *Server) submitArtifactReview(w http.ResponseWriter, r *http.Request, se
 	}
 	var review artifactReview
 	// JSON escaping can consume six bytes per byte of input.
-	r.Body = http.MaxBytesReader(w, r.Body, 6*maxArtifactReviewComments*2*maxArtifactReviewField+4096)
+	r.Body = http.MaxBytesReader(w, r.Body, 6*(maxArtifactReviewComments*2+1)*maxArtifactReviewField+4096)
 	dec := json.NewDecoder(r.Body)
 	if err := dec.Decode(&review); err != nil || dec.Decode(new(any)) != io.EOF ||
-		len(review.Comments) == 0 || len(review.Comments) > maxArtifactReviewComments {
+		len(review.Comments) > maxArtifactReviewComments ||
+		(len(review.Comments) == 0 && strings.TrimSpace(review.GeneralComment) == "") {
 		http.Error(w, "Invalid artifact review", http.StatusBadRequest)
+		return
+	}
+	if len(review.GeneralComment) > maxArtifactReviewField {
+		http.Error(w, "General comment exceeds 4000 bytes", http.StatusBadRequest)
 		return
 	}
 	if hash, err := hex.DecodeString(review.SHA256); err != nil || len(hash) != 32 ||
@@ -183,6 +189,9 @@ func (s *Server) submitArtifactReview(w http.ResponseWriter, r *http.Request, se
 	}
 	var prompt strings.Builder
 	fmt.Fprintf(&prompt, "Artifact review: %s\nArtifact ID: %s\nReviewed SHA-256: %s\n\n", chunk.Artifact.Name, id, review.SHA256)
+	if general := strings.TrimSpace(review.GeneralComment); general != "" {
+		fmt.Fprintf(&prompt, "### General comment\n%s\n\n", general)
+	}
 	for i, c := range review.Comments {
 		quote := strings.ReplaceAll(strings.TrimSpace(c.Quote), "\r\n", "\n")
 		quote = strings.ReplaceAll(quote, "\r", "\n")
