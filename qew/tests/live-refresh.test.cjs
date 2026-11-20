@@ -732,9 +732,11 @@ test('agent messages and callbacks collapse to a first-line preview without coll
     ],
     lastSubagents: [], lastActivity: [], lastTodos: null, expandedTodos: false, queuedMessages: [], chatTotal: 4,
     currentSession: 'receiver-id', currentSessionNick: '', currentSessionName: 'receiver', currentSessionStatus: 'idle',
-    showThoughts: false, expandedActivity: false, userLabel: 'you', userPhoto: 'data:image/png;base64,AAAA',
+    thoughtMode: 'Hidden', userLabel: 'you', userPhoto: 'data:image/png;base64,AAAA',
     lastChatHTML: '', chatForceScrollBottom: false,
     collapseSupersededActivityTurns: turns => turns,
+    collapseSupersededActivityEvents: events => events,
+    truncateActivityContent: text => text.split('\n')[0],
     formatContent: text => text.replaceAll('<', '&lt;').replaceAll('>', '&gt;'),
     escapeHtml: text => text.replaceAll('<', '&lt;').replaceAll('>', '&gt;'),
     ensureChatScrollable() {},
@@ -759,6 +761,35 @@ test('agent messages and callbacks collapse to a first-line preview without coll
   const css = fs.readFileSync(path.join(__dirname, '../pkg/web/static/index.html'), 'utf8');
   assert.match(css, /\.msg-role\.agent-user\s*\{\s*color:\s*var\(--danger\)/);
   assert.match(css, /\.msg\.callback \{ color: var\(--muted\);/);
+
+  context.chatConversation = [
+    { role: 'user', content: 'old prompt' },
+    { role: 'thinking', content: 'past thought' },
+    { role: 'assistant', content: 'old reply' },
+    { role: 'scheduled', content: 'current prompt' },
+    { role: 'thinking', content: 'current thought\nfull detail' },
+  ];
+  context.currentSessionStatus = 'working';
+  context.lastActivity = [{ type: 'tool_use', summary: 'live tool' }];
+  for (const [mode, current, full, past] of [
+    ['Hidden', false, false, false],
+    ['Compact', true, false, false],
+    ['Full', true, true, false],
+    ['Historic', true, true, true],
+  ]) {
+    context.thoughtMode = mode;
+    context.renderChat(false);
+    for (const [text, visible] of [
+      ['current prompt', current], ['current thought', current], ['live tool', current],
+      ['full detail', full], ['past thought', past],
+    ]) {
+      assert.equal(container.innerHTML.includes(text), visible, `${mode}: ${text}`);
+    }
+  }
+  context.thoughtMode = 'Full';
+  context.currentSessionStatus = 'idle';
+  context.renderChat(false);
+  assert.doesNotMatch(container.innerHTML, /past thought|current thought|live tool/);
 });
 
 test('working chat todo summaries show the active position and full lists escape native content', () => {

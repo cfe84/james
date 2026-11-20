@@ -51,8 +51,12 @@
   // Show persisted train-of-thought (thinking/agent_text) turns. When off, those
   // turns are hidden; live activity for the in-progress turn is still shown while
   // the agent is working. Persisted across reloads.
-  let showThoughts = (localStorage.getItem('qewShowThoughts') === '1');
-  let expandedActivity = (localStorage.getItem('qewExpandedActivity') === '1');
+  const thoughtModes = ['Hidden', 'Compact', 'Full', 'Historic'];
+  let thoughtMode = localStorage.getItem('qewThoughtMode');
+  if (!thoughtModes.includes(thoughtMode)) {
+    thoughtMode = localStorage.getItem('qewShowThoughts') !== '1' ? 'Hidden' :
+      localStorage.getItem('qewExpandedActivity') === '1' ? 'Historic' : 'Compact';
+  }
   let expandedTodos = (localStorage.getItem('qewExpandedTodos') === '1');
   const excludedProjects = new Set();
   let projectFilterCursor = 0;
@@ -1818,11 +1822,15 @@
     }
 
     const activityTurns = collapseSupersededActivityTurns(serverTurns);
-    let todoIndex = activityTurns.length;
-    while (todoIndex > 0 && ['thinking', 'agent_text', 'scheduled'].includes(activityTurns[todoIndex - 1].role)) {
-      todoIndex--;
-    }
-    const todosHTML = currentSessionStatus === 'working' ? renderTodos(lastTodos, expandedTodos) : '';
+    const working = currentSessionStatus === 'working';
+    const showThoughts = thoughtMode !== 'Hidden';
+    const expandedActivity = thoughtMode !== 'Compact';
+    const activeBoundary = working
+      ? activityTurns.findLastIndex(turn => ['user', 'callback', 'scheduled', 'assistant', 'compaction'].includes(turn.role))
+      : activityTurns.length;
+    const activeStart = activityTurns[activeBoundary]?.role === 'scheduled' ? activeBoundary : activeBoundary + 1;
+    const todoIndex = Math.min(activeStart, activityTurns.length);
+    const todosHTML = working ? renderTodos(lastTodos, expandedTodos) : '';
     const faces = window.jamesAgentFace;
     const assistantFace = faces.render(currentSession);
     const humanFace = faces.renderPhoto(userPhoto);
@@ -1838,7 +1846,6 @@
         html += renderArtifactCard(content, currentSession, turn.created_at);
         continue;
       }
-      if (todoIndex === activityTurns.length) html += todosHTML;
       if (['questionnaire', 'questionnaire_submitted', 'questionnaire_discarded'].includes(turn.role)) {
         html += renderQuestionnaireHistory(content, turn.role);
         continue;
@@ -1866,7 +1873,10 @@
       // Scheduled-invocation prompts render the same way (⏰) so they read as
       // background activity rather than a user message.
       if (turn.role === 'thinking' || turn.role === 'agent_text' || turn.role === 'scheduled') {
-        if (!showThoughts) { skippedThoughts = true; continue; }
+        if (!showThoughts || (thoughtMode !== 'Historic' && index < activeStart)) {
+          skippedThoughts = true;
+          continue;
+        }
         const icon = turn.role === 'thinking' ? '💭' : turn.role === 'scheduled' ? '⏰' : '📝';
         const thoughtContent = expandedActivity ? content : truncateActivityContent(content);
         const timestamp = turn.created_at ? `${escapeHtml(formatTurnTime(turn.created_at))} ` : '';
@@ -1902,6 +1912,7 @@
           <div class="msg-content">${formatContent(content)}</div>
         </div>`);
     }
+    if (todoIndex === activityTurns.length) html += todosHTML;
     // Show queued (optimistic) messages.
     for (const qm of queuedMessages) {
       html += withFace(humanFace, `
@@ -1911,7 +1922,7 @@
         </div>`);
     }
     // Working indicator with activity events.
-    if (currentSessionStatus === 'working') {
+    if (working) {
       if (showThoughts && activity && activity.length > 0) {
         const collapsedActivity = collapseSupersededActivityEvents(activity);
         const recentAct = expandedActivity ? collapsedActivity : collapsedActivity.slice(-5);
@@ -1943,7 +1954,7 @@
     // `lastChatHTML` and skip the DOM update below.
     if (html === '') {
       html = skippedThoughts
-        ? '<div class="empty-state">Train of thought hidden — press 💤 (or t) to show</div>'
+        ? '<div class="empty-state">Train of thought hidden in this mode — press t to change modes</div>'
         : '<div class="empty-state">No messages yet</div>';
     }
     // Skip re-render if content hasn't changed (preserves selection and scroll).
@@ -7364,19 +7375,14 @@
   }
 
   function toggleThoughts() {
-    if (!showThoughts) {
-      showThoughts = true;
-      expandedActivity = false;
-    } else if (!expandedActivity) {
-      expandedActivity = true;
-    } else {
-      showThoughts = false;
-      expandedActivity = false;
-    }
-    localStorage.setItem('qewShowThoughts', showThoughts ? '1' : '0');
-    localStorage.setItem('qewExpandedActivity', expandedActivity ? '1' : '0');
+    thoughtMode = nextThoughtMode();
+    localStorage.setItem('qewThoughtMode', thoughtMode);
     syncThoughtsToggle();
     renderChat(false);
+  }
+
+  function nextThoughtMode() {
+    return thoughtModes[(thoughtModes.indexOf(thoughtMode) + 1) % thoughtModes.length];
   }
 
   function toggleComposeMode() {
@@ -7399,12 +7405,10 @@
   function syncThoughtsToggle() {
     const btn = document.getElementById('thoughts-toggle');
     if (!btn) return;
-    btn.textContent = !showThoughts ? '💤' : expandedActivity ? '🧾' : '💭';
-    const mode = !showThoughts ? 'Hidden' : expandedActivity ? 'Full' : 'Compact';
-    const next = !showThoughts ? 'Compact' : expandedActivity ? 'Hidden' : 'Full';
-    btn.title = `Train of thought: ${mode} (click for ${next}) — T`;
+    btn.textContent = { Hidden: '💤', Compact: '💭', Full: '🧾', Historic: '📜' }[thoughtMode];
+    btn.title = `Train of thought: ${thoughtMode} (click for ${nextThoughtMode()}) — T`;
     btn.setAttribute('aria-label', btn.title);
-    btn.classList.toggle('active', showThoughts);
+    btn.classList.toggle('active', thoughtMode !== 'Hidden');
   }
 
   function supportsTodos(agent) {

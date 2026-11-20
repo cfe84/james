@@ -1863,6 +1863,11 @@ text and status. Copilot uses the tracked provider session ID and its effective
 filters by provider session ID, including an ID learned during the first turn.
 An unavailable todo snapshot is reported separately from activity or history
 failure. No provider task data is written to James storage.
+
+Qew persists one thought display mode. Compact and Full render stored thoughts
+only for a working session, after the latest prompt, reply, or compaction marker
+(including the latest scheduled prompt itself). Historic also renders previous
+stored thoughts; the live activity buffer does not provide history.
 Distillation uses bounded turn-aligned transcript chunks and computes its
 snapshot watermark from distillable source turns only, so appended outcome
 turns do not move a retry to a new snapshot. A newly appended source turn does
