@@ -27,6 +27,12 @@ type Metadata struct {
 	Size   int64  `json:"size"`
 	SHA256 string `json:"sha256"`
 	View   string `json:"view,omitempty"`
+	SentAt string `json:"sent_at,omitempty"`
+}
+
+type Ref struct {
+	SessionID string `json:"session_id"`
+	ID        string `json:"id"`
 }
 
 type ReadRequest struct {

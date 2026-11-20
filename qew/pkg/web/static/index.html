@@ -148,7 +148,6 @@ header h1 span { color: var(--primary); }
 .chat-header h2 { font-size: 1.1em; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-header .chat-mp { color: var(--muted); font-size: 0.85em; margin-left: 8px; }
 .chat-header-line1 .chat-mp { flex-shrink: 0; }
-.chat-header #chat-artifacts { flex-shrink: 0; margin-left: 8px; }
 .chat-header .chat-override {
   background: var(--surface); color: var(--text); border: 1px solid var(--surface2);
   border-radius: 6px; padding: 6px 10px; font-size: 0.9em; font-family: inherit;
@@ -654,7 +653,6 @@ header h1 span { color: var(--primary); }
         <h2 id="chat-title">Chat</h2>
         <span class="chat-mp" id="chat-mp"></span>
         <span class="chat-mp" id="chat-context" title="Context usage (custom compaction)"></span>
-        <button class="btn-muted" id="chat-artifacts" aria-haspopup="dialog">Artifacts</button>
       </div>
       <div class="chat-header-line2">
         <select id="chat-model-override" class="chat-override" title="Model override — esc-o"></select>
@@ -675,6 +673,7 @@ header h1 span { color: var(--primary); }
           <button data-action="push">Git Push</button>
           <hr>
           <button data-action="new-subagent">New Subagent</button>
+          <button data-action="artifacts">Artifacts</button>
           <button data-action="adopt">Make Subsession</button>
           <button data-action="promote">Make Top-Level</button>
           <button data-action="channels">Channels</button>

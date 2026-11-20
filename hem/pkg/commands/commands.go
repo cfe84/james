@@ -558,6 +558,8 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 		return e.ReadArtifact(args)
 	case "list artifact":
 		return e.ListArtifacts(args)
+	case "delete artifact":
+		return e.DeleteArtifact(args)
 	case "resolve questionnaire":
 		return e.resolveQuestionnaire(args)
 	case "create ponsonby", "list ponsonby", "show ponsonby", "update ponsonby", "retry ponsonby", "delete ponsonby":

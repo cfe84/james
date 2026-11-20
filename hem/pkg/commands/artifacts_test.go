@@ -48,6 +48,8 @@ func TestArtifactCommandsRouteOnlyTrackedSessions(t *testing.T) {
 			var data any = artifact.Chunk{Artifact: artifact.Metadata{ID: "artifact"}, Content: []byte("chunk")}
 			if command.Method == "list_artifacts" {
 				data = []artifact.Metadata{{ID: "artifact"}}
+			} else if command.Method == "delete_artifact" {
+				data = command.Data
 			}
 			raw, _ := json.Marshal(data)
 			if err := json.NewEncoder(out).Encode(transport.Response{Status: "success", Data: raw}); err != nil {
@@ -85,6 +87,19 @@ func TestArtifactCommandsRouteOnlyTrackedSessions(t *testing.T) {
 	data, _ = json.Marshal(cmd.Data)
 	if cmd.Method != "list_artifacts" || json.Unmarshal(data, &list) != nil || list.SessionID != "session" {
 		t.Fatalf("list lost the tracked session: %+v", cmd)
+	}
+	wantDelete := artifact.Ref{SessionID: "session", ID: "artifact"}
+	if resp := e.Dispatch("delete", "artifact", []string{wantDelete.SessionID, wantDelete.ID}); resp.Status != "ok" {
+		t.Fatalf("delete failed: %+v", resp)
+	}
+	cmd = <-requests
+	var deleted artifact.Ref
+	data, _ = json.Marshal(cmd.Data)
+	if cmd.Method != "delete_artifact" || json.Unmarshal(data, &deleted) != nil || deleted != wantDelete {
+		t.Fatalf("delete lost the tracked session or artifact: %+v", cmd)
+	}
+	if resp := e.Dispatch("delete", "artifact", []string{"missing", "artifact"}); resp.Status != "error" {
+		t.Fatal("delete accepted unknown session")
 	}
 	for _, args := range [][]string{nil, {"missing"}, {"session", "other"}} {
 		if resp := e.Dispatch("list", "artifact", args); resp.Status != "error" {

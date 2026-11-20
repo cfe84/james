@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"james/moneypenny/pkg/artifact"
 	"james/moneypenny/pkg/envelope"
@@ -301,7 +302,49 @@ func (h *Handler) listArtifacts(cmd *envelope.Command) *envelope.Response {
 		}
 		items = append(items, meta.Metadata)
 	}
+	if len(items) > 0 {
+		times, err := h.store.ArtifactSentTimes(request.SessionID)
+		if err != nil {
+			return fail(err)
+		}
+		for i := range items {
+			if sent := times[items[i].ID]; !sent.IsZero() {
+				items[i].SentAt = sent.UTC().Format(time.RFC3339)
+			}
+		}
+	}
 	return envelope.SuccessResponse(cmd.RequestID, items)
+}
+
+func (h *Handler) deleteArtifact(cmd *envelope.Command) *envelope.Response {
+	var request artifact.Ref
+	if err := decodeGadget(cmd.Data, &request); err != nil || !sessionIDPattern.MatchString(request.ID) {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "invalid artifact delete request")
+	}
+	dir, err := h.sessionDirPath(request.SessionID)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
+	}
+	h.artifactsMu.Lock()
+	defer h.artifactsMu.Unlock()
+	fail := func(err error) *envelope.Response {
+		h.errorLog("deleting artifact for session %s: %v", request.SessionID, err)
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, "could not delete session artifact")
+	}
+	session, err := h.store.GetSession(request.SessionID)
+	if err != nil {
+		return fail(err)
+	}
+	if session == nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, "artifact session not found")
+	}
+	if err := os.RemoveAll(filepath.Join(dir, "artifacts", request.ID)); err != nil {
+		return fail(err)
+	}
+	if err := h.store.DeleteArtifactTurn(request.SessionID, request.ID); err != nil {
+		return fail(err)
+	}
+	return envelope.SuccessResponse(cmd.RequestID, request)
 }
 
 func (h *Handler) readArtifact(_ context.Context, cmd *envelope.Command) *envelope.Response {

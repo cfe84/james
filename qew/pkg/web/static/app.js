@@ -1775,7 +1775,7 @@
       const content = turn.content || '(empty)';
 
       if (turn.role === 'artifact') {
-        html += renderArtifactCard(content, currentSession);
+        html += renderArtifactCard(content, currentSession, turn.created_at);
         continue;
       }
       if (['questionnaire', 'questionnaire_submitted', 'questionnaire_discarded'].includes(turn.role)) {
@@ -1979,15 +1979,15 @@
     }
   }
 
-  function renderArtifactCard(content, sessionID) {
+  function renderArtifactCard(content, sessionID, sentAt) {
     try {
-      return `<div class="msg"><div class="msg-role">Artifact</div>${renderArtifactDetails(JSON.parse(content), sessionID)}</div>`;
+      return `<div class="msg"><div class="msg-role">Artifact</div>${renderArtifactDetails(JSON.parse(content), sessionID, sentAt)}</div>`;
     } catch (error) {
       return '<div class="msg system-note">Artifact metadata could not be read.</div>';
     }
   }
 
-  function renderArtifactDetails(artifact, sessionID) {
+  function renderArtifactDetails(artifact, sessionID, sentAt = artifact?.sent_at) {
     if (!artifact || typeof artifact.id !== 'string' || !/^[a-f0-9-]{36}$/.test(artifact.id) ||
         typeof artifact.name !== 'string' || typeof artifact.title !== 'string' ||
         !Number.isSafeInteger(artifact.size) || artifact.size < 0) {
@@ -1999,20 +1999,48 @@
       (!artifact.view && /\.(md|markdown|txt|text|log)$/i.test(artifact.name));
     const view = canView ?
       `<a class="btn" href="${base}/view" target="_blank" rel="noopener noreferrer">View</a> ` : '';
-    return `<div class="msg-content"><strong>${escapeHtml(artifact.title)}</strong><br>${escapeHtml(artifact.name)}<br>${view}<a class="btn" href="${base}/download" download>Download</a></div>`;
+    const date = sentAt ? `<br><span class="agent-message-time">Sent ${escapeHtml(new Date(sentAt).toLocaleString())}</span>` : '';
+    return `<div class="msg-content"><strong>${escapeHtml(artifact.title)}</strong><br>${escapeHtml(artifact.name)}${date}<br>${view}<a class="btn" href="${base}/download" download>Download</a> <button class="btn-muted" data-delete-artifact="${artifact.id}" type="button">Delete</button></div>`;
+  }
+
+  async function deleteArtifact(event, sessionID) {
+    const button = event.target.closest('[data-delete-artifact]');
+    if (!button || button.disabled || currentSession !== sessionID || !sessionID) return false;
+    if (!confirm('Delete this published artifact? This cannot be undone.')) return false;
+    button.disabled = true;
+    try {
+      const id = button.dataset.deleteArtifact;
+      const resp = await apiCall('delete', 'artifact', [sessionID, id]);
+      if (resp.status !== 'ok') throw new Error(resp.message || 'Delete failed');
+      if (currentSession === sessionID) {
+        if (chatRefresh) await chatRefresh;
+        if (currentSession !== sessionID) return false;
+        await loadChat();
+        return true;
+      }
+    } catch (error) {
+      alert(`Could not delete artifact: ${error.message}`);
+    } finally {
+      button.disabled = false;
+    }
+    return false;
   }
 
   async function openArtifactsModal() {
     const sessionID = currentSession;
     if (!sessionID) return;
     renderWizardModal(`
-      <div role="dialog" aria-modal="true" aria-labelledby="chat-artifact-title">
+      <div class="cmd-palette" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="chat-artifact-title">
         <h3 id="chat-artifact-title">Artifacts</h3>
         <div id="chat-artifact-list" aria-live="polite"><div class="loading">Loading…</div></div>
         <div class="modal-actions"><button class="btn-muted" onclick="window._qewCloseWizard()">Close</button></div>
       </div>
     `);
     const list = document.getElementById('chat-artifact-list');
+    list.parentElement.focus();
+    list.addEventListener('click', async event => {
+      if (await deleteArtifact(event, sessionID) && list.isConnected) openArtifactsModal();
+    });
     try {
       const resp = await apiCall('list', 'artifact', [sessionID]);
       if (!list.isConnected || currentSession !== sessionID) return;
@@ -2348,7 +2376,7 @@
           <button class="cmd-item" data-cmd="resolveattention"><kbd>r</kbd> Resolve attention</button>
           <button class="cmd-item" data-cmd="edit"><kbd>e</kbd> Edit session</button>
           <button class="cmd-item" data-cmd="duplicate"><kbd>y</kbd> Duplicate session</button>
-          <button class="cmd-item" data-cmd="subagent"><kbd>a</kbd> New subagent</button>
+          <button class="cmd-item" data-cmd="artifacts"><kbd>a</kbd> Artifacts</button>
           <button class="cmd-item" data-cmd="allsubagents"><kbd>l</kbd> All subagents</button>
           <button class="cmd-item" data-cmd="project"><kbd>p</kbd> Move to project</button>
           <button class="cmd-item" data-cmd="diff"><kbd>g</kbd> Git diff</button>
@@ -2414,7 +2442,7 @@
       case 'resolveattention': resolveAttention(); break;
       case 'edit':     showEditSessionModal(); break;
       case 'duplicate': openDuplicateWizard(); break;
-      case 'subagent': createNewSubagent(); break;
+      case 'artifacts': openArtifactsModal(); break;
       case 'allsubagents': showAllSubagents(); break;
       case 'project':  showMoveToProjectModal(); break;
       case 'diff':     showDiff(); break;
@@ -2484,12 +2512,16 @@
       <div class="cmd-palette" tabindex="-1" role="dialog" aria-modal="true" aria-label="All subagents">
         <h3>All subagents</h3>
         <div class="cmd-list">${items}</div>
-        <div class="modal-actions">${actions}<button class="btn-muted" onclick="window._qewCloseAllSubagents()">Close (Esc)</button></div>
+        <div class="modal-actions">${actions}<button class="btn" data-new-subagent>New subagent (A)</button><button class="btn-muted" onclick="window._qewCloseAllSubagents()">Close (Esc)</button></div>
       </div>
     `);
     const palette = document.querySelector('.cmd-palette');
     if (palette) {
       palette.addEventListener('click', (e) => {
+        if (e.target.closest('[data-new-subagent]')) {
+          createNewSubagent();
+          return;
+        }
         const button = e.target.closest('[data-all-sub-idx]');
         if (!button) return;
         openAllSubagent(parseInt(button.dataset.allSubIdx, 10));
@@ -2557,7 +2589,13 @@
 
   function handleAllSubagentsKey(e) {
     const palette = document.querySelector('.cmd-palette[aria-label="All subagents"]');
-    if (!palette || e.ctrlKey || e.metaKey || e.altKey || allSubagents.length === 0) return false;
+    if (!palette || e.ctrlKey || e.metaKey || e.altKey) return false;
+    if (e.key === 'a' && !e.repeat) {
+      e.preventDefault();
+      createNewSubagent();
+      return true;
+    }
+    if (!allSubagents.length || (e.key === 'Enter' && e.target.closest('[data-new-subagent]'))) return false;
     if (e.key === 'ArrowDown' || e.key === 'j') {
       e.preventDefault();
       allSubagentsCursor = Math.min(allSubagentsCursor + 1, allSubagents.length - 1);
@@ -7328,7 +7366,7 @@
   document.getElementById('thoughts-toggle').addEventListener('click', toggleThoughts);
   document.getElementById('activity-detail-toggle').addEventListener('click', toggleExpandedActivity);
   document.getElementById('schedules-toggle').addEventListener('click', openSchedulesModal);
-  document.getElementById('chat-artifacts').addEventListener('click', openArtifactsModal);
+  document.getElementById('chat-messages').addEventListener('click', event => deleteArtifact(event, currentSession));
   syncThoughtsToggle();
   syncActivityDetailToggle();
   syncSchedulesToggle([]);
@@ -7403,6 +7441,7 @@
     else if (action === 'branch') showBranchModal();
     else if (action === 'push') gitPush();
     else if (action === 'new-subagent') createNewSubagent();
+    else if (action === 'artifacts') openArtifactsModal();
     else if (action === 'adopt') adoptSession();
     else if (action === 'promote') promoteSession();
     else if (action === 'channels') openChannelsModal();
@@ -7624,7 +7663,7 @@
         }
         return;
       }
-      const map = { c: 'complete', u: 'markready', r: 'resolveattention', e: 'edit', y: 'duplicate', a: 'subagent', l: 'allsubagents', p: 'project', g: 'diff', t: 'thoughts', o: 'model', f: 'effort', w: 'context', m: 'memory', n: 'channels', h: 'schedules', K: 'compact', D: 'distill', s: 'stop', d: 'delete', q: 'back' };
+      const map = { c: 'complete', u: 'markready', r: 'resolveattention', e: 'edit', y: 'duplicate', a: 'artifacts', l: 'allsubagents', p: 'project', g: 'diff', t: 'thoughts', o: 'model', f: 'effort', w: 'context', m: 'memory', n: 'channels', h: 'schedules', K: 'compact', D: 'distill', s: 'stop', d: 'delete', q: 'back' };
       const cmd = map[e.key];
       if (cmd) { e.preventDefault(); runCmd(cmd); }
       return;
@@ -7660,6 +7699,12 @@
     }
 
     if (chatActive) {
+      if (e.key === 'a' && !e.repeat && !e.ctrlKey && !e.metaKey && !e.altKey &&
+          !e.target.closest('input, textarea, select, [contenteditable="true"]') && !e.target.isContentEditable) {
+        e.preventDefault();
+        openArtifactsModal();
+        return;
+      }
       // Keyboard nav mode: input is blurred; j/k (or arrows) scroll the
       // transcript, Escape returns to the input.
       if (chatNavMode) {

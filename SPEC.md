@@ -1268,9 +1268,12 @@ and never overwrites an existing file. Unpublished working files are not accessi
 
 Qew renders artifact cards using the existing conversation components:
 View/Download buttons retain contrasting text rather than inheriting message-link colors.
-The conversation header's **Artifacts** button lists all published artifacts
-for that session, including cards outside the loaded history, with the same
-View and Download actions.
+**Actions → Artifacts** (shortcut `a` outside the chat composer) lists all
+published artifacts, including cards outside the loaded history. Both the
+list and transcript cards show the original send date and offer View,
+Download, and confirmed Delete. Delete removes the snapshot and its card,
+not the source file. In the **All subagents** window, `a` creates a subagent
+instead.
 
 | File | View | Download |
 |------|------|----------|

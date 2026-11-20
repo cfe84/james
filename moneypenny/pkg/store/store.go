@@ -1104,6 +1104,52 @@ func (s *Store) GetConversation(sessionID string) ([]*ConversationTurn, error) {
 	return turns, rows.Err()
 }
 
+// ArtifactSentTimes returns the original publication times from the transcript.
+func (s *Store) ArtifactSentTimes(sessionID string) (map[string]time.Time, error) {
+	rows, err := s.db.Query(`SELECT json_extract(content, '$.id'), created_at
+			FROM conversation_turns WHERE session_id = ? AND role = 'artifact' AND json_valid(content)`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	times := make(map[string]time.Time)
+	for rows.Next() {
+		var id sql.NullString
+		var sent time.Time
+		if err := rows.Scan(&id, &sent); err != nil {
+			return nil, err
+		}
+		if id.Valid {
+			times[id.String] = sent
+		}
+	}
+	return times, rows.Err()
+}
+
+// DeleteArtifactTurn removes the card and advances the transcript revision.
+func (s *Store) DeleteArtifactTurn(sessionID, artifactID string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(`DELETE FROM conversation_turns WHERE session_id = ? AND role = 'artifact'
+			AND CASE WHEN json_valid(content) THEN json_extract(content, '$.id') END = ?`, sessionID, artifactID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n > 0 {
+		if _, err := tx.Exec(`UPDATE sessions SET revision = revision + 1, updated_at = ? WHERE session_id = ?`, time.Now().UTC(), sessionID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func (s *Store) GetDistillationProgress(sessionID string, snapshotMaxTurnID int64, configKey string) (*DistillationProgress, error) {
 	var p DistillationProgress
 	err := s.db.QueryRow(`SELECT session_id, snapshot_max_turn_id, config_key, next_chunk, chunk_count

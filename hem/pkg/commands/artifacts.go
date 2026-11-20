@@ -20,6 +20,15 @@ func (e *Executor) ListArtifacts(args []string) *protocol.Response {
 	return e.relayArtifact(request.SessionID, "list_artifacts", request)
 }
 
+// DeleteArtifact removes a published snapshot from its owning session.
+func (e *Executor) DeleteArtifact(args []string) *protocol.Response {
+	if len(args) != 2 || args[0] == "" || args[1] == "" {
+		return protocol.ErrResponse("usage: delete artifact SESSION_ID ARTIFACT_ID")
+	}
+	request := artifact.Ref{SessionID: args[0], ID: args[1]}
+	return e.relayArtifact(request.SessionID, "delete_artifact", request)
+}
+
 // ReadArtifact relays a bounded chunk from the owning MP without storing it.
 func (e *Executor) ReadArtifact(args []string) *protocol.Response {
 	if len(args) != 1 {

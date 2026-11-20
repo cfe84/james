@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"james/moneypenny/pkg/agent"
 	"james/moneypenny/pkg/artifact"
@@ -171,7 +172,8 @@ func TestArtifactPublicationSnapshotAndSessionScope(t *testing.T) {
 	if err != nil || len(files) != 2 {
 		t.Fatalf("superseded snapshots were not cleaned: %v %v", files, err)
 	}
-	if items := list(gadgetSession); len(items) != 1 || items[0].ID != meta.ID || items[0].Size != int64(len("next update")) {
+	if items := list(gadgetSession); len(items) != 1 || items[0].ID != meta.ID ||
+		items[0].Size != int64(len("next update")) || items[0].SentAt != turns[0].CreatedAt.UTC().Format(time.RFC3339) {
 		t.Fatalf("list did not return current artifact metadata: %+v", items)
 	}
 	for _, file := range []struct{ name, view string }{{"notes.MD", "markdown"}, {"output.txt", "text"}} {
@@ -204,6 +206,32 @@ func TestArtifactPublicationSnapshotAndSessionScope(t *testing.T) {
 		if !resp.Success || json.Unmarshal(raw, &updated) != nil || updated.Name != doc.Name || updated.View != doc.View {
 			t.Fatalf("update did not preserve the legacy artifact's filename and preview: %+v", resp)
 		}
+	}
+	deleteArtifact := func(session, id string) *envelope.Response {
+		t.Helper()
+		data, _ := json.Marshal(artifact.Ref{SessionID: session, ID: id})
+		return h.Handle(context.Background(), &envelope.Command{Method: "delete_artifact", Data: data})
+	}
+	if resp := deleteArtifact(gadgetSession, "../"); resp.Status != envelope.StatusError {
+		t.Fatal("invalid artifact ID was accepted")
+	}
+	if resp := deleteArtifact(gadgetOtherSession, meta.ID); resp.Status != envelope.StatusSuccess || len(list(gadgetSession)) != 3 {
+		t.Fatal("delete crossed the session boundary")
+	}
+	for range 2 {
+		if resp := deleteArtifact(gadgetSession, meta.ID); resp.Status != envelope.StatusSuccess {
+			t.Fatalf("artifact delete failed: %+v", resp)
+		}
+	}
+	if resp := read(gadgetSession, meta.ID, 0); resp.Status != envelope.StatusError {
+		t.Fatal("deleted snapshot remained readable")
+	}
+	turns, err = h.store.GetConversation(gadgetSession)
+	if err != nil || len(turns) != 2 || len(list(gadgetSession)) != 2 {
+		t.Fatalf("artifact delete did not remove just its own card and entry: %v %v", turns, err)
+	}
+	if _, err := os.Stat(filename); err != nil {
+		t.Fatalf("artifact delete removed the original source: %v", err)
 	}
 	data, _ := json.Marshal(envelope.SessionIDData{SessionID: gadgetSession})
 	if resp := h.Handle(context.Background(), &envelope.Command{Method: "delete_session", Data: data}); resp.Status != envelope.StatusSuccess {

@@ -294,6 +294,12 @@ Files are never pushed through the conversation/event channel.
 Qew's conversation artifact list requests metadata on open via Hem's operator
 `list artifact SESSION_ID` command, reusing MP's `list_artifacts` and the same
 tracked-session routing as reads, independently of transcript pagination.
+The list gets original send times from artifact turns; replacing snapshot bytes
+does not change that date. Operator-only `delete artifact SESSION_ID ARTIFACT_ID`
+uses the same routing and serializes with MP artifact reads and writes. It
+removes the snapshot directory, then deletes the card and bumps the conversation
+revision. Retrying can finish card cleanup if the snapshot is already gone.
+Cached previews stop serving the artifact when their existence check fails.
 
 Agent artifact list/download calls use the authenticated gadget relay, not
 the administrative proxy. The caller MP and Hem check the existing Agents

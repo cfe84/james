@@ -477,6 +477,8 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.readArtifact(ctx, cmd)
 	case "list_artifacts":
 		return h.listArtifacts(cmd)
+	case "delete_artifact":
+		return h.deleteArtifact(cmd)
 	case "resolve_questionnaire":
 		return h.resolveQuestionnaire(cmd)
 	case "schedule":

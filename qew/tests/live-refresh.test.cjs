@@ -62,18 +62,29 @@ test('artifact cards offer View only for supported files and escape metadata', (
 });
 
 test('conversation artifact list loads the selected session independently of history', async () => {
-  const list = { isConnected: true };
+  const list = { isConnected: true, addEventListener() {}, parentElement: { focus() {} } };
   const artifact = {
     id: '00000000-0000-0000-0000-000000000001', name: 'report.md', title: '<Old report>', size: 1024, view: 'markdown',
+    sent_at: '2026-11-20T00:00:00Z',
   };
   let response = { status: 'ok', data: [artifact] };
+  let confirmed = false;
+  const deleted = [];
+  let chatReloads = 0;
   const context = vm.createContext({
     currentSession: 'session',
     encodeURIComponent,
+    chatRefresh: null,
+    confirm: () => confirmed,
+    loadChat: async () => { chatReloads++; },
     escapeHtml: text => text.replaceAll('<', '&lt;'),
     renderWizardModal: html => assert.match(html, /chat-artifact-list/),
     document: { getElementById: () => list },
     apiCall: async (verb, noun, args) => {
+      if (verb === 'delete') {
+        deleted.push(`${noun} ${args.join(' ')}`);
+        return { status: 'ok' };
+      }
       assert.equal(`${verb} ${noun} ${args}`, 'list artifact session');
       return response;
     },
@@ -82,9 +93,19 @@ test('conversation artifact list loads the selected session independently of his
     app.indexOf('  function renderQuestionnaireHistory(')), context);
   await context.openArtifactsModal();
   assert.match(list.innerHTML, /&lt;Old report>/);
+  assert.ok(list.innerHTML.includes(`Sent ${new Date(artifact.sent_at).toLocaleString()}`));
+  assert.match(list.innerHTML, new RegExp(`data-delete-artifact="${artifact.id}"`));
   for (const action of ['view', 'download']) {
     assert.ok(list.innerHTML.includes(`/artifacts/session/${artifact.id}/${action}`));
   }
+  const button = { dataset: { deleteArtifact: artifact.id } };
+  const click = { target: { closest: () => button } };
+  assert.equal(await context.deleteArtifact(click, 'session'), false);
+  assert.deepEqual(deleted, []);
+  confirmed = true;
+  assert.equal(await context.deleteArtifact(click, 'session'), true);
+  assert.deepEqual(deleted, [`artifact session ${artifact.id}`]);
+  assert.equal(chatReloads, 1);
   response = { status: 'ok', data: [] };
   await context.openArtifactsModal();
   assert.match(list.innerHTML, /No artifacts published/);
@@ -347,7 +368,7 @@ test('Markdown preserves literal code and PowerShell continuation backticks', ()
 test('conversation help retains action, compose, focus and scrolling shortcuts', () => {
   const source = app.slice(app.indexOf("  document.addEventListener('keydown', (e) => {"), app.indexOf('  // --- Routing ---'));
   const actions = {
-    c: 'complete', u: 'markready', r: 'resolveattention', e: 'edit', y: 'duplicate', a: 'subagent',
+    c: 'complete', u: 'markready', r: 'resolveattention', e: 'edit', y: 'duplicate', a: 'artifacts',
     l: 'allsubagents', p: 'project', g: 'diff', t: 'thoughts', o: 'model',
     f: 'effort', w: 'context', m: 'memory', n: 'channels', h: 'schedules',
     K: 'compact', D: 'distill', s: 'stop', d: 'delete', q: 'back',
@@ -372,6 +393,10 @@ test('conversation help retains action, compose, focus and scrolling shortcuts',
     ['none', { key: 'p', ctrlKey: true }, [['compose']], true],
     ['none', { key: 'i' }, [['focus-input', true]], true],
     ['none', { key: 'd', ctrlKey: true }, [['page', 1]], true],
+    ['none', { key: 'a' }, [['artifacts']], true],
+    ['none', { key: 'a', target: { closest: () => true } }, [], false],
+    ['subagents', { key: 'a' }, [['new-subagent']], true],
+    ['subagents', { key: 'a', repeat: true }, [], false],
     ...['p', 'j', 'k', 'd', 'u'].map(key => ['edit', { key, ctrlKey: true }, [], false]),
     ['edit', { key: 'i' }, [], false],
   ]) {
@@ -385,7 +410,8 @@ test('conversation help retains action, compose, focus and scrolling shortcuts',
         activeElement: {},
         getElementById: id => id === 'chat-input' ? input : { style: { display: 'flex' } },
         querySelector: selector => selector === '.modal-overlay' ? modal !== 'none' :
-          selector === '.cmd-palette[aria-label="Session commands"]' ? modal === 'help' : null,
+          selector === '.cmd-palette[aria-label="Session commands"]' ? modal === 'help' :
+          selector === '.cmd-palette[aria-label="All subagents"]' ? modal === 'subagents' : null,
         addEventListener: (event, handler) => { listener = handler; },
       },
       closeCmdPalette: focus => calls.push(['close-palette', focus]),
@@ -395,15 +421,20 @@ test('conversation help retains action, compose, focus and scrolling shortcuts',
       chatScrollLine: direction => calls.push(['line', direction]),
       chatScroll: direction => calls.push(['page', direction]),
       runCmd: command => calls.push(['command', command]),
+      openArtifactsModal: () => calls.push(['artifacts']),
+      createNewSubagent: () => calls.push(['new-subagent']),
+      allSubagents: [],
       closeWizard: () => calls.push(['close']),
       window: { _openSubagent: (...args) => calls.push(['subagent', ...args]) },
       handleProjectFilterKey: () => false,
-      handleAllSubagentsKey: () => false, handleDiffModalKey: () => false, handleWizardListKey() {},
+      handleDiffModalKey: () => false, handleWizardListKey() {},
     });
+    vm.runInContext(app.slice(app.indexOf('  function handleAllSubagentsKey('),
+      app.indexOf('  async function showWizardStep1(')), context);
     vm.runInContext(source, context);
     let defaultPrevented = false;
     listener({ ctrlKey: false, metaKey: false, altKey: false, repeat: false, isComposing: false,
-      ...inputs, preventDefault() { defaultPrevented = true; } });
+      target: { closest: () => null }, ...inputs, preventDefault() { defaultPrevented = true; } });
     assert.deepEqual(calls, expected, `${modal}: ${JSON.stringify(inputs)}`);
     assert.equal(defaultPrevented, prevented, `${modal}: ${JSON.stringify(inputs)}`);
   }
