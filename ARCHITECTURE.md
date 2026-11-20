@@ -307,6 +307,9 @@ grant on each request. Hem resolves the specified target against tracked
 sessions, then relays metadata listing or bounded `read_artifact` chunks from
 the owning MP. The CLI keeps the destination path local and stages bytes beside
 it, validates the manifest and SHA-256, then publishes without overwriting.
+Injected gadget instructions distinguish the daemon-bound caller from the
+publishing session passed as the target and direct agents to use this relay
+before requesting a manual copy.
 
 Qew's authenticated View page keeps a stable URL and frames the authenticated
 preview endpoint, which reuses a temporary preview only if its checksum still

@@ -1261,8 +1261,9 @@ To share a file, publish it and message the peer your session ID and artifact
 ID. The **Agents** grant lets a session use `gadgets artifacts list SESSION_ID`
 and `gadgets artifacts download SESSION_ID ARTIFACT_ID DESTINATION` on any
 session tracked by its Hem, including sessions on a different MP. The grant
-applies to all published artifacts, not just IDs shared in a message. The
-destination is a new local file; relative paths use the gadget CLI's current
+applies to all published artifacts, not just IDs shared in a message. Use the
+publisher's full session ID in both commands; no shared folder or reply is
+required. The destination is a new local file; relative paths use the gadget CLI's current
 directory. Download verifies the whole snapshot before making it available
 and never overwrites an existing file. Unpublished working files are not accessible.
 

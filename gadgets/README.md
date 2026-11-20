@@ -205,9 +205,18 @@ preview format stay the same. Editing the source file alone has no effect.
 
 Share the publishing session ID and artifact ID in an agent message. Agents
 with the **Agents** grant can list or download any tracked session's published
-artifacts, even across hosts. Download saves the verified snapshot to a new
-file at `DESTINATION` on the calling host (relative to the current directory
-if not absolute). It does not overwrite existing files.
+artifacts, even across hosts, without a shared folder or a reply from the
+publisher. To retrieve a file, look up the publisher's full session ID with
+`gadgets agents list` if needed, then use it in both commands:
+
+```text
+gadgets artifacts list PUBLISHER_SESSION_ID
+gadgets artifacts download PUBLISHER_SESSION_ID ARTIFACT_ID ./report.zip
+```
+
+Skip `list` if you already know the artifact ID. Download saves the verified
+snapshot to a new file at `DESTINATION` on the calling host (relative to the
+current directory if not absolute). It does not overwrite existing files.
 
 The file stays on the MP until session deletion. Qew transfers it through Hem
 on demand. Reload an open View page to see the latest update, or use Download

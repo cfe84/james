@@ -356,7 +356,8 @@ func TestExistingSessionRouteRefreshFromOperatorOnly(t *testing.T) {
 
 func TestGadgetPromptShowsOnlyGrantedCommands(t *testing.T) {
 	h, params := gadgetTestHandler(t)
-	if strings.Contains(params.SystemPrompt, "gadgets agents list") || !strings.Contains(params.SystemPrompt, "gadgets memory get") {
+	if strings.Contains(params.SystemPrompt, "gadgets agents list") || strings.Contains(params.SystemPrompt, "gadgets artifacts download") ||
+		!strings.Contains(params.SystemPrompt, "gadgets memory get") {
 		t.Fatal("default prompt does not match capability defaults")
 	}
 	for _, text := range []string{
@@ -384,7 +385,11 @@ func TestGadgetPromptShowsOnlyGrantedCommands(t *testing.T) {
 			t.Fatalf("revoked/stale instructions remain: %s", text)
 		}
 	}
-	for _, text := range []string{"Base instructions.", "gadgets agents list", "gadgets subagents message parent", "no parent ID or discovery permission is needed", "gadgets notify"} {
+	for _, text := range []string{
+		"Base instructions.", "gadgets agents list", "gadgets subagents message parent", "no parent ID or discovery permission is needed", "gadgets notify",
+		"gadgets artifacts list PUBLISHER_SESSION_ID", "gadgets artifacts download PUBLISHER_SESSION_ID ARTIFACT_ID DESTINATION",
+		"even from a different Moneypenny", "no shared folder or reply from the publisher is needed",
+	} {
 		if !strings.Contains(params.SystemPrompt, text) {
 			t.Fatalf("missing allowed instruction: %s", text)
 		}
