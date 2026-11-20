@@ -1268,6 +1268,9 @@ and never overwrites an existing file. Unpublished working files are not accessi
 
 Qew renders artifact cards using the existing conversation components:
 View/Download buttons retain contrasting text rather than inheriting message-link colors.
+The conversation header's **Artifacts** button lists all published artifacts
+for that session, including cards outside the loaded history, with the same
+View and Download actions.
 
 | File | View | Download |
 |------|------|----------|

@@ -291,6 +291,9 @@ and its source before compilation. `read_artifact` serves at most 192 KiB
 per operator request, or metadata only; `read artifact` on Hem routes only
 tracked sessions to their registered MP. Neither accepts arbitrary source paths.
 Files are never pushed through the conversation/event channel.
+Qew's conversation artifact list requests metadata on open via Hem's operator
+`list artifact SESSION_ID` command, reusing MP's `list_artifacts` and the same
+tracked-session routing as reads, independently of transcript pagination.
 
 Agent artifact list/download calls use the authenticated gadget relay, not
 the administrative proxy. The caller MP and Hem check the existing Agents

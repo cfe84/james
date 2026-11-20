@@ -12,9 +12,10 @@ import (
 	"james/hem/pkg/store"
 	"james/hem/pkg/transport"
 	"james/moneypenny/pkg/artifact"
+	"james/moneypenny/pkg/envelope"
 )
 
-func TestReadArtifactRoutesOnlyTrackedSessions(t *testing.T) {
+func TestArtifactCommandsRouteOnlyTrackedSessions(t *testing.T) {
 	e := newHierarchyExecutor(t)
 	dir := t.TempDir()
 	inPath, outPath := filepath.Join(dir, "in"), filepath.Join(dir, "out")
@@ -44,7 +45,11 @@ func TestReadArtifactRoutesOnlyTrackedSessions(t *testing.T) {
 				return
 			}
 			requests <- command
-			raw, _ := json.Marshal(artifact.Chunk{Artifact: artifact.Metadata{ID: "artifact"}, Content: []byte("chunk")})
+			var data any = artifact.Chunk{Artifact: artifact.Metadata{ID: "artifact"}, Content: []byte("chunk")}
+			if command.Method == "list_artifacts" {
+				data = []artifact.Metadata{{ID: "artifact"}}
+			}
+			raw, _ := json.Marshal(data)
 			if err := json.NewEncoder(out).Encode(transport.Response{Status: "success", Data: raw}); err != nil {
 				return
 			}
@@ -70,6 +75,22 @@ func TestReadArtifactRoutesOnlyTrackedSessions(t *testing.T) {
 	if cmd.Method != "read_artifact" || json.Unmarshal(data, &forwarded) != nil || !reflect.DeepEqual(forwarded, request) {
 		t.Fatalf("read lost target or offset: %+v", cmd)
 	}
+	resp = e.Dispatch("list", "artifact", []string{"session"})
+	var items []artifact.Metadata
+	if resp.Status != "ok" || json.Unmarshal(resp.Data, &items) != nil || len(items) != 1 || items[0].ID != "artifact" {
+		t.Fatalf("list failed: %+v", resp)
+	}
+	cmd = <-requests
+	var list envelope.SessionIDData
+	data, _ = json.Marshal(cmd.Data)
+	if cmd.Method != "list_artifacts" || json.Unmarshal(data, &list) != nil || list.SessionID != "session" {
+		t.Fatalf("list lost the tracked session: %+v", cmd)
+	}
+	for _, args := range [][]string{nil, {"missing"}, {"session", "other"}} {
+		if resp := e.Dispatch("list", "artifact", args); resp.Status != "error" {
+			t.Fatalf("invalid artifact list accepted: %v", args)
+		}
+	}
 	for _, payload := range []string{`{"session_id":"missing","id":"artifact"}`, `{"session_id":"session","id":"artifact","path":"/private"}`} {
 		if resp := e.Dispatch("read", "artifact", []string{payload}); resp.Status != "error" {
 			t.Fatalf("invalid artifact read accepted: %s", payload)
@@ -77,7 +98,7 @@ func TestReadArtifactRoutesOnlyTrackedSessions(t *testing.T) {
 	}
 	select {
 	case cmd := <-requests:
-		t.Fatalf("invalid read reached a daemon: %+v", cmd)
+		t.Fatalf("invalid request reached a daemon: %+v", cmd)
 	default:
 	}
 }

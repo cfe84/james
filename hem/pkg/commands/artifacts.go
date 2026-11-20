@@ -11,6 +11,15 @@ import (
 	"james/moneypenny/pkg/envelope"
 )
 
+// ListArtifacts relays the publishing session's artifact metadata.
+func (e *Executor) ListArtifacts(args []string) *protocol.Response {
+	if len(args) != 1 || args[0] == "" {
+		return protocol.ErrResponse("usage: list artifact SESSION_ID")
+	}
+	request := envelope.SessionIDData{SessionID: args[0]}
+	return e.relayArtifact(request.SessionID, "list_artifacts", request)
+}
+
 // ReadArtifact relays a bounded chunk from the owning MP without storing it.
 func (e *Executor) ReadArtifact(args []string) *protocol.Response {
 	if len(args) != 1 {

@@ -61,6 +61,38 @@ test('artifact cards offer View only for supported files and escape metadata', (
   assert.ok(context.renderArtifactCard('{"id":"../../api"}', 'session').includes('could not be read'));
 });
 
+test('conversation artifact list loads the selected session independently of history', async () => {
+  const list = { isConnected: true };
+  const artifact = {
+    id: '00000000-0000-0000-0000-000000000001', name: 'report.md', title: '<Old report>', size: 1024, view: 'markdown',
+  };
+  let response = { status: 'ok', data: [artifact] };
+  const context = vm.createContext({
+    currentSession: 'session',
+    encodeURIComponent,
+    escapeHtml: text => text.replaceAll('<', '&lt;'),
+    renderWizardModal: html => assert.match(html, /chat-artifact-list/),
+    document: { getElementById: () => list },
+    apiCall: async (verb, noun, args) => {
+      assert.equal(`${verb} ${noun} ${args}`, 'list artifact session');
+      return response;
+    },
+  });
+  vm.runInContext(app.slice(app.indexOf('  function renderArtifactDetails('),
+    app.indexOf('  function renderQuestionnaireHistory(')), context);
+  await context.openArtifactsModal();
+  assert.match(list.innerHTML, /&lt;Old report>/);
+  for (const action of ['view', 'download']) {
+    assert.ok(list.innerHTML.includes(`/artifacts/session/${artifact.id}/${action}`));
+  }
+  response = { status: 'ok', data: [] };
+  await context.openArtifactsModal();
+  assert.match(list.innerHTML, /No artifacts published/);
+  response = { status: 'error', message: 'host offline' };
+  await context.openArtifactsModal();
+  assert.equal(list.textContent, 'Could not load artifacts: host offline');
+});
+
 test('questionnaires require every answer and count Other as text only when selected', () => {
   const context = vm.createContext({ TextEncoder });
   vm.runInContext(app.slice(app.indexOf('  function questionnaireAnswers('),

@@ -1981,20 +1981,49 @@
 
   function renderArtifactCard(content, sessionID) {
     try {
-      const artifact = JSON.parse(content);
-      if (!/^[a-f0-9-]{36}$/.test(artifact.id) || typeof artifact.name !== 'string' ||
-          typeof artifact.title !== 'string' || !Number.isSafeInteger(artifact.size) || artifact.size < 0) {
-        throw new Error('Invalid artifact metadata');
-      }
-      const base = `/artifacts/${encodeURIComponent(sessionID)}/${encodeURIComponent(artifact.id)}`;
-      // Older transcript cards lack a view type for these extensions; Qew rechecks on open.
-      const canView = ['html', 'pdf', 'zip', 'markdown', 'text'].includes(artifact.view) ||
-        (!artifact.view && /\.(md|markdown|txt|text|log)$/i.test(artifact.name));
-      const view = canView ?
-        `<a class="btn" href="${base}/view" target="_blank" rel="noopener noreferrer">View</a> ` : '';
-      return `<div class="msg"><div class="msg-role">Artifact</div><div class="msg-content"><strong>${escapeHtml(artifact.title)}</strong><br>${escapeHtml(artifact.name)}<br>${view}<a class="btn" href="${base}/download" download>Download</a></div></div>`;
+      return `<div class="msg"><div class="msg-role">Artifact</div>${renderArtifactDetails(JSON.parse(content), sessionID)}</div>`;
     } catch (error) {
       return '<div class="msg system-note">Artifact metadata could not be read.</div>';
+    }
+  }
+
+  function renderArtifactDetails(artifact, sessionID) {
+    if (!artifact || typeof artifact.id !== 'string' || !/^[a-f0-9-]{36}$/.test(artifact.id) ||
+        typeof artifact.name !== 'string' || typeof artifact.title !== 'string' ||
+        !Number.isSafeInteger(artifact.size) || artifact.size < 0) {
+      throw new Error('Artifact metadata could not be read.');
+    }
+    const base = `/artifacts/${encodeURIComponent(sessionID)}/${encodeURIComponent(artifact.id)}`;
+    // Older transcript cards lack a view type for these extensions; Qew rechecks on open.
+    const canView = ['html', 'pdf', 'zip', 'markdown', 'text'].includes(artifact.view) ||
+      (!artifact.view && /\.(md|markdown|txt|text|log)$/i.test(artifact.name));
+    const view = canView ?
+      `<a class="btn" href="${base}/view" target="_blank" rel="noopener noreferrer">View</a> ` : '';
+    return `<div class="msg-content"><strong>${escapeHtml(artifact.title)}</strong><br>${escapeHtml(artifact.name)}<br>${view}<a class="btn" href="${base}/download" download>Download</a></div>`;
+  }
+
+  async function openArtifactsModal() {
+    const sessionID = currentSession;
+    if (!sessionID) return;
+    renderWizardModal(`
+      <div role="dialog" aria-modal="true" aria-labelledby="chat-artifact-title">
+        <h3 id="chat-artifact-title">Artifacts</h3>
+        <div id="chat-artifact-list" aria-live="polite"><div class="loading">Loading…</div></div>
+        <div class="modal-actions"><button class="btn-muted" onclick="window._qewCloseWizard()">Close</button></div>
+      </div>
+    `);
+    const list = document.getElementById('chat-artifact-list');
+    try {
+      const resp = await apiCall('list', 'artifact', [sessionID]);
+      if (!list.isConnected || currentSession !== sessionID) return;
+      if (resp.status !== 'ok' || !Array.isArray(resp.data)) throw new Error(resp.message || 'Invalid response');
+      list.innerHTML = resp.data.length ?
+        resp.data.map(item => `<div class="msg">${renderArtifactDetails(item, sessionID)}</div>`).join('') :
+        '<div class="empty-state">No artifacts published in this conversation.</div>';
+    } catch (error) {
+      if (list.isConnected && currentSession === sessionID) {
+        list.textContent = `Could not load artifacts: ${error.message}`;
+      }
     }
   }
 
@@ -7299,6 +7328,7 @@
   document.getElementById('thoughts-toggle').addEventListener('click', toggleThoughts);
   document.getElementById('activity-detail-toggle').addEventListener('click', toggleExpandedActivity);
   document.getElementById('schedules-toggle').addEventListener('click', openSchedulesModal);
+  document.getElementById('chat-artifacts').addEventListener('click', openArtifactsModal);
   syncThoughtsToggle();
   syncActivityDetailToggle();
   syncSchedulesToggle([]);
