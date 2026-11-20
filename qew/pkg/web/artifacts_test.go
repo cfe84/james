@@ -86,8 +86,13 @@ func TestArtifactHTTPViewDownloadAndExpiry(t *testing.T) {
 	var archive bytes.Buffer
 	z := zip.NewWriter(&archive)
 	for _, file := range []struct{ name, content string }{
-		{"index.html", `<meta http-equiv="refresh" content="0;url=/login"><script src="report.js"></script><h1 onclick="run()">Review</h1><a href="/api">Link</a>`},
+		{"index.html", `<link rel="stylesheet" href="./assets/report.css"><link rel="stylesheet" href="https://example.invalid/external.css"><link rel="stylesheet" href="%2e%2e/outside.css"><link rel="prefetch" href="./assets/report.css">
+		<meta http-equiv="refresh" content="0;url=/login"><base href="/api"><script src="report.js"></script><h1 onclick="run()">Review</h1><a href="/api">Link</a>
+		<form action="/api"><input autofocus><button>Send</button></form><iframe src="/api"></iframe>
+		<img src="assets/chart.png" alt="Chart" onerror="run()" srcset="/api 2x"><img src="//example.invalid/remote.png" alt="Remote">`},
 		{"report.js", `document.title = 'Report';`},
+		{"assets/report.css", `.chart { background: url(chart.png) }`},
+		{"assets/chart.png", "chart bytes"},
 	} {
 		w, err := z.Create(file.name)
 		if err != nil {
@@ -105,7 +110,8 @@ func TestArtifactHTTPViewDownloadAndExpiry(t *testing.T) {
 		content []byte
 		view    bool
 	}{
-		{"report.html", []byte("<h1>Review</h1>"), true},
+		{"report.html", []byte(`<html lang="en" data-theme="dark"><head><style>.panel { color: red }</style></head>
+		<body class="report" data-sha="untrusted"><h1 class="panel" style="font-size:2rem">Review</h1><img src="data:image/png;base64,AAAA" alt="Chart"></body></html>`), true},
 		{"report.zip", archive.Bytes(), true},
 		{"report.pdf", []byte("%PDF-1.4\n"), true},
 		{"report.MD", []byte("# Review\n\n**Ready**\n\n<script>not rendered</script>\n"), true},
@@ -205,18 +211,46 @@ func TestArtifactHTTPViewDownloadAndExpiry(t *testing.T) {
 				}
 			} else {
 				body := doc.Body.String()
+				csp := doc.Header().Get("Content-Security-Policy")
 				if doc.Code != http.StatusOK || !strings.Contains(body, `data-sha="`+hem.meta.SHA256+`"`) ||
-					!strings.Contains(doc.Header().Get("Content-Security-Policy"), "sandbox allow-same-origin; default-src 'none'") ||
-					strings.Contains(body, "<script") || strings.Contains(body, "onclick") ||
-					strings.Contains(body, "http-equiv") || strings.Contains(body, "href=") {
+					!strings.HasPrefix(csp, "sandbox allow-same-origin; default-src 'none';") ||
+					!strings.Contains(csp, "base-uri 'none'; form-action 'none'") {
 					t.Fatalf("unsafe or unavailable review document: %d", doc.Code)
 				}
-				if tc.name == "report.txt" {
-					if !strings.Contains(body, `&lt;em&gt;literal text&lt;/em&gt;`) {
-						t.Fatal("review did not preserve literal text")
+				want, forbidden := []string{"<h1>Review</h1>"}, []string{"href="}
+				switch tc.name {
+				case "report.txt":
+					want = []string{`&lt;em&gt;literal text&lt;/em&gt;`}
+				case "report.html":
+					want = []string{`<html lang="en" data-theme="dark">`, `<body class="report"`, `.panel { color: red }`,
+						`<h1 class="panel" style="font-size:2rem">Review</h1>`, `src="data:image/png;base64,AAAA"`}
+					forbidden = []string{`untrusted`}
+					if strings.Contains(csp, "/artifact-view/") {
+						t.Fatalf("standalone review allows requests to artifact assets: %s", csp)
 					}
-				} else if !strings.Contains(body, "<h1>Review</h1>") {
-					t.Fatal("review lost document structure")
+				case "report.zip":
+					want = append(want, `<link rel="stylesheet" href="./assets/report.css">`, `<img src="./assets/chart.png" alt="Chart">`, `<a>Link</a>`)
+					forbidden = []string{"<script", "onclick", "onerror", "http-equiv", "<base", "<form", "<input", "<button", "<iframe",
+						`href="/api"`, `src="/api"`, "srcset=", "example.invalid", "outside.css", "prefetch"}
+					source := "http://example.com/artifact-view/" + token + "/ https://example.com/artifact-view/" + token + "/"
+					if !strings.Contains(csp, "style-src 'unsafe-inline' "+source+"; img-src data: "+source+"; font-src data: "+source+";") {
+						t.Fatalf("ZIP asset policy is not scoped to the current bundle: %s", csp)
+					}
+					asset := artifactRequest(s, mux, "/artifact-view/"+token+"/assets/report.css", false)
+					if asset.Code != http.StatusOK || !strings.HasPrefix(asset.Header().Get("Content-Type"), "text/css") ||
+						!strings.Contains(asset.Body.String(), "url(chart.png)") {
+						t.Fatalf("bundled review stylesheet not served: %d %s", asset.Code, asset.Body)
+					}
+				}
+				for _, markup := range want {
+					if !strings.Contains(body, markup) {
+						t.Errorf("review lost markup %q", markup)
+					}
+				}
+				for _, markup := range forbidden {
+					if strings.Contains(body, markup) {
+						t.Errorf("review retained unwanted markup %q", markup)
+					}
 				}
 			}
 			count := len(hem.requests)

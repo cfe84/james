@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"regexp"
 	"strings"
 
@@ -62,7 +63,7 @@ func (s *Server) serveArtifactViewer(w http.ResponseWriter, session, id string) 
 	}
 }
 
-func serveArtifactReviewDocument(w http.ResponseWriter, target string, entry *artifactPreview) {
+func serveArtifactReviewDocument(w http.ResponseWriter, target string, entry *artifactPreview, assetSources string) {
 	in, err := os.Open(target)
 	if err != nil {
 		http.Error(w, "Cannot read artifact review document", http.StatusInternalServerError)
@@ -78,59 +79,202 @@ func serveArtifactReviewDocument(w http.ResponseWriter, target string, entry *ar
 		http.Error(w, "This document is too large to review. You can still view or download it.", http.StatusUnprocessableEntity)
 		return
 	}
-	var body strings.Builder
-	if entry.format == "text" {
-		body.WriteString("<pre>")
-		template.HTMLEscape(&body, source)
-		body.WriteString("</pre>")
-	} else {
-		doc, err := html.Parse(bytes.NewReader(source))
+	var doc *html.Node
+	if entry.format != "text" {
+		doc, err = html.Parse(bytes.NewReader(source))
 		if err != nil {
 			http.Error(w, "Cannot parse artifact review document", http.StatusUnprocessableEntity)
 			return
 		}
-		writeReviewMarkup(&body, doc)
+	}
+	markup := reviewMarkup{formatted: entry.format == "html" || entry.format == "zip", bundled: entry.format == "zip"}
+	root := reviewChild(doc, "html")
+	head := reviewChild(root, "head")
+	body := reviewChild(root, "body")
+	markup.WriteString("<!doctype html><html")
+	markup.writeAttributes(root)
+	markup.WriteString(`><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Review document</title>`)
+	if markup.formatted {
+		markup.writeChildren(head)
+	} else {
+		markup.WriteString(`<style>:root{color-scheme:light dark}body{max-width:85ch;margin:1.5rem auto;padding:0 1rem;font:1rem/1.6 sans-serif;overflow-wrap:anywhere}pre{white-space:pre-wrap}table{border-collapse:collapse}td,th{border:1px solid;padding:.25rem .5rem}</style>`)
+	}
+	markup.WriteString(`<style>::highlight(artifact-comment){background-color:#ffe287!important;color:#252014!important}</style></head><body`)
+	markup.writeAttributes(body)
+	fmt.Fprintf(&markup, ` data-sha="%s">`, template.HTMLEscapeString(entry.sha256))
+	if entry.format == "text" {
+		// The HTML parser strips the first newline following a pre start tag.
+		markup.WriteString("<pre>\n")
+		template.HTMLEscape(&markup, source)
+		markup.WriteString("</pre>")
+	} else {
+		markup.writeChildren(body)
+	}
+	markup.WriteString("</body></html>")
+
+	styles, images, fonts := "'unsafe-inline'", "'none'", "'none'"
+	if markup.formatted {
+		images, fonts = "data:", "data:"
+	}
+	if markup.bundled {
+		styles += " " + assetSources
+		images += " " + assetSources
+		fonts += " " + assetSources
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Content-Security-Policy", "sandbox allow-same-origin; default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'self'; base-uri 'none'; form-action 'none'")
-	fmt.Fprintf(w, `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Review document</title><style>:root{color-scheme:light dark}body{max-width:85ch;margin:1.5rem auto;padding:0 1rem;font:1rem/1.6 sans-serif;overflow-wrap:anywhere}pre{white-space:pre-wrap}table{border-collapse:collapse}td,th{border:1px solid;padding:.25rem .5rem}::highlight(artifact-comment){background:#ffe287;color:#252014}</style><main id="review-document" data-sha="%s">%s</main></html>`, template.HTMLEscapeString(entry.sha256), body.String())
+	w.Header().Set("Content-Security-Policy", "sandbox allow-same-origin; default-src 'none'; style-src "+styles+"; img-src "+images+"; font-src "+fonts+"; frame-ancestors 'self'; base-uri 'none'; form-action 'none'")
+	io.WriteString(w, markup.String())
 }
 
-// Keep only passive document structure. The viewer can read the frame's
-// selection without allowing original attributes, links or scripts to run.
-func writeReviewMarkup(out *strings.Builder, node *html.Node) {
+func reviewChild(parent *html.Node, tag string) *html.Node {
+	if parent != nil {
+		for node := parent.FirstChild; node != nil; node = node.NextSibling {
+			if node.Type == html.ElementNode && node.Data == tag {
+				return node
+			}
+		}
+	}
+	return nil
+}
+
+type reviewMarkup struct {
+	strings.Builder
+	formatted, bundled bool
+}
+
+func (out *reviewMarkup) writeChildren(node *html.Node) {
+	if node != nil {
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			out.writeNode(child)
+		}
+	}
+}
+
+func (out *reviewMarkup) writeNode(node *html.Node) {
 	if node.Type == html.TextNode {
-		template.HTMLEscape(out, []byte(node.Data))
+		out.WriteString(template.HTMLEscapeString(node.Data))
 		return
 	}
-	tag := ""
-	if node.Type == html.ElementNode {
-		if node.Namespace != "" {
+	if node.Type != html.ElementNode || node.Namespace != "" {
+		return
+	}
+	switch tag := node.Data; tag {
+	case "script", "template", "noscript", "iframe", "object", "title", "textarea", "select":
+		return
+	case "style":
+		if out.formatted && node.FirstChild != nil && node.FirstChild.Type == html.TextNode {
+			css := node.FirstChild.Data
+			// A style element uses raw text, not HTML-escaped text.
+			if !strings.Contains(strings.ToLower(css), "</style") {
+				out.WriteString("<style")
+				out.writeAttribute("media", node)
+				out.WriteString(">" + css + "</style>")
+			}
+		}
+	case "link":
+		if out.bundled && strings.EqualFold(reviewAttribute(node, "rel"), "stylesheet") {
+			if href := reviewBundleURL(reviewAttribute(node, "href")); href != "" {
+				out.WriteString(`<link rel="stylesheet"`)
+				out.attribute("href", href)
+				out.writeAttribute("media", node)
+				out.WriteByte('>')
+			}
+		}
+	case "img":
+		if !out.formatted {
 			return
 		}
-		switch node.Data {
-		case "head", "script", "style", "template", "noscript", "iframe", "object":
-			return
-		case "br", "hr":
-			out.WriteString("<" + node.Data + ">")
-			return
-		case "article", "aside", "section", "div", "p", "h1", "h2", "h3", "h4", "h5", "h6",
-			"blockquote", "pre", "code", "em", "strong", "b", "i", "s", "del", "u", "mark", "small",
-			"ul", "ol", "li", "dl", "dt", "dd", "figure", "figcaption",
-			"table", "caption", "thead", "tbody", "tfoot", "tr", "th", "td":
-			tag = node.Data
-			out.WriteString("<" + tag + ">")
+		src := strings.TrimSpace(reviewAttribute(node, "src"))
+		if !strings.HasPrefix(strings.ToLower(src), "data:image/") {
+			if !out.bundled {
+				src = ""
+			} else {
+				src = reviewBundleURL(src)
+			}
 		}
-	}
-	for child := node.FirstChild; child != nil; child = child.NextSibling {
-		writeReviewMarkup(out, child)
-	}
-	if tag != "" {
+		out.WriteString("<img")
+		if src != "" {
+			out.attribute("src", src)
+		}
+		out.writeAttributes(node)
+		out.WriteByte('>')
+	case "br", "hr", "wbr", "col":
+		out.WriteString("<" + tag)
+		out.writeAttributes(node)
+		out.WriteByte('>')
+	case "article", "aside", "section", "div", "p", "h1", "h2", "h3", "h4", "h5", "h6",
+		"header", "footer", "main", "nav", "span", "a", "address", "details", "summary",
+		"blockquote", "pre", "code", "em", "strong", "b", "i", "s", "del", "u", "mark", "small",
+		"sub", "sup", "samp", "kbd", "var", "abbr", "time", "ins",
+		"ul", "ol", "li", "dl", "dt", "dd", "figure", "figcaption",
+		"table", "caption", "colgroup", "thead", "tbody", "tfoot", "tr", "th", "td":
+		out.WriteString("<" + tag)
+		out.writeAttributes(node)
+		out.WriteByte('>')
+		if tag == "pre" && node.FirstChild != nil && strings.HasPrefix(node.FirstChild.Data, "\n") {
+			out.WriteByte('\n')
+		}
+		out.writeChildren(node)
 		out.WriteString("</" + tag + ">")
+	default:
+		out.writeChildren(node)
 	}
+}
+
+func (out *reviewMarkup) writeAttributes(node *html.Node) {
+	if !out.formatted || node == nil {
+		return
+	}
+	for _, attr := range node.Attr {
+		if attr.Namespace != "" {
+			continue
+		}
+		switch attr.Key {
+		case "id", "class", "style", "title", "lang", "dir", "role", "hidden",
+			"alt", "width", "height", "colspan", "rowspan", "span", "scope", "headers",
+			"start", "reversed", "value", "open":
+			out.attribute(attr.Key, attr.Val)
+		default:
+			if (strings.HasPrefix(attr.Key, "aria-") || strings.HasPrefix(attr.Key, "data-")) &&
+				attr.Key != "data-sha" && strings.Trim(attr.Key, "abcdefghijklmnopqrstuvwxyz0123456789-_") == "" {
+				out.attribute(attr.Key, attr.Val)
+			}
+		}
+	}
+}
+
+func reviewAttribute(node *html.Node, key string) string {
+	for _, attr := range node.Attr {
+		if attr.Namespace == "" && attr.Key == key {
+			return attr.Val
+		}
+	}
+	return ""
+}
+
+func (out *reviewMarkup) writeAttribute(key string, node *html.Node) {
+	if value := reviewAttribute(node, key); value != "" {
+		out.attribute(key, value)
+	}
+}
+
+func (out *reviewMarkup) attribute(key, value string) {
+	fmt.Fprintf(out, ` %s="%s"`, key, template.HTMLEscapeString(value))
+}
+
+func reviewBundleURL(value string) string {
+	ref, err := url.Parse(strings.TrimSpace(value))
+	if err != nil || ref.IsAbs() || ref.Host != "" || path.IsAbs(ref.Path) || strings.ContainsAny(ref.Path, "\\:\x00") {
+		return ""
+	}
+	clean := path.Clean(ref.Path)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
+		return ""
+	}
+	return (&url.URL{Path: "./" + clean, Fragment: ref.Fragment}).String()
 }
 
 type artifactReview struct {

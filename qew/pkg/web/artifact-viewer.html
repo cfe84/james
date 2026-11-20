@@ -30,7 +30,7 @@
     <section id="review" data-base="{{.Base}}" data-max-bytes="{{.MaxBytes}}" data-max-comments="{{.MaxComments}}" hidden>
       <iframe id="review-frame" title="Document for review" sandbox="allow-same-origin"></iframe>
       <aside aria-label="Artifact review comments">
-        <p>Select text in the document, then add a comment. Review shows static text without scripts or embedded assets.</p>
+        <p>Select text in the document, then add a comment. Review keeps static formatting but does not run document scripts.</p>
         <button id="add-comment" type="button" disabled>Add comment</button>
         <form id="review-form">
           <ol id="review-comments"></ol>

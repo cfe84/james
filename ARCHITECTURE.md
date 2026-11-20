@@ -336,9 +336,14 @@ does not prevent an active document from navigating its own tab.
 
 Artifact review reuses the verified preview cache but derives a separate
 passive document from its entry file. Qew escapes plain text and rebuilds
-HTML from an allowlist of attribute-free elements. The review iframe permits
-same-origin selection reads from the trusted viewer but disables scripts and
-external resources through sandbox and CSP. The normal preview is unchanged.
+HTML from allowlisted elements and presentation attributes. HTML and ZIP
+reviews retain inline CSS and embedded images and fonts. ZIP stylesheet
+links and image paths are restricted to the bundle, with CSP limiting
+stylesheet, image, and font requests to that preview's cache URL path. The
+review iframe permits same-origin selection reads from the trusted viewer,
+but sandboxing and CSP block scripts, forms, and external requests; the
+markup contains no navigable links or embedded frames. The normal preview
+is unchanged.
 The viewer highlights draft quotes using selection ranges in the review frame,
 without modifying the reviewed text.
 The authenticated, CSRF-protected review endpoint validates the bounded comment

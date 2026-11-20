@@ -391,7 +391,7 @@ func (s *Server) handleArtifactPreview(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "This artifact cannot be reviewed", http.StatusUnsupportedMediaType)
 			return
 		}
-		serveArtifactReviewDocument(w, target, entry)
+		serveArtifactReviewDocument(w, target, entry, artifactAssetSources(r.Host, parts[0]))
 		return
 	}
 	info, err := os.Stat(target)
@@ -399,10 +399,7 @@ func (s *Server) handleArtifactPreview(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	base := url.URL{Scheme: "http", Host: r.Host, Path: "/artifact-view/" + parts[0] + "/"}
-	source := base.String()
-	base.Scheme = "https"
-	source += " " + base.String()
+	source := artifactAssetSources(r.Host, parts[0])
 	policy := "default-src 'none'; script-src 'unsafe-inline' " + source + "; style-src 'unsafe-inline' " + source + "; img-src data: blob: " + source + "; font-src data: " + source + "; media-src blob: " + source + "; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
 	if entry.format == "markdown" || entry.format == "text" {
 		policy = "sandbox; default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
@@ -432,4 +429,11 @@ func (s *Server) handleArtifactPreview(w http.ResponseWriter, r *http.Request) {
 	}
 	defer in.Close()
 	http.ServeContent(w, r, info.Name(), time.Time{}, in)
+}
+
+func artifactAssetSources(host, token string) string {
+	base := url.URL{Scheme: "http", Host: host, Path: "/artifact-view/" + token + "/"}
+	source := base.String()
+	base.Scheme = "https"
+	return source + " " + base.String()
 }

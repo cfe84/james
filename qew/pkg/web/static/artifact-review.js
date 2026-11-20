@@ -54,11 +54,11 @@
 
   frame.addEventListener('load', () => {
     const doc = frame.contentDocument;
-    const source = doc?.getElementById('review-document');
+    const source = doc?.body;
     documentReady = false;
     selection = '';
     selectedRange = undefined;
-    if (!source) {
+    if (!source?.dataset.sha) {
       if (frame.hasAttribute('src')) status.textContent = 'Could not load the document for review. Reload to try again.';
       updateButtons();
       return;
