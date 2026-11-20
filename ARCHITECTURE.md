@@ -325,6 +325,16 @@ session/artifact existence through Hem before serving cached content. They are
 read-only bearer URLs, not a new account/session credential. Browser sandboxing
 does not prevent an active document from navigating its own tab.
 
+Artifact review reuses the verified preview cache but derives a separate
+passive document from its entry file. Qew escapes plain text and rebuilds
+HTML from an allowlist of attribute-free elements. The review iframe permits
+same-origin selection reads from the trusted viewer but disables scripts and
+external resources through sandbox and CSP. The normal preview is unchanged.
+The authenticated, CSRF-protected review endpoint validates the bounded comment
+batch and checks its checksum against current MP metadata at submission.
+It sends one ordinary async `continue session` request to the publishing
+session with a retry operation ID; review data does not require separate storage.
+
 Four Qew admission slots bound concurrent transfers and retained previews;
 oldest-preview eviction and 30-minute timers release files/slots. Active file
 serves finish before deletion, shutdown clears retained previews, and subsequent

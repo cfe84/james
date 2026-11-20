@@ -25,12 +25,17 @@ type artifactHem struct {
 	meta     artifact.Metadata
 	content  []byte
 	requests []artifact.ReadRequest
+	reviews  []Request
 	deleted  bool
 }
 
 func (h *artifactHem) Send(req *Request) (*Response, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if req.Verb == "continue" && req.Noun == "session" {
+		h.reviews = append(h.reviews, *req)
+		return &Response{Status: "ok"}, nil
+	}
 	if req.Verb != "read" || req.Noun != "artifact" || len(req.Args) != 1 {
 		return nil, fmt.Errorf("unexpected artifact request: %+v", req)
 	}
@@ -62,7 +67,7 @@ func artifactWebServer(t *testing.T, name string, content []byte) (*Server, *art
 	server.artifactCacheDir = t.TempDir()
 	t.Cleanup(server.Close)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/artifacts/", server.requireAuth(server.handleArtifact))
+	mux.HandleFunc("/artifacts/", server.requireAuth(server.csrfProtect(server.handleArtifact)))
 	mux.HandleFunc("/artifact-view/", server.handleArtifactPreview)
 	return server, hem, mux
 }
@@ -80,7 +85,10 @@ func artifactRequest(server *Server, mux http.Handler, target string, authentica
 func TestArtifactHTTPViewDownloadAndExpiry(t *testing.T) {
 	var archive bytes.Buffer
 	z := zip.NewWriter(&archive)
-	for _, file := range []struct{ name, content string }{{"index.html", `<script src="report.js"></script><h1>Review</h1>`}, {"report.js", `document.title = 'Report';`}} {
+	for _, file := range []struct{ name, content string }{
+		{"index.html", `<meta http-equiv="refresh" content="0;url=/login"><script src="report.js"></script><h1 onclick="run()">Review</h1><a href="/api">Link</a>`},
+		{"report.js", `document.title = 'Report';`},
+	} {
 		w, err := z.Create(file.name)
 		if err != nil {
 			t.Fatal(err)
@@ -108,6 +116,9 @@ func TestArtifactHTTPViewDownloadAndExpiry(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, hem, mux := artifactWebServer(t, tc.name, tc.content)
+			if tc.name == "report.zip" {
+				hem.meta.View = "zip"
+			}
 			base := "/artifacts/session/" + hem.meta.ID
 			if resp := artifactRequest(s, mux, base+"/download", false); resp.Code != http.StatusFound || len(hem.requests) != 0 {
 				t.Fatal("unauthenticated request reached Hem")
@@ -178,6 +189,36 @@ func TestArtifactHTTPViewDownloadAndExpiry(t *testing.T) {
 					t.Fatalf("ZIP asset not served: %+v", asset)
 				}
 			}
+			reviewable := tc.name != "report.pdf"
+			viewer := artifactRequest(s, mux, base+"/view", true)
+			if strings.Contains(viewer.Body.String(), `id="review-toggle"`) != reviewable {
+				t.Fatal("viewer offered the wrong review mode")
+			}
+			review := artifactRequest(s, mux, base+"/preview?review=1", true)
+			if review.Code != http.StatusSeeOther || review.Header().Get("Location") != location+"?review=1" {
+				t.Fatal("review did not reuse the prepared preview")
+			}
+			doc := artifactRequest(s, mux, review.Header().Get("Location"), false)
+			if !reviewable {
+				if doc.Code != http.StatusUnsupportedMediaType {
+					t.Fatal("PDF was accepted for review")
+				}
+			} else {
+				body := doc.Body.String()
+				if doc.Code != http.StatusOK || !strings.Contains(body, `data-sha="`+hem.meta.SHA256+`"`) ||
+					!strings.Contains(doc.Header().Get("Content-Security-Policy"), "sandbox allow-same-origin; default-src 'none'") ||
+					strings.Contains(body, "<script") || strings.Contains(body, "onclick") ||
+					strings.Contains(body, "http-equiv") || strings.Contains(body, "href=") {
+					t.Fatalf("unsafe or unavailable review document: %d", doc.Code)
+				}
+				if tc.name == "report.txt" {
+					if !strings.Contains(body, `&lt;em&gt;literal text&lt;/em&gt;`) {
+						t.Fatal("review did not preserve literal text")
+					}
+				} else if !strings.Contains(body, "<h1>Review</h1>") {
+					t.Fatal("review lost document structure")
+				}
+			}
 			count := len(hem.requests)
 			if resp := artifactRequest(s, mux, base+"/preview", true); resp.Header().Get("Location") != location ||
 				len(hem.requests) != count+1 || !hem.requests[count].MetadataOnly {
@@ -196,6 +237,68 @@ func TestArtifactHTTPViewDownloadAndExpiry(t *testing.T) {
 				t.Fatalf("deleted preview not cleaned: %v", err)
 			}
 		})
+	}
+}
+
+func TestArtifactReviewSubmission(t *testing.T) {
+	s, hem, mux := artifactWebServer(t, "report.md", []byte("first\nsecond\nanother quote"))
+	target := "/artifacts/session/" + hem.meta.ID + "/review"
+	submit := func(hash, comment string, authenticated, csrf bool) *httptest.ResponseRecorder {
+		t.Helper()
+		body, err := json.Marshal(map[string]any{
+			"sha256": hash, "operation_id": "review-id",
+			"comments": []map[string]string{
+				{"quote": "first\nsecond", "comment": comment},
+				{"quote": "another quote", "comment": "Clarify this."},
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, target, bytes.NewReader(body))
+		if authenticated {
+			req.AddCookie(s.sessionCookie(s.makeToken(time.Now(), time.Now())))
+		}
+		if csrf {
+			req.Header.Set("X-Requested-With", "QewClient")
+		}
+		out := httptest.NewRecorder()
+		mux.ServeHTTP(out, req)
+		return out
+	}
+	for _, tc := range []struct {
+		name                string
+		hash, comment       string
+		authenticated, csrf bool
+		status              int
+	}{
+		{"not logged in", hem.meta.SHA256, "Explain this.", false, true, http.StatusFound},
+		{"missing CSRF header", hem.meta.SHA256, "Explain this.", true, false, http.StatusForbidden},
+		{"stale snapshot", strings.Repeat("0", 64), "Explain this.", true, true, http.StatusConflict},
+		{"empty comment", hem.meta.SHA256, " ", true, true, http.StatusBadRequest},
+		{"oversized comment", hem.meta.SHA256, strings.Repeat("é", 2001), true, true, http.StatusBadRequest},
+		{"complete review", hem.meta.SHA256, "Explain this.", true, true, http.StatusNoContent},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := submit(tc.hash, tc.comment, tc.authenticated, tc.csrf)
+			if response.Code != tc.status {
+				t.Fatalf("submit got %d: %s", response.Code, response.Body)
+			}
+		})
+	}
+	if len(hem.reviews) != 1 {
+		t.Fatalf("sent %d turns for one successful submission", len(hem.reviews))
+	}
+	args := hem.reviews[0].Args
+	if got := strings.Join(args[:len(args)-1], " "); got != "--async --operation-id review-id -- session" {
+		t.Fatalf("review was not routed to the publishing session: %s", got)
+	}
+	prompt := args[len(args)-1]
+	for _, want := range []string{"Artifact review: report.md", hem.meta.ID, hem.meta.SHA256,
+		"> first\n> second\n\nExplain this.", "> another quote\n\nClarify this."} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("review prompt missing %q: %s", want, prompt)
+		}
 	}
 }
 

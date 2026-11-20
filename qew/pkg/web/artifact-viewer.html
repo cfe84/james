@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Artifact preview</title>
+  <style>
+    :root{color-scheme:light dark}
+    body{margin:0;height:100dvh;display:flex;flex-direction:column;font:1rem/1.45 system-ui,sans-serif}
+    header,aside{padding:.75rem}
+    header{border-bottom:1px solid GrayText}
+    button,textarea{font:inherit}
+    iframe{display:block;width:100%;height:100%;border:0}
+    [hidden]{display:none}
+    main{flex:1;min-height:0}
+    #review:not([hidden]){display:grid;grid-template-columns:minmax(0,1fr) minmax(17rem,26rem);height:100%}
+    aside{border-inline-start:1px solid GrayText;overflow:auto}
+    blockquote{margin:.5rem 0;padding-inline-start:.6rem;border-inline-start:2px solid GrayText;white-space:pre-wrap;overflow-wrap:anywhere;max-height:8rem;overflow:auto}
+    textarea{width:100%;box-sizing:border-box}
+    li{margin-block:1rem}
+    @media(max-width:44rem){#review:not([hidden]){grid-template-columns:1fr;grid-template-rows:minmax(0,1fr) minmax(0,1fr)}aside{border-inline-start:0;border-top:1px solid GrayText}}
+  </style>
+  {{if .Reviewable}}<script src="/artifact-review.js" defer></script>{{end}}
+</head>
+<body>
+  {{if .Reviewable}}<header><button id="review-toggle" type="button" aria-expanded="false" aria-controls="review">Review</button></header>{{end}}
+  <main>
+    <iframe id="preview" title="Artifact preview" src="{{.Base}}/preview"></iframe>
+    {{if .Reviewable}}
+    <section id="review" data-base="{{.Base}}" data-max-bytes="{{.MaxBytes}}" data-max-comments="{{.MaxComments}}" hidden>
+      <iframe id="review-frame" title="Document for review" sandbox="allow-same-origin"></iframe>
+      <aside aria-label="Artifact review comments">
+        <p>Select text in the document, then add a comment. Review shows static text without scripts or embedded assets.</p>
+        <button id="add-comment" type="button" disabled>Add comment</button>
+        <form id="review-form">
+          <ol id="review-comments"></ol>
+          <button id="submit-review" type="submit" disabled>Submit review</button>
+        </form>
+        <p id="review-status" role="status"></p>
+      </aside>
+    </section>
+    {{end}}
+  </main>
+</body>
+</html>

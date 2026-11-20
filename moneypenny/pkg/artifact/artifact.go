@@ -41,8 +41,8 @@ type Chunk struct {
 	Content  []byte   `json:"content"`
 }
 
-// Inspect identifies viewable files. Other files remain downloadable.
-func Inspect(filename, name string) string {
+// ViewFormat identifies the candidate preview format by filename.
+func ViewFormat(name string) string {
 	switch strings.ToLower(filepath.Ext(name)) {
 	case ".html", ".htm":
 		return "html"
@@ -53,18 +53,28 @@ func Inspect(filename, name string) string {
 	case ".txt", ".text", ".log":
 		return "text"
 	case ".zip":
-		r, err := zip.OpenReader(filename)
-		if err != nil {
-			return "" // Invalid archives are still downloadable as ordinary files.
-		}
-		defer r.Close()
-		if err := validateZIP(&r.Reader); err != nil {
-			return ""
-		}
-		for _, f := range r.File {
-			if f.Name == "index.html" && f.Mode().IsRegular() {
-				return "zip"
-			}
+		return "zip"
+	}
+	return ""
+}
+
+// Inspect identifies viewable files. Other files remain downloadable.
+func Inspect(filename, name string) string {
+	format := ViewFormat(name)
+	if format != "zip" {
+		return format
+	}
+	r, err := zip.OpenReader(filename)
+	if err != nil {
+		return "" // Invalid archives are still downloadable as ordinary files.
+	}
+	defer r.Close()
+	if err := validateZIP(&r.Reader); err != nil {
+		return ""
+	}
+	for _, f := range r.File {
+		if f.Name == "index.html" && f.Mode().IsRegular() {
+			return format
 		}
 	}
 	return ""

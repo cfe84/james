@@ -119,7 +119,7 @@ func (s *Server) Run() error {
 
 	// API endpoint: POST /api — proxy to Hem.
 	mux.HandleFunc("/api", s.requireAuth(s.csrfProtect(s.handleAPI)))
-	mux.HandleFunc("/artifacts/", s.requireAuth(s.handleArtifact))
+	mux.HandleFunc("/artifacts/", s.requireAuth(s.csrfProtect(s.handleArtifact)))
 	// Preview assets use a short-lived, artifact-scoped capability URL because
 	// sandboxed documents have an opaque origin and cannot send login cookies.
 	mux.HandleFunc("/artifact-view/", s.handleArtifactPreview)

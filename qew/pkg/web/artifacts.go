@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"html"
 	"io"
 	"mime"
 	"net/http"
@@ -209,24 +208,33 @@ func (s *Server) fetchArtifact(r *http.Request, session, id, filename string) (a
 }
 
 func (s *Server) handleArtifact(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "GET only", http.StatusMethodNotAllowed)
-		return
-	}
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/artifacts/"), "/")
-	if len(parts) != 3 || (parts[2] != "view" && parts[2] != "preview" && parts[2] != "download") {
+	if len(parts) != 3 {
 		http.NotFound(w, r)
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	if parts[2] == "view" {
-		src := "/artifacts/" + url.PathEscape(parts[0]) + "/" + url.PathEscape(parts[1]) + "/preview"
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Content-Security-Policy", "default-src 'none'; frame-src 'self'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'")
-		fmt.Fprintf(w, `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Artifact preview</title><style>body{margin:0}iframe{display:block;width:100%%;height:100vh;border:0}</style><iframe title="Artifact preview" src="%s"></iframe></html>`, html.EscapeString(src))
+	if parts[2] == "review" {
+		s.submitArtifactReview(w, r, parts[0], parts[1])
 		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "GET only", http.StatusMethodNotAllowed)
+		return
+	}
+	if parts[2] != "view" && parts[2] != "preview" && parts[2] != "download" {
+		http.NotFound(w, r)
+		return
+	}
+	if parts[2] == "view" {
+		s.serveArtifactViewer(w, parts[0], parts[1])
+		return
+	}
+	review := parts[2] == "preview" && r.URL.Query().Get("review") == "1"
+	var suffix string
+	if review {
+		suffix = "?review=1"
 	}
 	if parts[2] == "preview" {
 		chunk, err := s.artifactChunk(parts[0], parts[1], 0, true)
@@ -244,7 +252,7 @@ func (s *Server) handleArtifact(w http.ResponseWriter, r *http.Request) {
 		}
 		s.artifactMu.Unlock()
 		if existing != "" {
-			http.Redirect(w, r, existing, http.StatusSeeOther)
+			http.Redirect(w, r, existing+suffix, http.StatusSeeOther)
 			return
 		}
 	}
@@ -343,7 +351,7 @@ func (s *Server) handleArtifact(w http.ResponseWriter, r *http.Request) {
 	s.artifacts[token] = entry
 	s.artifactMu.Unlock()
 	retained = true
-	http.Redirect(w, r, "/artifact-view/"+token+"/"+entryName, http.StatusSeeOther)
+	http.Redirect(w, r, "/artifact-view/"+token+"/"+entryName+suffix, http.StatusSeeOther)
 }
 
 func (s *Server) handleArtifactPreview(w http.ResponseWriter, r *http.Request) {
@@ -377,6 +385,15 @@ func (s *Server) handleArtifactPreview(w http.ResponseWriter, r *http.Request) {
 	}
 	defer entry.mu.Unlock()
 	target := filepath.Join(entry.root, filepath.FromSlash(parts[1]))
+	if r.URL.Query().Get("review") == "1" {
+		w.Header().Set("Cache-Control", "no-store")
+		if parts[1] != entry.entryName || !artifactReviewable(entry.format) {
+			http.Error(w, "This artifact cannot be reviewed", http.StatusUnsupportedMediaType)
+			return
+		}
+		serveArtifactReviewDocument(w, target, entry)
+		return
+	}
 	info, err := os.Stat(target)
 	if err != nil || !info.Mode().IsRegular() {
 		http.NotFound(w, r)
