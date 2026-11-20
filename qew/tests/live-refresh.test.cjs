@@ -67,6 +67,7 @@ test('conversation artifact list loads the selected session independently of his
     id: '00000000-0000-0000-0000-000000000001', name: 'report.md', title: '<Old report>', size: 1024, view: 'markdown',
     sent_at: '2026-11-20T00:00:00Z',
   };
+  const projectArtifact = { ...artifact, id: '00000000-0000-0000-0000-000000000002', title: 'Shared report', project_id: 'p' };
   let response = { status: 'ok', data: [artifact] };
   let confirmed = false;
   const deleted = [];
@@ -78,6 +79,7 @@ test('conversation artifact list loads the selected session independently of his
     confirm: () => confirmed,
     loadChat: async () => { chatReloads++; },
     escapeHtml: text => text.replaceAll('<', '&lt;'),
+    escapeAttr: text => text,
     renderWizardModal: html => assert.match(html, /chat-artifact-list/),
     document: { getElementById: () => list },
     apiCall: async (verb, noun, args) => {
@@ -85,6 +87,7 @@ test('conversation artifact list loads the selected session independently of his
         deleted.push(`${noun} ${args.join(' ')}`);
         return { status: 'ok' };
       }
+      if (`${verb} ${noun} ${args}` === 'list artifact project:p') return { status: 'ok', data: [projectArtifact] };
       assert.equal(`${verb} ${noun} ${args}`, 'list artifact session');
       return response;
     },
@@ -105,6 +108,16 @@ test('conversation artifact list loads the selected session independently of his
   confirmed = true;
   assert.equal(await context.deleteArtifact(click, 'session'), true);
   assert.deepEqual(deleted, [`artifact session ${artifact.id}`]);
+  assert.equal(chatReloads, 1);
+  response = { status: 'ok', data: [artifact, projectArtifact] };
+  await context.openArtifactsModal();
+  assert.match(list.innerHTML, /Old report[\s\S]*Project artifacts[\s\S]*Shared report/);
+  await context.openArtifactsModal('p', 'Project P');
+  assert.match(list.innerHTML, new RegExp(`/artifacts/project%3Ap/${projectArtifact.id}/view`));
+  assert.doesNotMatch(list.innerHTML, /Old report|<h4>/);
+  const sharedClick = { target: { closest: () => ({ dataset: { deleteArtifact: projectArtifact.id } }) } };
+  assert.equal(await context.deleteArtifact(sharedClick, null, 'p'), true);
+  assert.equal(deleted.at(-1), `artifact project:p ${projectArtifact.id}`);
   assert.equal(chatReloads, 1);
   response = { status: 'ok', data: [] };
   await context.openArtifactsModal();
@@ -825,6 +838,7 @@ test('project list displays server counts and stale state without changing saved
   assert.match(container.innerHTML, /2 active · 3 completed/);
   assert.match(container.innerHTML, /0 active · 4 completed/);
   assert.match(container.innerHTML, /Older server/);
+  assert.equal((container.innerHTML.match(/data-action="artifacts"/g) || []).length, rows.length);
   assert.equal(context.projectsCache.find(p => p.name === 'Empty').status, 'active');
   assert.equal(context.excludedProjects.has('Empty'), true);
   assert.equal(context.excludedProjects.has('Done'), true);

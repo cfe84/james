@@ -218,10 +218,16 @@ func TestArtifactPublicationSnapshotAndSessionScope(t *testing.T) {
 	if resp := deleteArtifact(gadgetOtherSession, meta.ID); resp.Status != envelope.StatusSuccess || len(list(gadgetSession)) != 3 {
 		t.Fatal("delete crossed the session boundary")
 	}
+	requireGadgetError(t, gadgetCall(t, other, "artifacts.delete", artifact.DeleteRequest{ID: meta.ID}), "not_found")
+	requireGadgetError(t, gadgetCall(t, params, "artifacts.delete", map[string]string{"id": meta.ID, "session_id": gadgetOtherSession}), "invalid_request")
+	if resp := gadgetCall(t, params, "artifacts.delete", artifact.DeleteRequest{ID: meta.ID}); !resp.Success {
+		t.Fatalf("publisher could not delete its own artifact: %+v", resp)
+	}
 	for range 2 {
 		if resp := deleteArtifact(gadgetSession, meta.ID); resp.Status != envelope.StatusSuccess {
 			t.Fatalf("artifact delete failed: %+v", resp)
 		}
+
 	}
 	if resp := read(gadgetSession, meta.ID, 0); resp.Status != envelope.StatusError {
 		t.Fatal("deleted snapshot remained readable")
@@ -242,5 +248,44 @@ func TestArtifactPublicationSnapshotAndSessionScope(t *testing.T) {
 	}
 	if resp := read(gadgetSession, meta.ID, 0); resp.Status != envelope.StatusError {
 		t.Fatal("deleted artifact remained accessible")
+	}
+}
+
+func TestProjectArtifactStagingIsNotPublished(t *testing.T) {
+	h, _ := gadgetTestHandler(t)
+	session, err := h.store.GetSession(gadgetSession)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(session.Path, "replacement.txt"), []byte("# Notes"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	call := func(method string, data any) *envelope.Response {
+		raw, err := json.Marshal(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h.Handle(context.Background(), &envelope.Command{Method: method, Data: raw})
+	}
+	resp := call("stage_artifact", artifact.StageRequest{SessionID: gadgetSession, Path: "replacement.txt", Name: "original.md"})
+	meta, ok := resp.Data.(artifact.Metadata)
+	if !ok || meta.Name != "original.md" || meta.View != "markdown" {
+		t.Fatalf("staging did not use the published filename for preview: %+v", resp)
+	}
+	if turns, err := h.store.GetConversation(gadgetSession); err != nil || len(turns) != 0 {
+		t.Fatalf("staging published a conversation turn: %+v %v", turns, err)
+	}
+	read := artifact.ReadRequest{SessionID: gadgetSession, ID: meta.ID}
+	if resp := call("read_artifact", read); resp.Status != envelope.StatusError {
+		t.Fatal("normal artifact route exposed staging")
+	}
+	if resp := call("read_staged_artifact", read); resp.Status != envelope.StatusSuccess || string(resp.Data.(artifact.Chunk).Content) != "# Notes" {
+		t.Fatalf("staged read failed: %+v", resp)
+	}
+	if resp := call("delete_staged_artifact", artifact.Ref{SessionID: gadgetSession, ID: meta.ID}); resp.Status != envelope.StatusSuccess {
+		t.Fatalf("stage cleanup failed: %+v", resp)
+	}
+	if resp := call("read_staged_artifact", read); resp.Status != envelope.StatusError {
+		t.Fatal("deleted staged snapshot remained readable")
 	}
 }

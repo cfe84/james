@@ -35,7 +35,7 @@ func command(args []string) (string, []string, error) {
 		"agents.list", "agents.message", "agents.create", "subagents.list", "subagents.create", "subagents.message",
 		"subagents.edit", "subagents.complete", "subagents.stop", "subagents.delete",
 		"traits.list", "traits.get", "traits.edit", "sessions.edit", "moneypenny.list", "moneypenny.logs", "artifacts.publish",
-		"artifacts.update", "artifacts.list", "artifacts.download", "questionnaire.publish",
+		"artifacts.update", "artifacts.delete", "artifacts.list", "artifacts.download", "questionnaire.publish",
 		"schedule.list", "schedule.create", "schedule.delete",
 		"run.list", "run.status", "run.stop", "attention.get", "attention.set", "attention.resolve":
 		return method, args[2:], nil
@@ -63,7 +63,9 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 	allowed := map[string]bool{}
 	switch method {
 	case "artifacts.publish":
-		allowed["title"] = true
+		allowed["title"], allowed["project"] = true, true
+	case "artifacts.update", "artifacts.delete", "artifacts.list", "artifacts.download":
+		allowed["project"] = true
 	case "channels.search":
 		allowed["query"], allowed["provider"] = true, true
 	case "channels.create":
@@ -113,6 +115,12 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 	}
 	data := map[string]any{}
 	for key, value := range flags {
+		if key == "project" {
+			if value == "true" {
+				data[key] = true
+			}
+			continue
+		}
 		if strings.HasPrefix(method, "channels.") {
 			key = strings.ReplaceAll(key, "-", "_")
 		}
@@ -301,20 +309,35 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 			}
 			data["id"], data["path"] = pos[0], pos[1]
 		}
-	case "artifacts.list", "artifacts.download":
-		n := 1
-		if method == "artifacts.download" {
-			n = 3
+	case "artifacts.delete":
+		if err = arity(1, 1); err == nil {
+			if strings.TrimSpace(pos[0]) == "" {
+				err = errors.New("artifact ID is required")
+			}
+			data["id"] = pos[0]
 		}
-		if err = arity(n, n); err == nil {
+	case "artifacts.list", "artifacts.download":
+		project := flags["project"] == "true"
+		minArgs, maxArgs := 0, 1
+		if project {
+			maxArgs = 0
+		}
+		if method == "artifacts.download" {
+			minArgs = maxArgs + 2
+			maxArgs = minArgs
+		}
+		if err = arity(minArgs, maxArgs); err == nil {
 			for _, value := range pos {
 				if strings.TrimSpace(value) == "" {
 					return Request{}, errors.New("session ID, artifact ID and destination must not be blank")
 				}
 			}
-			data["session_id"] = pos[0]
-			if n == 3 {
-				data["id"], data["destination"] = pos[1], pos[2]
+			if method == "artifacts.download" {
+				data["id"], data["destination"] = pos[len(pos)-2], pos[len(pos)-1]
+				pos = pos[:len(pos)-2]
+			}
+			if len(pos) == 1 {
+				data["session_id"] = pos[0]
 			}
 		}
 	case "questionnaire.publish":
@@ -463,7 +486,7 @@ func parseFlags(args []string, allowed map[string]bool) (map[string]string, []st
 		if _, exists := flags[name]; exists {
 			return nil, nil, fmt.Errorf("duplicate flag --%s", name)
 		}
-		if name == "recursive" || name == "yolo" || name == "allow-anyone" {
+		if name == "recursive" || name == "yolo" || name == "allow-anyone" || name == "project" {
 			if !hasValue {
 				value = "true"
 			}

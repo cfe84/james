@@ -311,6 +311,19 @@ Injected gadget instructions distinguish the daemon-bound caller from the
 publishing session passed as the target and direct agents to use this relay
 before requesting a manual copy.
 
+Personal gadget deletes bind the target to the authenticated session on
+Moneypenny. Project snapshots instead live in Hem's SQLite database, indexed by
+project and artifact ID, independently of the publisher. Hem derives project
+scope from the authenticated session and rechecks membership in SQLite when
+accessing or changing bytes. It pulls a bounded temporary snapshot from the
+caller's MP in verified chunks, then writes metadata and content atomically
+under per-project quotas. The MP does not publish a card for staged content;
+an interrupted transfer leaves at most one stage per session, replaced by the
+next transfer or removed with the session. Project deletion removes its
+snapshots in the same transaction. The operator's `project:ID` artifact scope
+uses the existing Qew viewer and list without exposing project access to
+agents outside the project.
+
 Qew's authenticated View page keeps a stable URL and frames the authenticated
 preview endpoint, which reuses a temporary preview only if its checksum still
 matches MP metadata. Preview and Download retrieve the snapshot into private

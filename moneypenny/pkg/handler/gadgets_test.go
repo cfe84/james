@@ -356,7 +356,8 @@ func TestExistingSessionRouteRefreshFromOperatorOnly(t *testing.T) {
 
 func TestGadgetPromptShowsOnlyGrantedCommands(t *testing.T) {
 	h, params := gadgetTestHandler(t)
-	if strings.Contains(params.SystemPrompt, "gadgets agents list") || strings.Contains(params.SystemPrompt, "gadgets artifacts download") ||
+	if strings.Contains(params.SystemPrompt, "gadgets agents list") || strings.Contains(params.SystemPrompt, "gadgets artifacts download PUBLISHER_SESSION_ID") ||
+		!strings.Contains(params.SystemPrompt, "gadgets artifacts download --project") ||
 		!strings.Contains(params.SystemPrompt, "gadgets memory get") {
 		t.Fatal("default prompt does not match capability defaults")
 	}

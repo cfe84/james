@@ -40,6 +40,9 @@ func artifactReviewable(format string) bool {
 }
 
 func canReviewArtifact(meta artifact.Metadata) bool {
+	if meta.ProjectID != "" {
+		return false
+	}
 	format := artifact.ViewFormat(meta.Name)
 	return artifactReviewable(format) && (format != "zip" || meta.View == "zip")
 }

@@ -26,10 +26,12 @@ gadgets agents create [--name name] [--nick nick] [--agent agent] [--model model
 gadgets agents message id [--body text]
 gadgets traits list
 gadgets moneypenny list
-gadgets artifacts publish PATH [--title TITLE]
-gadgets artifacts update ARTIFACT_ID PATH
-gadgets artifacts list SESSION_ID
+gadgets artifacts publish PATH [--title TITLE] [--project]
+gadgets artifacts update ARTIFACT_ID PATH [--project]
+gadgets artifacts delete ARTIFACT_ID [--project]
+gadgets artifacts list [SESSION_ID | --project]
 gadgets artifacts download SESSION_ID ARTIFACT_ID DESTINATION
+gadgets artifacts download --project ARTIFACT_ID DESTINATION
 gadgets traits get ID
 gadgets traits edit ID
 gadgets subagents list
@@ -202,6 +204,15 @@ Relative paths resolve from the stored session working directory. Save the
 returned `id`; `gadgets artifacts update ARTIFACT_ID PATH` replaces that
 snapshot without posting another card. The title, download filename and
 preview format stay the same. Editing the source file alone has no effect.
+`gadgets artifacts delete ARTIFACT_ID` deletes a snapshot you published to your
+own conversation without deleting the original file.
+
+Use `--project` with publish, update, or delete to share or manage a snapshot
+in your current project. All current members can manage it, without the
+**Agents** grant. Use `gadgets artifacts list --project` and
+`gadgets artifacts download --project ARTIFACT_ID DESTINATION` to retrieve it.
+Listing a conversation defaults to your own session and appends artifacts from
+its project if you are a member. Shared items have a `project_id` field.
 
 Share the publishing session ID and artifact ID in an agent message. Agents
 with the **Agents** grant can list or download any tracked session's published
@@ -345,10 +356,11 @@ and `Authorization: Bearer <token>`. Body:
 | agents/subagents list | `agents.list` / `subagents.list` | `{}` |
 | agents/subagents message | `agents.message` / `subagents.message` | `{"id":"...","body":"..."}` |
 | traits list | `traits.list` | `{}` |
-| artifacts publish | `artifacts.publish` | `{"path":"report.zip","title":"Review report"}`; title optional; authenticated session only |
-| artifacts update | `artifacts.update` | `{"id":"...","path":"report.zip"}`; authenticated owner only |
-| artifacts list | `artifacts.list` | `{"session_id":"..."}`; Agents grant |
-| artifacts download | `artifacts.download` | `{"session_id":"...","id":"...","offset":0}`; Agents grant; one chunk per request, assembled locally by the CLI |
+| artifacts publish | `artifacts.publish` | `{"path":"report.zip","title":"Review report","project":true}`; title and project optional |
+| artifacts update | `artifacts.update` | `{"id":"...","path":"report.zip","project":true}`; project optional |
+| artifacts delete | `artifacts.delete` | `{"id":"...","project":true}`; project optional |
+| artifacts list | `artifacts.list` | `{"session_id":"..."}` for a conversation or `{"project":true}` for the current project; defaults to caller's conversation |
+| artifacts download | `artifacts.download` | `{"session_id":"...","id":"...","offset":0}` for personal artifacts; replace `session_id` with `"project":true` for shared artifacts |
 | moneypenny list | `moneypenny.list` | `{}`; metadata-only discovery, no capability grant |
 | traits get | `traits.get` | `{"id":"..."}` |
 | traits edit | `traits.edit` | `{"id":"...","body":"..."}`; complete string body required, empty allowed |

@@ -1993,25 +1993,28 @@
         !Number.isSafeInteger(artifact.size) || artifact.size < 0) {
       throw new Error('Artifact metadata could not be read.');
     }
-    const base = `/artifacts/${encodeURIComponent(sessionID)}/${encodeURIComponent(artifact.id)}`;
+    const scope = artifact.project_id ? `project:${artifact.project_id}` : sessionID;
+    const base = `/artifacts/${encodeURIComponent(scope)}/${encodeURIComponent(artifact.id)}`;
     // Older transcript cards lack a view type for these extensions; Qew rechecks on open.
     const canView = ['html', 'pdf', 'zip', 'markdown', 'text'].includes(artifact.view) ||
       (!artifact.view && /\.(md|markdown|txt|text|log)$/i.test(artifact.name));
     const view = canView ?
       `<a class="btn" href="${base}/view" target="_blank" rel="noopener noreferrer">View</a> ` : '';
     const date = sentAt ? `<br><span class="agent-message-time">Sent ${escapeHtml(new Date(sentAt).toLocaleString())}</span>` : '';
-    return `<div class="msg-content"><strong>${escapeHtml(artifact.title)}</strong><br>${escapeHtml(artifact.name)}${date}<br>${view}<a class="btn" href="${base}/download" download>Download</a> <button class="btn-muted" data-delete-artifact="${artifact.id}" type="button">Delete</button></div>`;
+    return `<div class="msg-content"><strong>${escapeHtml(artifact.title)}</strong><br>${escapeHtml(artifact.name)}${date}<br>${view}<a class="btn" href="${base}/download" download>Download</a> <button class="btn-muted" data-delete-artifact="${artifact.id}"${artifact.project_id ? ` data-artifact-project="${escapeAttr(artifact.project_id)}"` : ''} type="button">Delete</button></div>`;
   }
 
-  async function deleteArtifact(event, sessionID) {
+  async function deleteArtifact(event, sessionID, projectID) {
     const button = event.target.closest('[data-delete-artifact]');
-    if (!button || button.disabled || currentSession !== sessionID || !sessionID) return false;
+    if (!button || button.disabled || (!projectID && (!sessionID || currentSession !== sessionID))) return false;
     if (!confirm('Delete this published artifact? This cannot be undone.')) return false;
     button.disabled = true;
     try {
       const id = button.dataset.deleteArtifact;
-      const resp = await apiCall('delete', 'artifact', [sessionID, id]);
+      const project = projectID || button.dataset.artifactProject;
+      const resp = await apiCall('delete', 'artifact', [project ? `project:${project}` : sessionID, id]);
       if (resp.status !== 'ok') throw new Error(resp.message || 'Delete failed');
+      if (project) return true;
       if (currentSession === sessionID) {
         if (chatRefresh) await chatRefresh;
         if (currentSession !== sessionID) return false;
@@ -2026,30 +2029,35 @@
     return false;
   }
 
-  async function openArtifactsModal() {
-    const sessionID = currentSession;
-    if (!sessionID) return;
+  async function openArtifactsModal(projectID, projectName) {
+    const sessionID = projectID ? null : currentSession;
+    if (!sessionID && !projectID) return;
+    const scope = projectID ? `project:${projectID}` : sessionID;
     renderWizardModal(`
       <div class="cmd-palette" tabindex="-1" role="dialog" aria-modal="true" aria-labelledby="chat-artifact-title">
-        <h3 id="chat-artifact-title">Artifacts</h3>
+        <h3 id="chat-artifact-title">${projectID ? `Artifacts · ${escapeHtml(projectName)}` : 'Artifacts'}</h3>
         <div id="chat-artifact-list" aria-live="polite"><div class="loading">Loading…</div></div>
         <div class="modal-actions"><button class="btn-muted" onclick="window._qewCloseWizard()">Close</button></div>
       </div>
     `);
     const list = document.getElementById('chat-artifact-list');
     list.parentElement.focus();
+    const stillOpen = () => list.isConnected && (projectID || currentSession === sessionID);
     list.addEventListener('click', async event => {
-      if (await deleteArtifact(event, sessionID) && list.isConnected) openArtifactsModal();
+      if (await deleteArtifact(event, sessionID, projectID) && stillOpen()) openArtifactsModal(projectID, projectName);
     });
     try {
-      const resp = await apiCall('list', 'artifact', [sessionID]);
-      if (!list.isConnected || currentSession !== sessionID) return;
+      const resp = await apiCall('list', 'artifact', [scope]);
+      if (!stillOpen()) return;
       if (resp.status !== 'ok' || !Array.isArray(resp.data)) throw new Error(resp.message || 'Invalid response');
-      list.innerHTML = resp.data.length ?
-        resp.data.map(item => `<div class="msg">${renderArtifactDetails(item, sessionID)}</div>`).join('') :
-        '<div class="empty-state">No artifacts published in this conversation.</div>';
+      const render = items => items.map(item => `<div class="msg">${renderArtifactDetails(item, sessionID)}</div>`).join('');
+      const shared = resp.data.filter(item => item.project_id);
+      const personal = resp.data.filter(item => !item.project_id);
+      list.innerHTML = render(personal) + (shared.length ?
+        (projectID ? '' : '<h4>Project artifacts</h4>') + render(shared) : '') ||
+        `<div class="empty-state">No artifacts published in this ${projectID ? 'project' : 'conversation'}.</div>`;
     } catch (error) {
-      if (list.isConnected && currentSession === sessionID) {
+      if (stillOpen()) {
         list.textContent = `Could not load artifacts: ${error.message}`;
       }
     }
@@ -6253,6 +6261,7 @@
             ${mp ? `<span class="mgmt-detail">${escapeHtml(mp)}</span>` : ''}
             ${agent ? `<span class="mgmt-detail">${escapeHtml(agent)}</span>` : ''}
             <span class="mgmt-actions">
+              <button type="button" data-action="artifacts">Artifacts</button>
               <button data-proj-name="${escapeAttr(name)}" data-action="edit">Edit</button>
               <button data-proj-name="${escapeAttr(name)}" data-action="delete" class="danger">Delete</button>
             </span>
@@ -6296,6 +6305,10 @@
           const action = btn.dataset.action;
           if (action === 'edit') showEditProjectModal(projName);
           else if (action === 'delete') deleteProject(projName);
+          else if (action === 'artifacts') {
+            const row = btn.closest('.project-row');
+            openArtifactsModal(row.dataset.projectId, row.dataset.projectName);
+          }
         });
       });
       setupProjectReordering(container, rows, categories);

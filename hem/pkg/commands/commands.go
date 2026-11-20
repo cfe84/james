@@ -44,16 +44,17 @@ type mpSessionInfo struct {
 // Executor runs commands using the store and transport layer.
 // It coordinates between the store, client manager, cache manager, and watch manager.
 type Executor struct {
-	store                *store.Store
-	clientManager        *ClientManager
-	cacheManager         *CacheManager
-	watchManager         *WatchManager
-	Version              string
-	MI6Control           string                        // MI6 control address (host/session_id) for hem server
-	MI6ServerFingerprint string                        // expected MI6 server fingerprint for gadget commands
-	HemSocket            string                        // local daemon-to-Hem routing endpoint
-	BroadcastFunc        func(resp *protocol.Response) // optional: push broadcasts to connected MI6 clients
-	eventBroker          *EventBroker
+	store                 *store.Store
+	clientManager         *ClientManager
+	cacheManager          *CacheManager
+	watchManager          *WatchManager
+	Version               string
+	MI6Control            string                        // MI6 control address (host/session_id) for hem server
+	MI6ServerFingerprint  string                        // expected MI6 server fingerprint for gadget commands
+	HemSocket             string                        // local daemon-to-Hem routing endpoint
+	BroadcastFunc         func(resp *protocol.Response) // optional: push broadcasts to connected MI6 clients
+	eventBroker           *EventBroker
+	projectArtifactUpload sync.Mutex
 }
 
 func New(s *store.Store, mi6KeyPath string) *Executor {

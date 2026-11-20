@@ -473,12 +473,14 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.transferFile(ctx, cmd)
 	case "save_attachment":
 		return h.saveAttachment(ctx, cmd)
-	case "read_artifact":
+	case "read_artifact", "read_staged_artifact":
 		return h.readArtifact(ctx, cmd)
 	case "list_artifacts":
 		return h.listArtifacts(cmd)
-	case "delete_artifact":
+	case "delete_artifact", "delete_staged_artifact":
 		return h.deleteArtifact(cmd)
+	case "stage_artifact":
+		return h.stageArtifact(ctx, cmd)
 	case "resolve_questionnaire":
 		return h.resolveQuestionnaire(cmd)
 	case "schedule":

@@ -234,6 +234,10 @@ func (s *Server) handleArtifact(w http.ResponseWriter, r *http.Request) {
 	review := parts[2] == "preview" && r.URL.Query().Get("review") == "1"
 	var suffix string
 	if review {
+		if strings.HasPrefix(parts[0], artifact.ProjectScope) {
+			http.Error(w, "Project artifacts do not have a conversation to send reviews to", http.StatusUnsupportedMediaType)
+			return
+		}
 		suffix = "?review=1"
 	}
 	if parts[2] == "preview" {
@@ -387,7 +391,7 @@ func (s *Server) handleArtifactPreview(w http.ResponseWriter, r *http.Request) {
 	target := filepath.Join(entry.root, filepath.FromSlash(parts[1]))
 	if r.URL.Query().Get("review") == "1" {
 		w.Header().Set("Cache-Control", "no-store")
-		if parts[1] != entry.entryName || !artifactReviewable(entry.format) {
+		if parts[1] != entry.entryName || !artifactReviewable(entry.format) || strings.HasPrefix(entry.session, artifact.ProjectScope) {
 			http.Error(w, "This artifact cannot be reviewed", http.StatusUnsupportedMediaType)
 			return
 		}

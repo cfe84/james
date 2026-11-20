@@ -2,6 +2,9 @@ package commands
 
 import (
 	"bufio"
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -9,6 +12,7 @@ import (
 	"syscall"
 	"testing"
 
+	"james/hem/pkg/protocol"
 	"james/hem/pkg/store"
 	"james/hem/pkg/transport"
 	"james/moneypenny/pkg/artifact"
@@ -36,6 +40,11 @@ func TestArtifactCommandsRouteOnlyTrackedSessions(t *testing.T) {
 	defer out.Close()
 	requests := make(chan transport.Command, 2)
 	done := make(chan struct{})
+	body := bytes.Repeat([]byte("report"), artifact.StageChunkSize/6+1)
+	hash := sha256.Sum256(body)
+	snapshot := artifact.Metadata{ID: generateSessionID(), Name: "report.md", Title: "Report", View: "markdown", Size: int64(len(body)), SHA256: hex.EncodeToString(hash[:])}
+	stages := make(chan artifact.StageRequest, 2)
+	cleaned := make(chan struct{}, 3)
 	go func() {
 		defer close(done)
 		scanner := bufio.NewScanner(in)
@@ -44,12 +53,30 @@ func TestArtifactCommandsRouteOnlyTrackedSessions(t *testing.T) {
 			if json.Unmarshal(scanner.Bytes(), &command) != nil {
 				return
 			}
-			requests <- command
+			rawRequest, _ := json.Marshal(command.Data)
 			var data any = artifact.Chunk{Artifact: artifact.Metadata{ID: "artifact"}, Content: []byte("chunk")}
-			if command.Method == "list_artifacts" {
-				data = []artifact.Metadata{{ID: "artifact"}}
-			} else if command.Method == "delete_artifact" {
+			switch command.Method {
+			case "stage_artifact":
+				var request artifact.StageRequest
+				_ = json.Unmarshal(rawRequest, &request)
+				stages <- request
+				data = snapshot
+			case "read_staged_artifact":
+				var request artifact.ReadRequest
+				_ = json.Unmarshal(rawRequest, &request)
+				end := min(request.Offset+artifact.StageChunkSize, int64(len(body)))
+				data = artifact.Chunk{Artifact: snapshot, Content: body[request.Offset:end]}
+			case "delete_staged_artifact":
+				cleaned <- struct{}{}
 				data = command.Data
+			case "list_artifacts":
+				requests <- command
+				data = []artifact.Metadata{{ID: "artifact"}}
+			case "delete_artifact":
+				requests <- command
+				data = command.Data
+			default:
+				requests <- command
 			}
 			raw, _ := json.Marshal(data)
 			if err := json.NewEncoder(out).Encode(transport.Response{Status: "success", Data: raw}); err != nil {
@@ -115,5 +142,83 @@ func TestArtifactCommandsRouteOnlyTrackedSessions(t *testing.T) {
 	case cmd := <-requests:
 		t.Fatalf("invalid request reached a daemon: %+v", cmd)
 	default:
+	}
+
+	for _, id := range []string{"project", "other"} {
+		if err := e.store.CreateProject(&store.Project{ID: id, Name: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := e.store.SetSessionProject("session", "project"); err != nil {
+		t.Fatal(err)
+	}
+	for session, project := range map[string]string{"peer": "project", "outsider": "other", "unassigned": ""} {
+		if err := e.store.TrackSession(session, "mp", project); err != nil {
+			t.Fatal(err)
+		}
+	}
+	call := func(session, method string, data any, status string) *protocol.Response {
+		t.Helper()
+		body, err := json.Marshal(map[string]any{"source_session_id": session, "method": "artifacts." + method, "data": data})
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp := e.Dispatch("gadget", "route", []string{string(body)})
+		if resp.Status != status {
+			t.Fatalf("%s artifacts.%s: %+v", session, method, resp)
+		}
+		return resp
+	}
+	publish := artifact.PublishRequest{Path: "source.md", Project: true}
+	call("unassigned", "publish", publish, "error")
+	resp = call("session", "publish", publish, "ok")
+	var meta artifact.Metadata
+	if err := json.Unmarshal(resp.Data, &meta); err != nil || meta.ProjectID != "project" || meta.ID == snapshot.ID || meta.SentAt == "" {
+		t.Fatalf("unexpected project snapshot metadata: %s (%v)", resp.Data, err)
+	}
+	if stage := <-stages; stage.SessionID != "session" || stage.Path != "source.md" {
+		t.Fatalf("publish read from the wrong source: %+v", stage)
+	}
+	<-cleaned
+	resp = call("peer", "list", artifact.ListRequest{}, "ok")
+	<-requests
+	if err := json.Unmarshal(resp.Data, &items); err != nil || len(items) != 2 || items[0].ID != "artifact" || items[1] != meta {
+		t.Fatalf("session list did not append its project artifacts: %s (%v)", resp.Data, err)
+	}
+	read := artifact.ReadRequest{ID: meta.ID, Project: true, Offset: artifact.ChunkSize}
+	del := artifact.DeleteRequest{ID: meta.ID, Project: true}
+	update := artifact.UpdateRequest{ID: meta.ID, Path: "replacement.txt", Project: true}
+	call("outsider", "download", read, "error")
+	call("outsider", "update", update, "error")
+	call("outsider", "delete", del, "error")
+	if err := e.store.DeleteTrackedSession("session"); err != nil {
+		t.Fatal(err)
+	}
+	resp = call("peer", "download", read, "ok")
+	if err := json.Unmarshal(resp.Data, &chunk); err != nil || chunk.Artifact != meta || !bytes.Equal(chunk.Content, body[artifact.ChunkSize:2*artifact.ChunkSize]) {
+		t.Fatalf("project artifact unavailable after publisher deletion: %v", err)
+	}
+	call("peer", "update", update, "ok")
+	if stage := <-stages; stage.SessionID != "peer" || stage.Name != meta.Name {
+		t.Fatalf("peer update did not use its own host and preserve the original filename: %+v", stage)
+	}
+	<-cleaned
+	if err := e.store.SetSessionProject("peer", "other"); err != nil {
+		t.Fatal(err)
+	}
+	call("peer", "download", read, "error")
+	if err := e.store.SetSessionProject("peer", "project"); err != nil {
+		t.Fatal(err)
+	}
+	call("peer", "delete", del, "ok")
+	call("peer", "download", read, "error")
+	call("peer", "publish", publish, "ok")
+	<-stages
+	<-cleaned
+	if err := e.store.DeleteProject("project"); err != nil {
+		t.Fatal(err)
+	}
+	if items, err := e.store.ListProjectArtifacts("project", ""); err != nil || len(items) != 0 {
+		t.Fatalf("project deletion retained snapshots: %+v %v", items, err)
 	}
 }

@@ -255,7 +255,8 @@ func (h *Handler) prepareGadgets(sessionID string, params *agent.RunParams) erro
 	}
 	params.SystemPrompt += "Discovery (always available): gadgets moneypenny list lists registered host names and enabled/default status; gadgets traits list lists trait IDs, exact names and default status. These omit host addresses and trait prompt contents. Use exact host names with --moneypenny and trait names or IDs with --traits when creating agents.\n"
 	params.SystemPrompt += "Questionnaires: `gadgets questionnaire publish` reads one JSON object from stdin, e.g. {\"title\":\"Next step\",\"questions\":[{\"prompt\":\"Proceed?\",\"type\":\"yes_no\"},{\"prompt\":\"Which scope?\",\"type\":\"choice\",\"options\":[\"Small\",\"Large\"]},{\"prompt\":\"Any constraints?\",\"type\":\"text\"}]}. Both choice types allow a custom text answer. Qew submits all answers together as a new user turn; discard sends no turn. A pending questionnaire does not block normal chat or set attention.\n"
-	params.SystemPrompt += fmt.Sprintf("Conversation artifacts: gadgets artifacts publish PATH [--title TITLE] publishes a file snapshot to your own conversation. Keep the returned id and use gadgets artifacts update ARTIFACT_ID PATH to replace the snapshot without adding another card. The title, download filename and preview format stay fixed. Relative source paths resolve from your session working directory. Snapshots are stored on the publishing Moneypenny; bytes are fetched when requested, not sent with the card. View supports HTML, PDF, Markdown (.md, .markdown), UTF-8 text (.txt, .text, .log), and safe ZIPs with root index.html; other files are download-only. Maximum %d MiB per file, %d files and %d MiB per session. Do not publish secrets or content the user should not receive.\n", artifact.MaxFileSize/(1024*1024), artifact.MaxFiles, artifact.MaxSessionSize/(1024*1024))
+	params.SystemPrompt += fmt.Sprintf("Conversation artifacts: gadgets artifacts publish PATH [--title TITLE] publishes a snapshot to your own conversation. Keep the returned ID. Use gadgets artifacts update ARTIFACT_ID PATH to replace it or gadgets artifacts delete ARTIFACT_ID to remove it. Only the publishing session can update or delete a personal artifact via gadgets. Relative source paths resolve from your session working directory. Updates keep the title, filename, and preview format. View supports HTML, PDF, Markdown, UTF-8 text, and safe ZIPs with root index.html. Maximum %d MiB per file, %d files and %d MiB per session or project. Do not publish secrets.\n", artifact.MaxFileSize/(1024*1024), artifact.MaxFiles, artifact.MaxSessionSize/(1024*1024))
+	params.SystemPrompt += "Project artifacts: add --project to publish, update, or delete to act on your current project's shared snapshots. Any member of that project can publish, list, download, update, or delete them; no Agents grant or publishing session ID is needed. Use gadgets artifacts list --project and gadgets artifacts download --project ARTIFACT_ID DESTINATION. Plain gadgets artifacts list shows your own artifacts followed by project artifacts (marked project_id). Project artifacts live independently of the publishing session.\n"
 	if caps.Traits {
 		params.SystemPrompt += "Shared trait definitions: gadgets traits get ID; gadgets traits edit ID (complete replacement body on stdin; empty stdin clears it). IDs or exact names are accepted. You may edit only traits assigned to your own session; edits affect future use by all agents, not already-injected session prompts. No trait creation, deletion, assignment, renaming, or default changes are permitted.\n"
 	}
@@ -383,13 +384,22 @@ func (h *Handler) executeGadget(ctx context.Context, sessionID string, request g
 	case "memory.get", "memory.list", "memory.search", "memory.set", "memory.batch", "memory.delete", "memory.revisions",
 		"memory.query", "memory.claim-set", "memory.claim-get", "memory.claim-delete":
 		allowed = caps.Memory
-	case "agents.list", "agents.message", "artifacts.list", "artifacts.download":
+	case "agents.list", "agents.message":
 		allowed = caps.Agents
+	case "artifacts.list", "artifacts.download":
+		var target struct {
+			SessionID string `json:"session_id"`
+			Project   bool   `json:"project"`
+		}
+		if err := json.Unmarshal(request.Data, &target); err != nil {
+			return nil, &gadgetError{"invalid_request", "invalid artifact scope"}
+		}
+		allowed = target.Project || caps.Agents || target.SessionID == "" || target.SessionID == sessionID
 	case "agents.create":
 		allowed = caps.CreateAgents
 	case "sessions.edit":
 		allowed = caps.EditSessions || caps.EditOwnSession
-	case "traits.list", "moneypenny.list", "artifacts.publish", "artifacts.update", "questionnaire.publish":
+	case "traits.list", "moneypenny.list", "artifacts.publish", "artifacts.update", "artifacts.delete", "questionnaire.publish":
 		allowed = true
 	case "traits.get", "traits.edit":
 		allowed = caps.Traits
@@ -438,6 +448,9 @@ func (h *Handler) executeGadget(ctx context.Context, sessionID string, request g
 	}
 	if request.Method == "artifacts.update" {
 		return h.updateArtifact(ctx, sessionID, request.Data)
+	}
+	if request.Method == "artifacts.delete" {
+		return h.deleteArtifactGadget(ctx, sessionID, request.Data)
 	}
 	if request.Method == "artifacts.list" || request.Method == "artifacts.download" {
 		return h.routeGadget(ctx, sessionID, request.Method, request.Data)

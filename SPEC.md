@@ -1256,6 +1256,19 @@ file can subsequently change or disappear without changing the published copy.
 the caller's own session using the ID returned by publish. It keeps the same
 card, title, download filename and preview format. A failed update leaves the
 previous snapshot available. Use publish for another card or preview format.
+`gadgets artifacts delete ARTIFACT_ID` removes the snapshot and card without
+touching the original source. Only the publishing session can use this gadget
+to delete a personal artifact.
+
+`gadgets artifacts publish PATH --project` publishes to the caller's current
+project instead of their conversation. All current project members can list,
+download, update, and delete those snapshots using `--project`, regardless of
+the Agents grant. Projects use the same file and byte limits as sessions.
+Project snapshots survive publisher deletion or reassignment and are removed
+when the project is deleted. Listing a session shows its project artifacts at
+the bottom (agents can see them only if they belong to the same project).
+In Qew, **Projects → Artifacts** opens a project's list directly, with View,
+Download, and Delete. Project artifacts do not have a conversation for Review.
 
 To share a file, publish it and message the peer your session ID and artifact
 ID. The **Agents** grant lets a session use `gadgets artifacts list SESSION_ID`

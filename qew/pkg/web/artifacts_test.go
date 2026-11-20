@@ -44,7 +44,11 @@ func (h *artifactHem) Send(req *Request) (*Response, error) {
 		return nil, err
 	}
 	h.requests = append(h.requests, data)
-	if h.deleted || data.ID != h.meta.ID || data.SessionID != "session" {
+	scope := "session"
+	if h.meta.ProjectID != "" {
+		scope = artifact.ProjectScope + h.meta.ProjectID
+	}
+	if h.deleted || data.ID != h.meta.ID || data.SessionID != scope {
 		return &Response{Status: "error", Message: "session or artifact missing"}, nil
 	}
 	var content []byte
@@ -271,6 +275,30 @@ func TestArtifactHTTPViewDownloadAndExpiry(t *testing.T) {
 				t.Fatalf("deleted preview not cleaned: %v", err)
 			}
 		})
+	}
+}
+
+func TestProjectArtifactViewerUsesProjectScope(t *testing.T) {
+	content := []byte("# Shared")
+	s, hem, mux := artifactWebServer(t, "report.md", content)
+	hem.meta.ProjectID = "project-id"
+	base := "/artifacts/project%3Aproject-id/" + hem.meta.ID
+	view := artifactRequest(s, mux, base+"/view", true)
+	if view.Code != http.StatusOK || strings.Contains(view.Body.String(), `id="review-toggle"`) ||
+		!strings.Contains(view.Body.String(), `/artifacts/project:project-id/`+hem.meta.ID+`/preview`) {
+		t.Fatalf("wrong viewer for project artifact: %d %s", view.Code, view.Body)
+	}
+	preview := artifactRequest(s, mux, base+"/preview", true)
+	if preview.Code != http.StatusSeeOther {
+		t.Fatalf("project artifact preview failed: %d %s", preview.Code, preview.Body)
+	}
+	doc := artifactRequest(s, mux, preview.Header().Get("Location"), false)
+	if doc.Code != http.StatusOK || !strings.Contains(doc.Body.String(), "<h1>Shared</h1>") {
+		t.Fatalf("project preview lost its content: %d %s", doc.Code, doc.Body)
+	}
+	download := artifactRequest(s, mux, base+"/download", true)
+	if download.Code != http.StatusOK || !bytes.Equal(download.Body.Bytes(), content) {
+		t.Fatalf("project download changed its content: %d %s", download.Code, download.Body)
 	}
 }
 

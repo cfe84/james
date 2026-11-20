@@ -18,16 +18,51 @@ const (
 	MaxExpanded    = 100 * 1024 * 1024
 	MaxEntries     = 1000
 	ChunkSize      = 192 * 1024
+	StageChunkSize = 1024 * 1024
 )
 
 type Metadata struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Title  string `json:"title"`
-	Size   int64  `json:"size"`
-	SHA256 string `json:"sha256"`
-	View   string `json:"view,omitempty"`
-	SentAt string `json:"sent_at,omitempty"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Title     string `json:"title"`
+	Size      int64  `json:"size"`
+	SHA256    string `json:"sha256"`
+	View      string `json:"view,omitempty"`
+	SentAt    string `json:"sent_at,omitempty"`
+	ProjectID string `json:"project_id,omitempty"`
+}
+
+// ProjectScope distinguishes project IDs from session IDs on operator routes.
+const ProjectScope = "project:"
+
+type PublishRequest struct {
+	Path    string `json:"path"`
+	Title   string `json:"title,omitempty"`
+	Project bool   `json:"project,omitempty"`
+}
+
+type UpdateRequest struct {
+	ID      string `json:"id"`
+	Path    string `json:"path"`
+	Project bool   `json:"project,omitempty"`
+}
+
+type DeleteRequest struct {
+	ID      string `json:"id"`
+	Project bool   `json:"project,omitempty"`
+}
+
+type ListRequest struct {
+	SessionID string `json:"session_id,omitempty"`
+	Project   bool   `json:"project,omitempty"`
+}
+
+// StageRequest identifies a caller's source file for a project transfer.
+type StageRequest struct {
+	SessionID string `json:"session_id"`
+	Path      string `json:"path"`
+	Title     string `json:"title,omitempty"`
+	Name      string `json:"name,omitempty"` // Existing filename for a replacement.
 }
 
 type Ref struct {
@@ -40,6 +75,7 @@ type ReadRequest struct {
 	ID           string `json:"id"`
 	Offset       int64  `json:"offset"`
 	MetadataOnly bool   `json:"metadata_only,omitempty"`
+	Project      bool   `json:"project,omitempty"`
 }
 
 type Chunk struct {

@@ -121,6 +121,14 @@ CREATE TABLE IF NOT EXISTS projects (
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS project_artifacts (
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    id TEXT NOT NULL,
+    metadata TEXT NOT NULL,
+    content BLOB NOT NULL,
+    PRIMARY KEY (project_id, id)
+);
+
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
     moneypenny_name TEXT NOT NULL REFERENCES moneypennies(name) ON DELETE CASCADE,
@@ -924,15 +932,21 @@ func (s *Store) UpdateProject(id string, name, status, moneypenny, paths, defaul
 
 // DeleteProject removes a project by id.
 func (s *Store) DeleteProject(id string) error {
-	// Clear project_id on sessions that reference this project.
-	if _, err := s.db.Exec(`UPDATE sessions SET project_id = '' WHERE project_id = ?`, id); err != nil {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE sessions SET project_id = '' WHERE project_id = ?`, id); err != nil {
 		return fmt.Errorf("unlinking sessions from project %q: %w", id, err)
 	}
-	_, err := s.db.Exec(`DELETE FROM projects WHERE id = ?`, id)
-	if err != nil {
+	if _, err := tx.Exec(`DELETE FROM project_artifacts WHERE project_id = ?`, id); err != nil {
+		return fmt.Errorf("deleting artifacts for project %q: %w", id, err)
+	}
+	if _, err := tx.Exec(`DELETE FROM projects WHERE id = ?`, id); err != nil {
 		return fmt.Errorf("delete project %q: %w", id, err)
 	}
-	return nil
+	return tx.Commit()
 }
 
 // SetSessionProject updates the project_id on a session.

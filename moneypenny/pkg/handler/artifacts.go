@@ -17,28 +17,55 @@ import (
 )
 
 func (h *Handler) publishArtifact(ctx context.Context, sessionID string, raw json.RawMessage) (any, error) {
-	var request struct {
-		Path  string `json:"path"`
-		Title string `json:"title"`
-	}
+	var request artifact.PublishRequest
 	if err := decodeGadget(raw, &request); err != nil {
 		return nil, err
 	}
-	return h.snapshotArtifact(ctx, sessionID, "", request.Path, request.Title)
+	if request.Project {
+		return h.routeGadget(ctx, sessionID, "artifacts.publish", raw)
+	}
+	return h.snapshotArtifact(ctx, sessionID, "", request.Path, request.Title, nil)
 }
 
 func (h *Handler) updateArtifact(ctx context.Context, sessionID string, raw json.RawMessage) (any, error) {
-	var request struct {
-		ID   string `json:"id"`
-		Path string `json:"path"`
-	}
+	var request artifact.UpdateRequest
 	if err := decodeGadget(raw, &request); err != nil {
 		return nil, err
 	}
 	if !sessionIDPattern.MatchString(request.ID) {
 		return nil, &gadgetError{"invalid_request", "invalid artifact ID"}
 	}
-	return h.snapshotArtifact(ctx, sessionID, request.ID, request.Path, "")
+	if request.Project {
+		return h.routeGadget(ctx, sessionID, "artifacts.update", raw)
+	}
+	return h.snapshotArtifact(ctx, sessionID, request.ID, request.Path, "", nil)
+}
+
+func (h *Handler) deleteArtifactGadget(ctx context.Context, sessionID string, raw json.RawMessage) (any, error) {
+	var request artifact.DeleteRequest
+	if err := decodeGadget(raw, &request); err != nil {
+		return nil, err
+	}
+	if !sessionIDPattern.MatchString(request.ID) {
+		return nil, &gadgetError{"invalid_request", "invalid artifact ID"}
+	}
+	if request.Project {
+		return h.routeGadget(ctx, sessionID, "artifacts.delete", raw)
+	}
+	return h.removeArtifact(artifact.Ref{SessionID: sessionID, ID: request.ID}, false, true)
+}
+
+func (h *Handler) stageArtifact(ctx context.Context, cmd *envelope.Command) *envelope.Response {
+	var request artifact.StageRequest
+	if err := decodeGadget(cmd.Data, &request); err != nil ||
+		(request.Name != "" && sanitizeAttachmentName(request.Name) != request.Name) {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "invalid staged artifact request")
+	}
+	meta, err := h.snapshotArtifact(ctx, request.SessionID, "", request.Path, request.Title, &request)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
+	}
+	return envelope.SuccessResponse(cmd.RequestID, meta)
 }
 
 type storedArtifact struct {
@@ -77,7 +104,7 @@ func loadStoredArtifact(dir string) (storedArtifact, error) {
 	return meta, nil
 }
 
-func (h *Handler) snapshotArtifact(ctx context.Context, sessionID, id, source, title string) (any, error) {
+func (h *Handler) snapshotArtifact(ctx context.Context, sessionID, id, source, title string, stage *artifact.StageRequest) (any, error) {
 	if strings.TrimSpace(source) == "" || len(title) > 240 {
 		return nil, fmt.Errorf("artifact path is required and title must not exceed 240 bytes")
 	}
@@ -116,7 +143,13 @@ func (h *Handler) snapshotArtifact(ctx context.Context, sessionID, id, source, t
 	if err != nil {
 		return nil, err
 	}
-	root = filepath.Join(root, "artifacts")
+	root = filepath.Join(root, artifactDir(stage != nil))
+	if stage != nil {
+		// At most one temporary snapshot per session; recover an abandoned transfer.
+		if err := os.RemoveAll(root); err != nil {
+			return nil, fmt.Errorf("cleaning abandoned artifact transfer: %w", err)
+		}
+	}
 	var previous storedArtifact
 	if id != "" {
 		dir := filepath.Join(root, id)
@@ -175,6 +208,9 @@ func (h *Handler) snapshotArtifact(ctx context.Context, sessionID, id, source, t
 	name := sanitizeAttachmentName(info.Name())
 	if name == "" || strings.ContainsAny(name, "\r\n") {
 		return nil, fmt.Errorf("invalid artifact filename")
+	}
+	if stage != nil && stage.Name != "" {
+		name = stage.Name
 	}
 	meta := storedArtifact{Metadata: artifact.Metadata{ID: newAgentSessionID(), Name: name, Title: title}}
 	if id != "" {
@@ -251,11 +287,20 @@ func (h *Handler) snapshotArtifact(ctx context.Context, sessionID, id, source, t
 		return nil, err
 	}
 	dir = destination
-	if err := h.store.AddConversationTurn(sessionID, "artifact", string(encoded)); err != nil {
-		return nil, err
+	if stage == nil {
+		if err := h.store.AddConversationTurn(sessionID, "artifact", string(encoded)); err != nil {
+			return nil, err
+		}
 	}
 	committed = true
 	return meta.Metadata, nil
+}
+
+func artifactDir(staged bool) string {
+	if staged {
+		return "artifact-stage"
+	}
+	return "artifacts"
 }
 
 func (h *Handler) removeArtifactFile(sessionID, filename string) {
@@ -321,30 +366,55 @@ func (h *Handler) deleteArtifact(cmd *envelope.Command) *envelope.Response {
 	if err := decodeGadget(cmd.Data, &request); err != nil || !sessionIDPattern.MatchString(request.ID) {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "invalid artifact delete request")
 	}
+	result, err := h.removeArtifact(request, cmd.Method == "delete_staged_artifact", false)
+	if err != nil {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
+	}
+	return envelope.SuccessResponse(cmd.RequestID, result)
+}
+
+func (h *Handler) removeArtifact(request artifact.Ref, staged, requireOwned bool) (artifact.Ref, error) {
 	dir, err := h.sessionDirPath(request.SessionID)
 	if err != nil {
-		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
+		return request, err
 	}
 	h.artifactsMu.Lock()
 	defer h.artifactsMu.Unlock()
-	fail := func(err error) *envelope.Response {
+	fail := func(err error) (artifact.Ref, error) {
 		h.errorLog("deleting artifact for session %s: %v", request.SessionID, err)
-		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, "could not delete session artifact")
+		return request, fmt.Errorf("could not delete session artifact")
 	}
 	session, err := h.store.GetSession(request.SessionID)
 	if err != nil {
 		return fail(err)
 	}
 	if session == nil {
-		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, "artifact session not found")
+		return request, fmt.Errorf("artifact session not found")
 	}
-	if err := os.RemoveAll(filepath.Join(dir, "artifacts", request.ID)); err != nil {
+	target := filepath.Join(dir, artifactDir(staged), request.ID)
+	if requireOwned {
+		if _, err := os.Stat(target); os.IsNotExist(err) {
+			// A previous delete may have removed the bytes but failed to remove the card.
+			times, err := h.store.ArtifactSentTimes(request.SessionID)
+			if err != nil {
+				return fail(err)
+			}
+			if _, published := times[request.ID]; !published {
+				return request, &gadgetError{"not_found", "artifact not found in your session"}
+			}
+		} else if err != nil {
+			return fail(err)
+		}
+	}
+	if err := os.RemoveAll(target); err != nil {
 		return fail(err)
 	}
-	if err := h.store.DeleteArtifactTurn(request.SessionID, request.ID); err != nil {
-		return fail(err)
+	if !staged {
+		if err := h.store.DeleteArtifactTurn(request.SessionID, request.ID); err != nil {
+			return fail(err)
+		}
 	}
-	return envelope.SuccessResponse(cmd.RequestID, request)
+	return request, nil
 }
 
 func (h *Handler) readArtifact(_ context.Context, cmd *envelope.Command) *envelope.Response {
@@ -365,7 +435,8 @@ func (h *Handler) readArtifact(_ context.Context, cmd *envelope.Command) *envelo
 	if err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
 	}
-	root = filepath.Join(root, "artifacts", request.ID)
+	staged := cmd.Method == "read_staged_artifact"
+	root = filepath.Join(root, artifactDir(staged), request.ID)
 	fail := func(err error) *envelope.Response {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("reading artifact: %v", err))
 	}
@@ -387,7 +458,11 @@ func (h *Handler) readArtifact(_ context.Context, cmd *envelope.Command) *envelo
 	if _, err := in.Seek(request.Offset, io.SeekStart); err != nil {
 		return fail(err)
 	}
-	content, err := io.ReadAll(io.LimitReader(in, min(artifact.ChunkSize, meta.Size-request.Offset)))
+	chunkSize := int64(artifact.ChunkSize)
+	if staged {
+		chunkSize = artifact.StageChunkSize
+	}
+	content, err := io.ReadAll(io.LimitReader(in, min(chunkSize, meta.Size-request.Offset)))
 	if err != nil {
 		return fail(err)
 	}

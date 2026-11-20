@@ -65,10 +65,12 @@ Usage:
   gadgets schedule create (--cron expr | --at timestamp) --prompt text
   gadgets schedule delete id
   gadgets moneypenny list
-  gadgets artifacts publish PATH [--title TITLE]
-  gadgets artifacts update ARTIFACT_ID PATH
-  gadgets artifacts list SESSION_ID
+  gadgets artifacts publish PATH [--title TITLE] [--project]
+  gadgets artifacts update ARTIFACT_ID PATH [--project]
+  gadgets artifacts delete ARTIFACT_ID [--project]
+  gadgets artifacts list [SESSION_ID | --project]
   gadgets artifacts download SESSION_ID ARTIFACT_ID DESTINATION
+  gadgets artifacts download --project ARTIFACT_ID DESTINATION
   gadgets questionnaire publish  (reads questionnaire JSON from stdin)
   gadgets moneypenny logs [--name registered-host] [--lines N]
   gadgets run-and-callback -- command [args...]  (License to Kill required)
