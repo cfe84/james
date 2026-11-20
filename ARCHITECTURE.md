@@ -978,6 +978,9 @@ hem/
    remains a compatibility alias.
    Legacy notify/tags share this setter and deduplicate their transcript turn.
    Final response tags use the same path as streamed tags.
+   Before executing a new conversation turn, Moneypenny uses a summary-only
+   report update to clear stale dashboard text without changing the attention
+   request or its revision. Auxiliary runs do not clear the summary.
    Shared run instructions require durable attention before waiting or ending
    a turn whenever user input, approval, or external action is required, not
    just while continuing background work. Questions/choices/approvals use
@@ -1863,6 +1866,9 @@ text and status. Copilot uses the tracked provider session ID and its effective
 filters by provider session ID, including an ID learned during the first turn.
 An unavailable todo snapshot is reported separately from activity or history
 failure. No provider task data is written to James storage.
+Qew hides snapshots with only done or cancelled items unless the snapshot is
+truncated. Provider tasks are session-scoped, so unfinished work remains visible
+across turns rather than being treated as stale.
 
 Qew persists one thought display mode. Compact and Full render stored thoughts
 only for a working session, after the latest prompt, reply, or compaction marker

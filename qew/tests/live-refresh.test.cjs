@@ -808,6 +808,14 @@ test('working chat todo summaries show the active position and full lists escape
   assert.match(full, /Pending.*report/);
   assert.equal(context.renderTodos({ items: [] }, false), '');
   assert.match(context.renderTodos({ unavailable: true }, false), /unavailable/);
+  const finished = { items: [
+    { content: 'old task', status: 'done' },
+    { content: 'skipped task', status: 'cancelled' },
+  ] };
+  for (const full of [false, true]) {
+    assert.equal(context.renderTodos(finished, full), '');
+    assert.notEqual(context.renderTodos({ ...finished, truncated: true }, full), '');
+  }
 });
 
 function dashboardHarness() {

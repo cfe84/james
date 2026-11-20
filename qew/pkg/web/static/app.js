@@ -1749,10 +1749,12 @@
     if (snapshot.unavailable) return '<div class="msg todo-indicator">Todo list unavailable</div>';
     const items = snapshot.items || [];
     if (!items.length) return '';
+    const firstOpen = items.findIndex(item => item.status !== 'done' && item.status !== 'cancelled');
+    if (firstOpen < 0 && !snapshot.truncated) return '';
     const total = `${items.length}${snapshot.truncated ? '+' : ''}`;
     if (!full) {
       let index = items.findIndex(item => item.status === 'in_progress');
-      if (index < 0) index = items.findIndex(item => item.status !== 'done' && item.status !== 'cancelled');
+      if (index < 0) index = firstOpen;
       const item = items[index];
       if (!item) {
         const done = items.filter(todo => todo.status === 'done').length;

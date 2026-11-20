@@ -81,6 +81,28 @@ func TestSuccessfulRunPublishesResultWithoutUrgentAttention(t *testing.T) {
 	}
 }
 
+func TestNewTurnClearsDashboardSummaryWithoutResolvingAttention(t *testing.T) {
+	h, s, sessionID := newOperationRepairHandler(t)
+	summary, kind := "Previous turn status", "needs_answer"
+	before, _, err := s.SetSessionReport(sessionID, envelope.AttentionUpdate{
+		Summary: &summary, Kind: &kind, Reason: "Choose a branch",
+	}, "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.runAgentFunc = func(context.Context, agent.RunParams) (*agent.Result, error) {
+		session, err := s.GetSession(sessionID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if session.Summary != "" || session.Attention == nil || *session.Attention != *before.Attention {
+			t.Fatalf("unexpected report at turn start: %+v", session.SessionReport)
+		}
+		return &agent.Result{Text: "Continuing."}, nil
+	}
+	h.runAgent(sessionID, agent.RunParams{SessionID: sessionID, Agent: "copilot"})
+}
+
 func TestRunAgentDoesNotMislabelAgentErrorsAsMemoryPreparation(t *testing.T) {
 	for _, tc := range []struct{ name, message string }{
 		{"model error", "agent process failed: exit status 1\nstderr:\nError: Model luna is not available. Check memory."},

@@ -1220,7 +1220,11 @@ func (h *Handler) runAgentWithContext(ctx context.Context, sessionID string, par
 	}
 
 	var result *agent.Result
-	if err == nil {
+	if err == nil && ctx.Err() == nil {
+		emptySummary := ""
+		if _, _, reportErr := h.store.SetSessionReport(sessionID, envelope.AttentionUpdate{Summary: &emptySummary}, "daemon"); reportErr != nil {
+			h.errorLog("failed to clear dashboard summary: session=%s error=%v", sessionID, reportErr)
+		}
 		result, err = h.runAuxiliary(ctx, params)
 	}
 	if ctx.Err() != nil {
