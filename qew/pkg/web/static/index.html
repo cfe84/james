@@ -157,7 +157,7 @@ header h1 span { color: var(--primary); }
 /* Keep the toggle + Actions menu from ever shrinking or being cropped, and push
    the Actions dropdown to the right edge of line 2 so its right-aligned menu
    opens on-screen. */
-.chat-header #thoughts-toggle, .chat-header #activity-detail-toggle, .chat-header #schedules-toggle, .chat-header .dropdown { flex-shrink: 0; }
+.chat-header #thoughts-toggle, .chat-header #todos-toggle, .chat-header #schedules-toggle, .chat-header .dropdown { flex-shrink: 0; }
 .chat-header-line2 .dropdown { margin-left: auto; }
 .chat-header .conversation-toggle { position: relative; background: none; border: none; font-size: 1.2em; cursor: pointer; margin-right: 4px; }
 .schedule-pending-dot {
@@ -266,6 +266,8 @@ header h1 span { color: var(--primary); }
 /* Working / schedule indicators */
 .working-indicator { color: var(--success); font-weight: 500; padding: 8px 0; }
 .activity-indicator { color: var(--muted); font-size: 0.85em; font-style: italic; padding: 2px 0; white-space: pre-wrap; word-break: break-word; }
+.todo-indicator { color: var(--muted); font-size: 0.85em; padding: 2px 0; overflow-wrap: anywhere; }
+.todo-indicator ul { list-style: none; padding: 0; margin: 0; }
 .msg.thought { color: var(--muted); font-size: 0.9em; font-style: italic; padding: 4px 0 4px 16px; white-space: pre-wrap; word-break: break-word; }
 .msg.system-note { color: var(--muted); font-size: 0.85em; font-style: italic; padding: 4px 0 4px 16px; white-space: pre-wrap; word-break: break-word; opacity: 0.85; }
 #thoughts-toggle.active { filter: none; }
@@ -659,7 +661,7 @@ header h1 span { color: var(--primary); }
         <select id="chat-effort-override" class="chat-override" title="Effort override — esc-f"></select>
         <select id="chat-context-override" class="chat-override" title="Context override — esc-w" style="display:none"></select>
         <button id="thoughts-toggle" class="conversation-toggle" title="Train of thought hidden (click to show) — T">💤</button>
-        <button id="activity-detail-toggle" class="conversation-toggle" title="Activity detail: Brief (click for Expanded)">📄</button>
+        <button id="todos-toggle" class="conversation-toggle" title="Todos: Compact (click for Full)" hidden>⏹️</button>
         <button id="schedules-toggle" class="conversation-toggle" title="Scheduled tasks — H" aria-label="Scheduled tasks">⏰<span id="schedules-pending-dot" class="schedule-pending-dot"></span></button>
         <div class="dropdown" id="chat-menu-wrap">
         <button class="btn-muted" id="chat-menu-btn">Actions ▾</button>

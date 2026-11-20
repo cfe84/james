@@ -40,6 +40,9 @@
   let allSubagentsCursor = 0;
   let allSubagentsRefresh = null;
   let lastActivity = [];
+  let lastTodos = null;
+  let nextTodoRead = 0;
+  let todoRefreshTimer = null;
   const CHAT_PAGE_SIZE = 50;
   let parentSessionStack = []; // stack for subagent navigation
   let soundEnabled = true;
@@ -50,6 +53,7 @@
   // the agent is working. Persisted across reloads.
   let showThoughts = (localStorage.getItem('qewShowThoughts') === '1');
   let expandedActivity = (localStorage.getItem('qewExpandedActivity') === '1');
+  let expandedTodos = (localStorage.getItem('qewExpandedTodos') === '1');
   const excludedProjects = new Set();
   let projectFilterCursor = 0;
   let projectFilterOptions = [];
@@ -1286,6 +1290,9 @@
     lastSubagents = [];
     allSubagents = [];
     lastActivity = [];
+    lastTodos = null;
+    nextTodoRead = 0;
+    syncTodosToggle();
     // Keep an in-app entry behind the session for browser/mobile Back.
     const newHash = '#/session/' + sessionId;
     if (window.location.hash !== newHash) {
@@ -1416,7 +1423,19 @@
         optionalCall('list', 'subsession', [currentSession]),
       ];
       // Always fetch activity — avoids race where status isn't yet "working" on current poll.
-      calls.push(optionalCall('activity', 'session', [currentSession]));
+      const readTodos = (!currentSessionAgent || supportsTodos(currentSessionAgent)) &&
+        Date.now() >= nextTodoRead;
+      if (readTodos) nextTodoRead = Date.now() + 2000;
+      else if (supportsTodos(currentSessionAgent) && currentSessionStatus === 'working' && todoRefreshTimer === null) {
+        todoRefreshTimer = setTimeout(async () => {
+          todoRefreshTimer = null;
+          await chatRefresh;
+          if (currentSession === sessAtStart && generation === chatGeneration &&
+              currentSessionStatus === 'working' && Date.now() >= nextTodoRead) loadChat();
+        }, Math.max(0, nextTodoRead - Date.now()));
+      }
+      calls.push(optionalCall('activity', 'session', readTodos ? [currentSession, '--todos'] : [currentSession],
+        readTodos ? 2500 : undefined));
       let [histResp, showResp, schedResp, subsResp, actResp] = await Promise.all(calls);
       // Bail out if the user navigated to a different session while we awaited;
       // otherwise we'd overwrite the new session's state with stale data.
@@ -1501,6 +1520,7 @@
         // Capture agent + default model/effort for the override dropdowns (once).
         if (!currentSessionAgent) {
           currentSessionAgent = showResp.data.agent || '';
+          syncTodosToggle();
           sessionDefaultModel = showResp.data.model || '';
           sessionDefaultEffort = showResp.data.effort || '';
           sessionDefaultContext = showResp.data.context_tier || '';
@@ -1526,6 +1546,12 @@
       let activity = lastActivity;
       if (actResp && actResp.status === 'ok' && actResp.data && actResp.data.activity) {
         activity = actResp.data.activity;
+      }
+      if (currentSessionStatus !== 'working') {
+        lastTodos = null;
+        nextTodoRead = 0;
+      } else if (readTodos && supportsTodos(currentSessionAgent)) {
+        lastTodos = actResp?.data?.todos || { unavailable: true };
       }
       lastSchedules = schedules;
       syncSchedulesToggle(schedules);
@@ -1714,6 +1740,34 @@
     return collapseSupersededActivity(events, event => event.type, event => event.summary);
   }
 
+  function renderTodos(snapshot, full) {
+    if (!snapshot) return '';
+    if (snapshot.unavailable) return '<div class="msg todo-indicator">Todo list unavailable</div>';
+    const items = snapshot.items || [];
+    if (!items.length) return '';
+    const total = `${items.length}${snapshot.truncated ? '+' : ''}`;
+    if (!full) {
+      let index = items.findIndex(item => item.status === 'in_progress');
+      if (index < 0) index = items.findIndex(item => item.status !== 'done' && item.status !== 'cancelled');
+      const item = items[index];
+      if (!item) {
+        const done = items.filter(todo => todo.status === 'done').length;
+        return `<div class="msg todo-indicator">☑️ ${done}/${total} done</div>`;
+      }
+      const icon = item.status === 'in_progress' ? '▶️' : item.status === 'blocked' ? '⚠️' : '□';
+      return `<div class="msg todo-indicator">${icon} ${index + 1}/${total}: ${escapeHtml(item.content)}</div>`;
+    }
+    const rows = items.map((item, index) => {
+      const text = escapeHtml(item.content);
+      const [icon, label] = item.status === 'done' ? ['✓', 'Done'] :
+        item.status === 'in_progress' ? ['▶', 'In progress'] :
+        item.status === 'blocked' ? ['⚠', 'Blocked'] :
+        item.status === 'cancelled' ? ['–', 'Cancelled'] : ['□', 'Pending'];
+      return `<li><span title="${label}">${icon}</span> ${index + 1}. ${item.status === 'done' ? `<s>${text}</s>` : text}</li>`;
+    }).join('');
+    return `<div class="msg todo-indicator"><ul aria-label="Todos">${rows}</ul>${snapshot.truncated ? 'More todos not shown' : ''}</div>`;
+  }
+
   function renderChat(prepend) {
     const container = document.getElementById('chat-messages');
     const serverTurns = chatConversation;
@@ -1764,13 +1818,19 @@
     }
 
     const activityTurns = collapseSupersededActivityTurns(serverTurns);
+    let todoIndex = activityTurns.length;
+    while (todoIndex > 0 && ['thinking', 'agent_text', 'scheduled'].includes(activityTurns[todoIndex - 1].role)) {
+      todoIndex--;
+    }
+    const todosHTML = currentSessionStatus === 'working' ? renderTodos(lastTodos, expandedTodos) : '';
     const faces = window.jamesAgentFace;
     const assistantFace = faces.render(currentSession);
     const humanFace = faces.renderPhoto(userPhoto);
     const withFace = (face, message) => face ? `<div class="msg-with-face">${face}${message}</div>` : message;
     let html = '';
     let skippedThoughts = false;
-    for (const turn of activityTurns) {
+    for (const [index, turn] of activityTurns.entries()) {
+      if (index === todoIndex) html += todosHTML;
       const agentName = currentSessionNick || currentSessionName || 'agent';
       const content = turn.content || '(empty)';
 
@@ -1778,6 +1838,7 @@
         html += renderArtifactCard(content, currentSession, turn.created_at);
         continue;
       }
+      if (todoIndex === activityTurns.length) html += todosHTML;
       if (['questionnaire', 'questionnaire_submitted', 'questionnaire_discarded'].includes(turn.role)) {
         html += renderQuestionnaireHistory(content, turn.role);
         continue;
@@ -1851,7 +1912,7 @@
     }
     // Working indicator with activity events.
     if (currentSessionStatus === 'working') {
-      if (activity && activity.length > 0) {
+      if (showThoughts && activity && activity.length > 0) {
         const collapsedActivity = collapseSupersededActivityEvents(activity);
         const recentAct = expandedActivity ? collapsedActivity : collapsedActivity.slice(-5);
         for (const ev of recentAct) {
@@ -1863,7 +1924,7 @@
 
       } else {
         const spyVerbs = ['Infiltrating...', 'Surveilling...', 'Decrypting...', 'On a mission...', 'Going undercover...', 'Acquiring intel...', 'Intercepting...', 'Extracting...'];
-        const spyVerb = spyVerbs[Math.floor(Math.random() * spyVerbs.length)];
+        const spyVerb = showThoughts ? spyVerbs[Math.floor(Math.random() * spyVerbs.length)] : 'Working…';
         html += `<div class="msg working-indicator">🕴️ ${spyVerb}</div>`;
       }
     }
@@ -1882,7 +1943,7 @@
     // `lastChatHTML` and skip the DOM update below.
     if (html === '') {
       html = skippedThoughts
-        ? '<div class="empty-state">Train of thought hidden — press 💭 (or t) to show</div>'
+        ? '<div class="empty-state">Train of thought hidden — press 💤 (or t) to show</div>'
         : '<div class="empty-state">No messages yet</div>';
     }
     // Skip re-render if content hasn't changed (preserves selection and scroll).
@@ -7023,6 +7084,7 @@
 
   function stopChatPoll() {
     if (chatPollTimer) { clearInterval(chatPollTimer); chatPollTimer = null; }
+    if (todoRefreshTimer !== null) { clearTimeout(todoRefreshTimer); todoRefreshTimer = null; }
   }
 
   // --- Helpers ---
@@ -7301,20 +7363,19 @@
     });
   }
 
-  // toggleThoughts shows/hides persisted train-of-thought turns in the open chat.
   function toggleThoughts() {
-    showThoughts = !showThoughts;
+    if (!showThoughts) {
+      showThoughts = true;
+      expandedActivity = false;
+    } else if (!expandedActivity) {
+      expandedActivity = true;
+    } else {
+      showThoughts = false;
+      expandedActivity = false;
+    }
     localStorage.setItem('qewShowThoughts', showThoughts ? '1' : '0');
-    syncThoughtsToggle();
-    lastChatHTML = ''; // force re-render
-    renderChat();
-  }
-
-  function toggleExpandedActivity() {
-    expandedActivity = !expandedActivity;
     localStorage.setItem('qewExpandedActivity', expandedActivity ? '1' : '0');
-    syncActivityDetailToggle();
-    lastChatHTML = '';
+    syncThoughtsToggle();
     renderChat(false);
   }
 
@@ -7338,20 +7399,26 @@
   function syncThoughtsToggle() {
     const btn = document.getElementById('thoughts-toggle');
     if (!btn) return;
-    btn.textContent = showThoughts ? '💭' : '💤';
-    btn.title = showThoughts ? 'Train of thought shown (click to hide) — T'
-                             : 'Train of thought hidden (click to show) — T';
+    btn.textContent = !showThoughts ? '💤' : expandedActivity ? '🧾' : '💭';
+    const mode = !showThoughts ? 'Hidden' : expandedActivity ? 'Full' : 'Compact';
+    const next = !showThoughts ? 'Compact' : expandedActivity ? 'Hidden' : 'Full';
+    btn.title = `Train of thought: ${mode} (click for ${next}) — T`;
+    btn.setAttribute('aria-label', btn.title);
     btn.classList.toggle('active', showThoughts);
   }
 
-  function syncActivityDetailToggle() {
-    const btn = document.getElementById('activity-detail-toggle');
+  function supportsTodos(agent) {
+    return agent === 'copilot' || agent === 'opencode';
+  }
+
+  function syncTodosToggle() {
+    const btn = document.getElementById('todos-toggle');
     if (!btn) return;
-    btn.textContent = expandedActivity ? '🧾' : '📄';
-    btn.title = expandedActivity
-      ? 'Activity detail: Expanded (click for Brief)'
-      : 'Activity detail: Brief (click for Expanded)';
-    btn.classList.toggle('active', expandedActivity);
+    btn.hidden = !supportsTodos(currentSessionAgent);
+    btn.textContent = expandedTodos ? '☑️' : '⏹️';
+    btn.title = expandedTodos ? 'Todos: Full (click for Compact)' : 'Todos: Compact (click for Full)';
+    btn.setAttribute('aria-label', btn.title);
+    btn.classList.toggle('active', expandedTodos);
   }
 
   function syncSchedulesToggle(schedules) {
@@ -7377,11 +7444,16 @@
   document.getElementById('sound-toggle').addEventListener('click', toggleSound);
   document.getElementById('passkey-mgmt-btn').addEventListener('click', openPasskeyModal);
   document.getElementById('thoughts-toggle').addEventListener('click', toggleThoughts);
-  document.getElementById('activity-detail-toggle').addEventListener('click', toggleExpandedActivity);
+  document.getElementById('todos-toggle').addEventListener('click', () => {
+    expandedTodos = !expandedTodos;
+    localStorage.setItem('qewExpandedTodos', expandedTodos ? '1' : '0');
+    syncTodosToggle();
+    renderChat(false);
+  });
   document.getElementById('schedules-toggle').addEventListener('click', openSchedulesModal);
   document.getElementById('chat-messages').addEventListener('click', event => deleteArtifact(event, currentSession));
   syncThoughtsToggle();
-  syncActivityDetailToggle();
+  syncTodosToggle();
   syncSchedulesToggle([]);
   document.getElementById('new-session-btn').addEventListener('click', openCreateWizard);
   document.getElementById('nav-moneypennies-btn').addEventListener('click', showMoneypenniesView);

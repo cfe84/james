@@ -1851,8 +1851,18 @@ attachments, routing, ready markers, and memory/tool instruction preparation,
 but retains the normal project environment; it is not a process sandbox.
 For Copilot, the resumed summary run is prompted to read `todos` and `todo_deps`
 through its native `sql` tool, independently of James Memory permissions.
-Only the handoff text carries the todo state forward; James does not open,
-copy, or seed Copilot's session database.
+Only the handoff text carries the todo state forward; compaction does not copy
+or seed Copilot's session database.
+
+Qew requests native todos through `activity session --todos`, at most once
+every two seconds per open chat while working, using the existing push-triggered
+refresh and polling fallback. Moneypenny only reads for working Copilot/OpenCode
+sessions, opens SQLite read-only with a short deadline, and returns bounded task
+text and status. Copilot uses the tracked provider session ID and its effective
+`COPILOT_HOME`; OpenCode resolves its database through `opencode db path` and
+filters by provider session ID, including an ID learned during the first turn.
+An unavailable todo snapshot is reported separately from activity or history
+failure. No provider task data is written to James storage.
 Distillation uses bounded turn-aligned transcript chunks and computes its
 snapshot watermark from distillable source turns only, so appended outcome
 turns do not move a retry to a new snapshot. A newly appended source turn does

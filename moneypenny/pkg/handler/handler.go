@@ -1718,8 +1718,8 @@ func (h *Handler) reconcileSession(_ context.Context, cmd *envelope.Command) *en
 	})
 }
 
-func (h *Handler) getSessionActivity(_ context.Context, cmd *envelope.Command) *envelope.Response {
-	var data envelope.SessionIDData
+func (h *Handler) getSessionActivity(ctx context.Context, cmd *envelope.Command) *envelope.Response {
+	var data envelope.SessionActivityData
 	if err := json.Unmarshal(cmd.Data, &data); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("invalid data: %v", err))
 	}
@@ -1735,10 +1735,33 @@ func (h *Handler) getSessionActivity(_ context.Context, cmd *envelope.Command) *
 		}
 	}
 
-	return envelope.SuccessResponse(cmd.RequestID, envelope.SessionActivityResponse{
+	result := envelope.SessionActivityResponse{
 		SessionID: data.SessionID,
 		Activity:  activity,
-	})
+	}
+	if data.Todos {
+		sess, err := h.store.GetSession(data.SessionID)
+		if err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, "could not load session")
+		}
+		if sess != nil && sess.Status == store.StateWorking && (sess.Agent == "copilot" || sess.Agent == "opencode") {
+			todos := envelope.SessionTodos{Unavailable: true}
+			env, err := sessionEnvironment(sess)
+			if err == nil {
+				readCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+				defer cancel()
+				todos, err = h.runner.ReadSessionTodos(readCtx, agent.RunParams{
+					SessionID: sess.SessionID, AgentSessionID: sess.AgentSessionID,
+					Agent: sess.Agent, Path: sess.Path, Environment: env,
+				})
+			}
+			if err != nil {
+				todos.Unavailable = true
+			}
+			result.Todos = &todos
+		}
+	}
+	return envelope.SuccessResponse(cmd.RequestID, result)
 }
 
 func (h *Handler) deleteSession(_ context.Context, cmd *envelope.Command) *envelope.Response {

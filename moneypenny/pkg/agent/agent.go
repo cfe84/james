@@ -238,9 +238,10 @@ type ActivityEvent struct {
 
 // activityBuffer is a ring buffer of recent activity events for a session.
 type activityBuffer struct {
-	mu     sync.Mutex
-	events []ActivityEvent
-	max    int
+	mu                sync.Mutex
+	events            []ActivityEvent
+	max               int
+	openCodeSessionID atomic.Value
 }
 
 const (
@@ -740,6 +741,9 @@ func (r *Runner) runOpenCodeStreamingWithWatch(ctx context.Context, cmd *exec.Cm
 		if id, ok := event["sessionID"].(string); ok && id != "" {
 			agentSessionID = id
 			agentID.Store(id)
+			if persistTurns {
+				buf.openCodeSessionID.Store(id)
+			}
 		}
 		evType, _ := event["type"].(string)
 		switch evType {

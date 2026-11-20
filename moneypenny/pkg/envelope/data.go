@@ -584,10 +584,28 @@ type ActivityEvent struct {
 	Timestamp string `json:"timestamp"` // RFC3339
 }
 
+// SessionActivityData is the request for get_session_activity.
+type SessionActivityData struct {
+	SessionID string `json:"session_id"`
+	Todos     bool   `json:"todos,omitempty"`
+}
+
+type SessionTodo struct {
+	Content string `json:"content"`
+	Status  string `json:"status"`
+}
+
+type SessionTodos struct {
+	Items       []SessionTodo `json:"items"`
+	Unavailable bool          `json:"unavailable,omitempty"`
+	Truncated   bool          `json:"truncated,omitempty"`
+}
+
 // SessionActivityResponse is returned by get_session_activity.
 type SessionActivityResponse struct {
 	SessionID string          `json:"session_id"`
 	Activity  []ActivityEvent `json:"activity"`
+	Todos     *SessionTodos   `json:"todos,omitempty"`
 }
 
 // CheckAgentsResponse is returned by check_agents.

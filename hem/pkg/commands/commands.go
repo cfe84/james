@@ -6947,9 +6947,11 @@ func parseScheduleTime(s string) (time.Time, error) {
 // ActivitySession returns recent agent activity (thinking, tool calls) for a session.
 func (e *Executor) ActivitySession(args []string) *protocol.Response {
 	var sessionID string
+	var todos bool
 
 	remaining, err := parseFlagsFromArgs("activity-session", args, func(fs *flag.FlagSet) {
 		fs.StringVar(&sessionID, "session-id", "", "session ID")
+		fs.BoolVar(&todos, "todos", false, "include native todos for supported working sessions")
 	})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
@@ -6970,20 +6972,13 @@ func (e *Executor) ActivitySession(args []string) *protocol.Response {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	resp, err := e.sendCommand(ctx, mp, "get_session_activity", map[string]interface{}{"session_id": sessionID})
+	resp, err := e.sendCommand(ctx, mp, "get_session_activity", envelope.SessionActivityData{SessionID: sessionID, Todos: todos})
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
 
 	// Pass through the activity response.
-	var result struct {
-		SessionID string `json:"session_id"`
-		Activity  []struct {
-			Type      string `json:"type"`
-			Summary   string `json:"summary"`
-			Timestamp string `json:"timestamp"`
-		} `json:"activity"`
-	}
+	var result envelope.SessionActivityResponse
 	if err := json.Unmarshal(resp.Data, &result); err != nil {
 		return protocol.ErrResponse(fmt.Sprintf("parsing activity: %v", err))
 	}

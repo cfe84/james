@@ -268,7 +268,7 @@ test('session Back/Forward stays in Qew across nested sessions, reloads and deep
       } },
       releaseActiveWatch() {}, stopDashboardPoll() {}, stopChatPoll() {},
       syncComposeModeToggle() {}, sessionNameFromCache: id => id, sessionNickFromCache: () => '',
-      syncSchedulesToggle() {}, setChatTitle() {}, clearPendingAttachments() {}, autoResize() {},
+      syncSchedulesToggle() {}, syncTodosToggle() {}, setChatTitle() {}, clearPendingAttachments() {}, autoResize() {},
       loadChat: async () => {}, requestActiveWatch() {}, startChatPoll() {},
       loadDashboard() {}, startDashboardPoll() {},
       window: { addEventListener() {} },
@@ -730,7 +730,7 @@ test('agent messages and callbacks collapse to a first-line preview without coll
       { role: 'user', content: 'human prompt' },
       { role: 'assistant', content: 'reply' },
     ],
-    lastSubagents: [], lastActivity: [], queuedMessages: [], chatTotal: 4,
+    lastSubagents: [], lastActivity: [], lastTodos: null, expandedTodos: false, queuedMessages: [], chatTotal: 4,
     currentSession: 'receiver-id', currentSessionNick: '', currentSessionName: 'receiver', currentSessionStatus: 'idle',
     showThoughts: false, expandedActivity: false, userLabel: 'you', userPhoto: 'data:image/png;base64,AAAA',
     lastChatHTML: '', chatForceScrollBottom: false,
@@ -739,7 +739,7 @@ test('agent messages and callbacks collapse to a first-line preview without coll
     escapeHtml: text => text.replaceAll('<', '&lt;').replaceAll('>', '&gt;'),
     ensureChatScrollable() {},
   });
-  const source = app.slice(app.indexOf('  function renderChat(prepend)'), app.indexOf('  // --- Attachments ---'));
+  const source = app.slice(app.indexOf('  function renderTodos('), app.indexOf('  // --- Attachments ---'));
   vm.runInContext(`${source}\nrenderChat(false);`, context);
   assert.match(container.innerHTML, /<details class="msg agent-message" data-agent-turn="1">\s*<summary class="msg-role agent-user">cecil<span class="agent-message-preview">: agent &lt;prompt&gt;<\/span><\/summary>\s*<div class="msg-content">agent &lt;prompt&gt;\nmore details<\/div>/);
   assert.match(container.innerHTML, /<details class="msg agent-message callback" data-agent-turn="2">\s*<summary class="msg-role">↩️ cecil<span class="agent-message-preview">: Finished<\/span><\/summary>/);
@@ -759,6 +759,24 @@ test('agent messages and callbacks collapse to a first-line preview without coll
   const css = fs.readFileSync(path.join(__dirname, '../pkg/web/static/index.html'), 'utf8');
   assert.match(css, /\.msg-role\.agent-user\s*\{\s*color:\s*var\(--danger\)/);
   assert.match(css, /\.msg\.callback \{ color: var\(--muted\);/);
+});
+
+test('working chat todo summaries show the active position and full lists escape native content', () => {
+  const context = vm.createContext({ escapeHtml: text => text.replaceAll('<', '&lt;') });
+  const source = app.slice(app.indexOf('  function renderTodos('), app.indexOf('  function renderChat('));
+  vm.runInContext(source, context);
+  const snapshot = { items: [
+    { content: 'plan', status: 'done' },
+    { content: '<execute>', status: 'in_progress' },
+    { content: 'report', status: 'pending' },
+  ] };
+  assert.match(context.renderTodos(snapshot, false), /▶️ 2\/3: &lt;execute>/);
+  const full = context.renderTodos(snapshot, true);
+  assert.match(full, /<s>plan<\/s>/);
+  assert.match(full, /In progress.*&lt;execute>/);
+  assert.match(full, /Pending.*report/);
+  assert.equal(context.renderTodos({ items: [] }, false), '');
+  assert.match(context.renderTodos({ unavailable: true }, false), /unavailable/);
 });
 
 function dashboardHarness() {
@@ -1592,6 +1610,8 @@ function browser({ stableReconcile = false, reconcileRevision = 1, pushFirst = t
       return Promise.resolve(response);
     },
     optionalCall: async () => null,
+    supportsTodos: agent => agent === 'copilot' || agent === 'opencode',
+    syncTodosToggle() {},
     syncSchedulesToggle() {},
     setConnectionState() {},
     mergeRecentHistory(data) { context.latestHistory = data; },
