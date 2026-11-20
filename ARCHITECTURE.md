@@ -1849,6 +1849,10 @@ Failures leave the prior resumable session metadata intact. The bootstrap is a
 reduced-capability, prompt-disciplined run: it uses Yolo=false and omits
 attachments, routing, ready markers, and memory/tool instruction preparation,
 but retains the normal project environment; it is not a process sandbox.
+For Copilot, the resumed summary run is prompted to read `todos` and `todo_deps`
+through its native `sql` tool, independently of James Memory permissions.
+Only the handoff text carries the todo state forward; James does not open,
+copy, or seed Copilot's session database.
 Distillation uses bounded turn-aligned transcript chunks and computes its
 snapshot watermark from distillable source turns only, so appended outcome
 turns do not move a retry to a new snapshot. A newly appended source turn does

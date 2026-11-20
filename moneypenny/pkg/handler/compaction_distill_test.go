@@ -42,7 +42,7 @@ func TestCompactionPromptsRespectMemoryPermissions(t *testing.T) {
 						t.Fatal("missing memory-independent notification instructions")
 					}
 					for _, enabled := range []bool{false, true} {
-						task := compactionTaskPrompt(enabled)
+						task := compactionTaskPrompt(name, enabled)
 						if strings.Contains(task, "system memory contract") != enabled {
 							t.Fatalf("unexpected memory task: %s", task)
 						}
@@ -51,6 +51,9 @@ func TestCompactionPromptsRespectMemoryPermissions(t *testing.T) {
 						}
 						if strings.Contains(task, "README.md") || strings.Contains(task, "4000") {
 							t.Fatal("task duplicates system memory usage rules")
+						}
+						if strings.Contains(task, "todo_deps") != (name == "copilot") {
+							t.Fatalf("unexpected Copilot todo handoff guidance: %s", task)
 						}
 					}
 					if strings.Contains(params.SystemPrompt, "full history") || strings.Contains(params.SystemPrompt, "<memory-note>") {

@@ -21,16 +21,22 @@ Your context is getting large and is about to be compacted into a fresh session.
 
 1. Preserve the durable knowledge and working state from the current conversation according to the system memory contract, retaining provenance, corrections, scoped negative results and consequential unresolved questions without inventing verification.
 
-2. Output a comprehensive handoff summary as your FINAL message: original task, key decisions and rationale, important context, current state, and pending actions. Include enough context to resume work, with references to any details you actually saved. Output ONLY the summary text — no preamble or meta-commentary.`
+2. Output a comprehensive handoff summary as your FINAL message: original task, key decisions and rationale, important context, current state, and pending actions. Include enough context to resume work, with references to any details you actually saved.`
 
-func compactionTaskPrompt(memoryEnabled bool) string {
-	if memoryEnabled {
-		return compactionDistillPrompt
-	}
-	return `[SYSTEM: CONTEXT COMPACTION]
+func compactionTaskPrompt(agentName string, memoryEnabled bool) string {
+	prompt := compactionDistillPrompt
+	if !memoryEnabled {
+		prompt = `[SYSTEM: CONTEXT COMPACTION]
 Your context is getting large and is about to be compacted into a fresh session. Persistent memory is disabled for this run; do not read or write session memory through gadgets, native file tools, or direct database access.
 
-Output a standalone, comprehensive handoff summary of the available conversation as your FINAL message. The fresh session must be able to resume from this summary alone: include the original task, key decisions and rationale, important context (file paths, names, conventions, learnings), current state, and pending actions. Do not assume access to earlier history or external notes. Output ONLY the summary text — no preamble or meta-commentary.`
+Output a standalone, comprehensive handoff summary of the available conversation as your FINAL message. The fresh session must be able to resume from this summary alone: include the original task, key decisions and rationale, important context (file paths, names, conventions, learnings), current state, and pending actions. Do not assume access to earlier history or external notes.`
+	}
+	if agentName == "copilot" {
+		prompt += `
+
+Before writing the summary, use Copilot's built-in sql tool to read this session's todos and todo_deps tables without modifying them. The fresh session cannot see those tables from this session. Include unfinished todos in the handoff with their titles, relevant descriptions, statuses, and dependencies or blockers. If the tool or tables are unavailable, say the todo list could not be checked and summarize known pending work from the conversation instead.`
+	}
+	return prompt + "\n\nOutput ONLY the summary text — no preamble or meta-commentary."
 }
 
 func compactionSeedSystemPrompt(systemPrompt, summary string) string {
@@ -226,7 +232,7 @@ func (h *Handler) runCompactionWithParams(sessionID, nextPrompt, effModel, effEf
 	distillParams := agent.RunParams{
 		SessionID:      sessionID,
 		Agent:          sess.Agent,
-		Prompt:         compactionTaskPrompt(capabilities.Memory),
+		Prompt:         compactionTaskPrompt(sess.Agent, capabilities.Memory),
 		SystemPrompt:   sess.SystemPrompt,
 		Model:          effModel,
 		Effort:         effEffort,
