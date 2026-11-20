@@ -112,8 +112,9 @@ moneypenny list returns names and enabled/default status, without addresses;
 traits list returns IDs, exact names and default status, without prompt contents.
 Artifacts publish copies a file snapshot into your own conversation on this MP;
 relative paths use the session working directory. Qew fetches only on View/Download.
-View supports HTML, PDF, and safe ZIPs with root index.html. Other files are
-download-only. Limits: 25 MiB/file, 100 files and 100 MiB/session.
+View supports HTML, PDF, Markdown (.md, .markdown), UTF-8 text (.txt, .text,
+.log), and safe ZIPs with root index.html. Other files are download-only.
+Limits: 25 MiB/file, 100 files and 100 MiB/session.
 With the Agents grant, list and download published artifacts from tracked
 sessions. Download writes verified bytes to a new local file; it never
 overwrites an existing destination.

@@ -48,6 +48,10 @@ func Inspect(filename, name string) string {
 		return "html"
 	case ".pdf":
 		return "pdf"
+	case ".md", ".markdown":
+		return "markdown"
+	case ".txt", ".text", ".log":
+		return "text"
 	case ".zip":
 		r, err := zip.OpenReader(filename)
 		if err != nil {

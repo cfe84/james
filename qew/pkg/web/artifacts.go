@@ -17,11 +17,18 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
+
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/extension"
 
 	"james/moneypenny/pkg/artifact"
 )
 
 const artifactPreviewTTL = 30 * time.Minute
+const maxMarkdownPreviewSource = 1024 * 1024
+
+var artifactMarkdown = goldmark.New(goldmark.WithExtensions(extension.GFM))
 
 type artifactPreview struct {
 	mu        sync.Mutex
@@ -33,6 +40,44 @@ type artifactPreview struct {
 	timer     *time.Timer
 	created   time.Time
 	entryName string
+	format    string
+}
+
+func renderArtifactMarkdown(filename, destination string) error {
+	in, err := os.Open(filename)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	source, err := io.ReadAll(io.LimitReader(in, maxMarkdownPreviewSource+1))
+	if err != nil {
+		return err
+	}
+	truncated := len(source) > maxMarkdownPreviewSource
+	if truncated {
+		end := maxMarkdownPreviewSource
+		for end > 0 && !utf8.RuneStart(source[end]) {
+			end--
+		}
+		source = source[:end]
+	}
+	out, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	if _, err := io.WriteString(out, `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Markdown preview</title><style>:root{color-scheme:light dark}body{max-width:72ch;margin:2rem auto;padding:0 1rem;font:1rem/1.6 sans-serif;overflow-wrap:anywhere}pre,table{display:block;overflow:auto}td,th{padding:.25rem .5rem}</style><main>`); err != nil {
+		return err
+	}
+	if truncated {
+		if _, err := io.WriteString(out, `<p><strong>Preview truncated. Download the file to read the full document.</strong></p>`); err != nil {
+			return err
+		}
+	}
+	if err := artifactMarkdown.Convert(source, out); err != nil {
+		return err
+	}
+	return out.Close()
 }
 
 func (s *Server) removeArtifactFiles(dir string) {
@@ -268,12 +313,18 @@ func (s *Server) handleArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	entryName := "index.html"
-	if view == "zip" {
+	switch view {
+	case "zip":
 		err = artifact.Extract(filename, root)
-	} else {
-		if view == "pdf" {
-			entryName = "document.pdf"
-		}
+	case "markdown":
+		err = renderArtifactMarkdown(filename, filepath.Join(root, entryName))
+	case "text":
+		entryName = "document.txt"
+		err = os.Rename(filename, filepath.Join(root, entryName))
+	case "pdf":
+		entryName = "document.pdf"
+		err = os.Rename(filename, filepath.Join(root, entryName))
+	default:
 		err = os.Rename(filename, filepath.Join(root, entryName))
 	}
 	if err != nil {
@@ -286,7 +337,7 @@ func (s *Server) handleArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token := hex.EncodeToString(random[:])
-	entry := &artifactPreview{dir: dir, root: root, session: parts[0], id: parts[1], sha256: meta.SHA256, created: time.Now(), entryName: entryName}
+	entry := &artifactPreview{dir: dir, root: root, session: parts[0], id: parts[1], sha256: meta.SHA256, created: time.Now(), entryName: entryName, format: view}
 	s.artifactMu.Lock()
 	entry.timer = time.AfterFunc(artifactPreviewTTL, func() { s.expireArtifact(token) })
 	s.artifacts[token] = entry
@@ -336,7 +387,9 @@ func (s *Server) handleArtifactPreview(w http.ResponseWriter, r *http.Request) {
 	base.Scheme = "https"
 	source += " " + base.String()
 	policy := "default-src 'none'; script-src 'unsafe-inline' " + source + "; style-src 'unsafe-inline' " + source + "; img-src data: blob: " + source + "; font-src data: " + source + "; media-src blob: " + source + "; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
-	if strings.ToLower(filepath.Ext(target)) == ".pdf" {
+	if entry.format == "markdown" || entry.format == "text" {
+		policy = "sandbox; default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'"
+	} else if strings.ToLower(filepath.Ext(target)) == ".pdf" {
 		// Native PDF viewers need their own embedded renderer, not an HTML sandbox.
 		policy = "default-src 'none'; object-src 'self'; frame-src 'self'; base-uri 'none'; form-action 'none'"
 	} else {
@@ -348,6 +401,9 @@ func (s *Server) handleArtifactPreview(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	contentType := mime.TypeByExtension(filepath.Ext(target))
+	if entry.format == "text" {
+		contentType = "text/plain; charset=utf-8"
+	}
 	if contentType == "" {
 		contentType = "application/octet-stream"
 	}

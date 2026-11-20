@@ -100,6 +100,9 @@ func TestArtifactHTTPViewDownloadAndExpiry(t *testing.T) {
 		{"report.html", []byte("<h1>Review</h1>"), true},
 		{"report.zip", archive.Bytes(), true},
 		{"report.pdf", []byte("%PDF-1.4\n"), true},
+		{"report.MD", []byte("# Review\n\n**Ready**\n\n<script>not rendered</script>\n"), true},
+		{"large.markdown", []byte("# Review\n\n" + strings.Repeat("plain text\n\n", maxMarkdownPreviewSource/10) + "beyond preview"), true},
+		{"report.txt", []byte("Résumé\n<em>literal text</em>\n"), true},
 		{"report.bin", bytes.Repeat([]byte{0, 1, 2}, artifact.ChunkSize/2), false},
 		{"invalid.zip", []byte("not a ZIP"), false},
 	} {
@@ -137,8 +140,34 @@ func TestArtifactHTTPViewDownloadAndExpiry(t *testing.T) {
 				t.Fatalf("preview failed: %d %s", preview.Code, preview.Body)
 			}
 			csp := preview.Header().Get("Content-Security-Policy")
-			if (tc.name != "report.pdf" && (!strings.Contains(csp, "connect-src 'none'") || !strings.Contains(csp, "sandbox allow-scripts;"))) || strings.Contains(csp, "allow-same-origin") {
+			if strings.Contains(csp, "allow-same-origin") {
 				t.Fatalf("unsafe preview CSP: %s", csp)
+			}
+			switch tc.name {
+			case "report.MD", "large.markdown", "report.txt":
+				if !strings.HasPrefix(csp, "sandbox; default-src 'none';") {
+					t.Fatalf("document preview allows active content: %s", csp)
+				}
+			case "report.html", "report.zip":
+				if !strings.Contains(csp, "connect-src 'none'") || !strings.HasPrefix(csp, "sandbox allow-scripts;") {
+					t.Fatalf("unsafe preview CSP: %s", csp)
+				}
+			}
+			switch tc.name {
+			case "report.MD":
+				body := preview.Body.String()
+				if !strings.Contains(body, "<h1>Review</h1>") || !strings.Contains(body, "<strong>Ready</strong>") ||
+					strings.Contains(body, "<script>") || strings.Contains(body, "not rendered") {
+					t.Fatalf("Markdown did not render as safe HTML: %s", body)
+				}
+			case "large.markdown":
+				if !strings.Contains(preview.Body.String(), "Preview truncated") || strings.Contains(preview.Body.String(), "beyond preview") {
+					t.Fatal("large Markdown preview was not truncated")
+				}
+			case "report.txt":
+				if preview.Header().Get("Content-Type") != "text/plain; charset=utf-8" || !bytes.Equal(preview.Body.Bytes(), tc.content) {
+					t.Fatal("text preview did not preserve literal content")
+				}
 			}
 			token := strings.Split(location, "/")[2]
 			entry := s.artifacts[token]

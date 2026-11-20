@@ -1987,7 +1987,10 @@
         throw new Error('Invalid artifact metadata');
       }
       const base = `/artifacts/${encodeURIComponent(sessionID)}/${encodeURIComponent(artifact.id)}`;
-      const view = ['html', 'pdf', 'zip'].includes(artifact.view) ?
+      // Older transcript cards lack a view type for these extensions; Qew rechecks on open.
+      const canView = ['html', 'pdf', 'zip', 'markdown', 'text'].includes(artifact.view) ||
+        (!artifact.view && /\.(md|markdown|txt|text|log)$/i.test(artifact.name));
+      const view = canView ?
         `<a class="btn" href="${base}/view" target="_blank" rel="noopener noreferrer">View</a> ` : '';
       return `<div class="msg"><div class="msg-role">Artifact</div><div class="msg-content"><strong>${escapeHtml(artifact.title)}</strong><br>${escapeHtml(artifact.name)}<br>${view}<a class="btn" href="${base}/download" download>Download</a></div></div>`;
     } catch (error) {

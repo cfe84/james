@@ -174,6 +174,37 @@ func TestArtifactPublicationSnapshotAndSessionScope(t *testing.T) {
 	if items := list(gadgetSession); len(items) != 1 || items[0].ID != meta.ID || items[0].Size != int64(len("next update")) {
 		t.Fatalf("list did not return current artifact metadata: %+v", items)
 	}
+	for _, file := range []struct{ name, view string }{{"notes.MD", "markdown"}, {"output.txt", "text"}} {
+		if err := os.WriteFile(filepath.Join(session.Path, file.name), []byte("original"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		resp := gadgetCall(t, params, "artifacts.publish", map[string]string{"path": file.name})
+		raw, _ := json.Marshal(resp.Data)
+		var doc artifact.Metadata
+		if !resp.Success || json.Unmarshal(raw, &doc) != nil || doc.View != file.view {
+			t.Fatalf("preview format missing from publication: %+v", resp)
+		}
+		// Simulate metadata written before text previews were supported.
+		dir := filepath.Join(root, "artifacts", doc.ID)
+		saved, err := loadStoredArtifact(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		saved.View = ""
+		raw, err = json.Marshal(saved)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "metadata.json"), raw, 0600); err != nil {
+			t.Fatal(err)
+		}
+		resp = gadgetCall(t, params, "artifacts.update", map[string]string{"id": doc.ID, "path": "report.html"})
+		raw, _ = json.Marshal(resp.Data)
+		var updated artifact.Metadata
+		if !resp.Success || json.Unmarshal(raw, &updated) != nil || updated.Name != doc.Name || updated.View != doc.View {
+			t.Fatalf("update did not preserve the legacy artifact's filename and preview: %+v", resp)
+		}
+	}
 	data, _ := json.Marshal(envelope.SessionIDData{SessionID: gadgetSession})
 	if resp := h.Handle(context.Background(), &envelope.Command{Method: "delete_session", Data: data}); resp.Status != envelope.StatusSuccess {
 		t.Fatalf("session deletion failed: %+v", resp)

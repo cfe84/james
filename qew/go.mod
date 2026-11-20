@@ -4,6 +4,7 @@ go 1.25.6
 
 require (
 	github.com/go-webauthn/webauthn v0.17.4
+	github.com/yuin/goldmark v1.7.8
 	golang.org/x/crypto v0.52.0
 	golang.org/x/net v0.55.0
 	james/moneypenny v0.0.0

@@ -283,9 +283,9 @@ Artifacts survive provider session replacement and daemon restarts. Session
 deletion removes artifact storage before deleting its database record; cleanup
 errors are surfaced.
 
-The shared `moneypenny/pkg/artifact` package owns wire types, quotas, ZIP
-inspection and bounded extraction. Qew imports this local module alongside Hem
-to avoid separate archive rules/limits. Both Docker builder stages preserve the
+The shared `moneypenny/pkg/artifact` package owns wire types, quotas, preview
+classification and bounded ZIP extraction. Qew imports this local module alongside
+Hem to avoid separate archive rules/limits. Both Docker builder stages preserve the
 sibling module layout, copying Moneypenny manifests before dependency download
 and its source before compilation. `read_artifact` serves at most 192 KiB
 per operator request, or metadata only; `read artifact` on Hem routes only
@@ -314,6 +314,11 @@ single preview. Those asset URLs intentionally do not require Qew cookies:
 opaque-origin HTML sandboxing strips same-origin access, and CORS permits bundled
 module scripts to load without credentials. CSP allows bundled resources only,
 not APIs/remote subresources/forms/frames/plugins; HTML cannot access Qew storage.
+Qew renders up to 1 MiB of Markdown source with Goldmark's raw HTML disabled
+and serves UTF-8 text literally as `text/plain`. Both use a stricter sandbox
+without scripts or remote subresources. For historical Markdown/text cards that
+lack a preview type, Qew offers View based on the stored filename and still
+checks eligibility server-side.
 PDF responses instead permit the native embedded PDF renderer. Capability paths
 are never logged by the API logger, use no-referrer/no-store, and revalidate
 session/artifact existence through Hem before serving cached content. They are

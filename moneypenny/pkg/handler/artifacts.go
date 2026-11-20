@@ -217,7 +217,9 @@ func (h *Handler) snapshotArtifact(ctx context.Context, sessionID, id, source, t
 	}
 	meta.SHA256 = hex.EncodeToString(hash.Sum(nil))
 	meta.View = artifact.Inspect(target, meta.Name)
-	if id != "" && meta.View != previous.View {
+	// Older text artifacts had no preview format; their preserved filename determines it.
+	addedTextPreview := previous.View == "" && (meta.View == "markdown" || meta.View == "text")
+	if id != "" && meta.View != previous.View && !addedTextPreview {
 		return nil, fmt.Errorf("replacement must keep the original artifact's preview format")
 	}
 	encoded, err := json.Marshal(meta)

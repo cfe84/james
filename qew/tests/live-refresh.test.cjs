@@ -36,19 +36,24 @@ test('chat header preserves escaped labels without repeating the message face', 
   assert.doesNotMatch(title.innerHTML, /<svg/);
 });
 
-test('artifact cards offer View only for supported bundles and escape metadata', () => {
+test('artifact cards offer View only for supported files and escape metadata', () => {
   const context = vm.createContext({
     encodeURIComponent,
     escapeHtml: text => String(text).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;'),
   });
   vm.runInContext(app.slice(app.indexOf('  function renderArtifactCard('),
     app.indexOf('  function removePendingAttachment(')), context);
-  for (const view of ['html', 'pdf', 'zip', '', 'exe']) {
+  for (const [view, name, canView] of [
+    ['html', '<report>', true], ['pdf', '<report>', true], ['zip', '<report>', true],
+    ['markdown', 'report.md', true], ['text', 'report.txt', true],
+    [undefined, 'legacy.MD', true], [undefined, 'legacy.LOG', true],
+    [undefined, 'invalid.zip', false], ['exe', '<report>', false],
+  ]) {
     const result = context.renderArtifactCard(JSON.stringify({
-      id: '00000000-0000-0000-0000-000000000001', name: '<report>', title: '<script>', size: 1024, view,
+      id: '00000000-0000-0000-0000-000000000001', name, title: '<script>', size: 1024, view,
     }), 'session');
     assert.ok(result.includes('>Download</a>'));
-    assert.equal(result.includes('>View</a>'), ['html', 'pdf', 'zip'].includes(view));
+    assert.equal(result.includes('>View</a>'), canView);
     assert.ok(result.includes('&lt;script>'));
     assert.ok(!result.includes('<script>'));
   }

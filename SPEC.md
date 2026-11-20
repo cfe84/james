@@ -1272,14 +1272,19 @@ View/Download buttons retain contrasting text rather than inheriting message-lin
 | File | View | Download |
 |------|------|----------|
 | HTML (`.html`, `.htm`) | Browser preview | Original file |
+| Markdown (`.md`, `.markdown`) | Rendered Markdown; raw HTML and external resources disabled | Original file |
+| Plain text (`.txt`, `.text`, `.log`) | Literal UTF-8 text | Original file |
 | PDF | Native browser PDF viewer | Original file |
 | Safe ZIP with root `index.html` | Extracted static-site preview | Original ZIP |
 | Other files, invalid/unsafe ZIPs, ZIPs without root `index.html` | Not offered | Original file |
 
 View opens a stable Qew page; reloading it checks for the current snapshot,
 including after the temporary preview expires. Download always fetches the
-latest snapshot. Both fetch bytes on demand from the MP through Hem's existing
-transport; publishing and updating do not transfer file contents. Hem relays bounded
+latest snapshot. Markdown previews render up to the first 1 MiB and show a
+notice when truncated. Previously published Markdown and text artifacts are
+viewable without republishing. Both actions fetch bytes on demand from the MP
+through Hem's existing transport; publishing and updating do not transfer file
+contents. Hem relays bounded
 chunks without retaining them. The combined James image builds Qew with the
 shared Moneypenny artifact module available at build time.
 Qew verifies the snapshot's SHA-256 checksum

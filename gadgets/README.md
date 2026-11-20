@@ -211,8 +211,9 @@ if not absolute). It does not overwrite existing files.
 
 The file stays on the MP until session deletion. Qew transfers it through Hem
 on demand. Reload an open View page to see the latest update, or use Download
-for the latest original file. View is available for HTML, PDF,
-and safe ZIPs with root `index.html`. Other files remain downloadable. Download
+for the latest original file. View is available for HTML, PDF, Markdown
+(`.md`, `.markdown`), UTF-8 text (`.txt`, `.text`, `.log`), and safe ZIPs with
+root `index.html`. Other files remain downloadable. Download
 offers the original bytes/filename to the user's browser, including the original
 ZIP. Bundle CSS, JavaScript and other assets: HTML previews cannot call APIs,
 load remote resources, access Qew storage or run a backend.
