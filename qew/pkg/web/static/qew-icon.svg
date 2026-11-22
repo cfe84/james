@@ -1,7 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
-  <path fill="#1a1a2e" d="M0 0h512v512H0z"/>
-  <g fill="none" stroke="#e94560" stroke-width="36" stroke-linecap="round">
-    <circle cx="250" cy="248" r="104"/>
-    <path d="m298 298 68 68"/>
-  </g>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-10 -10 52 52" shape-rendering="crispEdges">
+  <title>James</title>
+  <path fill="#1a1a2e" d="M-10-10h52v52h-52z"/>
+  <path fill="#e94560" d="M4 28h24v4H4z"/>
+  <path fill="#888" d="M12 24h8v6h-8z"/>
+  <path fill="#eee" d="M6 6h20v20H6z"/>
+  <path fill="#1a1a2e" d="M10 12h4v4h-4zM18 12h4v4h-4zM11 22h10v2H11z"/>
+  <path fill="#e94560" d="M8 4h16v4H8zM14 0h4v6h-4zM8 10h16v2H8zM14 12h4v2h-4z"/>
 </svg>

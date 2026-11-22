@@ -771,6 +771,7 @@ test('agent messages and callbacks collapse to a first-line preview without coll
   ];
   context.currentSessionStatus = 'working';
   context.lastActivity = [{ type: 'tool_use', summary: 'live tool' }];
+  context.queuedMessages = [{ content: 'queued follow-up', since: context.chatConversation.length }];
   for (const [mode, current, full, past] of [
     ['Hidden', false, false, false],
     ['Compact', true, false, false],
@@ -785,6 +786,8 @@ test('agent messages and callbacks collapse to a first-line preview without coll
     ]) {
       assert.equal(container.innerHTML.includes(text), visible, `${mode}: ${text}`);
     }
+    const activity = current ? 'live tool' : 'Working…';
+    assert.match(container.innerHTML, new RegExp(`${activity}[\\s\\S]*\\[Queued\\][\\s\\S]*queued follow-up`), mode);
   }
   context.thoughtMode = 'Full';
   context.currentSessionStatus = 'idle';

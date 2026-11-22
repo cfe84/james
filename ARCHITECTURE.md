@@ -1545,7 +1545,9 @@ Qew is a web-based UI that connects to a Hem server via MI6, enabling remote acc
 
 Qew's login page and app shell link to the same web app manifest. The manifest
 and two launcher icons are public static assets so Android can install or update
-the app without a Qew session. The start URL goes through the existing login
+the app without a Qew session. Both PNG sizes are rendered from `qew-icon.svg`,
+a fixed portrait with padding for Android's icon mask. The smaller PNG also
+serves as the favicon and notification icon. The start URL goes through the existing login
 gate. The Web Push service worker only handles notifications and click routing;
 it does not intercept requests or cache content.
 
@@ -1893,7 +1895,9 @@ across turns rather than being treated as stale.
 Qew persists one thought display mode. Compact and Full render stored thoughts
 only for a working session, after the latest prompt, reply, or compaction marker
 (including the latest scheduled prompt itself). Historic also renders previous
-stored thoughts; the live activity buffer does not provide history.
+stored thoughts; the live activity buffer does not provide history. `renderChat`
+appends optimistic queued prompts after the live activity or working indicator,
+without changing transcript reconciliation.
 Distillation uses bounded turn-aligned transcript chunks and computes its
 snapshot watermark from distillable source turns only, so appended outcome
 turns do not move a retry to a new snapshot. A newly appended source turn does

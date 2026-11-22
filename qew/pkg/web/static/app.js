@@ -1915,14 +1915,6 @@
         </div>`);
     }
     if (todoIndex === activityTurns.length) html += todosHTML;
-    // Show queued (optimistic) messages.
-    for (const qm of queuedMessages) {
-      html += withFace(humanFace, `
-        <div class="msg">
-          <div class="msg-role user">⏳ ${escapeHtml(userLabel)} <span style="color:var(--muted);font-weight:normal">[Queued]</span></div>
-          <div class="msg-content">${formatContent(qm.content)}</div>
-        </div>`);
-    }
     // Working indicator with activity events.
     if (working) {
       if (showThoughts && activity && activity.length > 0) {
@@ -1940,6 +1932,14 @@
         const spyVerb = showThoughts ? spyVerbs[Math.floor(Math.random() * spyVerbs.length)] : 'Working…';
         html += `<div class="msg working-indicator">🕴️ ${spyVerb}</div>`;
       }
+    }
+    // Show queued (optimistic) messages after the current run's activity.
+    for (const qm of queuedMessages) {
+      html += withFace(humanFace, `
+        <div class="msg">
+          <div class="msg-role user">⏳ ${escapeHtml(userLabel)} <span style="color:var(--muted);font-weight:normal">[Queued]</span></div>
+          <div class="msg-content">${formatContent(qm.content)}</div>
+        </div>`);
     }
     // Subagents.
     if (subagents && subagents.length > 0) {
