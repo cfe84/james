@@ -70,12 +70,19 @@ func (r *Runner) ReadSessionTodos(ctx context.Context, params RunParams) (envelo
 	return readTodoDatabase(ctx, path, params.Agent, id)
 }
 
+func todoDatabaseURI(slashPath string) string {
+	if !strings.HasPrefix(slashPath, "/") {
+		slashPath = "/" + slashPath
+	}
+	uri := url.URL{Scheme: "file", Path: slashPath, RawQuery: "mode=ro&_busy_timeout=250"}
+	return uri.String()
+}
+
 func readTodoDatabase(ctx context.Context, path, provider, id string) (envelope.SessionTodos, error) {
 	if !filepath.IsAbs(path) {
 		return envelope.SessionTodos{}, errors.New("provider database path is not absolute")
 	}
-	uri := url.URL{Scheme: "file", Path: filepath.ToSlash(path), RawQuery: "mode=ro&_busy_timeout=250"}
-	db, err := sql.Open("sqlite3", uri.String())
+	db, err := sql.Open("sqlite3", todoDatabaseURI(filepath.ToSlash(path)))
 	if err != nil {
 		return envelope.SessionTodos{}, err
 	}

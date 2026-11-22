@@ -10,6 +10,17 @@ import (
 	"james/moneypenny/pkg/envelope"
 )
 
+func TestTodoDatabaseURI(t *testing.T) {
+	for path, want := range map[string]string{
+		"C:/User Name/#todo/session.db": "file:///C:/User%20Name/%23todo/session.db?mode=ro&_busy_timeout=250",
+		"/home/user/session.db":         "file:///home/user/session.db?mode=ro&_busy_timeout=250",
+	} {
+		if got := todoDatabaseURI(path); got != want {
+			t.Errorf("todoDatabaseURI(%q) = %q; want %q", path, got, want)
+		}
+	}
+}
+
 func TestReadTodoDatabase(t *testing.T) {
 	for _, tc := range []struct {
 		provider string

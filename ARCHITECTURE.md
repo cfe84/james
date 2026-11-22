@@ -1864,6 +1864,8 @@ sessions, opens SQLite read-only with a short deadline, and returns bounded task
 text and status. Copilot uses the tracked provider session ID and its effective
 `COPILOT_HOME`; OpenCode resolves its database through `opencode db path` and
 filters by provider session ID, including an ID learned during the first turn.
+Windows drive paths use `file:///C:/...` so SQLite treats the drive as part of
+the path, not the URI authority.
 An unavailable todo snapshot is reported separately from activity or history
 failure. No provider task data is written to James storage.
 Qew hides snapshots with only done or cancelled items unless the snapshot is
