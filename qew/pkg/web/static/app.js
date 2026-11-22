@@ -7312,7 +7312,8 @@
       setTimeout(() => popover.remove(), 300);
     }, 4000);
     // Browser notification (works when tab is in background).
-    if (typeof Notification === 'undefined') return;
+    if (typeof Notification === 'undefined' ||
+        document.getElementById('push-toggle')?.getAttribute('aria-pressed') === 'true') return;
     try {
       if (Notification.permission === 'granted') {
         new Notification(label, { body: message });

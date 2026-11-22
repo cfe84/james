@@ -119,6 +119,11 @@ func main() {
 
 	srv := web.NewServer(hem, *listenAddr, *password, *development, vlog, Version, secretSeed, passkeys)
 	defer srv.Close()
+	if *password != "" {
+		if err := srv.EnableWebPush(filepath.Join(filepath.Dir(*keyPath), "qew_push.json")); err != nil {
+			log.Printf("background notifications disabled: %v", err)
+		}
+	}
 	if err := srv.Run(); err != nil {
 		log.Fatalf("server error: %v", err)
 	}

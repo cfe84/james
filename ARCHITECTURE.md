@@ -1543,6 +1543,24 @@ entry points intact.
 
 Qew is a web-based UI that connects to a Hem server via MI6, enabling remote access from phones and other computers.
 
+Qew's login page and app shell link to the same web app manifest. The manifest
+and two launcher icons are public static assets so Android can install or update
+the app without a Qew session. The start URL goes through the existing login
+gate. The Web Push service worker only handles notifications and click routing;
+it does not intercept requests or cache content.
+
+On authenticated deployments, Qew persists its VAPID identity and per-device
+subscriptions in `qew_push.json` alongside its session secret (mode 0600). A
+password or session-secret change invalidates subscriptions. The existing cookie
+and CSRF checks protect registration and removal. Outbound delivery accepts only
+Chrome FCM subscription URLs and does not follow redirects. Push payloads are
+encrypted and contain only the notification kind and the conversation ID for
+click routing; no names, attention reasons, or conversation content are sent.
+While subscribed devices exist, Qew compares successful structured Hem dashboard
+snapshots every 15 seconds, baselining the initial snapshot without sending it.
+This is a best-effort observer, not a durable delivery queue; withdrawals from the
+push provider (404/410) remove the expired device.
+
 ### Project Structure
 
 ```

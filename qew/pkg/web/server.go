@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -62,6 +63,7 @@ type Server struct {
 	// WebAuthn passkeys (additive auth alongside the password). nil when no
 	// password is configured (passkeys require the password bootstrap path).
 	passkeys         *PasskeyStore
+	push             *webPush
 	waMu             sync.Mutex
 	waChallenges     map[string]*waChallenge
 	watchHub         *watchHub
@@ -109,8 +111,7 @@ func NewServer(hem HemClient, listenAddr, password string, development bool, vlo
 	return s
 }
 
-// Run starts the HTTP server.
-func (s *Server) Run() error {
+func (s *Server) routes() (http.Handler, error) {
 	mux := http.NewServeMux()
 
 	if s.password != "" {
@@ -150,10 +151,37 @@ func (s *Server) Run() error {
 	// Static files.
 	staticSub, err := fs.Sub(staticFS, "static")
 	if err != nil {
-		return fmt.Errorf("static fs: %w", err)
+		return nil, fmt.Errorf("static fs: %w", err)
 	}
-	mux.Handle("/", s.requireAuth(http.FileServer(http.FS(staticSub)).ServeHTTP))
+	static := http.FileServer(http.FS(staticSub))
+	mux.HandleFunc("GET /manifest.webmanifest", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/manifest+json")
+		static.ServeHTTP(w, r)
+	})
+	mux.Handle("GET /qew-192.png", static)
+	mux.Handle("GET /qew-512.png", static)
+	if s.push != nil {
+		mux.HandleFunc("/web-push", s.requireAuth(s.csrfProtect(s.push.handle)))
+		mux.HandleFunc("GET /qew-sw.js", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Cache-Control", "no-cache")
+			static.ServeHTTP(w, r)
+		})
+	}
+	mux.Handle("/", s.requireAuth(static.ServeHTTP))
+	return mux, nil
+}
 
+// Run starts the HTTP server.
+func (s *Server) Run() error {
+	mux, err := s.routes()
+	if err != nil {
+		return err
+	}
+	if s.push != nil {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		go s.push.run(ctx, s.hem)
+	}
 	s.vlog.Printf("Qew web server listening on %s", s.addr)
 	log.Printf("Qew web UI: http://%s", s.addr)
 	return http.ListenAndServe(s.addr, mux)
@@ -688,6 +716,7 @@ func loginPageHTML(errorMsg string, passkeysEnabled bool) string {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="manifest" href="/manifest.webmanifest">
 <title>Qew — Login</title>
 <style>
 :root {
@@ -732,7 +761,11 @@ body {
     <input type="password" name="password" placeholder="Password" autofocus>
     <button type="submit">Sign in</button>` + passkeyBlock + `
   </form>
-</div>` + script + `
+</div>
+<script>
+const loginRoute = /^#\/session\/[0-9a-f-]{36}$/.test(location.hash) ? location.hash : '';
+document.querySelector('form').action = '/login' + loginRoute;
+</script>` + script + `
 </body>
 </html>`
 }
@@ -764,7 +797,7 @@ function bufToB64url(buf){const b=new Uint8Array(buf);let s='';for(let i=0;i<b.l
           userHandle:cred.response.userHandle?bufToB64url(cred.response.userHandle):null}};
       const f=await fetch('/webauthn/login/finish',{method:'POST',headers:H,body:JSON.stringify(body)});
       if(!f.ok)throw new Error('Passkey sign-in failed');
-      window.location.href='/';
+      window.location.href='/' + loginRoute;
     }catch(e){showErr(e.message||'Passkey sign-in failed');btn.disabled=false;}
   });
 })();

@@ -2206,6 +2206,10 @@ Hem periodically syncs sessions from all registered moneypennies. On startup (as
 
 Qew is a web-based UI for remote access to Hem via MI6. It serves a dashboard and chat interface accessible from any browser (phone, tablet, other computers).
 
+On Android Chrome, open Qew over HTTPS and use **Add to Home screen → Install** to launch it from its own icon in a standalone window. Qew still requires a server connection and the usual login; it does not provide offline access.
+
+The **Background alerts** (📲) button in the Qew header opts the current Chrome device in or out of Web Push on a password-protected deployment. Alerts work without an open Qew window and cover new top-level agent results and attention requests, not routine progress or child sessions. Lock-screen text omits session names and request details; tapping the alert opens the conversation and still requires sign-in when the login has expired. Delivery is best effort and does not replay existing results when enabled.
+
 ## Usage
 
 ```bash

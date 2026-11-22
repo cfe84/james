@@ -1770,12 +1770,14 @@ test('durable attention survives reads, deduplicates delivery and resolves only 
 
 test('attention popovers retain the session name and tolerate unavailable sound', async () => {
   const popovers = [], opened = [], warnings = [];
+  let backgroundAlerts = false;
   const context = vm.createContext({
     soundEnabled: true,
     Audio: class { async play() { throw new Error('autoplay unavailable'); } },
     Notification: class { static permission = 'denied'; },
     console: { warn: (...args) => warnings.push(args) },
     document: {
+      getElementById: () => ({ getAttribute: () => String(backgroundAlerts) }),
       createElement: () => ({ addEventListener(event, handler) { this[event] = handler; }, remove() {} }),
       body: { appendChild: popover => popovers.push(popover) },
     },
@@ -1800,6 +1802,9 @@ test('attention popovers retain the session name and tolerate unavailable sound'
     assert.equal(popovers.at(-1).textContent, 'Needs action: Deploy: Sign in.');
   }
   assert.equal(warnings.length, 3, 'unavailable optional delivery is reported without failing the view');
+  backgroundAlerts = true;
+  await context.showNotification('Deploy', 'session', 'Needs action', 'Sign in.');
+  assert.equal(warnings.length, 3, 'Web Push prevents duplicate system notifications');
 });
 
 test('unchanged reconcile polls do not fetch history or change the transcript', async () => {
