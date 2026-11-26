@@ -587,6 +587,8 @@ test('mac setup executes only a verified archive and passes service arguments in
     fs.writeFileSync(path.join(tools, 'uname'), '#!/bin/sh\ncase "$1" in -s) echo Darwin;; -m) echo arm64;; esac\n', { mode: 0o755 });
     fs.writeFileSync(path.join(tools, 'curl'), '#!/bin/sh\nwhile [ "$#" -gt 0 ]; do if [ "$1" = -o ]; then cp "$FIXTURE_ARCHIVE" "$2"; exit; fi; shift; done\nexit 1\n', { mode: 0o755 });
     fs.writeFileSync(path.join(bundle, 'moneypenny'), '#!/bin/sh\nprintf "%s\\n" "$@" >> "$FIXTURE_CALLS"\nif [ "$1" = --show-public-key ]; then echo "ssh-ed25519 TEST_PUBLIC_KEY"; fi\n', { mode: 0o755 });
+    const companions = ['mi6-client', 'hem', 'gadgets'];
+    for (const name of companions) fs.writeFileSync(path.join(bundle, name), '', { mode: 0o755 });
     const archive = path.join(root, 'fixture.tar.gz');
     const packed = spawnSync('tar', ['-czf', archive, '-C', root, 'james-darwin-arm64']);
     assert.equal(packed.status, 0, packed.stderr.toString());
@@ -594,19 +596,26 @@ test('mac setup executes only a verified archive and passes service arguments in
     vm.runInContext(app.slice(app.indexOf('  function moneypennySetupCommand('), app.indexOf('  async function showAddMoneypennyModal(')), context);
     const pin = 'SHA256:' + 'a'.repeat(43);
     const digest = crypto.createHash('sha256').update(fs.readFileSync(archive)).digest('hex');
-    for (const verified of [true, false]) {
-      const home = path.join(root, verified ? 'verified home' : 'rejected home');
+    for (const scenario of ['verified', 'bad digest', 'existing binary']) {
+      const home = path.join(root, `${scenario} home`);
       fs.mkdirSync(home);
+      const bin = path.join(home, '.local/bin');
+      const existing = path.join(bin, 'hem');
+      if (scenario === 'existing binary') {
+        fs.mkdirSync(bin, { recursive: true });
+        fs.writeFileSync(existing, 'existing hem');
+      }
       const calls = path.join(home, 'calls');
       const command = context.moneypennySetupCommand('mac', {
         url: 'https://github.com/cfe84/james/releases/download/v1.2.3/james-darwin-arm64.tar.gz',
-        sha256: verified ? digest : '0'.repeat(64),
+        sha256: scenario === 'bad digest' ? '0'.repeat(64) : digest,
       }, "relay'quoted:443/laptop", pin, false);
       const result = spawnSync('/bin/bash', ['-c', command], {
         env: { ...process.env, HOME: home, PATH: tools + path.delimiter + process.env.PATH, FIXTURE_ARCHIVE: archive, FIXTURE_CALLS: calls },
       });
-      if (verified) {
+      if (scenario === 'verified') {
         assert.equal(result.status, 0, result.stderr.toString());
+        assert.deepEqual(fs.readdirSync(bin).sort(), [...companions, 'moneypenny'].sort());
         assert.ok(fs.existsSync(calls), result.stdout.toString() + result.stderr.toString());
         assert.equal(fs.readFileSync(calls, 'utf8'), [
           '--show-public-key', 'install', '--non-interactive', '--user', '--auto-update',
@@ -616,7 +625,11 @@ test('mac setup executes only a verified archive and passes service arguments in
       } else {
         assert.notEqual(result.status, 0);
         assert.equal(fs.existsSync(calls), false);
-        assert.equal(fs.existsSync(path.join(home, '.local/share/james')), false);
+        assert.equal(fs.existsSync(path.join(bin, 'moneypenny')), false);
+        if (scenario === 'existing binary') {
+          assert.match(result.stderr.toString(), /Refusing to overwrite .*hem/);
+          assert.equal(fs.readFileSync(existing, 'utf8'), 'existing hem');
+        }
       }
     }
   } finally {

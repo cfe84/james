@@ -48,10 +48,12 @@ Terminal or PowerShell on that computer. Run as your normal login user.
 
 Hem verifies the latest release's signed manifest; the generated command
 downloads that specific release and checks its SHA256 before executing it.
-It installs the bundled binaries in a new user-owned directory and uses
-`moneypenny install --non-interactive --user --auto-update` to start a login
-service. Existing data and keys are kept. Replacing an existing user-level
-service requires selecting the explicit replacement checkbox. Intel Macs
+On macOS it installs `moneypenny`, `mi6-client`, `hem`, and `gadgets` in
+`~/.local/bin` without overwriting existing files. Add that directory to your
+shell's `PATH` if it isn't already there. Windows installs in a new user-owned
+directory. Setup uses `moneypenny install --non-interactive --user --auto-update`
+to start a login service. Existing data and keys are kept. The replacement
+checkbox replaces the service registration, not existing binaries. Intel Macs
 are not included in current release assets.
 
 Paste the printed **public key** into the optional field and click **Add**.

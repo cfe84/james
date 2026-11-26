@@ -440,8 +440,10 @@ command for macOS Apple Silicon (Terminal) or Windows x64 (PowerShell).
 `hem setup moneypenny` obtains the latest release metadata and verifies its
 signed manifest using Moneypenny's updater trust root. Qew embeds the verified
 archive URL and SHA256 in the command. The target verifies the download before
-extracting/running it, installs binaries in a new user-owned directory, creates
-or reuses the existing Moneypenny key, and installs/starts a user-level,
+extracting/running it. macOS installs Moneypenny and its update companions to
+`~/.local/bin` and refuses to overwrite existing files, even in service
+replacement mode; Windows installs in a new user-owned directory. Setup creates
+or reuses the existing Moneypenny key and installs/starts a user-level,
 auto-updating service using the supplied relay session and fingerprint.
 Existing service replacement is explicit; data and keys are preserved.
 Agent CLI installation and provider authentication are separate prerequisites.
