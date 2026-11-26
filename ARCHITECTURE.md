@@ -1688,6 +1688,11 @@ James-UUID placeholders are cleared on migration. A resumed run without an
 OpenCode ID enters lost-session recovery, including after an interrupted first
 run. The fresh recovery run's generated ID is persisted for later continuations.
 
+Moneypenny queries Copilot's headless stdio `models.list` RPC for selectable
+model IDs and display names. This replaces the older prompt and debug-log
+parsers. Discovery does not create an agent conversation or run inference.
+A failed catalog query leaves the last successful cache intact.
+
 Qew first reads Hem's cached model list and, on an empty cold-cache response,
 requests a synchronous `list-models --refresh`; this fills its create, edit,
 and chat pickers on the first open rather than requiring another visit after

@@ -578,6 +578,8 @@ Schema (`model_cache` table):
 - Default (no `--refresh`): if a cache row exists, returns it immediately and fires an opportunistic background refresh (rate-limited; see below). If no row exists, queries the moneypenny synchronously and writes the result.
 - `--refresh`: bypasses the cache read and the rate limit. Always queries the moneypenny.
 - JSON output (`-o json`) carries `cached` (bool) and `cached_at` (RFC3339) so consumers can distinguish fresh vs cached responses.
+- Copilot models come from the selected moneypenny's installed Copilot CLI
+  and signed-in account, not from a fixed list or a generated answer.
 
 ### `hem refresh-models [-m MP] [--agent AGENT]`
 

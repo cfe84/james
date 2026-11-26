@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -11,6 +12,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/textproto"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -2359,24 +2361,7 @@ type copilotRefresh struct {
 	err    error
 }
 
-// copilotModelLogRe matches each "[id,Display Name]" pair on copilot's
-// debug-level "Listed models:" log line (older builds).
-var copilotModelLogRe = regexp.MustCompile(`\[([^,\]]+),([^\]]*)\]`)
-
-// copilotModelIDRe validates a line looks like a copilot model identifier
-// (lowercase letters/digits/dots/hyphens, must contain a hyphen — every real
-// id does, e.g. "claude-sonnet-5", "gpt-5.3-codex"). Used to filter the
-// model's textual answer so prose/footer lines are rejected.
-var copilotModelIDRe = regexp.MustCompile(`^[a-z][a-z0-9.]*-[a-z0-9.-]+$`)
-
-// copilotModels queries copilot for its available models. Copilot has no
-// non-interactive "list models" command, so we run a trivial prompt asking it
-// to list the --model identifiers and parse the answer, validating each line
-// looks like a model id. Older copilot builds emitted an authoritative
-// "Listed models:" debug-log line (with friendly display names); we still parse
-// it first when present, but copilot 1.0.69+ no longer writes it, so the
-// stdout answer is the reliable source. Results are cached to avoid repeated
-// slow queries.
+// copilotModels returns the cached catalog and starts discovery if it is stale.
 func copilotModels() []envelope.ModelInfo {
 	copilotModelMu.Lock()
 	if len(copilotModelCache) > 0 && time.Since(copilotModelCacheTime) < copilotModelCacheTTL {
@@ -2390,9 +2375,8 @@ func copilotModels() []envelope.ModelInfo {
 		return models
 	}
 	stale := append([]envelope.ModelInfo(nil), copilotModelCache...)
-	refresh := startCopilotRefreshLocked(context.Background())
+	startCopilotRefreshLocked(context.Background())
 	copilotModelMu.Unlock()
-	_ = refresh
 	return stale
 }
 
@@ -2401,6 +2385,9 @@ func startCopilotRefreshLocked(ctx context.Context) *copilotRefresh {
 	copilotModelRefresh = refresh
 	go func() {
 		models, err := copilotDiscover(ctx)
+		if err != nil {
+			log.Printf("copilot models: %v", err)
+		}
 		copilotModelMu.Lock()
 		refresh.models = append([]envelope.ModelInfo(nil), models...)
 		refresh.err = err
@@ -2418,78 +2405,101 @@ func startCopilotRefreshLocked(ctx context.Context) *copilotRefresh {
 func discoverCopilotModels(ctx context.Context) ([]envelope.ModelInfo, error) {
 	path, err := agent.FindAgent("copilot")
 	if err != nil {
-		log.Printf("copilot models: copilot not found: %v", err)
 		return nil, err
 	}
 
-	log.Printf("copilot models: querying copilot at %s", path)
-
-	// Capture copilot's debug logs in a throwaway directory we can parse and
-	// then discard.
-	logDir, err := os.MkdirTemp("", "copilot-models-")
-	if err != nil {
-		log.Printf("copilot models: failed to create log dir: %v", err)
-		return nil, err
-	}
-	defer os.RemoveAll(logDir)
-
-	// Run a trivial prompt. --available-tools '' prevents tool use (no
-	// permission prompts, faster). --model auto lets copilot pick a current
-	// model so the query can't fail because a pinned identifier was retired.
-	// --log-level debug + --log-dir capture logs for the best-effort primary
-	// parse below.
-	var cancel context.CancelFunc
-	ctx, cancel = context.WithTimeout(ctx, 60*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, path,
-		"-p", "List the model identifiers available for --model. One per line. No other text, no markdown formatting.",
-		"--output-format", "text",
-		"--available-tools", "",
-		"--model", "auto",
-		"--log-level", "debug",
-		"--log-dir", logDir,
-	)
-	// Prepend agent's dir to PATH so its shebang (e.g. `env node`) finds
-	// `node` in the same directory (nvm install layout).
+	cmd := exec.CommandContext(ctx, path, "--headless", "--stdio")
 	cmd.Env = agent.PrependToPath(os.Environ(), filepath.Dir(path))
-	out, runErr := cmd.Output()
-	if runErr != nil {
-		// Don't bail yet: the model list may still have been logged, and the
-		// stdout answer captured before the failure can also hold the list.
-		log.Printf("copilot models: query exited with error (will still parse output): %v", runErr)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	defer stdin.Close()
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	defer stdout.Close()
+	stopRead := context.AfterFunc(ctx, func() { _ = stdout.Close() })
+	defer stopRead()
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("starting Copilot catalog query: %w", err)
+	}
+	defer func() {
+		cancel()
+		_ = cmd.Wait()
+	}()
+
+	const request = `{"jsonrpc":"2.0","id":1,"method":"models.list","params":{}}`
+	if _, err := fmt.Fprintf(stdin, "Content-Length: %d\r\n\r\n%s", len(request), request); err != nil {
+		return nil, fmt.Errorf("sending Copilot catalog query: %w", err)
+	}
+	// Older SDK servers cancel the request if stdin closes before the reply.
+	models, err := readCopilotModelCatalog(stdout)
+	if err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
+		return nil, err
 	}
+	return models, nil
+}
 
-	// Best-effort: older copilot builds logged an authoritative model list with
-	// friendly display names. Parse it when present (it isn't on 1.0.69+).
-	if models := parseCopilotModelLog(logDir); len(models) > 0 {
-		log.Printf("copilot models: parsed %d models from debug log", len(models))
-		return models, nil
+func readCopilotModelCatalog(stdout io.Reader) ([]envelope.ModelInfo, error) {
+	reader := bufio.NewReader(io.LimitReader(stdout, 8<<20))
+	header, err := textproto.NewReader(reader).ReadMIMEHeader()
+	if err != nil {
+		return nil, fmt.Errorf("reading Copilot model catalog header: %w", err)
 	}
-
-	// Reliable path: parse the model's textual answer, keeping only lines that
-	// look like model identifiers (rejects the doc-check preamble, blank lines,
-	// and the run-summary footer — Changes/AI Credits/Tokens/Resume/etc.).
-	log.Printf("copilot models: debug log has no model list, parsing stdout (%d bytes)", len(out))
-	var models []envelope.ModelInfo
+	size, err := strconv.Atoi(header.Get("Content-Length"))
+	if err != nil || size <= 0 || size > 8<<20 {
+		return nil, fmt.Errorf("invalid Copilot model catalog response length")
+	}
+	body := make([]byte, size)
+	if _, err := io.ReadFull(reader, body); err != nil {
+		return nil, fmt.Errorf("reading Copilot model catalog body: %w", err)
+	}
+	var response struct {
+		ID      int
+		JSONRPC string
+		Error   *struct {
+			Code    int
+			Message string
+		}
+		Result struct {
+			Models []struct{ ID, Name string }
+		}
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, fmt.Errorf("decoding Copilot model catalog: %w", err)
+	}
+	if response.JSONRPC != "2.0" || response.ID != 1 {
+		return nil, fmt.Errorf("unexpected Copilot model catalog response")
+	}
+	if response.Error != nil {
+		return nil, fmt.Errorf("Copilot models.list (%d): %s", response.Error.Code, response.Error.Message)
+	}
+	models := make([]envelope.ModelInfo, 0, len(response.Result.Models))
 	seen := make(map[string]bool)
-	for _, line := range strings.Split(string(out), "\n") {
-		id := strings.TrimSpace(line)
-		if id == "" || seen[id] || !copilotModelIDRe.MatchString(id) {
+	for _, model := range response.Result.Models {
+		if model.ID == "" {
+			return nil, fmt.Errorf("Copilot model catalog entry has no ID")
+		}
+		if seen[model.ID] {
 			continue
 		}
-		seen[id] = true
-		models = append(models, envelope.ModelInfo{Name: id, Value: id})
+		seen[model.ID] = true
+		if model.Name == "" {
+			model.Name = model.ID
+		}
+		models = append(models, envelope.ModelInfo{Name: model.Name, Value: model.ID})
 	}
-	if len(models) > 0 {
-		log.Printf("copilot models: cached %d models (stdout)", len(models))
-		return models, nil
+	if len(models) == 0 {
+		return nil, fmt.Errorf("Copilot model catalog returned no models")
 	}
-
-	log.Printf("copilot models: no models parsed")
-	return nil, fmt.Errorf("no models parsed")
+	return models, nil
 }
 
 func copilotModelsRefresh(ctx context.Context) ([]envelope.ModelInfo, error) {
@@ -2511,59 +2521,6 @@ func copilotModelsRefresh(ctx context.Context) ([]envelope.ModelInfo, error) {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-}
-
-// parseCopilotModelLog scans copilot's debug log files in logDir for the
-// "Listed models: [id,Display Name], ..." line and returns the chat models it
-// lists, in order, de-duplicated by identifier. Embedding models (which aren't
-// valid --model values) are skipped.
-func parseCopilotModelLog(logDir string) []envelope.ModelInfo {
-	entries, err := os.ReadDir(logDir)
-	if err != nil {
-		return nil
-	}
-	var listLine string
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
-		}
-		data, err := os.ReadFile(filepath.Join(logDir, e.Name()))
-		if err != nil {
-			continue
-		}
-		for _, line := range strings.Split(string(data), "\n") {
-			if idx := strings.Index(line, "Listed models:"); idx >= 0 {
-				listLine = line[idx+len("Listed models:"):]
-				break
-			}
-		}
-		if listLine != "" {
-			break
-		}
-	}
-	if listLine == "" {
-		return nil
-	}
-
-	var models []envelope.ModelInfo
-	seen := make(map[string]bool)
-	for _, m := range copilotModelLogRe.FindAllStringSubmatch(listLine, -1) {
-		id := strings.TrimSpace(m[1])
-		if id == "" || seen[id] {
-			continue
-		}
-		// Embedding models aren't selectable via --model; skip them.
-		if strings.HasPrefix(id, "text-embedding") {
-			continue
-		}
-		seen[id] = true
-		display := strings.TrimSpace(m[2])
-		if display == "" {
-			display = id
-		}
-		models = append(models, envelope.ModelInfo{Name: display, Value: id})
-	}
-	return models
 }
 
 func (h *Handler) stopSession(_ context.Context, cmd *envelope.Command) *envelope.Response {

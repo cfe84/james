@@ -2,8 +2,10 @@ package handler
 
 import (
 	"context"
-	"os"
+	"fmt"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"testing"
 
 	"james/moneypenny/pkg/agent"
@@ -40,44 +42,41 @@ func TestListSessionsIncludesSelectedModel(t *testing.T) {
 	}
 }
 
-func TestParseCopilotModelLog(t *testing.T) {
-	dir := t.TempDir()
-	logLine := `2026-06-10T19:13:29.906Z [DEBUG] Listed models: [claude-opus-4.8,Claude Opus 4.8], [claude-sonnet-4.6,Claude Sonnet 4.6], [gpt-5.5,GPT-5.5], [text-embedding-3-small,Embedding V3 small], [gpt-4o,GPT-4o], [gpt-4o,GPT-4o]`
-	if err := os.WriteFile(filepath.Join(dir, "process-1.log"), []byte("noise line\n"+logLine+"\nmore noise\n"), 0o644); err != nil {
-		t.Fatalf("write log: %v", err)
-	}
-
-	models := parseCopilotModelLog(dir)
-	if len(models) != 4 {
-		t.Fatalf("expected 4 models (embeddings filtered, dupes removed), got %d: %+v", len(models), models)
-	}
-
-	want := []struct{ value, name string }{
-		{"claude-opus-4.8", "Claude Opus 4.8"},
-		{"claude-sonnet-4.6", "Claude Sonnet 4.6"},
-		{"gpt-5.5", "GPT-5.5"},
-		{"gpt-4o", "GPT-4o"},
-	}
-	for i, w := range want {
-		if models[i].Value != w.value || models[i].Name != w.name {
-			t.Errorf("model %d: got {Value:%q Name:%q}, want {Value:%q Name:%q}",
-				i, models[i].Value, models[i].Name, w.value, w.name)
-		}
-	}
-}
-
-func TestParseCopilotModelLogNoLine(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "process-1.log"), []byte("nothing to see here\n"), 0o644); err != nil {
-		t.Fatalf("write log: %v", err)
-	}
-	if got := parseCopilotModelLog(dir); got != nil {
-		t.Errorf("expected nil for log without model line, got %+v", got)
-	}
-}
-
-func TestParseCopilotModelLogEmptyDir(t *testing.T) {
-	if got := parseCopilotModelLog(t.TempDir()); got != nil {
-		t.Errorf("expected nil for empty dir, got %+v", got)
+func TestReadCopilotModelCatalog(t *testing.T) {
+	for _, tc := range []struct {
+		name, body, wantError string
+		want                  []envelope.ModelInfo
+	}{
+		{
+			name: "selectable models",
+			body: `{"jsonrpc":"2.0","id":1,"result":{"models":[{"id":"auto","name":"Copilot Fusion"},{"id":"gpt-6.2-sol","name":"GPT-6.2 Sol"},{"id":"gpt-6.2-sol"},{"id":"custom/model"}],"imageModels":[{"id":"image-only"}]}}`,
+			want: []envelope.ModelInfo{
+				{Name: "Copilot Fusion", Value: "auto"},
+				{Name: "GPT-6.2 Sol", Value: "gpt-6.2-sol"},
+				{Name: "custom/model", Value: "custom/model"},
+			},
+		},
+		{
+			name:      "RPC error",
+			body:      `{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}`,
+			wantError: "Method not found",
+		},
+		{
+			name:      "empty catalog",
+			body:      `{"jsonrpc":"2.0","id":1,"result":{"models":[]}}`,
+			wantError: "returned no models",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			frame := fmt.Sprintf("Content-Length: %d\r\n\r\n%s", len(tc.body), tc.body)
+			got, err := readCopilotModelCatalog(strings.NewReader(frame))
+			if tc.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantError) || got != nil {
+					t.Fatalf("got %v, %v; want error containing %q", got, err, tc.wantError)
+				}
+			} else if err != nil || !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("got %v, %v; want %v", got, err, tc.want)
+			}
+		})
 	}
 }
