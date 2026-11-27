@@ -188,6 +188,7 @@ func TestGadgetCapabilitiesCommandForwarding(t *testing.T) {
 	defer out.Close()
 	writes := make(chan json.RawMessage, 16)
 	creates := make(chan map[string]json.RawMessage, 16)
+	const exportedHistory = `[{"id":0,"role":"user","content":"original","created_at":"2026-01-01T00:00:00Z"}]`
 	original := envelope.GadgetCapabilities{Memory: false, Subagents: true, Agents: true, Traits: true, Scheduling: false}
 	defer func() { _, _ = in.WriteString("\n") }()
 	go func() {
@@ -214,13 +215,15 @@ func TestGadgetCapabilitiesCommandForwarding(t *testing.T) {
 				}
 				writes <- command.Data["gadget_capabilities"]
 			case "create_session", "create_session_with_history":
-				if command.Method == "create_session_with_history" && string(command.Data["copy_history_from"]) != `"source"` {
-					t.Errorf("history copy did not name source: %s", command.Data["copy_history_from"])
+				if got := command.Data["imported_history"]; (command.Method == "create_session_with_history" && len(got) == 0) && string(command.Data["copy_history_from"]) != `"source"` {
+					t.Errorf("local history copy did not name source: %s", command.Data["copy_history_from"])
 				}
 				creates <- command.Data
 				writes <- command.Data["gadget_capabilities"]
 			case "summarize_session":
 				data = map[string]interface{}{"summary": "source summary", "turn_count": 1}
+			case "export_conversation":
+				data = json.RawMessage(exportedHistory)
 			}
 			raw, _ := json.Marshal(data)
 			if err := json.NewEncoder(out).Encode(transport.Response{Status: "ok", Data: raw}); err != nil {
@@ -332,5 +335,25 @@ func TestGadgetCapabilitiesCommandForwarding(t *testing.T) {
 	check(e.UpdateSession([]string{"source", "--gadget-traits=false"}), updated)
 	if resp := e.UpdateSession([]string{"source", "--gadget-agents=maybe"}); resp.Status != "error" || !strings.Contains(resp.Message, "true or false") {
 		t.Fatalf("invalid boolean was accepted: %#v", resp)
+	}
+
+	if err := e.store.AddMoneypenny(&store.Moneypenny{Name: "other", Enabled: true, TransportType: store.TransportFIFO, FIFOIn: inPath, FIFOOut: outPath}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.SetCachedModels("other", "copilot", []store.CachedModelEntry{{Name: "model", Value: "model"}}); err != nil {
+		t.Fatal(err)
+	}
+	check(e.CopySession([]string{"source", "--async", "-m", "other", "--copy-history"}), updated)
+	remote := <-creates
+	if string(remote["imported_history"]) != exportedHistory || remote["copy_history_from"] != nil || remote["copy_memory_from"] != nil {
+		t.Fatalf("wrong remote transfer payload: %v", remote)
+	}
+	var remoteID string
+	if err := json.Unmarshal(remote["session_id"], &remoteID); err != nil {
+		t.Fatal(err)
+	}
+	trackedRemote, err := e.store.GetSession(remoteID)
+	if err != nil || trackedRemote == nil || trackedRemote.MoneypennyName != "other" {
+		t.Fatalf("duplicate not tracked on destination: %+v, %v", trackedRemote, err)
 	}
 }

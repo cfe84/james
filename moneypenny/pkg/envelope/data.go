@@ -1,6 +1,10 @@
 package envelope
 
-import "james/moneypenny/pkg/questionnaire"
+import (
+	"encoding/json"
+
+	"james/moneypenny/pkg/questionnaire"
+)
 
 // Notification events
 const (
@@ -68,8 +72,9 @@ type CreateSessionData struct {
 	// CopyMemoryFrom, when set, names a source session on this same moneypenny
 	// whose memory folder should be copied into the new session's memory folder
 	// (used when duplicating a session so the copy inherits accumulated memory).
-	CopyMemoryFrom  string `json:"copy_memory_from,omitempty"`
-	CopyHistoryFrom string `json:"copy_history_from,omitempty"`
+	CopyMemoryFrom  string          `json:"copy_memory_from,omitempty"`
+	CopyHistoryFrom string          `json:"copy_history_from,omitempty"`
+	ImportedHistory json.RawMessage `json:"imported_history,omitempty"`
 }
 
 type WorktreeData struct {
@@ -236,7 +241,10 @@ type SessionReconcile struct {
 	HasMore       bool               `json:"has_more,omitempty"`
 }
 
-// ConversationTurn represents a single prompt/response pair.
+const MaxTransferredHistoryBytes = 4 << 20
+const MaxTransferredHistoryTurns = 10000
+
+// ConversationTurn represents a stored conversation entry.
 type ConversationTurn struct {
 	ID              int64  `json:"id"`
 	Role            string `json:"role"` // "user" or "assistant"

@@ -1042,7 +1042,7 @@ daemon-managed per-user workspace root keyed by the canonical session UUID;
 deletion targets only this owned location, not the editable working path.
 Worktree creation uses Git's non-forcing `worktree add -b` from the selected
 checkout's `HEAD` and leaves the worktree outside the session's lifecycle.
-Same-host duplicates can combine either provisioned workspace with transcript copying.
+Duplicates can combine either provisioned workspace with transcript copying, including across hosts.
 
 24. **Git operations**: Moneypenny exposes `git_commit`, `git_branch`, and `git_push` methods alongside the existing `git_diff`. These run git commands in a session's working directory: `git_commit` stages all changes (`git add -A`) and commits; `git_branch` creates and checks out a new branch; `git_push` pushes the current branch to origin with `-u`. Hem exposes these as `hem commit session`, `hem branch session`, and `hem push session`.
 
@@ -1511,12 +1511,16 @@ moneypenny/pkg/handler/channels.go  # ChannelManager (poll/forward/drain) + CRUD
    page 1 is consulted (`hasMoreResults` ignored); a chat pushed off page 1 by a burst of other
    activity is simply picked up on a later tick.
 
-With `hem copy session --copy-history`, the same-host Moneypenny inserts the new
-session and snapshots the source transcript in one SQLite transaction. Copied
-turns have fresh IDs while preserving order, timestamps, and attribution.
-Session-owned artifact entries are excluded. The dedicated create RPC fails
-on daemons that do not support history copying rather than silently dropping
-the request. The provider still starts a fresh session with the handoff summary.
+With `hem copy session --copy-history`, same-host copies insert the session and
+copy its transcript in one SQLite transaction. For cross-host copies, the source
+exports a consistent SQLite snapshot before summarization. Hem forwards it over
+the configured transport, separately from the paginated chat-view API. Exports
+are bounded to 4 MiB of encoded history and 10,000 turns to fit in a single
+transport message. The target validates and atomically inserts the new session
+and transcript before starting the agent. Both paths allocate fresh turn IDs,
+preserve timestamps and attribution, and exclude session-owned artifact
+entries. Unsupported daemons reject the request rather than silently dropping
+history. The provider starts a fresh session with the handoff summary.
 
 ## Qew - Web UI for Remote Access
 

@@ -636,6 +636,31 @@ func (s *Store) CreateSessionWithHistory(sess *Session, sourceID string) error {
 	return tx.Commit()
 }
 
+// CreateSessionWithImportedHistory inserts a session and its transferred turns atomically.
+func (s *Store) CreateSessionWithImportedHistory(sess *Session, turns []*ConversationTurn) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := insertSession(tx, sess); err != nil {
+		return err
+	}
+	stmt, err := tx.Prepare(`INSERT INTO conversation_turns (session_id, role, content, source_session_id, source_name, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for _, turn := range turns {
+		createdAt := turn.CreatedAt.UTC().Format("2006-01-02 15:04:05.999999999")
+		if _, err := stmt.Exec(sess.SessionID, turn.Role, turn.Content, turn.SourceSessionID, turn.SourceName, createdAt); err != nil {
+			return fmt.Errorf("import conversation turn: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
 func insertSession(db interface {
 	Exec(string, ...any) (sql.Result, error)
 }, sess *Session) error {
@@ -1124,7 +1149,41 @@ func (s *Store) GetConversation(sessionID string) ([]*ConversationTurn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get conversation: %w", err)
 	}
+	return readConversationTurns(rows)
+}
 
+// ExportConversation reads a bounded snapshot without materializing oversized transcripts.
+func (s *Store) ExportConversation(ctx context.Context, sessionID string) ([]*ConversationTurn, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var exists bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sessions WHERE session_id = ?)`, sessionID).Scan(&exists); err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, fmt.Errorf("source session not found")
+	}
+	var count, size int64
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(length(CAST(content AS BLOB)) +
+		length(CAST(role AS BLOB)) + length(CAST(source_session_id AS BLOB)) + length(CAST(source_name AS BLOB))), 0)
+		FROM conversation_turns WHERE session_id = ? AND role != 'artifact'`, sessionID).Scan(&count, &size); err != nil {
+		return nil, err
+	}
+	if count > envelope.MaxTransferredHistoryTurns || size > envelope.MaxTransferredHistoryBytes {
+		return nil, fmt.Errorf("conversation exceeds the cross-host copy limit (4 MiB or 10,000 turns)")
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT id, session_id, role, content, source_session_id, source_name, created_at
+		FROM conversation_turns WHERE session_id = ? AND role != 'artifact' ORDER BY created_at, id`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return readConversationTurns(rows)
+}
+
+func readConversationTurns(rows *sql.Rows) ([]*ConversationTurn, error) {
 	defer rows.Close()
 
 	var turns []*ConversationTurn

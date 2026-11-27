@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -5682,7 +5683,7 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	remaining, err := parseFlagsFromArgs("copy-session", args, func(fs *flag.FlagSet) {
 		capabilityFlags.register(fs)
 		params.workspaceFlags(fs)
-		fs.BoolVar(&copyHistory, "copy-history", false, "copy the conversation transcript on the same Moneypenny")
+		fs.BoolVar(&copyHistory, "copy-history", false, "copy the conversation transcript to the destination Moneypenny")
 		fs.StringVar(&sourceSessionID, "session-id", "", "source session ID")
 		fs.StringVar(&params.MoneypennyName, "m", "", "target moneypenny name")
 		fs.StringVar(&params.MoneypennyName, "moneypenny", "", "target moneypenny name")
@@ -5894,8 +5895,17 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
-	if copyHistory && sourceMP.Name != targetMP.Name {
-		return protocol.ErrResponse("conversation history can only be copied on the source Moneypenny")
+	sameHost := sourceMP.Name == targetMP.Name
+	var history json.RawMessage
+	if copyHistory && !sameHost {
+		resp, err := e.sendCommand(context.Background(), sourceMP, "export_conversation", envelope.SessionIDData{SessionID: sourceSessionID})
+		if err != nil {
+			return protocol.ErrResponse(fmt.Sprintf("exporting source conversation: %v", err))
+		}
+		history = bytes.TrimSpace(resp.Data)
+		if len(history) == 0 || history[0] != '[' || !json.Valid(history) || len(history) > envelope.MaxTransferredHistoryBytes {
+			return protocol.ErrResponse("invalid or oversized exported conversation")
+		}
 	}
 
 	// Now ask the source moneypenny to summarize the prior conversation.
@@ -5990,13 +6000,17 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
-	if sourceMP.Name == targetMP.Name {
+	if sameHost {
 		cmdData["copy_memory_from"] = sourceSessionID
 	}
 	method := "create_session"
 	if copyHistory {
 		method = "create_session_with_history"
-		cmdData["copy_history_from"] = sourceSessionID
+		if sameHost {
+			cmdData["copy_history_from"] = sourceSessionID
+		} else {
+			cmdData["imported_history"] = history
+		}
 	}
 
 	// Track the new session locally on the target moneypenny.

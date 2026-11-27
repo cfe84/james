@@ -421,6 +421,8 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.getDiagnostics(ctx, cmd)
 	case "create_session", "create_session_with_history":
 		return h.createSession(ctx, cmd)
+	case "export_conversation":
+		return h.exportConversation(ctx, cmd)
 	case "continue_session":
 		return h.continueSession(ctx, cmd)
 	case "list_sessions":
@@ -557,10 +559,18 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 	if !sessionIDPattern.MatchString(data.SessionID) {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id must be a canonical UUID")
 	}
-	if cmd.Method == "create_session_with_history" || data.CopyHistoryFrom != "" {
-		if cmd.Method != "create_session_with_history" || !sessionIDPattern.MatchString(data.CopyHistoryFrom) ||
-			data.CopyHistoryFrom == data.SessionID {
-			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "invalid conversation history copy request")
+	localHistory, remoteHistory := data.CopyHistoryFrom != "", data.ImportedHistory != nil
+	withHistory := cmd.Method == "create_session_with_history"
+	if withHistory != (localHistory || remoteHistory) || (localHistory && remoteHistory) ||
+		(localHistory && (!sessionIDPattern.MatchString(data.CopyHistoryFrom) || data.CopyHistoryFrom == data.SessionID)) {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "invalid conversation history copy request")
+	}
+	var transferredTurns []*store.ConversationTurn
+	if remoteHistory {
+		var err error
+		transferredTurns, err = importedConversation(data.ImportedHistory)
+		if err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
 		}
 	}
 
@@ -662,9 +672,13 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 	}
 	sess.Path = data.Path
 	create := h.store.CreateSession
-	if data.CopyHistoryFrom != "" {
+	if localHistory {
 		create = func(s *store.Session) error {
 			return h.store.CreateSessionWithHistory(s, data.CopyHistoryFrom)
+		}
+	} else if remoteHistory {
+		create = func(s *store.Session) error {
+			return h.store.CreateSessionWithImportedHistory(s, transferredTurns)
 		}
 	}
 	if err := create(sess); err != nil {
@@ -673,7 +687,7 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 				h.errorLog("failed to remove unregistered scratch workspace for %s: %v", data.SessionID, cleanupErr)
 			}
 		}
-		if data.CopyHistoryFrom != "" {
+		if withHistory {
 			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
 		}
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionAlreadyExists, fmt.Sprintf("session already exists: %s", data.SessionID))

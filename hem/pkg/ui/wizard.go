@@ -224,7 +224,7 @@ func newWizardModelForCopy(c *client, sourceSessionID string) wizardModel {
 	m.sourceSessionID = sourceSessionID
 	m.copyLoading = true
 	m.fields = slices.Insert(m.fields, 1, formField{
-		label: "Copy conversation history (same Moneypenny only)", flag: "--copy-history", isBool: true, value: "false",
+		label: "Copy conversation history to destination", flag: "--copy-history", isBool: true, value: "false",
 	})
 	return m
 }

@@ -316,6 +316,8 @@ Method: **queue_prompt**: queues a prompt for a session that is currently workin
 
 Method: **import_session**: creates a session with pre-existing conversation history without running an agent. Data: `{ "session_id": "id", "name": "name", "agent": "claude", "path": "/path", "conversation": [{"role": "user", "content": "..."}, ...] }`. Used by `hem import session`.
 
+Method: **export_conversation**: returns a bounded transcript snapshot for a source `session_id`, excluding artifact entries. For a cross-host copy, Hem passes the returned array as `imported_history` to **create_session_with_history** on the target. For a same-host copy, the create method takes `copy_history_from` instead. It rejects requests with both or neither.
+
 Method: **summarize_session**: asks the moneypenny to compact the session's conversation history into a standalone summary by invoking an agent as a one-shot over the full transcript. Data: `{ "session_id": "id" }`, plus optional agent overrides `{ "agent", "model", "effort", "context_tier", "yolo" }` — when present these replace the session's own agent parameters for the one-shot (used by `hem copy session` so a duplicate targeting a different agent summarizes with the *target* agent rather than the source's, which matters when the source agent is unavailable). Omitted/empty override fields fall back to the source session's value; when the `agent` override is set, `model`/`effort`/`context_tier` are taken only from the overrides (not carried from the source, since they belong to a different model namespace). Returns `{ "session_id": "id", "summary": "..." }`. An empty transcript returns `summary: ""`. Used by `hem summarize session` and by `hem copy session` to bootstrap the new session's prompt. Internally reuses the same `CompactSession` helper used by the agent-side recovery path (when the upstream agent reports its session is lost); the recovery path passes no overrides, so it still uses the session's own agent.
 
 Method: **git_diff**: runs `git diff` and `git diff --cached` in a session's working directory. Data: `{ "session_id": "id" }`. Returns `{ "diff": "..." }`.
@@ -811,15 +813,16 @@ an already-running agent turn. Notifications cannot be disabled by these flags.
 `hem copy session SOURCE_ID [PROMPT...] [flags]`
 
 Use `--copy-history` (the **Copy conversation history** option in Qew and the
-Hem TUI) to include the stored transcript in the duplicate on the same
-Moneypenny. The transcript appears before the new handoff prompt. Files,
-artifacts, scheduled jobs, and provider session state are not copied by this
-option. The default remains a summary-only handoff, which also works across
-hosts.
+Hem TUI) to include the stored transcript on the selected Moneypenny. The
+duplicate starts a fresh provider session from the handoff summary, with the
+copied transcript available in chat. Cross-host copies require both Moneypennies
+to support transcript transfer and reject snapshots over 4 MiB of encoded
+history or 10,000 turns rather than truncating them. Files, artifacts, scheduled
+jobs, and provider session state are not copied. The default is summary-only.
 
 - Creates a new session bootstrapped from a summary of an existing one. Source session is preserved (no state migration, no completion).
 - All flags from `create session` apply and override the source's values: `-m/--moneypenny`, `--agent`, `--model`, `--effort`, `--context`, `--name`, `--system-prompt`, `--traits`, `--env`, `--yolo`, `--path`, `--compaction`, `--compaction-threshold-tokens`, `--project`, `--async`. Any flag omitted is copied from the source (traits are inherited from the source unless `--traits` is given; the compaction mode, threshold, and user-provided environment are inherited unless explicitly replaced).
-- The target moneypenny can differ from the source's (cross-host copy). The source's conversation history stays on the source moneypenny — only the summary is transferred.
+- On a cross-host copy the source stays intact. Copy after it finishes if you need its latest turns: the transcript is a snapshot, not a live mirror. The destination needs its own workspace or a scratch folder; cross-host copies do not transfer the source's James memory.
 - **The summary is generated with the _target_ agent's parameters, not the source's.** Summarization is pure text-processing of the stored transcript, so it runs on whichever agent the copy targets (resolved `--agent`/`--model`/`--effort`/`--context`/`--yolo`). This means a copy targeting a working agent no longer depends on the source agent being available — e.g. duplicating a Claude session to Copilot works even when Claude is broken/unauthenticated. (The one-shot still executes on the source moneypenny, which owns the transcript, so the target agent must be installed there.)
 - **Cross-agent copies drop the source model/effort/context** unless explicitly overridden: when `--agent` changes the agent from the source's, the source's `--model`/`--effort`/`--context` are NOT inherited (they belong to a different model namespace and would be invalid for the new agent); the new agent picks its own defaults instead. Passing any of those flags explicitly still overrides. When the agent is unchanged, all three are inherited as before.
 - Source's gadgets/memory markers are stripped from the inherited system prompt to avoid double injection on the new session.
