@@ -169,29 +169,12 @@ func TestGadgetCapabilityStoreMigration(t *testing.T) {
 
 func TestGadgetCapabilitiesCommandForwarding(t *testing.T) {
 	e := newHierarchyExecutor(t)
-	dir := t.TempDir()
-	inPath, outPath := filepath.Join(dir, "in"), filepath.Join(dir, "out")
-	for _, path := range []string{inPath, outPath} {
-		if err := syscall.Mkfifo(path, 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	in, err := os.OpenFile(inPath, os.O_RDWR, 0600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer in.Close()
-	out, err := os.OpenFile(outPath, os.O_RDWR, 0600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer out.Close()
 	writes := make(chan json.RawMessage, 16)
 	creates := make(chan map[string]json.RawMessage, 16)
 	const exportedHistory = `[{"id":0,"role":"user","content":"original","created_at":"2026-01-01T00:00:00Z"}]`
+	const exportedMemory = `{"nodes":[{"path":"","body":"remember this","revision":1}],"claims":[]}`
 	original := envelope.GadgetCapabilities{Memory: false, Subagents: true, Agents: true, Traits: true, Scheduling: false}
-	defer func() { _, _ = in.WriteString("\n") }()
-	go func() {
+	serve := func(in, out *os.File) {
 		source := map[string]interface{}{
 			"session_id": "source", "name": "source", "agent": "copilot",
 			"path": ".", "yolo": true, "gadget_capabilities": original,
@@ -214,26 +197,54 @@ func TestGadgetCapabilitiesCommandForwarding(t *testing.T) {
 					source["gadget_capabilities"] = caps
 				}
 				writes <- command.Data["gadget_capabilities"]
-			case "create_session", "create_session_with_history":
+			case "create_session", "create_session_with_history", "create_session_with_memory":
 				if got := command.Data["imported_history"]; (command.Method == "create_session_with_history" && len(got) == 0) && string(command.Data["copy_history_from"]) != `"source"` {
 					t.Errorf("local history copy did not name source: %s", command.Data["copy_history_from"])
 				}
 				creates <- command.Data
 				writes <- command.Data["gadget_capabilities"]
+				if command.Data["imported_memory"] != nil && command.Method != "create_session_with_memory" {
+					t.Errorf("remote memory sent through %s", command.Method)
+				}
 			case "summarize_session":
 				data = map[string]interface{}{"summary": "source summary", "turn_count": 1}
 			case "export_conversation":
 				data = json.RawMessage(exportedHistory)
+			case "export_session_memory":
+				data = json.RawMessage(exportedMemory)
 			}
 			raw, _ := json.Marshal(data)
 			if err := json.NewEncoder(out).Encode(transport.Response{Status: "ok", Data: raw}); err != nil {
 				return
 			}
 		}
-	}()
-	if err := e.store.AddMoneypenny(&store.Moneypenny{Name: "mp", Enabled: true, TransportType: store.TransportFIFO, FIFOIn: inPath, FIFOOut: outPath}); err != nil {
-		t.Fatal(err)
 	}
+	addMoneypenny := func(name string) {
+		t.Helper()
+		dir := t.TempDir()
+		openFIFO := func(name string) *os.File {
+			path := filepath.Join(dir, name)
+			if err := syscall.Mkfifo(path, 0600); err != nil {
+				t.Fatal(err)
+			}
+			file, err := os.OpenFile(path, os.O_RDWR, 0600)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = file.Close() })
+			return file
+		}
+		in, out := openFIFO("in"), openFIFO("out")
+		t.Cleanup(func() { _, _ = in.WriteString("\n") })
+		go serve(in, out)
+		if err := e.store.AddMoneypenny(&store.Moneypenny{Name: name, Enabled: true, TransportType: store.TransportFIFO, FIFOIn: in.Name(), FIFOOut: out.Name()}); err != nil {
+			t.Fatal(err)
+		}
+		if err := e.store.SetCachedModels(name, "copilot", []store.CachedModelEntry{{Name: "model", Value: "model"}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	addMoneypenny("mp")
 	if err := e.store.TrackSession("source", "mp"); err != nil {
 		t.Fatal(err)
 	}
@@ -243,9 +254,6 @@ func TestGadgetCapabilitiesCommandForwarding(t *testing.T) {
 		}
 	}
 	if err := e.store.SetSessionProject("source", "parent-project"); err != nil {
-		t.Fatal(err)
-	}
-	if err := e.store.SetCachedModels("mp", "copilot", []store.CachedModelEntry{{Name: "model", Value: "model"}}); err != nil {
 		t.Fatal(err)
 	}
 	check := func(resp *protocol.Response, want envelope.GadgetCapabilities) {
@@ -337,15 +345,11 @@ func TestGadgetCapabilitiesCommandForwarding(t *testing.T) {
 		t.Fatalf("invalid boolean was accepted: %#v", resp)
 	}
 
-	if err := e.store.AddMoneypenny(&store.Moneypenny{Name: "other", Enabled: true, TransportType: store.TransportFIFO, FIFOIn: inPath, FIFOOut: outPath}); err != nil {
-		t.Fatal(err)
-	}
-	if err := e.store.SetCachedModels("other", "copilot", []store.CachedModelEntry{{Name: "model", Value: "model"}}); err != nil {
-		t.Fatal(err)
-	}
+	addMoneypenny("other")
 	check(e.CopySession([]string{"source", "--async", "-m", "other", "--copy-history"}), updated)
 	remote := <-creates
-	if string(remote["imported_history"]) != exportedHistory || remote["copy_history_from"] != nil || remote["copy_memory_from"] != nil {
+	if string(remote["imported_history"]) != exportedHistory || string(remote["imported_memory"]) != exportedMemory ||
+		remote["copy_history_from"] != nil || remote["copy_memory_from"] != nil {
 		t.Fatalf("wrong remote transfer payload: %v", remote)
 	}
 	var remoteID string
@@ -355,5 +359,9 @@ func TestGadgetCapabilitiesCommandForwarding(t *testing.T) {
 	trackedRemote, err := e.store.GetSession(remoteID)
 	if err != nil || trackedRemote == nil || trackedRemote.MoneypennyName != "other" {
 		t.Fatalf("duplicate not tracked on destination: %+v, %v", trackedRemote, err)
+	}
+	check(e.CopySession([]string{"source", "--async", "-m", "other"}), updated)
+	if remote := <-creates; string(remote["imported_memory"]) != exportedMemory || remote["imported_history"] != nil {
+		t.Fatalf("remote memory should not depend on copying history: %v", remote)
 	}
 }

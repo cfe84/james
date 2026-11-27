@@ -574,9 +574,12 @@ The existing tree browser, single-note editor, search, and synthetic root row
 are reused. The Markdown note field no longer implies direct README file access;
 the TUI accepts the empty root path when saving an existing root note.
 Same-host duplication calls `CopyTree` on the authoritative snapshot, never
-backup files. The source snapshot reads notes, claims and links in one transaction;
-the destination copies them atomically and rejects claim-ID collisions rather
-than overwriting. Existing operator editors still manage notes only; claim CRUD
+backup files. Cross-host duplication exports the same logical SQLite snapshot
+as bounded JSON (4 MiB), without sending SQLite files or shared stores.
+The source reads notes, claims and links in one transaction; the destination
+restores them transactionally to a new memory database before registering the
+session. The dedicated create RPC also accepts the optional transcript and
+prevents older targets from silently dropping memory. Existing operator editors still manage notes only; claim CRUD
 and deterministic queries are exposed through gadgets. Migration and copying preserve imported oversized bodies; ordinary
 replacement writes must meet the limit.
 

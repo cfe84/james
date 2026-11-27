@@ -796,9 +796,9 @@ func (e *Executor) sendCommand(ctx context.Context, mp *store.Moneypenny, method
 	if client == nil {
 		return nil, fmt.Errorf("unsupported transport type %q for moneypenny %q", mp.TransportType, mp.Name)
 	}
-	creating := method == "create_session" || method == "create_session_with_history"
+	creating := method == "create_session" || method == "create_session_with_history" || method == "create_session_with_memory"
 	switch method {
-	case "create_session", "create_session_with_history", "get_session", "continue_session", "queue_prompt", "compact_session", "distill_session", "update_session":
+	case "create_session", "create_session_with_history", "create_session_with_memory", "get_session", "continue_session", "queue_prompt", "compact_session", "distill_session", "update_session":
 		if fields, ok := data.(map[string]interface{}); ok {
 			copy := make(map[string]interface{}, len(fields)+1)
 			for key, value := range fields {
@@ -5896,7 +5896,14 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 		return protocol.ErrResponse(err.Error())
 	}
 	sameHost := sourceMP.Name == targetMP.Name
-	var history json.RawMessage
+	var history, memorySnapshot json.RawMessage
+	if !sameHost {
+		resp, err := e.sendCommand(context.Background(), sourceMP, "export_session_memory", envelope.SessionIDData{SessionID: sourceSessionID})
+		if err != nil {
+			return protocol.ErrResponse(fmt.Sprintf("exporting source James memory: %v", err))
+		}
+		memorySnapshot = resp.Data
+	}
 	if copyHistory && !sameHost {
 		resp, err := e.sendCommand(context.Background(), sourceMP, "export_conversation", envelope.SessionIDData{SessionID: sourceSessionID})
 		if err != nil {
@@ -5991,24 +5998,21 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	}
 	params.SystemPrompt += traitsSystemPrompt(traits)
 	e.addGadgetEnvironmentValues(&params.Environment)
-	// Memory instructions are injected by the moneypenny at runtime.
-	// When duplicating within the same moneypenny, ask it to copy the
-	// source session's memory tree into the new session so the duplicate
-	// inherits accumulated knowledge.
-
 	cmdData, err := buildCreateSessionData(params, newSessionID, prompt)
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
+	method := "create_session"
 	if sameHost {
 		cmdData["copy_memory_from"] = sourceSessionID
-	}
-	method := "create_session"
-	if copyHistory {
-		method = "create_session_with_history"
-		if sameHost {
+		if copyHistory {
+			method = "create_session_with_history"
 			cmdData["copy_history_from"] = sourceSessionID
-		} else {
+		}
+	} else {
+		method = "create_session_with_memory"
+		cmdData["imported_memory"] = memorySnapshot
+		if copyHistory {
 			cmdData["imported_history"] = history
 		}
 	}

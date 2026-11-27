@@ -419,10 +419,12 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.ponsonbyCommand(cmd)
 	case "get_diagnostics":
 		return h.getDiagnostics(ctx, cmd)
-	case "create_session", "create_session_with_history":
+	case "create_session", "create_session_with_history", "create_session_with_memory":
 		return h.createSession(ctx, cmd)
 	case "export_conversation":
 		return h.exportConversation(ctx, cmd)
+	case "export_session_memory":
+		return h.exportSessionMemory(cmd)
 	case "continue_session":
 		return h.continueSession(ctx, cmd)
 	case "list_sessions":
@@ -560,10 +562,22 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id must be a canonical UUID")
 	}
 	localHistory, remoteHistory := data.CopyHistoryFrom != "", data.ImportedHistory != nil
-	withHistory := cmd.Method == "create_session_with_history"
-	if withHistory != (localHistory || remoteHistory) || (localHistory && remoteHistory) ||
+	withMemory := cmd.Method == "create_session_with_memory"
+	withHistory := localHistory || remoteHistory
+	if withMemory != (data.ImportedMemory != nil) || (withMemory && (data.CopyMemoryFrom != "" || localHistory)) {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "invalid memory copy request")
+	}
+	if (!withMemory && (cmd.Method == "create_session_with_history") != withHistory) || (localHistory && remoteHistory) ||
 		(localHistory && (!sessionIDPattern.MatchString(data.CopyHistoryFrom) || data.CopyHistoryFrom == data.SessionID)) {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "invalid conversation history copy request")
+	}
+	var transferredMemory *memory.Snapshot
+	if withMemory {
+		var err error
+		transferredMemory, err = memory.DecodeSnapshot(data.ImportedMemory)
+		if err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, err.Error())
+		}
 	}
 	var transferredTurns []*store.ConversationTurn
 	if remoteHistory {
@@ -630,7 +644,7 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 		}
 		sess.GadgetCapabilities = encoded
 	}
-	if data.NoFolder || data.Worktree != nil {
+	if data.NoFolder || data.Worktree != nil || withMemory {
 		if err := ctx.Err(); err != nil {
 			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
 		}
@@ -649,6 +663,34 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 			if source == nil {
 				return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, "copy_history_from is not a known session")
 			}
+		}
+	}
+	registered := false
+	if withMemory && !transferredMemory.Empty() {
+		dir, err := h.sessionDirPath(data.SessionID)
+		if err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
+		}
+		root := filepath.Join(dir, "memory")
+		file, err := reserveMemoryImport(root)
+		if err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("reserving imported memory: %v", err))
+		}
+		defer func() {
+			if !registered {
+				if err := os.Remove(file.Name()); err != nil {
+					h.errorLog("failed to remove unregistered memory for %s: %v", data.SessionID, err)
+				}
+			}
+		}()
+		if err := file.Close(); err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("closing reserved memory: %v", err))
+		}
+		if err := transferredMemory.Restore(root); err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("importing James memory: %v", err))
+		}
+		if err := ctx.Err(); err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
 		}
 	}
 	var scratch string
@@ -687,11 +729,12 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 				h.errorLog("failed to remove unregistered scratch workspace for %s: %v", data.SessionID, cleanupErr)
 			}
 		}
-		if withHistory {
+		if withHistory || withMemory {
 			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
 		}
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionAlreadyExists, fmt.Sprintf("session already exists: %s", data.SessionID))
 	}
+	registered = true
 	// Set status to working.
 	if err := h.store.UpdateSessionStatus(data.SessionID, store.StateWorking); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to update status: %v", err))

@@ -73,6 +73,7 @@ type CreateSessionData struct {
 	// whose memory folder should be copied into the new session's memory folder
 	// (used when duplicating a session so the copy inherits accumulated memory).
 	CopyMemoryFrom  string          `json:"copy_memory_from,omitempty"`
+	ImportedMemory  json.RawMessage `json:"imported_memory,omitempty"`
 	CopyHistoryFrom string          `json:"copy_history_from,omitempty"`
 	ImportedHistory json.RawMessage `json:"imported_history,omitempty"`
 }

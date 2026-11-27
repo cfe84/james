@@ -22,6 +22,22 @@ func testClaim(path, title string) Claim {
 	}
 }
 
+func TestExportSnapshotRejectsOversizedLegacyNote(t *testing.T) {
+	root := memoryRoot(t)
+	db, err := open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec("INSERT INTO memory_nodes(path, body) VALUES ('', ?)", strings.Repeat("<", MaxTransferBytes/6))
+	db.close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := ExportSnapshot(root); err != errSnapshotTooLarge || raw != nil {
+		t.Fatalf("oversized encoded note: got %d bytes, error %v", len(raw), err)
+	}
+}
+
 func TestClaimsEvidenceCorrectionsAndLifecycle(t *testing.T) {
 	root := memoryRoot(t)
 	if _, err := Set(root, "engineering", "Original topic note"); err != nil {
@@ -83,7 +99,15 @@ func TestClaimsEvidenceCorrectionsAndLifecycle(t *testing.T) {
 		t.Fatalf("move lost stable identity: %+v %v", moved, err)
 	}
 	dst := memoryRoot(t)
-	if err := CopyTree(root, dst); err != nil {
+	raw, err := ExportSnapshot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := DecodeSnapshot(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := snapshot.Restore(dst); err != nil {
 		t.Fatal(err)
 	}
 	copied, err := GetClaim(dst, old.ID)

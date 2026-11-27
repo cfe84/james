@@ -516,7 +516,7 @@ func IsEmptyWithError(root string) (bool, error) {
 // CopyTree atomically merges an authoritative snapshot into dst, preserving
 // oversized imported bodies. It never copies or consults backup README files.
 func CopyTree(src, dst string) error {
-	nodes, claims, err := memorySnapshot(src)
+	nodes, claims, err := memorySnapshot(src, 0)
 	if err != nil {
 		return err
 	}

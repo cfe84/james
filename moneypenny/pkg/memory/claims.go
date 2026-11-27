@@ -133,9 +133,6 @@ func validateClaim(c *Claim) error {
 			return err
 		}
 	}
-	if c.VerifiedAt > time.Now().UTC().Format(time.RFC3339) {
-		return errors.New("verified_at cannot be in the future")
-	}
 	if len(c.Provenance) == 0 || len(c.Provenance) > 8 || len(c.Links) > 16 {
 		return errors.New("claims require 1–8 provenance entries and at most 16 links")
 	}
@@ -284,6 +281,9 @@ func SetClaim(root string, input Claim) (*Claim, error) {
 	if err := validateClaim(&c); err != nil {
 		return nil, err
 	}
+	if c.VerifiedAt > time.Now().UTC().Format(time.RFC3339) {
+		return nil, errors.New("verified_at cannot be in the future")
+	}
 	db, err := open(root)
 	if err != nil {
 		return nil, err
@@ -410,7 +410,7 @@ func claimSnapshot(db *sql.Tx) ([]*Claim, error) {
 	return claims, nil
 }
 
-func memorySnapshot(root string) ([]*Node, []*Claim, error) {
+func memorySnapshot(root string, maxLiveBytes int) ([]*Node, []*Claim, error) {
 	db, err := open(root)
 	if err != nil {
 		return nil, nil, err
@@ -421,6 +421,17 @@ func memorySnapshot(root string) ([]*Node, []*Claim, error) {
 		return nil, nil, err
 	}
 	defer tx.Rollback()
+	if maxLiveBytes > 0 {
+		var liveBytes int64
+		err := tx.QueryRow(`SELECT (page_count - freelist_count) * page_size
+			FROM pragma_page_count(), pragma_freelist_count(), pragma_page_size()`).Scan(&liveBytes)
+		if err != nil {
+			return nil, nil, err
+		}
+		if liveBytes > int64(maxLiveBytes) {
+			return nil, nil, errSnapshotTooLarge
+		}
+	}
 	rows, err := tx.Query("SELECT " + nodeColumns + " FROM memory_nodes ORDER BY path")
 	if err != nil {
 		return nil, nil, err
