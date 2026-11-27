@@ -2922,6 +2922,8 @@
       </div>
       <label for="wiz-prompt">${promptLabel}</label>
       <textarea id="wiz-prompt" rows="3" placeholder="${escapeAttr(promptPlaceholder)}"></textarea>
+      ${copy ? `<label><input type="checkbox" id="wiz-copy-history" style="width:auto"${src.moneypenny === wizardState.selectedMP ? '' : ' disabled'}> Copy conversation history</label>
+        <div class="step-label">Copies chat turns on the same Moneypenny, not files or artifacts.</div>` : ''}
       <label for="wiz-name">Name (optional)</label>
       <input id="wiz-name" type="text" placeholder="Auto-generated from prompt" value="${escapeAttr(defName)}">
       <label for="wiz-nick">Nick (optional)</label>
@@ -3048,6 +3050,7 @@
     // `copy session` verb expects); create mode has no positional source.
     const parentId = wizardState.parentId;
     const args = copy ? [wizardState.sourceId] : parentId ? [parentId] : [];
+    if (copy && document.getElementById('wiz-copy-history')?.checked) args.push('--copy-history');
     args.push('-m', wizardState.selectedMP, '--async');
     if (!copy && wizardState.workspaceMode === 'scratch') args.push('--no-folder');
     else args.push('--path', wizardState.currentPath);

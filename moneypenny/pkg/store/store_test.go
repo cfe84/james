@@ -518,6 +518,44 @@ func TestDeleteSessionAlsoDeletesConversation(t *testing.T) {
 	}
 }
 
+func TestCreateSessionWithHistory(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.CreateSession(&Session{SessionID: "source", Name: "Source", Agent: "copilot"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, turn := range []struct{ role, content string }{
+		{"user", "question"}, {"artifact", "source-only artifact"}, {"assistant", "answer"},
+	} {
+		if err := s.AddConversationTurnFrom("source", turn.role, turn.content, "sender", "Sender"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.CreateSessionWithHistory(&Session{SessionID: "duplicate", Name: "Duplicate", Agent: "claude"}, "source"); err != nil {
+		t.Fatal(err)
+	}
+	source, err := s.GetConversation("source")
+	if err != nil || len(source) != 3 {
+		t.Fatalf("source history: %v, %v", source, err)
+	}
+	copied, err := s.GetConversation("duplicate")
+	if err != nil || len(copied) != 2 {
+		t.Fatalf("copied history: %v, %v", copied, err)
+	}
+	for i, original := range []*ConversationTurn{source[0], source[2]} {
+		want := *original
+		want.ID, want.SessionID = copied[i].ID, "duplicate"
+		if copied[i].ID == original.ID || *copied[i] != want {
+			t.Fatalf("copied turn %+v does not preserve original %+v", copied[i], original)
+		}
+	}
+	if err := s.CreateSessionWithHistory(&Session{SessionID: "failed", Name: "Failed", Agent: "claude"}, "missing"); err == nil {
+		t.Fatal("accepted missing source")
+	}
+	if duplicate, err := s.GetSession("failed"); err != nil || duplicate != nil {
+		t.Fatalf("failed copy left a session: %+v, %v", duplicate, err)
+	}
+}
+
 func TestAddAndGetConversationTurns(t *testing.T) {
 	s := newTestStore(t)
 

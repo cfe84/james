@@ -68,7 +68,8 @@ type CreateSessionData struct {
 	// CopyMemoryFrom, when set, names a source session on this same moneypenny
 	// whose memory folder should be copied into the new session's memory folder
 	// (used when duplicating a session so the copy inherits accumulated memory).
-	CopyMemoryFrom string `json:"copy_memory_from,omitempty"`
+	CopyMemoryFrom  string `json:"copy_memory_from,omitempty"`
+	CopyHistoryFrom string `json:"copy_history_from,omitempty"`
 }
 
 type WorktreeData struct {

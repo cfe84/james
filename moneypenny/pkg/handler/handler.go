@@ -419,7 +419,7 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.ponsonbyCommand(cmd)
 	case "get_diagnostics":
 		return h.getDiagnostics(ctx, cmd)
-	case "create_session":
+	case "create_session", "create_session_with_history":
 		return h.createSession(ctx, cmd)
 	case "continue_session":
 		return h.continueSession(ctx, cmd)
@@ -557,6 +557,12 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 	if !sessionIDPattern.MatchString(data.SessionID) {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id must be a canonical UUID")
 	}
+	if cmd.Method == "create_session_with_history" || data.CopyHistoryFrom != "" {
+		if cmd.Method != "create_session_with_history" || !sessionIDPattern.MatchString(data.CopyHistoryFrom) ||
+			data.CopyHistoryFrom == data.SessionID || data.NoFolder || data.Worktree != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "invalid conversation history copy request")
+		}
+	}
 
 	if (data.NoFolder && data.Worktree != nil) || (data.Path != "" && (data.NoFolder || data.Worktree != nil)) {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "select exactly one workspace option")
@@ -646,11 +652,20 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 		}
 	}
 	sess.Path = data.Path
-	if err := h.store.CreateSession(sess); err != nil {
+	create := h.store.CreateSession
+	if data.CopyHistoryFrom != "" {
+		create = func(s *store.Session) error {
+			return h.store.CreateSessionWithHistory(s, data.CopyHistoryFrom)
+		}
+	}
+	if err := create(sess); err != nil {
 		if scratch != "" {
 			if cleanupErr := removeScratchWorkspace(scratch, data.SessionID); cleanupErr != nil {
 				h.errorLog("failed to remove unregistered scratch workspace for %s: %v", data.SessionID, cleanupErr)
 			}
+		}
+		if data.CopyHistoryFrom != "" {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
 		}
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionAlreadyExists, fmt.Sprintf("session already exists: %s", data.SessionID))
 	}

@@ -213,7 +213,10 @@ func TestGadgetCapabilitiesCommandForwarding(t *testing.T) {
 					source["gadget_capabilities"] = caps
 				}
 				writes <- command.Data["gadget_capabilities"]
-			case "create_session":
+			case "create_session", "create_session_with_history":
+				if command.Method == "create_session_with_history" && string(command.Data["copy_history_from"]) != `"source"` {
+					t.Errorf("history copy did not name source: %s", command.Data["copy_history_from"])
+				}
 				creates <- command.Data
 				writes <- command.Data["gadget_capabilities"]
 			case "summarize_session":
@@ -313,7 +316,7 @@ func TestGadgetCapabilitiesCommandForwarding(t *testing.T) {
 	check(e.CopySession([]string{"source", "--async", "--gadget-agents=false"}), copied)
 	copied = updated
 	copied.Traits = false
-	check(e.CopySession([]string{"source", "--async", "--gadget-traits=false"}), copied)
+	check(e.CopySession([]string{"source", "--async", "--gadget-traits=false", "--copy-history"}), copied)
 	updated.Traits = false
 	check(e.UpdateSession([]string{"source", "--gadget-traits=false"}), updated)
 	if resp := e.UpdateSession([]string{"source", "--gadget-agents=maybe"}); resp.Status != "error" || !strings.Contains(resp.Message, "true or false") {

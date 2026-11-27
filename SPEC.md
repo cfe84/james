@@ -810,6 +810,13 @@ an already-running agent turn. Notifications cannot be disabled by these flags.
 
 `hem copy session SOURCE_ID [PROMPT...] [flags]`
 
+Use `--copy-history` (the **Copy conversation history** option in Qew and the
+Hem TUI) to include the stored transcript in the duplicate on the same
+Moneypenny. The transcript appears before the new handoff prompt. Files,
+artifacts, scheduled jobs, and provider session state are not copied by this
+option. The default remains a summary-only handoff, which also works across
+hosts.
+
 - Creates a new session bootstrapped from a summary of an existing one. Source session is preserved (no state migration, no completion).
 - All flags from `create session` apply and override the source's values: `-m/--moneypenny`, `--agent`, `--model`, `--effort`, `--context`, `--name`, `--system-prompt`, `--traits`, `--env`, `--yolo`, `--path`, `--compaction`, `--compaction-threshold-tokens`, `--project`, `--async`. Any flag omitted is copied from the source (traits are inherited from the source unless `--traits` is given; the compaction mode, threshold, and user-provided environment are inherited unless explicitly replaced).
 - The target moneypenny can differ from the source's (cross-host copy). The source's conversation history stays on the source moneypenny — only the summary is transferred.

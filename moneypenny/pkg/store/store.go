@@ -605,6 +605,40 @@ func (s *Store) Close() error {
 
 // CreateSession inserts a new session. Returns error if session_id already exists.
 func (s *Store) CreateSession(sess *Session) error {
+	return insertSession(s.db, sess)
+}
+
+// CreateSessionWithHistory inserts the duplicate and snapshots its transcript atomically.
+func (s *Store) CreateSessionWithHistory(sess *Session, sourceID string) error {
+	if sourceID == sess.SessionID {
+		return fmt.Errorf("cannot copy a session's history to itself")
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := insertSession(tx, sess); err != nil {
+		return err
+	}
+	var exists bool
+	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM sessions WHERE session_id = ?)`, sourceID).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("source session not found: %s", sourceID)
+	}
+	if _, err := tx.Exec(`INSERT INTO conversation_turns (session_id, role, content, source_session_id, source_name, created_at)
+		SELECT ?, role, content, source_session_id, source_name, created_at
+		FROM conversation_turns WHERE session_id = ? AND role != 'artifact' ORDER BY created_at, id`, sess.SessionID, sourceID); err != nil {
+		return fmt.Errorf("copy conversation history: %w", err)
+	}
+	return tx.Commit()
+}
+
+func insertSession(db interface {
+	Exec(string, ...any) (sql.Result, error)
+}, sess *Session) error {
 	now := time.Now().UTC()
 	sess.Status = StateIdle
 	sess.CreatedAt = now
@@ -628,7 +662,7 @@ func (s *Store) CreateSession(sess *Session) error {
 		return fmt.Errorf("create session: %w", err)
 	}
 
-	_, err := s.db.Exec(
+	_, err := db.Exec(
 		`INSERT INTO sessions (session_id, name, agent, system_prompt, model, effort, context_tier, yolo, path, environment, gadget_route, gadget_capabilities, status, agent_session_id, compaction_mode, compaction_threshold_tokens, created_at, updated_at, revision, generation)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1)`,
 		sess.SessionID, sess.Name, sess.Agent, sess.SystemPrompt, sess.Model, sess.Effort, sess.ContextTier, yolo, sess.Path, sess.Environment, sess.GadgetRoute, sess.GadgetCapabilities, sess.Status, sess.AgentSessionID, sess.CompactionMode, sess.CompactionThresholdTokens, now, now,

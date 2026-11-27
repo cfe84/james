@@ -1510,6 +1510,13 @@ moneypenny/pkg/handler/channels.go  # ChannelManager (poll/forward/drain) + CRUD
    page 1 is consulted (`hasMoreResults` ignored); a chat pushed off page 1 by a burst of other
    activity is simply picked up on a later tick.
 
+With `hem copy session --copy-history`, the same-host Moneypenny inserts the new
+session and snapshots the source transcript in one SQLite transaction. Copied
+turns have fresh IDs while preserving order, timestamps, and attribution.
+Session-owned artifact entries are excluded. The dedicated create RPC fails
+on daemons that do not support history copying rather than silently dropping
+the request. The provider still starts a fresh session with the handoff summary.
+
 ## Qew - Web UI for Remote Access
 
 Session routes use `pushState` with a snapshot of the subagent parent stack.

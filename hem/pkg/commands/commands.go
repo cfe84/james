@@ -795,8 +795,9 @@ func (e *Executor) sendCommand(ctx context.Context, mp *store.Moneypenny, method
 	if client == nil {
 		return nil, fmt.Errorf("unsupported transport type %q for moneypenny %q", mp.TransportType, mp.Name)
 	}
+	creating := method == "create_session" || method == "create_session_with_history"
 	switch method {
-	case "create_session", "get_session", "continue_session", "queue_prompt", "compact_session", "distill_session", "update_session":
+	case "create_session", "create_session_with_history", "get_session", "continue_session", "queue_prompt", "compact_session", "distill_session", "update_session":
 		if fields, ok := data.(map[string]interface{}); ok {
 			copy := make(map[string]interface{}, len(fields)+1)
 			for key, value := range fields {
@@ -808,7 +809,7 @@ func (e *Executor) sendCommand(ctx context.Context, mp *store.Moneypenny, method
 			if err != nil {
 				return nil, err
 			}
-			if spec, explicit := fields["ponsonby_selection"].(string); explicit || method == "create_session" {
+			if spec, explicit := fields["ponsonby_selection"].(string); explicit || creating {
 				attachments, err = e.resolvePonsonbies(spec, !explicit)
 				if err != nil {
 					return nil, err
@@ -5662,6 +5663,7 @@ func (e *Executor) DistillateSession(args []string) *protocol.Response {
 func (e *Executor) CopySession(args []string) *protocol.Response {
 	var sourceSessionID, projectNameOrID string
 	var compactionThresholdTokens int
+	var copyHistory bool
 	params := &sessionParams{}
 	var capabilityFlags gadgetCapabilityFlags
 	environmentExplicit := false
@@ -5679,6 +5681,7 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 
 	remaining, err := parseFlagsFromArgs("copy-session", args, func(fs *flag.FlagSet) {
 		capabilityFlags.register(fs)
+		fs.BoolVar(&copyHistory, "copy-history", false, "copy the conversation transcript on the same Moneypenny")
 		fs.StringVar(&sourceSessionID, "session-id", "", "source session ID")
 		fs.StringVar(&params.MoneypennyName, "m", "", "target moneypenny name")
 		fs.StringVar(&params.MoneypennyName, "moneypenny", "", "target moneypenny name")
@@ -5887,6 +5890,9 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
+	if copyHistory && sourceMP.Name != targetMP.Name {
+		return protocol.ErrResponse("conversation history can only be copied on the source Moneypenny")
+	}
 
 	// Now ask the source moneypenny to summarize the prior conversation.
 	// Summarization is the whole point of a copy — if it fails we surface
@@ -5983,6 +5989,11 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	if sourceMP.Name == targetMP.Name {
 		cmdData["copy_memory_from"] = sourceSessionID
 	}
+	method := "create_session"
+	if copyHistory {
+		method = "create_session_with_history"
+		cmdData["copy_history_from"] = sourceSessionID
+	}
 
 	// Track the new session locally on the target moneypenny.
 	if params.ProjectID != "" {
@@ -5998,7 +6009,7 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	// Persist the selected traits mapping after the moneypenny accepts the
 	// create, so a failed create doesn't leave an orphaned mapping.
 	createCtx := context.Background()
-	if _, err := e.sendCommand(createCtx, targetMP, "create_session", cmdData); err != nil {
+	if _, err := e.sendCommand(createCtx, targetMP, method, cmdData); err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
 	if len(params.TraitIDs) > 0 {

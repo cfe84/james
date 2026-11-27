@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"slices"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -222,6 +223,9 @@ func newWizardModelForCopy(c *client, sourceSessionID string) wizardModel {
 	m := newWizardModel(c)
 	m.sourceSessionID = sourceSessionID
 	m.copyLoading = true
+	m.fields = slices.Insert(m.fields, 1, formField{
+		label: "Copy conversation history (same Moneypenny only)", flag: "--copy-history", isBool: true, value: "false",
+	})
 	return m
 }
 

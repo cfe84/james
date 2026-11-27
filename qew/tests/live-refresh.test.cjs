@@ -489,21 +489,23 @@ test('Add subagent opens the shared create wizard with parent host and path', as
 });
 
 test('shared create wizard routes creation modes and retains fields on failure', async () => {
-  for (const mode of ['create', 'copy', 'subagent', 'subagent-error', 'scratch', 'worktree']) {
+  for (const mode of ['create', 'copy', 'copy-history', 'subagent', 'subagent-error', 'scratch', 'worktree']) {
+    const copy = mode.startsWith('copy');
     const values = {
       'wiz-prompt': 'Build it', 'wiz-name': 'worker', 'wiz-nick': 'worker-nick',
       'wiz-project': 'project', 'wiz-agent': 'copilot', 'wiz-model': 'model',
       'wiz-effort': 'high', 'wiz-context': 'long_context', 'wiz-sysprompt': 'instructions',
       'wiz-env': 'SETTING=value', 'wiz-compaction': 'custom', 'wiz-compaction-threshold': '150',
-      'wiz-ponsonbies': mode === 'create' ? '' : mode === 'copy' ? 'engineering:read' : 'none',
+      'wiz-ponsonbies': mode === 'create' ? '' : copy ? 'engineering:read' : 'none',
     };
     const elements = Object.fromEntries(Object.entries(values).map(([id, value]) => [id, { value }]));
     elements['wiz-yolo'] = { checked: false };
+    elements['wiz-copy-history'] = { checked: mode === 'copy-history' };
     elements['wiz-submit'] = {};
     const subagent = mode.startsWith('subagent');
     const events = [];
     const context = vm.createContext({
-      wizardState: { copy: mode === 'copy', sourceId: 'source', parentId: subagent ? 'parent' : '',
+      wizardState: { copy, sourceId: 'source', parentId: subagent ? 'parent' : '',
         selectedMP: 'host', currentPath: '/work', workspaceMode: mode, worktreeFolder: 'jamy', worktreeBranch: 'features/jamy' },
       document: {
         getElementById: id => elements[id],
@@ -528,10 +530,11 @@ test('shared create wizard routes creation modes and retains fields on failure',
     vm.runInContext(app.slice(app.indexOf('  async function submitCreateSession('), app.indexOf('  function renderWizardModal(')), context);
     await context.submitCreateSession();
     const [verb, noun, args] = events[0];
-    assert.equal(verb, mode === 'copy' ? 'copy' : 'create');
+    assert.equal(verb, copy ? 'copy' : 'create');
     assert.equal(noun, subagent ? 'subsession' : 'session');
     if (subagent) assert.equal(args[0], 'parent');
-    if (mode === 'copy') assert.equal(args[0], 'source');
+    if (copy) assert.equal(args[0], 'source');
+    assert.equal(args.includes('--copy-history'), mode === 'copy-history');
     for (const [flag, value] of [
       ['-m', 'host'], ['--name', 'worker'], ['--project', 'project'],
       ['--agent', 'copilot'], ['--model', 'model'], ['--effort', 'high'], ['--context', 'long_context'],
