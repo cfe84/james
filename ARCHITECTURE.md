@@ -760,6 +760,10 @@ edit/delete operations. `subagents.create` fixes the parent/source server-side
 and fetches the parent's current capabilities before using existing asynchronous
 subsession creation. Agent-controlled prompt text is separated from operator
 flags; callers cannot supply source identity, permission or route overrides.
+For `copy session` through the Hem proxy, dispatch passes the authenticated
+caller separately from CLI arguments. Hem places that caller's ID and display
+label on the destination create envelope so the existing conversation
+renderers attribute the handoff prompt correctly.
 
 Hem is the top-level CLI that manages moneypenny instances and orchestrates sessions across them. kubectl-style verb+noun commands.
 

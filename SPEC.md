@@ -1994,6 +1994,11 @@ Nicknames are a hem-level concept (like projects and traits); moneypenny is unaw
 
 ### Agent-to-agent attribution
 
+When an agent duplicates a session through `gadgets hem copy session`, the new
+session's handoff prompt is attributed to the agent that requested the copy,
+not the session being copied or the human operator. Human-initiated copies
+keep their existing attribution.
+
 Agents message through `gadgets agents message` (global grant) or `gadgets subagents message` (direct parent/child scope). Moneypenny derives source identity from the session credential, and Hem resolves its preferred display name (nick, then session name). Moneypenny persists source ID and display name with the destination conversation turn, including queued delivery when busy. Parent replies use the callback role. Qew and the TUI show agent-authored prompts with a red `🕴️` source label; ordinary human prompts keep the blue `🧑‍💻` label. Qew's **person** button lets each browser choose its local human display name.
 
 ### Setting / clearing a nick

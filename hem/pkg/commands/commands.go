@@ -491,6 +491,10 @@ func (e *Executor) StartPeriodicSync(logger *log.Logger, interval time.Duration)
 
 // Dispatch routes a verb+noun+args to the appropriate handler.
 func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response {
+	return e.dispatch(verb, noun, args, "")
+}
+
+func (e *Executor) dispatch(verb, noun string, args []string, callerID string) *protocol.Response {
 	// Check for help flag in args.
 	for _, a := range args {
 		if a == "-h" || a == "--help" {
@@ -701,7 +705,7 @@ func (e *Executor) Dispatch(verb, noun string, args []string) *protocol.Response
 	case "distillate session":
 		return e.DistillateSession(args)
 	case "copy session":
-		return e.CopySession(args)
+		return e.copySession(args, callerID)
 	case "activity session":
 		return e.ActivitySession(args)
 	case "schedule session":
@@ -5670,6 +5674,10 @@ func (e *Executor) DistillateSession(args []string) *protocol.Response {
 // supplied flag overrides. Trailing args are an optional follow-up prompt
 // that is appended to the summary block. The source session is preserved.
 func (e *Executor) CopySession(args []string) *protocol.Response {
+	return e.copySession(args, "")
+}
+
+func (e *Executor) copySession(args []string, callerID string) *protocol.Response {
 	var sourceSessionID, projectNameOrID string
 	var compactionThresholdTokens int
 	var copyHistory, copyArtifacts bool
@@ -6010,6 +6018,10 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	cmdData, err := buildCreateSessionData(params, newSessionID, prompt)
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
+	}
+	if callerID != "" {
+		cmdData["source_session_id"] = callerID
+		cmdData["source_name"] = e.agentOriginLabel(callerID)
 	}
 	method := "create_session"
 	if sameHost {

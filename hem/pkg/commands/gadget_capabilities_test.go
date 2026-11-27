@@ -336,7 +336,9 @@ func TestGadgetCapabilitiesCommandForwarding(t *testing.T) {
 		t.Fatalf("show lost permissions: %s, %v", shown.Data, err)
 	}
 	check(e.CopySession([]string{"source", "--async"}), updated)
-	<-creates
+	if humanCopy := <-creates; humanCopy["source_session_id"] != nil || humanCopy["source_name"] != nil {
+		t.Fatalf("operator copy received agent attribution: %v", humanCopy)
+	}
 	copied := updated
 	copied.Agents = false
 	check(e.CopySession([]string{"source", "--async", "--gadget-agents=false", "--no-folder"}), copied)
@@ -383,10 +385,19 @@ func TestGadgetCapabilitiesCommandForwarding(t *testing.T) {
 	}
 	updated.Hem = true
 	check(e.UpdateSession([]string{"source", "--gadget-hem=true"}), updated)
-	check(gadgetRouteRequest(t, e, "source", "hem.command", map[string]any{
+	if err := e.store.TrackSession("caller", "mp"); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.SetSessionNick("caller", "ian"); err != nil {
+		t.Fatal(err)
+	}
+	check(gadgetRouteRequest(t, e, "caller", "hem.command", map[string]any{
 		"args": []string{"copy", "session", "source", "--async", "-m", "other", "--copy-artifacts"},
 	}), updated)
 	remote = <-creates
+	if string(remote["source_session_id"]) != `"caller"` || string(remote["source_name"]) != `"ian"` {
+		t.Fatalf("gadget copy was not attributed to the caller: %v", remote)
+	}
 	if string(remote["imported_memory"]) != exportedMemory || remote["imported_history"] != nil || string(remote["copied_artifacts"]) != `["artifact-id"]` {
 		t.Fatalf("remote artifact and memory copy should not depend on history: %v", remote)
 	}

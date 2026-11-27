@@ -123,7 +123,7 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 		if strings.HasPrefix(command.Verb, "-") {
 			return protocol.ErrResponse("Hem proxy does not accept global transport or process flags")
 		}
-		return e.Dispatch(command.Verb, command.Noun, command.Args)
+		return e.dispatch(command.Verb, command.Noun, command.Args, source.SessionID)
 	case "moneypenny.logs":
 		var request struct {
 			Name  string `json:"name"`
