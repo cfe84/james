@@ -1464,7 +1464,7 @@ gadgets subagents list
 gadgets subagents create [--name name] [--nick nick] [--agent agent] [--model model] [--path path] [--traits names-or-IDs]
 gadgets subagents message id [--body text]
 gadgets schedule list
-gadgets schedule create (--cron expr | --at timestamp) --prompt text
+gadgets schedule create (--cron expr | --at timestamp) --prompt text [--mark-ready]
 gadgets schedule delete id
 gadgets notify [text]
 ```
@@ -1476,6 +1476,7 @@ request, not a sequence of independent writes. `notify` accepts stdin when text
 is omitted and requires 1–1,000 Unicode characters of actionable content.
 Agent scheduling does not expose all operator Hem scheduling features; it has
 list/create/delete, not schedule editing or arbitrary-session targeting.
+`--mark-ready` surfaces the completed result in Ready; it defaults to false.
 Schedules use the existing prompt/time records; no separate schedule-name field is exposed.
 
 The client emits structured JSON success/error envelopes and nonzero exit codes

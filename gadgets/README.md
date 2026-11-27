@@ -38,7 +38,7 @@ gadgets subagents list
 gadgets subagents create [--name name] [--nick nick] [--agent agent] [--model model] [--path path | --no-folder] [--moneypenny name] [--traits names-or-IDs] [--yolo]
 gadgets subagents message id [--body text]
 gadgets schedule list
-gadgets schedule create (--cron expr | --at timestamp) --prompt text
+gadgets schedule create (--cron expr | --at timestamp) --prompt text [--mark-ready]
 gadgets schedule delete id
 gadgets moneypenny logs [--name registered-host] [--lines N]
 gadgets channels providers
@@ -349,6 +349,8 @@ printf 'Investigate failing tests' | gadgets subagents create --name tests
 gadgets schedule create --cron '0 9 * * 1-5' --prompt 'Review open tasks'
 gadgets notify 'Investigation complete'
 ```
+
+Add `--mark-ready` to surface the completed scheduled result in Ready. It is off by default.
 
 ## HTTP contract
 

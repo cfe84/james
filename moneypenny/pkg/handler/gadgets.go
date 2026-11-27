@@ -267,7 +267,7 @@ func (h *Handler) prepareGadgets(sessionID string, params *agent.RunParams) erro
 		params.SystemPrompt += "Shared trait definitions: gadgets traits get ID; gadgets traits edit ID (complete replacement body on stdin; empty stdin clears it). IDs or exact names are accepted. You may edit only traits assigned to your own session; edits affect future use by all agents, not already-injected session prompts. No trait creation, deletion, assignment, renaming, or default changes are permitted.\n"
 	}
 	if caps.Scheduling {
-		params.SystemPrompt += "Your scheduled prompts: gadgets schedule list; gadgets schedule create (--at RFC3339 | --cron 'five fields') --prompt 'task'; gadgets schedule delete ID. These commands act only on your session.\n"
+		params.SystemPrompt += "Your scheduled prompts: gadgets schedule list; gadgets schedule create (--at RFC3339 | --cron 'five fields') --prompt 'task' [--mark-ready]; gadgets schedule delete ID. These commands act only on your session. Use --mark-ready to surface the completed result in Ready.\n"
 	}
 	if caps.MoneypennyLogs {
 		params.SystemPrompt += "Daemon diagnostics: gadgets moneypenny logs [--name registered-host] [--lines N]. Defaults to your host and 100 lines; accepts 1-10000 lines, reads at most the final 2 MiB. Read-only, but logs can contain other sessions' data; retrieve only what is needed.\n"
@@ -659,10 +659,11 @@ func gadgetEnvelope(response *envelope.Response) (any, error) {
 
 func (h *Handler) scheduleGadget(ctx context.Context, sessionID string, request gadgetRequest) (any, error) {
 	var data struct {
-		ID     string `json:"id"`
-		At     string `json:"at"`
-		Cron   string `json:"cron"`
-		Prompt string `json:"prompt"`
+		ID        string `json:"id"`
+		At        string `json:"at"`
+		Cron      string `json:"cron"`
+		Prompt    string `json:"prompt"`
+		MarkReady bool   `json:"mark_ready"`
 	}
 	if err := decodeGadget(request.Data, &data); err != nil {
 		return nil, err
@@ -686,7 +687,7 @@ func (h *Handler) scheduleGadget(ctx context.Context, sessionID string, request 
 			data.At = next.Format(time.RFC3339)
 		}
 		return gadgetEnvelope(h.schedule(ctx, command("schedule", envelope.ScheduleData{
-			SessionID: sessionID, ScheduledAt: data.At, CronExpr: data.Cron, Prompt: data.Prompt,
+			SessionID: sessionID, ScheduledAt: data.At, CronExpr: data.Cron, Prompt: data.Prompt, MarkReady: data.MarkReady,
 		})))
 	case "schedule.delete":
 		id, err := strconv.ParseInt(data.ID, 10, 64)

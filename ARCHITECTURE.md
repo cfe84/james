@@ -416,7 +416,8 @@ Runtime prompts and CLI/TUI/Qew controls identify this shared impact.
 
 `prepareGadgets` replaces obsolete stored direct-Hem instructions with a
 runtime, permission-filtered `<gadgets>` block and always adds notification
-guidance. Scheduling exposes only session-local list/create/delete; global
+guidance. Scheduling exposes only session-local list/create/delete. Create
+forwards `mark_ready` to the existing scheduler without requiring the Hem grant. Global
 agent discovery/messaging and subagent operations route through Hem as described
 below. Agents are instructed to use gadgets, never direct Hem, native memory
 files, or direct database access. `agent/gadgets.go` grants non-yolo Claude only

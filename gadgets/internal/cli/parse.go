@@ -111,7 +111,7 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 			allowed[key] = true
 		}
 	case "schedule.create":
-		for _, key := range []string{"cron", "at", "prompt"} {
+		for _, key := range []string{"cron", "at", "prompt", "mark-ready"} {
 			allowed[key] = true
 		}
 	}
@@ -121,6 +121,10 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 	}
 	data := map[string]any{}
 	for key, value := range flags {
+		if key == "mark-ready" {
+			data["mark_ready"] = value == "true"
+			continue
+		}
 		if key == "no-folder" {
 			if _, hasPath := flags["path"]; value == "true" && hasPath {
 				return Request{}, errors.New("--no-folder cannot be combined with --path")
@@ -519,19 +523,22 @@ func parseFlags(args []string, allowed map[string]bool) (map[string]string, []st
 		if _, exists := flags[name]; exists {
 			return nil, nil, fmt.Errorf("duplicate flag --%s", name)
 		}
-		if name == "recursive" || name == "yolo" || name == "allow-anyone" || name == "project" || name == "no-folder" {
+		switch name {
+		case "recursive", "yolo", "allow-anyone", "project", "no-folder", "mark-ready":
 			if !hasValue {
 				value = "true"
 			}
 			if value != "true" && value != "false" {
 				return nil, nil, fmt.Errorf("--%s expects true or false", name)
 			}
-		} else if !hasValue {
-			i++
-			if i >= len(args) {
-				return nil, nil, fmt.Errorf("--%s requires a value", name)
+		default:
+			if !hasValue {
+				i++
+				if i >= len(args) {
+					return nil, nil, fmt.Errorf("--%s requires a value", name)
+				}
+				value = args[i]
 			}
-			value = args[i]
 		}
 		flags[name] = value
 	}

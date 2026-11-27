@@ -68,7 +68,7 @@ Usage:
   gadgets channels create --target-id id [--provider teams] [--label text] [--mention name] [--allow-anyone]
   gadgets channels set id [--mention name] [--allow-anyone=true|false]
   gadgets channels enable|disable|delete id
-  gadgets schedule create (--cron expr | --at timestamp) --prompt text
+  gadgets schedule create (--cron expr | --at timestamp) --prompt text [--mark-ready]
   gadgets schedule delete id
   gadgets moneypenny list
   gadgets artifacts publish PATH [--title TITLE] [--project]

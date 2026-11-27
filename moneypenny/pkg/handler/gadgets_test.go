@@ -303,14 +303,17 @@ func TestGadgetSchedulesAreOwnedAndRevocable(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireGadgetError(t, gadgetCall(t, params, "schedule.delete", map[string]string{"id": jsonNumber(schedule)}), "not_found")
-	if response := gadgetCall(t, params, "schedule.create", map[string]string{
-		"at": time.Now().Add(time.Hour).Format(time.RFC3339), "prompt": "own",
+	if response := gadgetCall(t, params, "schedule.create", map[string]any{
+		"at": time.Now().Add(time.Hour).Format(time.RFC3339), "prompt": "own", "mark_ready": true,
 	}); !response.Success {
 		t.Fatalf("schedule create: %+v", response)
 	}
 	own, _ := h.store.ListSchedules(gadgetSession, "")
 	if len(own) != 1 {
 		t.Fatal("schedule not bound to session")
+	}
+	if !own[0].MarkReady {
+		t.Fatal("schedule did not retain mark_ready")
 	}
 	if resp := gadgetCall(t, params, "schedule.delete", map[string]string{"id": jsonNumber(own[0].ID)}); !resp.Success {
 		t.Fatalf("own schedule delete: %+v", resp)
