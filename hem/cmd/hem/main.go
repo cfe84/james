@@ -637,6 +637,7 @@ func printResponse(data json.RawMessage, outputFmt string) {
 					{"gadget_edit_own_session", fmt.Sprintf("%v", result.GadgetCapabilities.EditOwnSession)},
 					{"gadget_edit_own_subagents", fmt.Sprintf("%v", result.GadgetCapabilities.EditOwnSubagents)},
 					{"gadget_moneypenny_logs", fmt.Sprintf("%v", result.GadgetCapabilities.MoneypennyLogs)},
+					{"gadget_peer_conversations", fmt.Sprintf("%v", result.GadgetCapabilities.PeerConversations)},
 					{"gadget_channels", fmt.Sprintf("%v", result.GadgetCapabilities.Channels)},
 					{"gadget_hem", fmt.Sprintf("%v", result.GadgetCapabilities.Hem)},
 					{"gadget_scheduling", fmt.Sprintf("%v", result.GadgetCapabilities.Scheduling)},

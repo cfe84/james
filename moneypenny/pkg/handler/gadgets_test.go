@@ -71,10 +71,39 @@ func gadgetCall(t *testing.T, params agent.RunParams, method string, data any) g
 
 func setGadgetCaps(t *testing.T, h *Handler, caps envelope.GadgetCapabilities) {
 	t.Helper()
-	payload, _ := json.Marshal(envelope.UpdateSessionData{SessionID: gadgetSession, GadgetCapabilities: &caps})
+	payload, _ := json.Marshal(map[string]any{
+		"session_id": gadgetSession,
+		"gadget_capabilities": struct {
+			envelope.GadgetCapabilities
+			PeerConversations bool `json:"peer_conversations"`
+		}{caps, caps.PeerConversations},
+	})
 	response := h.Handle(context.Background(), &envelope.Command{Method: "update_session", Data: payload})
 	if response.Status != envelope.StatusSuccess {
 		t.Fatalf("updating capabilities: %+v", response)
+	}
+}
+
+func TestConversationGadgetOwnTranscriptAndPeerDenial(t *testing.T) {
+	h, params := gadgetTestHandler(t)
+	setGadgetCaps(t, h, envelope.GadgetCapabilities{MoneypennyLogs: true, Agents: true})
+	if err := h.store.AddConversationTurn(gadgetSession, "user", "original conversation"); err != nil {
+		t.Fatal(err)
+	}
+	own := gadgetCall(t, params, "conversation.search", map[string]string{"text": "original"})
+	raw, err := json.Marshal(own.Data)
+	var page envelope.ConversationPage
+	if !own.Success || err != nil || json.Unmarshal(raw, &page) != nil ||
+		page.SessionID != gadgetSession || len(page.Turns) != 1 || page.Turns[0].Content != "original conversation" {
+		t.Fatalf("own transcript unavailable: %+v", own)
+	}
+	for _, method := range []string{"conversation.read", "conversation.search"} {
+		requireGadgetError(t, gadgetCall(t, params, method, map[string]string{
+			"session_id": gadgetOtherSession, "cursor": "previous-page",
+		}), "permission_denied")
+		requireGadgetError(t, gadgetCall(t, params, method, map[string]string{
+			"caller": gadgetOtherSession,
+		}), "invalid_request")
 	}
 }
 

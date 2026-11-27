@@ -150,6 +150,9 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 			status := envelope.StatusSuccess
 			errorCode := ""
 			switch command.Method {
+			case "query_conversation":
+				writes <- command
+				data = envelope.ConversationPage{SessionID: "conversation-peer", Turns: []envelope.ConversationMatch{}, NextCursor: host}
 			case "list_artifacts", "read_artifact":
 				writes <- command
 				data = host
@@ -300,6 +303,36 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 			if cmd := next(); cmd.Method != tc.wire || !reflect.DeepEqual(cmd.Data, tc.data) {
 				t.Fatalf("wrong artifact command: %+v", cmd)
 			}
+		}
+	})
+	t.Run("peer conversation access checks live grant for every page", func(t *testing.T) {
+		if err := e.store.TrackSession("conversation-peer", "remote"); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			liveCapabilities.Store(capabilities)
+			if err := e.store.DeleteTrackedSession("conversation-peer"); err != nil {
+				t.Error(err)
+			}
+		})
+		query := map[string]string{"session_id": "conversation-peer", "text": "decision"}
+		liveCapabilities.Store(envelope.GadgetCapabilities{PeerConversations: true})
+		resp := gadgetRouteRequest(t, e, "source", "conversation.search", query)
+		var page envelope.ConversationPage
+		if resp.Status != "ok" || json.Unmarshal(resp.Data, &page) != nil || page.NextCursor != "remote" {
+			t.Fatalf("peer not queried on its owning daemon: %+v", resp)
+		}
+		cmd := next()
+		wire, _ := json.Marshal(cmd.Data)
+		var routed envelope.RoutedConversationQuery
+		if cmd.Method != "query_conversation" || json.Unmarshal(wire, &routed) != nil ||
+			routed.Caller != "source" || !routed.Search || routed.Query.SessionID != "conversation-peer" || routed.Query.Text != "decision" {
+			t.Fatalf("incorrect routed query: %s %s", cmd.Method, wire)
+		}
+		liveCapabilities.Store(envelope.GadgetCapabilities{MoneypennyLogs: true, Agents: true})
+		query["cursor"] = page.NextCursor
+		if resp := gadgetRouteRequest(t, e, "source", "conversation.search", query); resp.Status != "error" {
+			t.Fatal("revoked grant still allowed the next page")
 		}
 	})
 	t.Run("scoped channel configuration", func(t *testing.T) {

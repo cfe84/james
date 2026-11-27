@@ -28,7 +28,8 @@ func command(args []string) (string, []string, error) {
 	}
 	method := args[0] + "." + args[1]
 	switch method {
-	case "memory.get", "memory.list", "memory.search", "memory.set", "memory.batch", "memory.delete", "memory.revisions",
+	case "conversation.read", "conversation.search",
+		"memory.get", "memory.list", "memory.search", "memory.set", "memory.batch", "memory.delete", "memory.revisions",
 		"channels.providers", "channels.search", "channels.list", "channels.create", "channels.set", "channels.enable", "channels.disable", "channels.delete",
 		"ponsonby.list", "ponsonby.ask", "ponsonby.result",
 		"memory.query", "memory.claim-set", "memory.claim-get", "memory.claim-delete",
@@ -62,6 +63,11 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 	}
 	allowed := map[string]bool{}
 	switch method {
+	case "conversation.read", "conversation.search":
+		for _, key := range []string{"session", "role", "order", "after", "before", "after-turn", "before-turn", "limit", "cursor"} {
+			allowed[key] = true
+		}
+		allowed["turn"] = method == "conversation.read"
 	case "artifacts.publish":
 		allowed["title"], allowed["project"] = true, true
 	case "artifacts.update", "artifacts.delete", "artifacts.list", "artifacts.download":
@@ -133,6 +139,20 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 		}
 		if method == "memory.query" {
 			key = strings.ReplaceAll(key, "-", "_")
+		}
+		if strings.HasPrefix(method, "conversation.") {
+			switch key {
+			case "session":
+				data["session_id"] = value
+				continue
+			case "turn", "after-turn", "before-turn":
+				n, err := strconv.ParseInt(value, 10, 64)
+				if err != nil || n <= 0 {
+					return Request{}, fmt.Errorf("--%s must be a positive turn ID", key)
+				}
+				data[strings.ReplaceAll(key, "-", "_")] = n
+				continue
+			}
 		}
 		data[key] = value
 		if key == "allow_anyone" {
@@ -257,6 +277,12 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 			if method == "memory.set" {
 				err = body("body", false)
 			}
+		}
+	case "conversation.read":
+		err = arity(0, 0)
+	case "conversation.search":
+		if err = arity(1, 1); err == nil {
+			data["text"] = pos[0]
 		}
 	case "memory.search":
 		if err = arity(1, 1); err == nil {

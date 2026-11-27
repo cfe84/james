@@ -24,6 +24,8 @@ func TestParseCommands(t *testing.T) {
 		method string
 		data   string
 	}{
+		{"conversation read", []string{"conversation", "read", "--turn", "182", "--session", "peer", "--cursor", "next"}, "", "conversation.read", `{"turn":182,"session_id":"peer","cursor":"next"}`},
+		{"conversation search", []string{"conversation", "search", "prior decision", "--role", "assistant", "--after-turn", "12", "--limit", "3"}, "", "conversation.search", `{"text":"prior decision","role":"assistant","after_turn":12,"limit":3}`},
 		{"get root", []string{"memory", "get"}, "", "memory.get", `{"path":""}`},
 		{"attention get", []string{"attention", "get"}, "", "attention.get", `{}`},
 		{"attention summary", []string{"attention", "set", "--summary", "Checking transport"}, "", "attention.set", `{"summary":"Checking transport"}`},

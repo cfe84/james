@@ -437,6 +437,8 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.getSession(ctx, cmd)
 	case "get_session_conversation":
 		return h.getSessionConversation(ctx, cmd)
+	case "query_conversation":
+		return h.queryConversation(ctx, cmd)
 	case "reconcile_session":
 		return h.reconcileSession(ctx, cmd)
 	case "update_attention":

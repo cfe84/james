@@ -45,6 +45,42 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 		return protocol.ErrResponse("gadget source session is not tracked by this Hem")
 	}
 	switch route.Method {
+	case "conversation.read", "conversation.search":
+		var query envelope.ConversationQuery
+		if err := decodeGadgetData(route.Data, &query); err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		if query.SessionID == "" || query.SessionID == source.SessionID {
+			return protocol.ErrResponse("peer conversation route requires a different session ID")
+		}
+		caps, err := e.currentGadgetCapabilities(source)
+		if err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		if !caps.PeerConversations {
+			return protocol.ErrResponse("reading other agents' conversations is disabled")
+		}
+		target, err := e.store.GetSession(query.SessionID)
+		if err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		if target == nil {
+			return protocol.ErrResponse("conversation session is not tracked by this Hem")
+		}
+		mp, err := e.store.GetMoneypenny(target.MoneypennyName)
+		if err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		if mp == nil {
+			return protocol.ErrResponse("conversation host is no longer registered")
+		}
+		resp, err := e.sendCommand(context.Background(), mp, "query_conversation", envelope.RoutedConversationQuery{
+			Caller: source.SessionID, Search: route.Method == "conversation.search", Query: query,
+		})
+		if err != nil {
+			return protocol.ErrResponse(err.Error())
+		}
+		return protocol.OKResponse(resp.Data)
 	case "moneypenny.list":
 		if err := decodeGadgetData(route.Data, &struct{}{}); err != nil {
 			return protocol.ErrResponse(err.Error())
@@ -255,6 +291,7 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 			fmt.Sprintf("--gadget-edit-own-session=%t", capabilities.EditOwnSession),
 			fmt.Sprintf("--gadget-edit-own-subagents=%t", capabilities.EditOwnSubagents),
 			fmt.Sprintf("--gadget-moneypenny-logs=%t", capabilities.MoneypennyLogs),
+			fmt.Sprintf("--gadget-peer-conversations=%t", capabilities.PeerConversations),
 			fmt.Sprintf("--gadget-channels=%t", capabilities.Channels),
 			fmt.Sprintf("--gadget-hem=%t", capabilities.Hem),
 			fmt.Sprintf("--gadget-traits=%t", capabilities.Traits),

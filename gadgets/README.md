@@ -129,6 +129,29 @@ Kill; Hem verifies that from a fresh source-session lookup before forwarding it.
 printf 'Maintain the project documentation' | gadgets agents create --name docs
 ```
 
+### Conversation
+
+```sh
+gadgets conversation search "migration decision" --role assistant --limit 10
+gadgets conversation read --turn 1842
+gadgets conversation read --session SESSION_ID --after 2026-11-27T00:00:00Z --order oldest
+```
+
+Both commands default to the caller's own stored user and assistant messages,
+even after compaction. Searching finds literal substrings (case-insensitive for
+ASCII) and returns excerpts; reading returns the stored text. Filters include
+exclusive `--after`/`--before` RFC3339 timestamps,
+`--after-turn`/`--before-turn` IDs, and `--role user|assistant`.
+Ordering is by turn ID (`newest` by default), with 10 turns per page by default
+and a maximum of 50. To continue, repeat the same command with the returned
+`--cursor`. A read turn with `partial: true` continues on the next page;
+`offset` is its byte position in the original message.
+
+An explicit `--session` for a different tracked agent requires the separate
+`--gadget-peer-conversations=true` grant, including for each subsequent page.
+It works across Moneypennies and does not grant discovery, messaging, artifact
+downloads, or daemon log access.
+
 ### Moneypenny logs (opt-in)
 
 `gadgets moneypenny logs --name chfeval-dev --lines 2000` reads the daemon's

@@ -2904,7 +2904,15 @@ func (e *Executor) UpdateSession(args []string) *protocol.Response {
 		if err != nil {
 			return protocol.ErrResponse(fmt.Sprintf("parsing gadget permissions: %v", err))
 		}
-		cmdData["gadget_capabilities"] = capabilityFlags.apply(&current)
+		patched := capabilityFlags.apply(&current)
+		cmdData["gadget_capabilities"] = patched
+		if current.PeerConversations && !patched.PeerConversations {
+			// Omit the new default-off field for old daemons, but send an explicit revocation.
+			cmdData["gadget_capabilities"] = struct {
+				*envelope.GadgetCapabilities
+				PeerConversations bool `json:"peer_conversations"`
+			}{GadgetCapabilities: patched}
+		}
 		hasUpdate = true
 	}
 	if name != "" {

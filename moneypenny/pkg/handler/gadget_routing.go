@@ -154,7 +154,8 @@ func gadgetRouteTimeout(method string, data json.RawMessage) time.Duration {
 
 func (h *Handler) routeGadget(ctx context.Context, sessionID, method string, data json.RawMessage) (any, error) {
 	switch method {
-	case "agents.list", "agents.message", "agents.create", "subagents.list", "subagents.create", "subagents.message",
+	case "conversation.read", "conversation.search",
+		"agents.list", "agents.message", "agents.create", "subagents.list", "subagents.create", "subagents.message",
 		"subagents.edit", "subagents.complete", "subagents.stop", "subagents.delete",
 		"traits.list", "traits.get", "traits.edit", "sessions.edit", "moneypenny.list", "moneypenny.logs", "hem.command",
 		"channels.providers", "channels.search", "channels.list", "channels.create", "channels.set", "channels.enable", "channels.disable", "channels.delete",

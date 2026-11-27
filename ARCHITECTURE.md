@@ -154,6 +154,17 @@ shared by fresh and resumed runs.
 
 ### Gadgets platform and capability boundary (v1.78.0)
 
+Conversation gadgets read the authenticated caller's transcript directly on
+Moneypenny. Peer requests require the independent `peer_conversations` grant
+on the caller's daemon and a fresh grant check in Hem before it routes to
+the tracked target's host. Every page repeats authorization; cursors are not
+credentials. The target runs a bounded SQL query in a read snapshot over
+user/assistant rows only. Keyset cursors bind the caller, target, filters and
+ordering, cap traversal at the initial maximum turn ID, and detect history
+resets using the session generation. Long reads resume at UTF-8 byte
+boundaries; searches return short literal-match excerpts. This does not use
+the paginated UI history or the daemon logs.
+
 `gadgets/` is a standalone dependency-free Go module with
 `cmd/gadgets`, built and installed alongside Moneypenny. It only parses commands,
 reads stdin, posts JSON, and prints structured results; daemon code implements

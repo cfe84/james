@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const controls = require('../pkg/web/static/gadget-capabilities.js');
 const thresholds = require('../pkg/web/static/compaction-threshold.js');
 
-const defaults = { memory: true, subagents: true, agents: false, create_agents: false, edit_sessions: false, edit_own_session: false, edit_own_subagents: false, moneypenny_logs: false, channels: false, hem: false, traits: false, scheduling: true };
+const defaults = { memory: true, subagents: true, agents: false, create_agents: false, edit_sessions: false, edit_own_session: false, edit_own_subagents: false, moneypenny_logs: false, peer_conversations: false, channels: false, hem: false, traits: false, scheduling: true };
 const allOff = Object.fromEntries(Object.keys(defaults).map(name => [name, false]));
 const documentFor = (values) => ({
   getElementById(id) {
@@ -213,7 +213,7 @@ test('create and copy emit all explicit permissions, including false', () => {
   assert.deepEqual(controls.args('wiz', undefined, documentFor(allOff)), [
     '--gadget-memory=false', '--gadget-subagents=false',
     '--gadget-agents=false', '--gadget-create-agents=false', '--gadget-edit-sessions=false', '--gadget-edit-own-session=false', '--gadget-edit-own-subagents=false',
-    '--gadget-moneypenny-logs=false', '--gadget-channels=false', '--gadget-hem=false', '--gadget-traits=false', '--gadget-scheduling=false',
+    '--gadget-moneypenny-logs=false', '--gadget-peer-conversations=false', '--gadget-channels=false', '--gadget-hem=false', '--gadget-traits=false', '--gadget-scheduling=false',
   ]);
 });
 
@@ -233,6 +233,12 @@ test('edit emits only changed settings and supports revocation', () => {
   assert.deepEqual(controls.args('es', { ...defaults, agents: true }, documentFor(defaults)), [
     '--gadget-agents=false',
   ]);
+});
+
+test('peer conversation access can be granted and revoked without daemon logs', () => {
+  const granted = { ...defaults, peer_conversations: true };
+  assert.deepEqual(controls.args('es', defaults, documentFor(granted)), ['--gadget-peer-conversations=true']);
+  assert.deepEqual(controls.args('es', granted, documentFor(defaults)), ['--gadget-peer-conversations=false']);
 });
 
 test('traits opt-in survives copy and edit can grant or revoke it alone', () => {

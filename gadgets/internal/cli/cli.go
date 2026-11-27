@@ -22,6 +22,11 @@ const (
 const Help = `gadgets — session-scoped tools provided by Moneypenny
 
 Usage:
+  gadgets conversation search "text" [conversation filters]
+  gadgets conversation read [--turn ID] [conversation filters]
+      Filters: --session ID --role user|assistant --order newest|oldest
+               --after RFC3339 --before RFC3339 --after-turn ID --before-turn ID
+               --limit 1–50 --cursor TOKEN (repeat the original filters)
   gadgets ponsonby list                      (attached stores and current introductions)
   gadgets ponsonby ask STORE                 (question on stdin; returns request ID)
   gadgets ponsonby result STORE REQUEST_ID   (pending/running/done/failed and answer)
@@ -184,7 +189,7 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(s
 		return 0
 	}
 	if args[0] != "hem" && (len(args) == 2 || len(args) == 3) && (args[len(args)-1] == "--help" || args[len(args)-1] == "-h") {
-		groupHelp := len(args) == 2 && (args[0] == "memory" || args[0] == "agents" || args[0] == "traits" || args[0] == "subagents" || args[0] == "schedule" || args[0] == "moneypenny" || args[0] == "notify" || args[0] == "attention" || args[0] == "artifacts")
+		groupHelp := len(args) == 2 && (args[0] == "conversation" || args[0] == "memory" || args[0] == "agents" || args[0] == "traits" || args[0] == "subagents" || args[0] == "schedule" || args[0] == "moneypenny" || args[0] == "notify" || args[0] == "attention" || args[0] == "artifacts")
 		_, rest, err := command(args)
 		if groupHelp || (len(args) == 3 && err == nil && len(rest) == 1) {
 			_, _ = io.WriteString(stdout, Help)

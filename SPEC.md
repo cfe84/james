@@ -1150,10 +1150,23 @@ back; use `--async` for agent operations and inspect state before retrying.
 | Create agents | Off, separate explicit grant | Create independent top-level agents on the caller's Moneypenny |
 | Traits | Off, explicit grant | List/view existing shared traits and replace their prompt bodies |
 | Moneypenny logs | Off, explicit grant | Read bounded daemon logs from any registered Moneypenny |
+| Peer conversations | Off, explicit grant | Read/search one explicitly selected tracked agent's user and assistant turns |
 | Hem administrative proxy | Off, explicit grant | Execute Hem server commands, including cross-session mutations and permission changes |
 | Scheduling | On, revocable | List/create/delete schedules belonging to this session |
 | Notifications | Always available | Send actionable operator notifications |
 | Background commands | Current License to Kill only | Start, list, inspect, and stop session-owned commands; completion returns to the same agent |
+
+**Conversation gadgets.** `gadgets conversation search TEXT` returns matching
+excerpts with turn IDs; `gadgets conversation read [--turn ID]` returns stored
+message text. Both default to the caller's own transcript (always available)
+and accept `--session ID` for one tracked peer with the `peer_conversations`
+grant (`--gadget-peer-conversations=true`). Daemon logs and agent discovery
+grants do not imply peer conversation access. Search is literal and
+ASCII-case-insensitive. Both commands support user/assistant role filters,
+exclusive RFC3339 timestamp and turn ID bounds, newest/oldest turn-ID order,
+and 1–50 turns per page (default 10). Repeat the original query with
+`--cursor` to continue the page or an oversized message. Hidden reasoning,
+tool events, and attachment bytes are not returned.
 
 `gadgets run-and-callback -- command [args...]` starts a no-shell process in
 the owning session's working directory and immediately returns a job ID and

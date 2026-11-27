@@ -355,6 +355,13 @@ func TestGadgetCapabilitiesCommandForwarding(t *testing.T) {
 	}
 	updated.Traits = false
 	check(e.UpdateSession([]string{"source", "--gadget-traits=false"}), updated)
+	updated.PeerConversations = true
+	check(e.UpdateSession([]string{"source", "--gadget-peer-conversations=true"}), updated)
+	revoked := e.UpdateSession([]string{"source", "--gadget-peer-conversations=false"})
+	if revoked.Status != "ok" || !strings.Contains(string(<-writes), `"peer_conversations":false`) {
+		t.Fatalf("peer conversation revocation was not sent explicitly: %+v", revoked)
+	}
+	updated.PeerConversations = false
 	if resp := e.UpdateSession([]string{"source", "--gadget-agents=maybe"}); resp.Status != "error" || !strings.Contains(resp.Message, "true or false") {
 		t.Fatalf("invalid boolean was accepted: %#v", resp)
 	}

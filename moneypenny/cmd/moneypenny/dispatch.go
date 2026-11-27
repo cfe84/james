@@ -55,7 +55,7 @@ func newRequestDispatcher(ctx context.Context, handle func(context.Context, *env
 
 func localSnapshot(method string) bool {
 	switch method {
-	case "list_sessions", "get_session", "get_session_conversation", "export_conversation", "export_session_memory",
+	case "list_sessions", "get_session", "get_session_conversation", "query_conversation", "export_conversation", "export_session_memory",
 		"get_session_activity", "list_schedules", "list_channels",
 		"get_version", "get_logs", "update_status":
 		return true

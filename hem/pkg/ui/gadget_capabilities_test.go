@@ -80,7 +80,7 @@ func TestCreateFormsSendExplicitGadgetPermissions(t *testing.T) {
 			t.Fatal("shared assignment omitted", sender.request.Args)
 		}
 		got := permissionArgs(sender.request.Args)
-		if len(got) != 12 {
+		if len(got) != 13 || got["--gadget-peer-conversations"] != "false" {
 			t.Fatalf("wizard=%v omitted permissions: %v", wizard, sender.request.Args)
 		}
 		for flag, value := range got {
@@ -100,7 +100,7 @@ func TestWizardCopiesGadgetPermissions(t *testing.T) {
 	sender := &permissionTestSender{}
 	m := newWizardModel(&client{sender: sender})
 	m.sourceSessionID = "source"
-	caps := envelope.GadgetCapabilities{Agents: true, Traits: true, CreateAgents: true, MoneypennyLogs: true, Hem: true, Channels: true}
+	caps := envelope.GadgetCapabilities{Agents: true, Traits: true, CreateAgents: true, MoneypennyLogs: true, PeerConversations: true, Hem: true, Channels: true}
 	m, _ = m.Update(wizardSourceLoadedMsg{source: &sessionDetail{
 		SessionID: "source", Agent: "copilot", GadgetCapabilities: &caps, Ponsonbies: []envelope.Ponsonby{{ID: "engineering", Publish: false}},
 	}})
@@ -115,7 +115,7 @@ func TestWizardCopiesGadgetPermissions(t *testing.T) {
 	}
 	args := permissionArgs(sender.request.Args)
 	if args["--gadget-agents"] != "true" || args["--gadget-traits"] != "true" || args["--gadget-memory"] != "false" ||
-		args["--gadget-subagents"] != "false" || args["--gadget-scheduling"] != "false" || args["--gadget-create-agents"] != "true" || args["--gadget-moneypenny-logs"] != "true" || args["--gadget-hem"] != "true" || args["--gadget-channels"] != "true" {
+		args["--gadget-subagents"] != "false" || args["--gadget-scheduling"] != "false" || args["--gadget-create-agents"] != "true" || args["--gadget-moneypenny-logs"] != "true" || args["--gadget-peer-conversations"] != "true" || args["--gadget-hem"] != "true" || args["--gadget-channels"] != "true" {
 		t.Fatalf("copy lost permissions: %v", args)
 	}
 }
