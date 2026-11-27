@@ -216,7 +216,7 @@ func (h *Handler) prepareGadgets(sessionID string, params *agent.RunParams) erro
 	params.SystemPrompt += "Reply to your parent: gadgets subagents message parent (body on stdin). Hem resolves parent from your authenticated session; no parent ID or discovery permission is needed. This fails explicitly for sessions without a parent. If an unrelated James agent invokes you with a task, you may use gadgets subagents message ID to send exactly one callback to that invoking session. Send completion reports, review results, and blockers through this callback path, not `gadgets notify` or `<NOTIFY_USER>`.\n"
 	if caps.Subagents {
 		params.SystemPrompt += "James subagents are Hem/Moneypenny child sessions created using `gadgets subagents create`. When asked to create or use a subagent, that command is mandatory; generic task tools, runtime/background workers, or other delegation mechanisms do not satisfy the request. After creation, verify the child appears in `gadgets subagents list`.\n"
-		params.SystemPrompt += "Own subagents: gadgets subagents list; gadgets subagents create [--name name] [--nick nick] [--agent agent] [--model model] [--path path] [--traits names-or-IDs]"
+		params.SystemPrompt += "Own subagents: gadgets subagents list; gadgets subagents create [--name name] [--nick nick] [--agent agent] [--model model] [--path path | --no-folder] [--traits names-or-IDs]"
 		if session.Yolo {
 			params.SystemPrompt += " [--yolo]"
 		}
@@ -243,7 +243,7 @@ func (h *Handler) prepareGadgets(sessionID string, params *agent.RunParams) erro
 		params.SystemPrompt += "Own subagent management: gadgets subagents edit ID [session fields], gadgets subagents complete ID, gadgets subagents stop ID, and gadgets subagents delete ID. These operations are restricted to your direct children.\n"
 	}
 	if caps.CreateAgents {
-		params.SystemPrompt += "Create independent top-level agents: gadgets agents create [--name name] [--nick nick] [--agent agent] [--model model] [--path path] [--traits names-or-IDs]"
+		params.SystemPrompt += "Create independent top-level agents: gadgets agents create [--name name] [--nick nick] [--agent agent] [--model model] [--path path | --no-folder] [--traits names-or-IDs]"
 		if session.Yolo {
 			params.SystemPrompt += " [--yolo]"
 		}

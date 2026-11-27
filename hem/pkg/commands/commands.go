@@ -2046,6 +2046,7 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 		fs.StringVar(&params.SystemPrompt, "system-prompt", "", "system prompt")
 		fs.BoolVar(&params.Yolo, "yolo", false, "enable yolo mode")
 		fs.StringVar(&params.Path, "path", "", "working directory path")
+		params.workspaceFlags(fs)
 		fs.StringVar(&params.CompactionMode, "compaction", "", "compaction mode: agent or custom")
 		fs.IntVar(&compactionThresholdTokens, "compaction-threshold-tokens", 0, "custom compaction threshold in tokens (10000-900000)")
 		fs.BoolVar(&params.Async, "async", false, "return immediately without waiting for response")
@@ -2056,6 +2057,9 @@ func (e *Executor) CreateSession(args []string) *protocol.Response {
 		fs.Var(&params.Environment, "env", "agent environment variable NAME=VALUE (repeatable)")
 	})
 	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if err := params.validateWorkspace(args); err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
 	if flagSeenIn(args, "compaction-threshold-tokens") {
@@ -7031,10 +7035,15 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 		fs.BoolVar(&yolo, "yolo", false, "enable yolo mode")
 		fs.StringVar(&callbackPrompt, "callback", "", "prompt to queue to parent when subagent completes")
 		fs.StringVar(&pathArg, "path", "", "working directory path")
+		params.workspaceFlags(fs)
 		fs.BoolVar(&async, "async", false, "return immediately without waiting for response")
 		fs.StringVar(&fromID, "from", "", "originating agent session ID (set automatically by gadgets)")
 	})
 	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	params.Path = pathArg
+	if err := params.validateWorkspace(args); err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
 	if flagSeenIn(args, "compaction-threshold-tokens") {
@@ -7129,14 +7138,14 @@ func (e *Executor) CreateSubSession(args []string) *protocol.Response {
 				Yolo bool   `json:"yolo"`
 			}
 			if json.Unmarshal(resp.Data, &parentData) == nil {
-				if pathArg == "" && parentData.Path != "" {
+				if !params.NoFolder && pathArg == "" && parentData.Path != "" {
 					pathArg = parentData.Path
 				}
 				parentYolo = parentData.Yolo
 			}
 		}
 	}
-	if pathArg == "" {
+	if !params.NoFolder && pathArg == "" {
 		if v, _ := e.store.GetDefault("path"); v != "" {
 			pathArg = v
 		} else {

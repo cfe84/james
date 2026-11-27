@@ -2015,7 +2015,7 @@ func (m Model) updateWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "esc" {
 		// When the path step is in folder-name input mode, let the wizard model
 		// handle esc (cancel the input) rather than navigating back a step.
-		if m.wizard.step == wizardStepPath && m.wizard.creatingFolder {
+		if m.wizard.step == wizardStepPath && (m.wizard.creatingFolder || m.wizard.worktreeInput != nil) {
 			var cmd tea.Cmd
 			m.wizard, cmd = m.wizard.Update(msg)
 			return m, cmd
@@ -2044,6 +2044,11 @@ func (m Model) updateWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.wizard.err = nil
 			return m, nil
 		case wizardStepForm:
+			if m.wizard.workspaceMode != workspaceFolder {
+				m.wizard.step = wizardStepPath
+				m.wizard.err = nil
+				return m, nil
+			}
 			m.wizard.step = wizardStepMoneypenny
 			m.wizard.mpLoading = true
 			m.wizard.err = nil
@@ -2580,6 +2585,13 @@ func (m Model) renderStatusBar() string {
 				statusKeyStyle.Render("esc") + statusDescStyle.Render(" cancel"),
 			}
 		case wizardStepPath:
+			if m.wizard.worktreeInput != nil || m.wizard.workspaceMode == workspaceScratch {
+				keys = []string{
+					statusKeyStyle.Render("↵") + statusDescStyle.Render(" continue"),
+					statusKeyStyle.Render("esc") + statusDescStyle.Render(" back"),
+				}
+				break
+			}
 			if m.wizard.creatingFolder {
 				keys = []string{
 					statusKeyStyle.Render("↵") + statusDescStyle.Render(" create folder"),

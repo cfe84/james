@@ -97,7 +97,7 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 	case "memory.delete":
 		allowed["recursive"] = true
 	case "subagents.create", "agents.create":
-		for _, key := range []string{"name", "nick", "agent", "model", "path", "moneypenny", "traits", "yolo"} {
+		for _, key := range []string{"name", "nick", "agent", "model", "path", "no-folder", "moneypenny", "traits", "yolo"} {
 			allowed[key] = true
 		}
 	case "sessions.edit", "subagents.edit":
@@ -115,6 +115,13 @@ func Parse(args []string, stdin io.Reader) (Request, error) {
 	}
 	data := map[string]any{}
 	for key, value := range flags {
+		if key == "no-folder" {
+			if _, hasPath := flags["path"]; value == "true" && hasPath {
+				return Request{}, errors.New("--no-folder cannot be combined with --path")
+			}
+			data["no_folder"] = value == "true"
+			continue
+		}
 		if key == "project" {
 			if value == "true" {
 				data[key] = true
@@ -486,7 +493,7 @@ func parseFlags(args []string, allowed map[string]bool) (map[string]string, []st
 		if _, exists := flags[name]; exists {
 			return nil, nil, fmt.Errorf("duplicate flag --%s", name)
 		}
-		if name == "recursive" || name == "yolo" || name == "allow-anyone" || name == "project" {
+		if name == "recursive" || name == "yolo" || name == "allow-anyone" || name == "project" || name == "no-folder" {
 			if !hasValue {
 				value = "true"
 			}

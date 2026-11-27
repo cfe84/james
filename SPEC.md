@@ -682,6 +682,27 @@ available to retry.
 
 `hem create session -m|--moneypenny NAME PROMPT [flags]`
 
+The Qew and Hem TUI new-agent path step offers **Existing folder**, **No
+folder**, and **New Git worktree**. Existing folder keeps the current picker
+and defaults. No folder creates a private workspace identified by the session
+ID under `~/.local/share/james/workspaces` on macOS/Linux or
+`%LOCALAPPDATA%\james\workspaces` on Windows. It survives restarts and
+completion, and is removed by Moneypenny when the owning session is deleted.
+It is not an isolation sandbox.
+
+For a new Git worktree, select the root of an existing checkout, enter a sibling
+folder name and a new branch, and review the destination. For example, selecting
+`~/git/home/public/james` with folder `jamy` and branch `features/jamy` creates
+`~/git/home/public/jamy` from the selected checkout's `HEAD`. An existing
+destination or branch is rejected; deleting the session leaves the worktree and
+branch intact.
+
+`hem create session` and `hem create subsession` accept `--no-folder` instead of
+`--path`, or `--path REPO --worktree-folder NAME --worktree-branch BRANCH`.
+`gadgets agents create` and `gadgets subagents create` accept `--no-folder`
+instead of `--path`. Copying an existing session continues to use the folder
+picker and does not provision a new workspace.
+
 - `-m` is optional if a default moneypenny is set.
 - Hem generates a session_id (UUID) and sends `create_session` to the moneypenny.
 - By default: waits for the agent to complete, prints the session_id and the response.

@@ -280,6 +280,9 @@ func (e *Executor) GadgetRoute(args []string) *protocol.Response {
 		if create.Traits != nil {
 			createArgs = append(createArgs, "--traits="+*create.Traits)
 		}
+		if create.NoFolder {
+			createArgs = append(createArgs, "--no-folder")
+		}
 		if create.Yolo != nil && *create.Yolo {
 			createArgs = append(createArgs, "--yolo")
 		}

@@ -641,14 +641,14 @@ func TestGadgetRoutingCreateAndMessage(t *testing.T) {
 		t.Fatalf("remote top-level creation was not bound correctly: %#v %#v %v", data, remoteTopLevel, err)
 	}
 	liveCapabilities.Store(capabilities)
-	response = gadgetRouteRequest(t, e, "source", "subagents.create", map[string]any{"prompt": "remote child", "moneypenny": "remote"})
+	response = gadgetRouteRequest(t, e, "source", "subagents.create", map[string]any{"prompt": "remote child", "moneypenny": "remote", "no_folder": true})
 	if response.Status != "ok" {
 		t.Fatal(response.Message)
 	}
 	data = next().Data.(map[string]any)
 	remoteChild, err := e.store.GetSession(data["session_id"].(string))
 	if err != nil || remoteChild == nil || remoteChild.MoneypennyName != "remote" || remoteChild.ParentSessionID != "source" ||
-		data["source_session_id"] != "source" {
+		data["source_session_id"] != "source" || data["no_folder"] != true || data["path"] != "" {
 		t.Fatalf("remote subagent creation was not bound correctly: %#v %#v %v", data, remoteChild, err)
 	}
 	var created SessionCreatedResult

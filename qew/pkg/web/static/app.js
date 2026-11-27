@@ -2761,32 +2761,74 @@
     await renderPathBrowser();
   }
 
+  function wizardWorktreeDestination() {
+    const repo = wizardState.currentPath.replaceAll('\\', '/').replace(/\/+$/, '');
+    return repo.substring(0, repo.lastIndexOf('/') + 1) + (wizardState.worktreeFolder || '…');
+  }
+
   async function renderPathBrowser() {
+    const mode = wizardState.workspaceMode || 'folder';
     renderWizardModal(`
       <h3>${wizardTitle()}</h3>
       <div class="step-label">Step 2 of 3 — Select Path</div>
-      <div class="dir-current">📂 ${escapeHtml(wizardState.currentPath)}</div>
-      <div class="dir-browser" id="wizard-dirs"><div class="loading">Loading...</div></div>
+      ${wizardState.copy ? '' : `<label for="wizard-workspace-mode">Workspace</label>
+        <select id="wizard-workspace-mode">
+          <option value="folder"${mode === 'folder' ? ' selected' : ''}>Existing folder</option>
+          <option value="scratch"${mode === 'scratch' ? ' selected' : ''}>No folder</option>
+          <option value="worktree"${mode === 'worktree' ? ' selected' : ''}>New Git worktree</option>
+        </select>`}
+      ${mode === 'scratch' ? '<p>Moneypenny will create a private scratch folder and remove it when you delete this session.</p>' : `
+        <div class="dir-current">📂 ${escapeHtml(wizardState.currentPath)}</div>
+        <div class="dir-browser" id="wizard-dirs"><div class="loading">Loading...</div></div>`}
+      ${mode === 'worktree' ? `
+        <p>Select the root of a Git checkout. The new worktree starts from its HEAD.</p>
+        <label for="wizard-worktree-folder">Sibling folder name</label>
+        <input id="wizard-worktree-folder" value="${escapeAttr(wizardState.worktreeFolder || '')}">
+        <label for="wizard-worktree-branch">New branch</label>
+        <input id="wizard-worktree-branch" value="${escapeAttr(wizardState.worktreeBranch || '')}">
+        <p id="wizard-worktree-destination" aria-live="polite"></p>` : ''}
       <div class="modal-actions">
         <button class="btn-muted" onclick="window._qewWizardBack()">Back</button>
-        <button class="btn" onclick="window._qewWizardStep3()">Use this path</button>
+        <button class="btn" id="wizard-confirm-path" onclick="window._qewWizardStep3()"${mode === 'worktree' ? ' disabled' : ''}>${mode === 'folder' ? 'Use this path' : 'Continue'}</button>
       </div>
     `);
+    const modeSelector = document.getElementById('wizard-workspace-mode');
+    modeSelector?.addEventListener('change', () => {
+      wizardState.workspaceMode = modeSelector.value;
+      renderPathBrowser();
+    });
+    if (mode === 'scratch') return;
 
+    const browser = document.getElementById('wizard-dirs');
+    const preview = document.getElementById('wizard-worktree-destination');
+    const updatePreview = () => {
+      if (preview) preview.textContent = 'Destination: ' + wizardWorktreeDestination();
+    };
+    for (const [id, key] of [['wizard-worktree-folder', 'worktreeFolder'], ['wizard-worktree-branch', 'worktreeBranch']]) {
+      const input = document.getElementById(id);
+      input?.addEventListener('input', () => {
+        wizardState[key] = input.value.trim();
+        updatePreview();
+      });
+    }
+    updatePreview();
     try {
       const resp = await apiCall('list-directory', '', ['-m', wizardState.selectedMP, '--path', wizardState.currentPath]);
+      if (!browser.isConnected) return;
       if (resp.status === 'ok' && resp.data) {
         wizardState.triedHome = false;
         wizardState.currentPath = resp.data.path || wizardState.currentPath;
         document.querySelector('.dir-current').textContent = '📂 ' + wizardState.currentPath;
+        updatePreview();
+        document.getElementById('wizard-confirm-path').disabled = false;
         const entries = (resp.data.entries || []).filter(e => e.is_dir);
         let html = '';
         html += `<div class="dir-entry" data-path="..">📁 ..</div>`;
         for (const entry of entries) {
           html += `<div class="dir-entry" data-path="${escapeAttr(entry.name)}">📁 ${escapeHtml(entry.name)}</div>`;
         }
-        html += `<div class="dir-entry dir-add" id="wizard-add-folder">➕ Add folder</div>`;
-        document.getElementById('wizard-dirs').innerHTML = html;
+        if (mode !== 'worktree') html += `<div class="dir-entry dir-add" id="wizard-add-folder">➕ Add folder</div>`;
+        browser.innerHTML = html;
         document.querySelectorAll('#wizard-dirs .dir-entry').forEach(el => {
           if (el.id === 'wizard-add-folder') {
             el.addEventListener('click', async () => {
@@ -2809,11 +2851,14 @@
           el.addEventListener('click', () => {
             const name = el.dataset.path;
             if (name === '..') {
-              const parts = wizardState.currentPath.split('/');
+              const parts = wizardState.currentPath.replaceAll('\\', '/').split('/');
+              if (!parts.at(-1)) parts.pop();
               parts.pop();
-              wizardState.currentPath = parts.join('/') || '/';
+              const parent = parts.join('/');
+              if (parent) wizardState.currentPath = /^[A-Za-z]:$/.test(parent) ? parent + '/' : parent;
+              else if (!/^[A-Za-z]:[\\/]$/.test(wizardState.currentPath)) wizardState.currentPath = '/';
             } else {
-              wizardState.currentPath = wizardState.currentPath.replace(/\/$/, '') + '/' + name;
+              wizardState.currentPath = wizardState.currentPath.replace(/[\\/]$/, '') + '/' + name;
             }
             renderPathBrowser();
           });
@@ -2828,14 +2873,17 @@
           return;
         }
         const errMsg = resp.message ? escapeHtml(resp.message) : 'Could not list directory';
-        document.getElementById('wizard-dirs').innerHTML = `<div class="empty-state">${errMsg}</div>`;
+        browser.innerHTML = `<div class="empty-state">${errMsg}</div>`;
       }
     } catch (e) {
-      document.getElementById('wizard-dirs').innerHTML = `<div class="empty-state">Error: ${escapeHtml(e.message)}</div>`;
+      if (browser.isConnected) browser.innerHTML = `<div class="empty-state">Error: ${escapeHtml(e.message)}</div>`;
     }
   }
 
   function showWizardStep3() {
+    const workspaceLabel = wizardState.workspaceMode === 'scratch' ? 'No folder (private scratch)' :
+      wizardState.workspaceMode === 'worktree' ? `${wizardWorktreeDestination()} (${wizardState.worktreeBranch})` :
+        wizardState.currentPath;
     const copy = wizardState.copy;
     const src = copy ? (wizardState.source || {}) : {};
     const srcProject = copy ? (src.project || '') : (wizardState.parentProject || '');
@@ -2870,7 +2918,7 @@
       <h3>${wizardTitle()}</h3>
       <div class="step-label">Step 3 of 3 — Session Details</div>
       <div style="font-size:0.85em;color:var(--muted);margin-bottom:8px">
-        📡 ${escapeHtml(wizardState.selectedMP)} &nbsp; 📂 ${escapeHtml(wizardState.currentPath)}
+        📡 ${escapeHtml(wizardState.selectedMP)} &nbsp; 📂 ${escapeHtml(workspaceLabel)}
       </div>
       <label for="wiz-prompt">${promptLabel}</label>
       <textarea id="wiz-prompt" rows="3" placeholder="${escapeAttr(promptPlaceholder)}"></textarea>
@@ -3000,7 +3048,12 @@
     // `copy session` verb expects); create mode has no positional source.
     const parentId = wizardState.parentId;
     const args = copy ? [wizardState.sourceId] : parentId ? [parentId] : [];
-    args.push('-m', wizardState.selectedMP, '--path', wizardState.currentPath, '--async');
+    args.push('-m', wizardState.selectedMP, '--async');
+    if (!copy && wizardState.workspaceMode === 'scratch') args.push('--no-folder');
+    else args.push('--path', wizardState.currentPath);
+    if (!copy && wizardState.workspaceMode === 'worktree') {
+      args.push('--worktree-folder=' + wizardState.worktreeFolder, '--worktree-branch=' + wizardState.worktreeBranch);
+    }
     const name = document.getElementById('wiz-name').value.trim();
     if (name) args.push('--name', name);
     // Nick is a create-only field (the copy verb has no --nick flag).
@@ -3139,7 +3192,13 @@
   // Expose wizard functions for inline onclick handlers.
   window._qewCloseWizard = closeWizard;
   window._qewWizardStep2 = showWizardStep2;
-  window._qewWizardStep3 = showWizardStep3;
+  window._qewWizardStep3 = function() {
+    if (wizardState.workspaceMode === 'worktree' && (!wizardState.worktreeFolder || !wizardState.worktreeBranch)) {
+      alert('Enter a folder name and a new branch.');
+      return;
+    }
+    showWizardStep3();
+  };
   window._qewWizardBack = function() {
     if (wizardState.moneypennies.length === 1) { closeWizard(); return; }
     showWizardStep1();

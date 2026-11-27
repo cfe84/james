@@ -15,6 +15,7 @@ type CreateAgentGadgetData struct {
 	Agent      string  `json:"agent"`
 	Model      string  `json:"model"`
 	Path       string  `json:"path"`
+	NoFolder   bool    `json:"no_folder,omitempty"`
 	Moneypenny string  `json:"moneypenny"`
 	Traits     *string `json:"traits,omitempty"`
 	Yolo       *bool   `json:"yolo,omitempty"`

@@ -489,7 +489,7 @@ test('Add subagent opens the shared create wizard with parent host and path', as
 });
 
 test('shared create wizard routes creation modes and retains fields on failure', async () => {
-  for (const mode of ['create', 'copy', 'subagent', 'subagent-error']) {
+  for (const mode of ['create', 'copy', 'subagent', 'subagent-error', 'scratch', 'worktree']) {
     const values = {
       'wiz-prompt': 'Build it', 'wiz-name': 'worker', 'wiz-nick': 'worker-nick',
       'wiz-project': 'project', 'wiz-agent': 'copilot', 'wiz-model': 'model',
@@ -504,7 +504,7 @@ test('shared create wizard routes creation modes and retains fields on failure',
     const events = [];
     const context = vm.createContext({
       wizardState: { copy: mode === 'copy', sourceId: 'source', parentId: subagent ? 'parent' : '',
-        selectedMP: 'host', currentPath: '/work' },
+        selectedMP: 'host', currentPath: '/work', workspaceMode: mode, worktreeFolder: 'jamy', worktreeBranch: 'features/jamy' },
       document: {
         getElementById: id => elements[id],
         querySelectorAll: () => [{ value: 'trait' }],
@@ -533,11 +533,21 @@ test('shared create wizard routes creation modes and retains fields on failure',
     if (subagent) assert.equal(args[0], 'parent');
     if (mode === 'copy') assert.equal(args[0], 'source');
     for (const [flag, value] of [
-      ['-m', 'host'], ['--path', '/work'], ['--name', 'worker'], ['--project', 'project'],
+      ['-m', 'host'], ['--name', 'worker'], ['--project', 'project'],
       ['--agent', 'copilot'], ['--model', 'model'], ['--effort', 'high'], ['--context', 'long_context'],
       ['--system-prompt', 'instructions'], ['--env', 'SETTING=value'],
       ['--compaction', 'custom'], ['--compaction-threshold-tokens', '150000'], ['--traits', 'trait'],
     ]) assert.equal(args[args.indexOf(flag) + 1], value, flag);
+    if (mode === 'scratch') {
+      assert.ok(args.includes('--no-folder'));
+      assert.ok(!args.includes('--path'));
+    } else {
+      assert.equal(args[args.indexOf('--path') + 1], '/work');
+    }
+    if (mode === 'worktree') {
+      assert.ok(args.includes('--worktree-folder=jamy'));
+      assert.ok(args.includes('--worktree-branch=features/jamy'));
+    }
     assert.ok(args.includes('--gadget-memory=false'));
     assert.equal(args[args.indexOf('--ponsonbies') + 1], values['wiz-ponsonbies'] || 'none');
     if (subagent) assert.ok(args.includes('--yolo=false'));

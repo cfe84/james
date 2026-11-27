@@ -22,7 +22,7 @@ gadgets ponsonby list
 gadgets ponsonby ask STORE
 gadgets ponsonby result STORE REQUEST_ID
 gadgets agents list
-gadgets agents create [--name name] [--nick nick] [--agent agent] [--model model] [--path path] [--moneypenny name] [--traits names-or-IDs] [--yolo]
+gadgets agents create [--name name] [--nick nick] [--agent agent] [--model model] [--path path | --no-folder] [--moneypenny name] [--traits names-or-IDs] [--yolo]
 gadgets agents message id [--body text]
 gadgets traits list
 gadgets moneypenny list
@@ -35,7 +35,7 @@ gadgets artifacts download --project ARTIFACT_ID DESTINATION
 gadgets traits get ID
 gadgets traits edit ID
 gadgets subagents list
-gadgets subagents create [--name name] [--nick nick] [--agent agent] [--model model] [--path path] [--moneypenny name] [--traits names-or-IDs] [--yolo]
+gadgets subagents create [--name name] [--nick nick] [--agent agent] [--model model] [--path path | --no-folder] [--moneypenny name] [--traits names-or-IDs] [--yolo]
 gadgets subagents message id [--body text]
 gadgets schedule list
 gadgets schedule create (--cron expr | --at timestamp) --prompt text
@@ -364,7 +364,7 @@ and `Authorization: Bearer <token>`. Body:
 | moneypenny list | `moneypenny.list` | `{}`; metadata-only discovery, no capability grant |
 | traits get | `traits.get` | `{"id":"..."}` |
 | traits edit | `traits.edit` | `{"id":"...","body":"..."}`; complete string body required, empty allowed |
-| agents/subagents create | `agents.create` / `subagents.create` | `{"prompt":"...", "name":"...", "nick":"...", "agent":"...", "model":"...", "path":"...", "traits":"Name,id"}`; optional flags omitted unless supplied; empty traits selects none; caller identity and permissions cannot be supplied |
+| agents/subagents create | `agents.create` / `subagents.create` | `{"prompt":"...", "name":"...", "nick":"...", "agent":"...", "model":"...", "no_folder":true, "traits":"Name,id"}`; `no_folder` creates a session-owned scratch workspace instead of `path`; empty traits selects none; caller identity and permissions cannot be supplied |
 | schedule list | `schedule.list` | `{}` |
 | schedule create | `schedule.create` | `{"cron":"...", "prompt":"..."}` or `{"at":"...", "prompt":"..."}` |
 | schedule delete | `schedule.delete` | `{"id":"..."}` |

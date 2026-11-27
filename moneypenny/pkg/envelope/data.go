@@ -48,6 +48,8 @@ type CreateSessionData struct {
 	SessionID          string              `json:"session_id"`
 	Name               string              `json:"name"`
 	Path               string              `json:"path"`
+	NoFolder           bool                `json:"no_folder,omitempty"`
+	Worktree           *WorktreeData       `json:"worktree,omitempty"`
 	Environment        map[string]string   `json:"environment,omitempty"`
 	GadgetRoute        map[string]string   `json:"gadget_route,omitempty"` // operator-only daemon routing metadata
 	GadgetCapabilities *GadgetCapabilities `json:"gadget_capabilities,omitempty"`
@@ -67,6 +69,12 @@ type CreateSessionData struct {
 	// whose memory folder should be copied into the new session's memory folder
 	// (used when duplicating a session so the copy inherits accumulated memory).
 	CopyMemoryFrom string `json:"copy_memory_from,omitempty"`
+}
+
+type WorktreeData struct {
+	Repository string `json:"repository"`
+	Folder     string `json:"folder"`
+	Branch     string `json:"branch"`
 }
 
 // ContinueSessionData is the data payload for continue_session.

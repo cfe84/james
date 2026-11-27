@@ -11,6 +11,9 @@ func init() {
 	CommandHelp["create session"] += "\n  --from             Originating agent session ID; attributes the initial prompt without creating a parent/child relationship"
 	CommandHelp["create subsession"] += "\n  --traits           Comma-separated trait IDs/names (omitted or empty selects none)"
 	CommandHelp["create subsession"] += "\n  --nick             Optional unique short nickname\n  --project          Project name or ID (omitted inherits parent's project)\n  --env              Agent environment NAME=VALUE (repeatable)\n  --compaction       agent or custom\n  --compaction-threshold-tokens Custom threshold in tokens (10000-900000)\n  --yolo=false       Explicitly disable inherited permission bypass"
+	for _, command := range []string{"create session", "create subsession"} {
+		CommandHelp[command] += "\n  --no-folder        Use a private scratch workspace instead of --path\n  --worktree-folder  Sibling folder name for a new Git worktree (requires --path REPO and --worktree-branch BRANCH)\n  --worktree-branch  New branch for the Git worktree"
+	}
 	for _, command := range []string{"create session", "create subsession", "copy session", "update session"} {
 		CommandHelp[command] += "\n  --ponsonbies       Comma-separated shared-store names/IDs; :read disables transcript publication; none/explicit empty opts out. Creation uses defaults, copy inherits, update preserves omitted selection. Publishing shares unprocessed conversation history with the store host/provider."
 		CommandHelp[command] += permissionsHelp

@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
+	"path"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -28,6 +28,14 @@ const (
 	wizardStepForm       = 2
 )
 
+const (
+	workspaceFolder = iota
+	workspaceScratch
+	workspaceWorktree
+)
+
+var workspaceModes = [...]string{"Existing folder", "No folder", "New Git worktree"}
+
 // wizardModel is a 3-step wizard for creating a new session or project.
 type wizardModel struct {
 	step   int
@@ -42,11 +50,15 @@ type wizardModel struct {
 	mpLoading    bool
 
 	// Step 2: path browser
-	currentPath string
-	dirEntries  []dirEntry
-	pathCursor  int
-	pathLoading bool
-	showHidden  bool // toggle with 'a' to show/hide hidden directories
+	currentPath    string
+	dirEntries     []dirEntry
+	pathCursor     int
+	pathLoading    bool
+	workspaceMode  int
+	worktreeInput  *textInput
+	worktreeFolder string
+	worktreeBranch string
+	showHidden     bool // toggle with 'a' to show/hide hidden directories
 	// Folder creation: when creatingFolder is set, the path step shows an inline
 	// text input for the new folder's name (triggered by the "+ Add folder"
 	// entry). folderName holds the in-progress name; folderErr a failure.
@@ -320,7 +332,14 @@ func (m wizardModel) createSession() tea.Cmd {
 			args = append(args, sourceID)
 		}
 		args = append(args, "-m", m.selectedMP)
-		args = append(args, "--path", m.selectedPath)
+		if m.workspaceMode == workspaceScratch {
+			args = append(args, "--no-folder")
+		} else {
+			args = append(args, "--path", m.selectedPath)
+			if m.workspaceMode == workspaceWorktree {
+				args = append(args, "--worktree-folder="+m.worktreeFolder, "--worktree-branch="+m.worktreeBranch)
+			}
+		}
 
 		prompt := ""
 		var traitIDs []string
@@ -716,6 +735,27 @@ func (m wizardModel) updateMPStep(msg tea.KeyMsg) (wizardModel, tea.Cmd) {
 }
 
 func (m wizardModel) updatePathStep(msg tea.KeyMsg) (wizardModel, tea.Cmd) {
+	if m.worktreeInput != nil {
+		if msg.String() == "esc" {
+			m.worktreeInput = nil
+			return m, nil
+		}
+		if _, submit := m.worktreeInput.HandleKey(msg); !submit {
+			return m, nil
+		}
+		value := strings.TrimSpace(m.worktreeInput.Value())
+		if value == "" {
+			m.err = fmt.Errorf("a folder name and new branch are required")
+			return m, nil
+		}
+		if m.worktreeFolder == "" {
+			m.worktreeFolder = value
+			m.worktreeInput.Reset()
+			return m, nil
+		}
+		m.worktreeBranch, m.worktreeInput = value, nil
+		return m.confirmWorkspace()
+	}
 	// Inline folder-name input mode (triggered by the "+ Add folder" entry).
 	if m.creatingFolder {
 		switch msg.String() {
@@ -747,6 +787,21 @@ func (m wizardModel) updatePathStep(msg tea.KeyMsg) (wizardModel, tea.Cmd) {
 		}
 	}
 
+	if !m.forProject && m.sourceSessionID == "" && (msg.String() == "left" || msg.String() == "right") {
+		delta := 1
+		if msg.String() == "left" {
+			delta = -1
+		}
+		m.workspaceMode = (m.workspaceMode + delta + len(workspaceModes)) % len(workspaceModes)
+		m.pathCursor = 0
+		return m, nil
+	}
+	if m.workspaceMode == workspaceScratch {
+		if msg.String() == "tab" || msg.String() == "enter" {
+			return m.confirmWorkspace()
+		}
+		return m, nil
+	}
 	if m.pathLoading {
 		return m, nil
 	}
@@ -755,6 +810,10 @@ func (m wizardModel) updatePathStep(msg tea.KeyMsg) (wizardModel, tea.Cmd) {
 	dirs := m.visibleDirs()
 	// List layout: 0=".."; 1..len(dirs)=dirs; len(dirs)+1="+ Add folder".
 	addFolderIdx := len(dirs) + 1
+	lastIdx := addFolderIdx
+	if m.workspaceMode == workspaceWorktree {
+		lastIdx--
+	}
 
 	switch msg.String() {
 	case "up", "k":
@@ -762,13 +821,13 @@ func (m wizardModel) updatePathStep(msg tea.KeyMsg) (wizardModel, tea.Cmd) {
 			m.pathCursor--
 		}
 	case "down", "j":
-		if m.pathCursor < addFolderIdx {
+		if m.pathCursor < lastIdx {
 			m.pathCursor++
 		}
 	case "enter":
 		if m.pathCursor == 0 {
 			// ".." — go up.
-			parent := filepath.Dir(m.currentPath)
+			parent := wizardParentPath(m.currentPath)
 			if parent != m.currentPath {
 				m.currentPath = parent
 				m.pathLoading = true
@@ -783,20 +842,22 @@ func (m wizardModel) updatePathStep(msg tea.KeyMsg) (wizardModel, tea.Cmd) {
 		} else {
 			idx := m.pathCursor - 1
 			if idx < len(dirs) {
-				m.currentPath = filepath.Join(m.currentPath, dirs[idx].Name)
+				m.currentPath = strings.TrimRight(m.currentPath, `/\`) + "/" + dirs[idx].Name
 				m.pathLoading = true
 				m.pathCursor = 0
 				return m, m.loadDirectory()
 			}
 		}
 	case "tab":
-		// Confirm current path.
-		m.selectedPath = m.currentPath
-		m.step = wizardStepForm
-		return m, m.loadModelsIfNeeded()
+		if m.workspaceMode == workspaceWorktree {
+			input := newTextInput(false)
+			m.worktreeFolder, m.worktreeInput = "", &input
+			return m, nil
+		}
+		return m.confirmWorkspace()
 	case "backspace":
 		// Go up one level.
-		parent := filepath.Dir(m.currentPath)
+		parent := wizardParentPath(m.currentPath)
 		if parent != m.currentPath {
 			m.currentPath = parent
 			m.pathLoading = true
@@ -810,6 +871,28 @@ func (m wizardModel) updatePathStep(msg tea.KeyMsg) (wizardModel, tea.Cmd) {
 		return m, m.loadDirectory()
 	}
 	return m, nil
+}
+
+func (m wizardModel) confirmWorkspace() (wizardModel, tea.Cmd) {
+	m.selectedPath = m.currentPath
+	m.step = wizardStepForm
+	return m, m.loadModelsIfNeeded()
+}
+
+func (m wizardModel) worktreeDestination() string {
+	return strings.TrimRight(wizardParentPath(m.currentPath), "/") + "/" + m.worktreeFolder
+}
+
+func wizardParentPath(dir string) string {
+	if len(dir) >= 3 && dir[1] == ':' {
+		dir = strings.ReplaceAll(dir, "\\", "/")
+		parent := path.Dir(dir)
+		if len(parent) == 2 {
+			return parent + "/"
+		}
+		return parent
+	}
+	return path.Dir(dir)
 }
 
 func (m wizardModel) updateFormStep(msg tea.KeyMsg) (wizardModel, tea.Cmd) {
@@ -1227,6 +1310,23 @@ func (m wizardModel) viewMPStep() string {
 
 func (m wizardModel) viewPathStep() string {
 	var b strings.Builder
+	if !m.forProject && m.sourceSessionID == "" {
+		fmt.Fprintf(&b, "  Workspace: %s  (left/right to switch)\n\n", workspaceModes[m.workspaceMode])
+	}
+	if m.workspaceMode == workspaceScratch {
+		return b.String() + "  A private scratch folder will be removed when this session is deleted.\n"
+	}
+	if m.worktreeInput != nil {
+		if m.worktreeFolder == "" {
+			fmt.Fprintf(&b, "  Sibling folder name: %s\n", m.worktreeInput.Render())
+		} else {
+			fmt.Fprintf(&b, "  Destination: %s\n  New branch: %s\n", m.worktreeDestination(), m.worktreeInput.Render())
+		}
+		return b.String() + "  enter: continue · esc: cancel\n"
+	}
+	if m.workspaceMode == workspaceWorktree {
+		b.WriteString("  Select the checkout root. The new branch starts from its HEAD.\n")
+	}
 
 	pathLabel := lipgloss.NewStyle().Foreground(colorPrimary).Bold(true).Render(m.currentPath)
 	mpLabel := lipgloss.NewStyle().Foreground(colorMuted).Render(m.selectedMP)
@@ -1252,6 +1352,9 @@ func (m wizardModel) viewPathStep() string {
 	// Item 0 is "..", items 1..len(dirs) are dirs, last item is "+ Add folder".
 	addFolderIdx := len(dirs) + 1
 	totalItems := len(dirs) + 2
+	if m.workspaceMode == workspaceWorktree {
+		totalItems--
+	}
 	start := 0
 	if m.pathCursor >= maxVisible {
 		start = m.pathCursor - maxVisible + 1
@@ -1312,9 +1415,15 @@ func (m wizardModel) viewFormStep() string {
 	// Show selections from previous steps.
 	mpLabel := lipgloss.NewStyle().Foreground(colorMuted).Render("Moneypenny:")
 	pathLabel := lipgloss.NewStyle().Foreground(colorMuted).Render("Path:")
+	displayPath := m.selectedPath
+	if m.workspaceMode == workspaceScratch {
+		displayPath = "No folder (private scratch)"
+	} else if m.workspaceMode == workspaceWorktree {
+		displayPath = m.worktreeDestination() + " (" + m.worktreeBranch + ")"
+	}
 	b.WriteString(fmt.Sprintf("  %s %s    %s %s\n\n",
 		mpLabel, lipgloss.NewStyle().Foreground(colorSuccess).Render(m.selectedMP),
-		pathLabel, lipgloss.NewStyle().Foreground(colorSuccess).Render(m.selectedPath)))
+		pathLabel, lipgloss.NewStyle().Foreground(colorSuccess).Render(displayPath)))
 
 	// Size the label column to the longest field label (clamped), so long trait
 	// names don't wrap. valueIndent = labelWidth + indent (2) + space (1).

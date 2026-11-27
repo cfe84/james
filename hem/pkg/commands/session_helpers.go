@@ -2,10 +2,12 @@ package commands
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"james/hem/pkg/store"
@@ -18,6 +20,9 @@ type sessionParams struct {
 	SessionName               string
 	SystemPrompt              string
 	Path                      string
+	NoFolder                  bool
+	WorktreeFolder            string
+	WorktreeBranch            string
 	Agent                     string
 	Model                     string
 	Effort                    string
@@ -208,6 +213,26 @@ func generateSessionName(prompt, providedName string) string {
 	return name
 }
 
+func (params *sessionParams) workspaceFlags(fs *flag.FlagSet) {
+	fs.BoolVar(&params.NoFolder, "no-folder", false, "create a session-owned scratch folder")
+	fs.StringVar(&params.WorktreeFolder, "worktree-folder", "", "create a sibling Git worktree with this folder name")
+	fs.StringVar(&params.WorktreeBranch, "worktree-branch", "", "new branch for the Git worktree")
+}
+
+func (params *sessionParams) validateWorkspace(args []string) error {
+	if end := slices.Index(args, "--"); end >= 0 {
+		args = args[:end]
+	}
+	worktree := flagSeenIn(args, "worktree-folder") || flagSeenIn(args, "worktree-branch")
+	if params.NoFolder && (flagSeenIn(args, "path") || worktree) {
+		return fmt.Errorf("--no-folder cannot be combined with --path or worktree flags")
+	}
+	if worktree && (params.Path == "" || !flagSeenIn(args, "path") || params.WorktreeFolder == "" || params.WorktreeBranch == "") {
+		return fmt.Errorf("Git worktree requires --path, --worktree-folder and --worktree-branch")
+	}
+	return nil
+}
+
 // buildCreateSessionData builds the command data map for create_session.
 func buildCreateSessionData(params *sessionParams, sessionID, prompt string) (map[string]interface{}, error) {
 	cmdData := map[string]interface{}{
@@ -216,6 +241,13 @@ func buildCreateSessionData(params *sessionParams, sessionID, prompt string) (ma
 		"name":       params.SessionName,
 		"prompt":     prompt,
 		"path":       params.Path,
+	}
+	if params.NoFolder {
+		cmdData["path"] = ""
+		cmdData["no_folder"] = true
+	} else if params.WorktreeFolder != "" {
+		cmdData["path"] = ""
+		cmdData["worktree"] = envelope.WorktreeData{Repository: params.Path, Folder: params.WorktreeFolder, Branch: params.WorktreeBranch}
 	}
 	if params.SystemPrompt != "" {
 		cmdData["system_prompt"] = params.SystemPrompt

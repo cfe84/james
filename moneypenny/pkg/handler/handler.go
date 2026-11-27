@@ -558,9 +558,13 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id must be a canonical UUID")
 	}
 
-	// Validate path exists.
-	if _, err := os.Stat(data.Path); err != nil {
-		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidPath, fmt.Sprintf("path does not exist: %s", data.Path))
+	if (data.NoFolder && data.Worktree != nil) || (data.Path != "" && (data.NoFolder || data.Worktree != nil)) {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "select exactly one workspace option")
+	}
+	if !data.NoFolder && data.Worktree == nil {
+		if _, err := os.Stat(data.Path); err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidPath, fmt.Sprintf("path does not exist: %s", data.Path))
+		}
 	}
 
 	// Check agent binary exists (PATH or well-known install locations).
@@ -610,7 +614,44 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 		}
 		sess.GadgetCapabilities = encoded
 	}
+	if data.NoFolder || data.Worktree != nil {
+		if err := ctx.Err(); err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
+		}
+		existing, err := h.store.GetSession(data.SessionID)
+		if err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
+		}
+		if existing != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionAlreadyExists, "session already exists")
+		}
+	}
+	var scratch string
+	if data.NoFolder {
+		scratch, err = scratchRoot()
+		if err == nil {
+			err = os.MkdirAll(scratch, 0700)
+		}
+		if err == nil {
+			data.Path = filepath.Join(scratch, data.SessionID)
+			err = os.Mkdir(data.Path, 0700)
+		}
+		if err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("creating scratch workspace: %v", err))
+		}
+	} else if data.Worktree != nil {
+		data.Path, err = createSessionWorktree(ctx, data.Worktree)
+		if err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidPath, err.Error())
+		}
+	}
+	sess.Path = data.Path
 	if err := h.store.CreateSession(sess); err != nil {
+		if scratch != "" {
+			if cleanupErr := removeScratchWorkspace(scratch, data.SessionID); cleanupErr != nil {
+				h.errorLog("failed to remove unregistered scratch workspace for %s: %v", data.SessionID, cleanupErr)
+			}
+		}
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionAlreadyExists, fmt.Sprintf("session already exists: %s", data.SessionID))
 	}
 	// Set status to working.
@@ -1807,6 +1848,14 @@ func (h *Handler) deleteSession(_ context.Context, cmd *envelope.Command) *envel
 			h.errorLog("failed to delete artifacts for session %s: %v", data.SessionID, err)
 			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, "failed to delete session artifacts")
 		}
+	}
+	root, err := scratchRoot()
+	if err == nil {
+		err = removeScratchWorkspace(root, data.SessionID)
+	}
+	if err != nil {
+		h.errorLog("failed to resolve or delete scratch workspace for %s: %v", data.SessionID, err)
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, "failed to delete scratch workspace")
 	}
 	if err := h.store.DeleteSession(data.SessionID); err != nil {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, fmt.Sprintf("failed to delete session: %v", err))
