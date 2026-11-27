@@ -791,7 +791,7 @@ func (m wizardModel) updatePathStep(msg tea.KeyMsg) (wizardModel, tea.Cmd) {
 		}
 	}
 
-	if !m.forProject && m.sourceSessionID == "" && (msg.String() == "left" || msg.String() == "right") {
+	if !m.forProject && (msg.String() == "left" || msg.String() == "right") {
 		delta := 1
 		if msg.String() == "left" {
 			delta = -1
@@ -1314,7 +1314,7 @@ func (m wizardModel) viewMPStep() string {
 
 func (m wizardModel) viewPathStep() string {
 	var b strings.Builder
-	if !m.forProject && m.sourceSessionID == "" {
+	if !m.forProject {
 		fmt.Fprintf(&b, "  Workspace: %s  (left/right to switch)\n\n", workspaceModes[m.workspaceMode])
 	}
 	if m.workspaceMode == workspaceScratch {

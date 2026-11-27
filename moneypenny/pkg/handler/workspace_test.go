@@ -26,6 +26,9 @@ func TestSessionWorkspaceLifecycle(t *testing.T) {
 	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
 	h, _ := gadgetTestHandler(t)
 	t.Cleanup(h.Close)
+	if err := h.store.AddConversationTurn(gadgetSession, "user", "original prompt"); err != nil {
+		t.Fatal(err)
+	}
 	started := make(chan string, 2)
 	h.runAgentFunc = func(_ context.Context, params agent.RunParams) (*agent.Result, error) {
 		started <- params.Path
@@ -56,12 +59,12 @@ func TestSessionWorkspaceLifecycle(t *testing.T) {
 		{"00000000-0000-0000-0000-000000000073", true},
 		{"00000000-0000-0000-0000-000000000074", false},
 	} {
-		data := envelope.CreateSessionData{SessionID: test.id, Name: "test", Agent: "git", Prompt: "test", NoFolder: test.scratch}
+		data := envelope.CreateSessionData{SessionID: test.id, Name: "test", Agent: "git", Prompt: "test", NoFolder: test.scratch, CopyHistoryFrom: gadgetSession}
 		if !test.scratch {
 			data.Worktree = &envelope.WorktreeData{Repository: repo, Folder: "jamy", Branch: "features/jamy"}
 		}
 		raw, _ := json.Marshal(data)
-		resp := h.createSession(ctx, &envelope.Command{Data: raw})
+		resp := h.createSession(ctx, &envelope.Command{Method: "create_session_with_history", Data: raw})
 		if resp.Status != envelope.StatusSuccess {
 			t.Fatalf("create failed: %#v", resp)
 		}
@@ -94,6 +97,10 @@ func TestSessionWorkspaceLifecycle(t *testing.T) {
 			}
 		case <-ctx.Done():
 			t.Fatal(ctx.Err())
+		}
+		turns, err := h.store.GetConversation(test.id)
+		if err != nil || len(turns) < 2 || turns[0].Content != "original prompt" || turns[1].Content != data.Prompt {
+			t.Fatalf("duplicate missing copied history before handoff: %+v, %v", turns, err)
 		}
 		raw, _ = json.Marshal(envelope.SessionIDData{SessionID: test.id})
 		if resp := h.deleteSession(ctx, &envelope.Command{Data: raw}); resp.Status != envelope.StatusSuccess {

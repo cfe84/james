@@ -559,7 +559,7 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 	}
 	if cmd.Method == "create_session_with_history" || data.CopyHistoryFrom != "" {
 		if cmd.Method != "create_session_with_history" || !sessionIDPattern.MatchString(data.CopyHistoryFrom) ||
-			data.CopyHistoryFrom == data.SessionID || data.NoFolder || data.Worktree != nil {
+			data.CopyHistoryFrom == data.SessionID {
 			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "invalid conversation history copy request")
 		}
 	}
@@ -630,6 +630,15 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 		}
 		if existing != nil {
 			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionAlreadyExists, "session already exists")
+		}
+		if data.CopyHistoryFrom != "" {
+			source, err := h.store.GetSession(data.CopyHistoryFrom)
+			if err != nil {
+				return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
+			}
+			if source == nil {
+				return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionNotFound, "copy_history_from is not a known session")
+			}
 		}
 	}
 	var scratch string

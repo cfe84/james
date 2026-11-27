@@ -489,8 +489,9 @@ test('Add subagent opens the shared create wizard with parent host and path', as
 });
 
 test('shared create wizard routes creation modes and retains fields on failure', async () => {
-  for (const mode of ['create', 'copy', 'copy-history', 'subagent', 'subagent-error', 'scratch', 'worktree']) {
+  for (const mode of ['create', 'copy', 'copy-history', 'subagent', 'subagent-error', 'scratch', 'worktree', 'copy-scratch', 'copy-worktree']) {
     const copy = mode.startsWith('copy');
+    const workspaceMode = mode.replace(/^copy-/, '');
     const values = {
       'wiz-prompt': 'Build it', 'wiz-name': 'worker', 'wiz-nick': 'worker-nick',
       'wiz-project': 'project', 'wiz-agent': 'copilot', 'wiz-model': 'model',
@@ -506,7 +507,7 @@ test('shared create wizard routes creation modes and retains fields on failure',
     const events = [];
     const context = vm.createContext({
       wizardState: { copy, sourceId: 'source', parentId: subagent ? 'parent' : '',
-        selectedMP: 'host', currentPath: '/work', workspaceMode: mode, worktreeFolder: 'jamy', worktreeBranch: 'features/jamy' },
+        selectedMP: 'host', currentPath: '/work', workspaceMode, worktreeFolder: 'jamy', worktreeBranch: 'features/jamy' },
       document: {
         getElementById: id => elements[id],
         querySelectorAll: () => [{ value: 'trait' }],
@@ -541,13 +542,13 @@ test('shared create wizard routes creation modes and retains fields on failure',
       ['--system-prompt', 'instructions'], ['--env', 'SETTING=value'],
       ['--compaction', 'custom'], ['--compaction-threshold-tokens', '150000'], ['--traits', 'trait'],
     ]) assert.equal(args[args.indexOf(flag) + 1], value, flag);
-    if (mode === 'scratch') {
+    if (workspaceMode === 'scratch') {
       assert.ok(args.includes('--no-folder'));
       assert.ok(!args.includes('--path'));
     } else {
       assert.equal(args[args.indexOf('--path') + 1], '/work');
     }
-    if (mode === 'worktree') {
+    if (workspaceMode === 'worktree') {
       assert.ok(args.includes('--worktree-folder=jamy'));
       assert.ok(args.includes('--worktree-branch=features/jamy'));
     }

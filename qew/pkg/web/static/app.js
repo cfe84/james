@@ -2771,12 +2771,12 @@
     renderWizardModal(`
       <h3>${wizardTitle()}</h3>
       <div class="step-label">Step 2 of 3 — Select Path</div>
-      ${wizardState.copy ? '' : `<label for="wizard-workspace-mode">Workspace</label>
+      <label for="wizard-workspace-mode">Workspace</label>
         <select id="wizard-workspace-mode">
           <option value="folder"${mode === 'folder' ? ' selected' : ''}>Existing folder</option>
           <option value="scratch"${mode === 'scratch' ? ' selected' : ''}>No folder</option>
           <option value="worktree"${mode === 'worktree' ? ' selected' : ''}>New Git worktree</option>
-        </select>`}
+        </select>
       ${mode === 'scratch' ? '<p>Moneypenny will create a private scratch folder and remove it when you delete this session.</p>' : `
         <div class="dir-current">📂 ${escapeHtml(wizardState.currentPath)}</div>
         <div class="dir-browser" id="wizard-dirs"><div class="loading">Loading...</div></div>`}
@@ -3052,9 +3052,9 @@
     const args = copy ? [wizardState.sourceId] : parentId ? [parentId] : [];
     if (copy && document.getElementById('wiz-copy-history')?.checked) args.push('--copy-history');
     args.push('-m', wizardState.selectedMP, '--async');
-    if (!copy && wizardState.workspaceMode === 'scratch') args.push('--no-folder');
+    if (wizardState.workspaceMode === 'scratch') args.push('--no-folder');
     else args.push('--path', wizardState.currentPath);
-    if (!copy && wizardState.workspaceMode === 'worktree') {
+    if (wizardState.workspaceMode === 'worktree') {
       args.push('--worktree-folder=' + wizardState.worktreeFolder, '--worktree-branch=' + wizardState.worktreeBranch);
     }
     const name = document.getElementById('wiz-name').value.trim();

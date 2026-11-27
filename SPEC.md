@@ -682,7 +682,7 @@ available to retry.
 
 `hem create session -m|--moneypenny NAME PROMPT [flags]`
 
-The Qew and Hem TUI new-agent path step offers **Existing folder**, **No
+The Qew and Hem TUI create and duplicate agent path step offers **Existing folder**, **No
 folder**, and **New Git worktree**. Existing folder keeps the current picker
 and defaults. No folder creates a private workspace identified by the session
 ID under `~/.local/share/james/workspaces` on macOS/Linux or
@@ -697,11 +697,11 @@ folder name and a new branch, and review the destination. For example, selecting
 destination or branch is rejected; deleting the session leaves the worktree and
 branch intact.
 
-`hem create session` and `hem create subsession` accept `--no-folder` instead of
+`hem create session`, `hem create subsession`, and `hem copy session` accept `--no-folder` instead of
 `--path`, or `--path REPO --worktree-folder NAME --worktree-branch BRANCH`.
 `gadgets agents create` and `gadgets subagents create` accept `--no-folder`
-instead of `--path`. Copying an existing session continues to use the folder
-picker and does not provision a new workspace.
+instead of `--path`. Duplicates still default to the source folder. The workspace
+choice is independent of whether the conversation history is copied.
 
 - `-m` is optional if a default moneypenny is set.
 - Hem generates a session_id (UUID) and sends `create_session` to the moneypenny.

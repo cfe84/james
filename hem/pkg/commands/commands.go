@@ -5681,6 +5681,7 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 
 	remaining, err := parseFlagsFromArgs("copy-session", args, func(fs *flag.FlagSet) {
 		capabilityFlags.register(fs)
+		params.workspaceFlags(fs)
 		fs.BoolVar(&copyHistory, "copy-history", false, "copy the conversation transcript on the same Moneypenny")
 		fs.StringVar(&sourceSessionID, "session-id", "", "source session ID")
 		fs.StringVar(&params.MoneypennyName, "m", "", "target moneypenny name")
@@ -5702,6 +5703,9 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 		fs.Var(&params.Environment, "env", "replace agent environment with NAME=VALUE entries (repeatable)")
 	})
 	if err != nil {
+		return protocol.ErrResponse(err.Error())
+	}
+	if err := params.validateWorkspace(args); err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
 	compactionThresholdExplicit := flagSeenIn(args, "compaction-threshold-tokens")
@@ -5840,7 +5844,7 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	if params.SystemPrompt == "" {
 		params.SystemPrompt = sp
 	}
-	if params.Path == "" {
+	if params.Path == "" && !params.NoFolder {
 		params.Path = src.Path
 	}
 	if params.CompactionMode == "" {

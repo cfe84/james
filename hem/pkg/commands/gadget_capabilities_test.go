@@ -311,12 +311,23 @@ func TestGadgetCapabilitiesCommandForwarding(t *testing.T) {
 		t.Fatalf("show lost permissions: %s, %v", shown.Data, err)
 	}
 	check(e.CopySession([]string{"source", "--async"}), updated)
+	<-creates
 	copied := updated
 	copied.Agents = false
-	check(e.CopySession([]string{"source", "--async", "--gadget-agents=false"}), copied)
+	check(e.CopySession([]string{"source", "--async", "--gadget-agents=false", "--no-folder"}), copied)
+	if scratch := <-creates; string(scratch["no_folder"]) != "true" || string(scratch["path"]) != `""` {
+		t.Fatalf("scratch copy forwarded the wrong workspace: %v", scratch)
+	}
 	copied = updated
 	copied.Traits = false
-	check(e.CopySession([]string{"source", "--async", "--gadget-traits=false", "--copy-history"}), copied)
+	check(e.CopySession([]string{"source", "--async", "--gadget-traits=false", "--copy-history", "--path", "/repo", "--worktree-folder", "jamy", "--worktree-branch", "features/jamy"}), copied)
+	worktree := <-creates
+	var workspace envelope.WorktreeData
+	if err := json.Unmarshal(worktree["worktree"], &workspace); err != nil ||
+		workspace != (envelope.WorktreeData{Repository: "/repo", Folder: "jamy", Branch: "features/jamy"}) ||
+		string(worktree["path"]) != `""` || string(worktree["copy_history_from"]) != `"source"` {
+		t.Fatalf("worktree and history copy forwarded the wrong data: %v, %v", worktree, err)
+	}
 	updated.Traits = false
 	check(e.UpdateSession([]string{"source", "--gadget-traits=false"}), updated)
 	if resp := e.UpdateSession([]string{"source", "--gadget-agents=maybe"}); resp.Status != "error" || !strings.Contains(resp.Message, "true or false") {

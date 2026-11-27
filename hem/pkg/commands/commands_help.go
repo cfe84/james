@@ -12,7 +12,7 @@ func init() {
 	CommandHelp["copy session"] += "\n  --copy-history     Copy the transcript on the same Moneypenny, in addition to the handoff summary"
 	CommandHelp["create subsession"] += "\n  --traits           Comma-separated trait IDs/names (omitted or empty selects none)"
 	CommandHelp["create subsession"] += "\n  --nick             Optional unique short nickname\n  --project          Project name or ID (omitted inherits parent's project)\n  --env              Agent environment NAME=VALUE (repeatable)\n  --compaction       agent or custom\n  --compaction-threshold-tokens Custom threshold in tokens (10000-900000)\n  --yolo=false       Explicitly disable inherited permission bypass"
-	for _, command := range []string{"create session", "create subsession"} {
+	for _, command := range []string{"create session", "create subsession", "copy session"} {
 		CommandHelp[command] += "\n  --no-folder        Use a private scratch workspace instead of --path\n  --worktree-folder  Sibling folder name for a new Git worktree (requires --path REPO and --worktree-branch BRANCH)\n  --worktree-branch  New branch for the Git worktree"
 	}
 	for _, command := range []string{"create session", "create subsession", "copy session", "update session"} {
