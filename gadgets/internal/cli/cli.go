@@ -41,6 +41,7 @@ Usage:
   gadgets memory revisions [path]
   gadgets agents list
   gadgets agents create [--name name] [--nick nick] [--agent agent] [--model model] [--path path | --no-folder] [--moneypenny name] [--traits names-or-IDs] [--yolo]
+  gadgets hem copy session SESSION_ID [--moneypenny name] --copy-artifacts --async
                                              (prompt on stdin; creates a top-level agent)
   gadgets agents message id [--body text]     (otherwise reads stdin)
   gadgets traits list
@@ -208,9 +209,13 @@ func Run(args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(s
 		MaxResponseHeaderBytes: 32 << 10,
 	}
 	defer transport.CloseIdleConnections()
+	timeout := 30 * time.Second
+	if len(args) >= 3 && args[0] == "hem" && args[1] == "copy" && args[2] == "session" {
+		timeout = 13 * time.Minute
+	}
 	client := &http.Client{
 		Transport: transport,
-		Timeout:   30 * time.Second,
+		Timeout:   timeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},

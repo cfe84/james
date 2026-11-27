@@ -270,7 +270,7 @@ func (h *Handler) prepareGadgets(sessionID string, params *agent.RunParams) erro
 		params.SystemPrompt += "Channel configuration (own session only): gadgets channels providers; gadgets channels search --query TEXT [--provider teams]; gadgets channels list; gadgets channels create --target-id ID [--provider teams --label LABEL --mention NAME --allow-anyone=true]; gadgets channels set ID [--mention NAME --allow-anyone=true|false]; gadgets channels enable ID; gadgets channels disable ID; gadgets channels delete ID. This separate permission does not change daemon credentials, plugin configuration, other sessions or gadget permissions. Empty mention forwards all matching-owner messages; allow-anyone permits other senders.\n"
 	}
 	if caps.Hem {
-		params.SystemPrompt += "Hem administrative proxy: gadgets hem VERB [NOUN] [ARGS...]. This explicit grant allows server-side administrative commands, including mutations and permission changes, independently of other gadget grants. Use only for the user's task. No shell execution, stdin forwarding, interactive/local commands, or transport overrides. Results are JSON; use --async for long-running agent operations. Timeouts do not roll back mutations; inspect state before retrying. Diagnostics: gadgets hem diagnose --name HOST [--session-id ID --scan].\n"
+		params.SystemPrompt += "Hem administrative proxy: gadgets hem VERB [NOUN] [ARGS...]. This explicit grant allows server-side administrative commands, including mutations and permission changes, independently of other gadget grants. Use only for the user's task. No shell execution, stdin forwarding, interactive/local commands, or transport overrides. Results are JSON; use --async for long-running agent operations. Timeouts do not roll back mutations; inspect state before retrying. Diagnostics: gadgets hem diagnose --name HOST [--session-id ID --scan]. Duplicate published session artifacts: gadgets hem copy session ID --copy-artifacts --async [--moneypenny HOST].\n"
 	}
 	if session.Yolo {
 		params.SystemPrompt += "Background commands: gadgets run-and-callback -- command [args...] returns a job ID and stdout/stderr paths; gadgets run list, gadgets run status ID, gadgets run stop ID. Commands run without a shell in your session directory, output is bounded, and completion queues an exit-code callback to this session. Available only while License to Kill remains enabled.\n"
@@ -351,6 +351,12 @@ func (h *Handler) serveGadget(w http.ResponseWriter, r *http.Request) {
 	if err := decoder.Decode(new(any)); err != io.EOF {
 		reply(http.StatusBadRequest, nil, &gadgetError{"invalid_request", "Expected one JSON request"})
 		return
+	}
+	if timeout := gadgetRouteTimeout(request.Method, request.Data); timeout > 25*time.Second {
+		if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(timeout + 5*time.Second)); err != nil {
+			reply(http.StatusInternalServerError, nil, err)
+			return
+		}
 	}
 	data, err := h.executeGadget(r.Context(), sessionID, request)
 	reply(http.StatusOK, data, err)

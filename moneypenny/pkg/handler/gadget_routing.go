@@ -140,6 +140,18 @@ type gadgetHemResponse struct {
 	RequestID string          `json:"request_id"`
 }
 
+func gadgetRouteTimeout(method string, data json.RawMessage) time.Duration {
+	var request struct {
+		Args []string `json:"args"`
+	}
+	if method == "hem.command" && json.Unmarshal(data, &request) == nil &&
+		len(request.Args) >= 2 && request.Args[0] == "copy" && request.Args[1] == "session" {
+		// Copy prepares the handoff and transfers snapshots before --async can return.
+		return 12 * time.Minute
+	}
+	return 25 * time.Second
+}
+
 func (h *Handler) routeGadget(ctx context.Context, sessionID, method string, data json.RawMessage) (any, error) {
 	switch method {
 	case "agents.list", "agents.message", "agents.create", "subagents.list", "subagents.create", "subagents.message",
@@ -177,7 +189,7 @@ func (h *Handler) routeGadget(ctx context.Context, sessionID, method string, dat
 		return nil, err
 	}
 	request := gadgetHemRequest{"gadget", "route", []string{string(payload)}, "gadget-" + hex.EncodeToString(id[:])}
-	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, gadgetRouteTimeout(method, data))
 	defer cancel()
 
 	address, socket := environment["JAMES_HEM_ADDRESS"], environment["JAMES_HEM_SOCKET"]

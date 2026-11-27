@@ -1525,6 +1525,15 @@ preserve timestamps and attribution, and exclude session-owned artifact
 entries. Unsupported daemons reject the request rather than silently dropping
 history. The provider starts a fresh session with the handoff summary.
 
+`--copy-artifacts` has Hem relay only the source session's published snapshots
+in bounded chunks to the new session's staging directory. Moneypenny enforces
+the normal artifact quotas, verifies sizes and checksums, and recomputes preview
+formats before installing the files. Each destination admits one staged copy
+at a time and reclaims an abandoned slot on the next transfer after 15 minutes.
+The session, copied transcript (if any),
+and artifact cards are inserted together before the agent starts. Shared project
+artifacts stay in Hem; the existing Hem gadget grant controls gadget access.
+
 ## Qew - Web UI for Remote Access
 
 Session routes use `pushState` with a snapshot of the subagent parent stack.

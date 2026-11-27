@@ -83,6 +83,14 @@ type Chunk struct {
 	Content  []byte   `json:"content"`
 }
 
+// CopyChunk appends bytes to an unpublished artifact for a new session.
+type CopyChunk struct {
+	SessionID string   `json:"session_id"`
+	Artifact  Metadata `json:"artifact"`
+	Offset    int64    `json:"offset"`
+	Content   []byte   `json:"content"`
+}
+
 // ViewFormat identifies the candidate preview format by filename.
 func ViewFormat(name string) string {
 	switch strings.ToLower(filepath.Ext(name)) {

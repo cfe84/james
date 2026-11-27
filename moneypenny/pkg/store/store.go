@@ -610,6 +610,32 @@ func (s *Store) CreateSession(sess *Session) error {
 
 // CreateSessionWithHistory inserts the duplicate and snapshots its transcript atomically.
 func (s *Store) CreateSessionWithHistory(sess *Session, sourceID string) error {
+	return s.CreateSessionWithTurns(sess, sourceID, nil)
+}
+
+func copySessionTurns(tx *sql.Tx, targetID, sourceID string) error {
+	var exists bool
+	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM sessions WHERE session_id = ?)`, sourceID).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("source session not found: %s", sourceID)
+	}
+	if _, err := tx.Exec(`INSERT INTO conversation_turns (session_id, role, content, source_session_id, source_name, created_at)
+		SELECT ?, role, content, source_session_id, source_name, created_at
+		FROM conversation_turns WHERE session_id = ? AND role != 'artifact' ORDER BY created_at, id`, targetID, sourceID); err != nil {
+		return fmt.Errorf("copy conversation history: %w", err)
+	}
+	return nil
+}
+
+// CreateSessionWithImportedHistory inserts a session and its transferred turns atomically.
+func (s *Store) CreateSessionWithImportedHistory(sess *Session, turns []*ConversationTurn) error {
+	return s.CreateSessionWithTurns(sess, "", turns)
+}
+
+// CreateSessionWithTurns installs local history and additional imported turns atomically.
+func (s *Store) CreateSessionWithTurns(sess *Session, sourceID string, turns []*ConversationTurn) error {
 	if sourceID == sess.SessionID {
 		return fmt.Errorf("cannot copy a session's history to itself")
 	}
@@ -621,30 +647,13 @@ func (s *Store) CreateSessionWithHistory(sess *Session, sourceID string) error {
 	if err := insertSession(tx, sess); err != nil {
 		return err
 	}
-	var exists bool
-	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM sessions WHERE session_id = ?)`, sourceID).Scan(&exists); err != nil {
-		return err
+	if sourceID != "" {
+		if err := copySessionTurns(tx, sess.SessionID, sourceID); err != nil {
+			return err
+		}
 	}
-	if !exists {
-		return fmt.Errorf("source session not found: %s", sourceID)
-	}
-	if _, err := tx.Exec(`INSERT INTO conversation_turns (session_id, role, content, source_session_id, source_name, created_at)
-		SELECT ?, role, content, source_session_id, source_name, created_at
-		FROM conversation_turns WHERE session_id = ? AND role != 'artifact' ORDER BY created_at, id`, sess.SessionID, sourceID); err != nil {
-		return fmt.Errorf("copy conversation history: %w", err)
-	}
-	return tx.Commit()
-}
-
-// CreateSessionWithImportedHistory inserts a session and its transferred turns atomically.
-func (s *Store) CreateSessionWithImportedHistory(sess *Session, turns []*ConversationTurn) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if err := insertSession(tx, sess); err != nil {
-		return err
+	if len(turns) == 0 {
+		return tx.Commit()
 	}
 	stmt, err := tx.Prepare(`INSERT INTO conversation_turns (session_id, role, content, source_session_id, source_name, created_at)
 		VALUES (?, ?, ?, ?, ?, ?)`)

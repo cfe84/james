@@ -74,6 +74,7 @@ type CreateSessionData struct {
 	// (used when duplicating a session so the copy inherits accumulated memory).
 	CopyMemoryFrom  string          `json:"copy_memory_from,omitempty"`
 	ImportedMemory  json.RawMessage `json:"imported_memory,omitempty"`
+	CopiedArtifacts []string        `json:"copied_artifacts,omitempty"`
 	CopyHistoryFrom string          `json:"copy_history_from,omitempty"`
 	ImportedHistory json.RawMessage `json:"imported_history,omitempty"`
 }

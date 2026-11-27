@@ -502,6 +502,7 @@ test('shared create wizard routes creation modes and retains fields on failure',
     const elements = Object.fromEntries(Object.entries(values).map(([id, value]) => [id, { value }]));
     elements['wiz-yolo'] = { checked: false };
     elements['wiz-copy-history'] = { checked: mode === 'copy-history' };
+    elements['wiz-copy-artifacts'] = { checked: mode === 'copy-history' || mode === 'copy-scratch' };
     elements['wiz-submit'] = {};
     const subagent = mode.startsWith('subagent');
     const events = [];
@@ -536,6 +537,7 @@ test('shared create wizard routes creation modes and retains fields on failure',
     if (subagent) assert.equal(args[0], 'parent');
     if (copy) assert.equal(args[0], 'source');
     assert.equal(args.includes('--copy-history'), mode === 'copy-history');
+    assert.equal(args.includes('--copy-artifacts'), mode === 'copy-history' || mode === 'copy-scratch');
     for (const [flag, value] of [
       ['-m', 'host'], ['--name', 'worker'], ['--project', 'project'],
       ['--agent', 'copilot'], ['--model', 'model'], ['--effort', 'high'], ['--context', 'long_context'],

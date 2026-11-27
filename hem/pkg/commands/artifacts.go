@@ -288,3 +288,47 @@ func (e *Executor) relayArtifact(sessionID, method string, request any) *protoco
 	}
 	return protocol.OKResponse(resp.Data)
 }
+
+func (e *Executor) stageArtifactCopies(ctx context.Context, source, target *store.Moneypenny, sourceID, targetID string) ([]string, error) {
+	resp, err := e.sendCommand(ctx, source, "list_artifacts", envelope.SessionIDData{SessionID: sourceID})
+	if err != nil {
+		return nil, err
+	}
+	var items []artifact.Metadata
+	if err := json.Unmarshal(resp.Data, &items); err != nil || items == nil || len(items) > artifact.MaxFiles {
+		return nil, fmt.Errorf("invalid source artifact list")
+	}
+	ids := make([]string, 0, len(items))
+	var total int64
+	for _, item := range items {
+		if item.ID == "" || item.ProjectID != "" || item.Size < 0 || item.Size > artifact.MaxFileSize || total+item.Size > artifact.MaxSessionSize {
+			return nil, fmt.Errorf("invalid source artifact metadata or capacity")
+		}
+		total += item.Size
+		expected := item
+		expected.SentAt = ""
+		for offset := int64(0); ; {
+			read := artifact.ReadRequest{SessionID: sourceID, ID: item.ID, Offset: offset}
+			resp, err := e.sendCommand(ctx, source, "read_artifact", read)
+			if err != nil {
+				return nil, err
+			}
+			var chunk artifact.Chunk
+			if err := json.Unmarshal(resp.Data, &chunk); err != nil || chunk.Artifact != expected ||
+				len(chunk.Content) > artifact.ChunkSize || int64(len(chunk.Content)) > item.Size-offset ||
+				(len(chunk.Content) == 0 && offset != item.Size) {
+				return nil, fmt.Errorf("invalid or changed source artifact %s", item.ID)
+			}
+			request := artifact.CopyChunk{SessionID: targetID, Artifact: item, Offset: offset, Content: chunk.Content}
+			if _, err := e.sendCommand(ctx, target, "stage_artifact_copy", request); err != nil {
+				return nil, err
+			}
+			offset += int64(len(chunk.Content))
+			if offset == item.Size {
+				break
+			}
+		}
+		ids = append(ids, item.ID)
+	}
+	return ids, nil
+}

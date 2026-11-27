@@ -67,6 +67,7 @@ func TestParseCommands(t *testing.T) {
 		{"hem diagnostics", []string{"hem", "diagnose", "--name", "chfeval-dev", "--session-id", "id", "--scan"}, "", "hem.command", `{"args":["diagnose","--name","chfeval-dev","--session-id","id","--scan"]}`},
 		{"hem literal arguments", []string{"hem", "create", "session", "--async", "--", "text ; $(echo literal)"}, "not forwarded", "hem.command", `{"args":["create","session","--async","--","text ; $(echo literal)"]}`},
 		{"hem command help", []string{"hem", "list", "sessions", "--help"}, "", "hem.command", `{"args":["list","sessions","--help"]}`},
+		{"hem copy artifacts", []string{"hem", "copy", "session", "source", "--copy-artifacts", "--async"}, "", "hem.command", `{"args":["copy","session","source","--copy-artifacts","--async"]}`},
 		{"own daemon logs", []string{"moneypenny", "logs"}, "", "moneypenny.logs", `{}`},
 		{"remote daemon logs", []string{"moneypenny", "logs", "--name", "chfeval-dev", "--lines", "2000"}, "", "moneypenny.logs", `{"name":"chfeval-dev","lines":2000}`},
 		{"literal daemon name", []string{"moneypenny", "logs", "--name=--lines=1", "--lines=1"}, "", "moneypenny.logs", `{"name":"--lines=1","lines":1}`},

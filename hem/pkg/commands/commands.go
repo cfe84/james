@@ -796,9 +796,9 @@ func (e *Executor) sendCommand(ctx context.Context, mp *store.Moneypenny, method
 	if client == nil {
 		return nil, fmt.Errorf("unsupported transport type %q for moneypenny %q", mp.TransportType, mp.Name)
 	}
-	creating := method == "create_session" || method == "create_session_with_history" || method == "create_session_with_memory"
+	creating := method == "create_session" || method == "create_session_with_history" || method == "create_session_with_memory" || method == "create_session_with_artifacts"
 	switch method {
-	case "create_session", "create_session_with_history", "create_session_with_memory", "get_session", "continue_session", "queue_prompt", "compact_session", "distill_session", "update_session":
+	case "create_session", "create_session_with_history", "create_session_with_memory", "create_session_with_artifacts", "get_session", "continue_session", "queue_prompt", "compact_session", "distill_session", "update_session":
 		if fields, ok := data.(map[string]interface{}); ok {
 			copy := make(map[string]interface{}, len(fields)+1)
 			for key, value := range fields {
@@ -5664,7 +5664,7 @@ func (e *Executor) DistillateSession(args []string) *protocol.Response {
 func (e *Executor) CopySession(args []string) *protocol.Response {
 	var sourceSessionID, projectNameOrID string
 	var compactionThresholdTokens int
-	var copyHistory bool
+	var copyHistory, copyArtifacts bool
 	params := &sessionParams{}
 	var capabilityFlags gadgetCapabilityFlags
 	environmentExplicit := false
@@ -5684,6 +5684,7 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 		capabilityFlags.register(fs)
 		params.workspaceFlags(fs)
 		fs.BoolVar(&copyHistory, "copy-history", false, "copy the conversation transcript to the destination Moneypenny")
+		fs.BoolVar(&copyArtifacts, "copy-artifacts", false, "copy published session artifacts to the destination Moneypenny")
 		fs.StringVar(&sourceSessionID, "session-id", "", "source session ID")
 		fs.StringVar(&params.MoneypennyName, "m", "", "target moneypenny name")
 		fs.StringVar(&params.MoneypennyName, "moneypenny", "", "target moneypenny name")
@@ -6017,6 +6018,27 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 		}
 	}
 
+	created := false
+	if copyArtifacts {
+		defer func() {
+			if !created {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if _, err := e.sendCommand(ctx, targetMP, "discard_artifact_copy", envelope.SessionIDData{SessionID: newSessionID}); err != nil {
+					log.Printf("failed to discard staged copies for session %s: %v", newSessionID, err)
+				}
+			}
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		ids, err := e.stageArtifactCopies(ctx, sourceMP, targetMP, sourceSessionID, newSessionID)
+		cancel()
+		if err != nil {
+			return protocol.ErrResponse(fmt.Sprintf("copying session artifacts: %v", err))
+		}
+		method = "create_session_with_artifacts"
+		cmdData["copied_artifacts"] = ids
+	}
+
 	// Track the new session locally on the target moneypenny.
 	if params.ProjectID != "" {
 		if err := e.store.TrackSession(newSessionID, targetMP.Name, params.ProjectID); err != nil {
@@ -6034,6 +6056,7 @@ func (e *Executor) CopySession(args []string) *protocol.Response {
 	if _, err := e.sendCommand(createCtx, targetMP, method, cmdData); err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
+	created = true
 	if len(params.TraitIDs) > 0 {
 		if err := e.store.SetSessionTraits(newSessionID, params.TraitIDs); err != nil {
 			return protocol.ErrResponse(fmt.Sprintf("persisting session traits: %v", err))

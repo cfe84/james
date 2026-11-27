@@ -2923,7 +2923,9 @@
       <label for="wiz-prompt">${promptLabel}</label>
       <textarea id="wiz-prompt" rows="3" placeholder="${escapeAttr(promptPlaceholder)}"></textarea>
       ${copy ? `<label><input type="checkbox" id="wiz-copy-history" style="width:auto"> Copy conversation history</label>
-        <div class="step-label">Copies chat turns to the selected Moneypenny, not files or artifacts.</div>` : ''}
+        <div class="step-label">Copies chat turns to the selected Moneypenny.</div>
+        <label><input type="checkbox" id="wiz-copy-artifacts" style="width:auto"> Copy artifacts</label>
+        <div class="step-label">Copies published session artifacts, not shared project artifacts or workspace files.</div>` : ''}
       <label for="wiz-name">Name (optional)</label>
       <input id="wiz-name" type="text" placeholder="Auto-generated from prompt" value="${escapeAttr(defName)}">
       <label for="wiz-nick">Nick (optional)</label>
@@ -3051,6 +3053,7 @@
     const parentId = wizardState.parentId;
     const args = copy ? [wizardState.sourceId] : parentId ? [parentId] : [];
     if (copy && document.getElementById('wiz-copy-history')?.checked) args.push('--copy-history');
+    if (copy && document.getElementById('wiz-copy-artifacts')?.checked) args.push('--copy-artifacts');
     args.push('-m', wizardState.selectedMP, '--async');
     if (wizardState.workspaceMode === 'scratch') args.push('--no-folder');
     else args.push('--path', wizardState.currentPath);

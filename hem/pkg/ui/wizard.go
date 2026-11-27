@@ -223,9 +223,10 @@ func newWizardModelForCopy(c *client, sourceSessionID string) wizardModel {
 	m := newWizardModel(c)
 	m.sourceSessionID = sourceSessionID
 	m.copyLoading = true
-	m.fields = slices.Insert(m.fields, 1, formField{
-		label: "Copy conversation history to destination", flag: "--copy-history", isBool: true, value: "false",
-	})
+	m.fields = slices.Insert(m.fields, 1,
+		formField{label: "Copy conversation history to destination", flag: "--copy-history", isBool: true, value: "false"},
+		formField{label: "Copy artifacts", flag: "--copy-artifacts", isBool: true, value: "false"},
+	)
 	return m
 }
 

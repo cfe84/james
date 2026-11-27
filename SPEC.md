@@ -320,6 +320,8 @@ Method: **export_conversation**: returns a bounded transcript snapshot for a sou
 
 Method: **export_session_memory**: returns the source session's bounded logical memory snapshot. Cross-host duplication uses **create_session_with_memory** to restore it before registering or starting the destination session, with optional `imported_history` on that same request.
 
+Artifact duplication stages published snapshots with **stage_artifact_copy** and commits them with **create_session_with_artifacts**, optionally with history and memory. **discard_artifact_copy** removes uncommitted staging.
+
 Method: **summarize_session**: asks the moneypenny to compact the session's conversation history into a standalone summary by invoking an agent as a one-shot over the full transcript. Data: `{ "session_id": "id" }`, plus optional agent overrides `{ "agent", "model", "effort", "context_tier", "yolo" }` — when present these replace the session's own agent parameters for the one-shot (used by `hem copy session` so a duplicate targeting a different agent summarizes with the *target* agent rather than the source's, which matters when the source agent is unavailable). Omitted/empty override fields fall back to the source session's value; when the `agent` override is set, `model`/`effort`/`context_tier` are taken only from the overrides (not carried from the source, since they belong to a different model namespace). Returns `{ "session_id": "id", "summary": "..." }`. An empty transcript returns `summary: ""`. Used by `hem summarize session` and by `hem copy session` to bootstrap the new session's prompt. Internally reuses the same `CompactSession` helper used by the agent-side recovery path (when the upstream agent reports its session is lost); the recovery path passes no overrides, so it still uses the session's own agent.
 
 Method: **git_diff**: runs `git diff` and `git diff --cached` in a session's working directory. Data: `{ "session_id": "id" }`. Returns `{ "diff": "..." }`.
@@ -821,6 +823,14 @@ copied transcript available in chat. Cross-host copies require both Moneypennies
 to support transcript transfer and reject snapshots over 4 MiB of encoded
 history or 10,000 turns rather than truncating them. Files, artifacts, scheduled
 jobs, and provider session state are not copied. The default is summary-only.
+
+Use `--copy-artifacts` (**Copy artifacts** in Qew and the Hem TUI) to copy personal
+published artifacts, on the same host or across Moneypennies. This is independent
+of `--copy-history`; shared project artifacts, attachments and workspace files
+are not copied. The destination Moneypenny must support artifact copying.
+Gadgets with the Hem grant can run
+`gadgets hem copy session SOURCE_ID --copy-artifacts --async` and select a
+destination with `--moneypenny`.
 
 - Creates a new session bootstrapped from a summary of an existing one. Source session is preserved (no state migration, no completion).
 - All flags from `create session` apply and override the source's values: `-m/--moneypenny`, `--agent`, `--model`, `--effort`, `--context`, `--name`, `--system-prompt`, `--traits`, `--env`, `--yolo`, `--path`, `--compaction`, `--compaction-threshold-tokens`, `--project`, `--async`. Any flag omitted is copied from the source (traits are inherited from the source unless `--traits` is given; the compaction mode, threshold, and user-provided environment are inherited unless explicitly replaced).

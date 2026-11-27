@@ -419,8 +419,12 @@ func (h *Handler) Handle(ctx context.Context, cmd *envelope.Command) *envelope.R
 		return h.ponsonbyCommand(cmd)
 	case "get_diagnostics":
 		return h.getDiagnostics(ctx, cmd)
-	case "create_session", "create_session_with_history", "create_session_with_memory":
+	case "create_session", "create_session_with_history", "create_session_with_memory", "create_session_with_artifacts":
 		return h.createSession(ctx, cmd)
+	case "stage_artifact_copy":
+		return h.stageArtifactCopy(cmd)
+	case "discard_artifact_copy":
+		return h.discardArtifactCopy(cmd)
 	case "export_conversation":
 		return h.exportConversation(ctx, cmd)
 	case "export_session_memory":
@@ -562,12 +566,17 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "session_id must be a canonical UUID")
 	}
 	localHistory, remoteHistory := data.CopyHistoryFrom != "", data.ImportedHistory != nil
-	withMemory := cmd.Method == "create_session_with_memory"
+	withArtifacts := cmd.Method == "create_session_with_artifacts"
+	if withArtifacts != (data.CopiedArtifacts != nil) {
+		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "invalid artifact copy request")
+	}
+	withMemory := data.ImportedMemory != nil
 	withHistory := localHistory || remoteHistory
-	if withMemory != (data.ImportedMemory != nil) || (withMemory && (data.CopyMemoryFrom != "" || localHistory)) {
+	if (!withArtifacts && withMemory != (cmd.Method == "create_session_with_memory")) ||
+		(withMemory && (data.CopyMemoryFrom != "" || localHistory)) {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "invalid memory copy request")
 	}
-	if (!withMemory && (cmd.Method == "create_session_with_history") != withHistory) || (localHistory && remoteHistory) ||
+	if (!withArtifacts && !withMemory && (cmd.Method == "create_session_with_history") != withHistory) || (localHistory && remoteHistory) ||
 		(localHistory && (!sessionIDPattern.MatchString(data.CopyHistoryFrom) || data.CopyHistoryFrom == data.SessionID)) {
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, "invalid conversation history copy request")
 	}
@@ -644,7 +653,7 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 		}
 		sess.GadgetCapabilities = encoded
 	}
-	if data.NoFolder || data.Worktree != nil || withMemory {
+	if data.NoFolder || data.Worktree != nil || withMemory || withArtifacts {
 		if err := ctx.Err(); err != nil {
 			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
 		}
@@ -666,6 +675,25 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 		}
 	}
 	registered := false
+	if withArtifacts {
+		dir, turns, err := h.installArtifactCopies(data.SessionID, data.CopiedArtifacts)
+		if err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInvalidRequest, fmt.Sprintf("installing copied artifacts: %v", err))
+		}
+		if dir != "" {
+			defer func() {
+				if !registered {
+					if err := os.RemoveAll(dir); err != nil {
+						h.errorLog("failed to remove unregistered artifact copies for %s: %v", data.SessionID, err)
+					}
+				}
+			}()
+		}
+		transferredTurns = append(transferredTurns, turns...)
+		if err := ctx.Err(); err != nil {
+			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
+		}
+	}
 	if withMemory && !transferredMemory.Empty() {
 		dir, err := h.sessionDirPath(data.SessionID)
 		if err != nil {
@@ -714,13 +742,9 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 	}
 	sess.Path = data.Path
 	create := h.store.CreateSession
-	if localHistory {
+	if withHistory || withArtifacts {
 		create = func(s *store.Session) error {
-			return h.store.CreateSessionWithHistory(s, data.CopyHistoryFrom)
-		}
-	} else if remoteHistory {
-		create = func(s *store.Session) error {
-			return h.store.CreateSessionWithImportedHistory(s, transferredTurns)
+			return h.store.CreateSessionWithTurns(s, data.CopyHistoryFrom, transferredTurns)
 		}
 	}
 	if err := create(sess); err != nil {
@@ -729,7 +753,7 @@ func (h *Handler) createSession(ctx context.Context, cmd *envelope.Command) *env
 				h.errorLog("failed to remove unregistered scratch workspace for %s: %v", data.SessionID, cleanupErr)
 			}
 		}
-		if withHistory || withMemory {
+		if withHistory || withMemory || withArtifacts {
 			return envelope.ErrorResponse(cmd.RequestID, envelope.ErrInternalError, err.Error())
 		}
 		return envelope.ErrorResponse(cmd.RequestID, envelope.ErrSessionAlreadyExists, fmt.Sprintf("session already exists: %s", data.SessionID))

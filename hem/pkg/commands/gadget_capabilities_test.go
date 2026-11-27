@@ -16,6 +16,7 @@ import (
 	"james/hem/pkg/protocol"
 	"james/hem/pkg/store"
 	"james/hem/pkg/transport"
+	"james/moneypenny/pkg/artifact"
 	"james/moneypenny/pkg/envelope"
 	mpstore "james/moneypenny/pkg/store"
 )
@@ -173,6 +174,8 @@ func TestGadgetCapabilitiesCommandForwarding(t *testing.T) {
 	creates := make(chan map[string]json.RawMessage, 16)
 	const exportedHistory = `[{"id":0,"role":"user","content":"original","created_at":"2026-01-01T00:00:00Z"}]`
 	const exportedMemory = `{"nodes":[{"path":"","body":"remember this","revision":1}],"claims":[]}`
+	published := artifact.Metadata{ID: "artifact-id", Name: "report.md", Size: 6}
+	staged := make(chan artifact.CopyChunk, 1)
 	original := envelope.GadgetCapabilities{Memory: false, Subagents: true, Agents: true, Traits: true, Scheduling: false}
 	serve := func(in, out *os.File) {
 		source := map[string]interface{}{
@@ -197,13 +200,13 @@ func TestGadgetCapabilitiesCommandForwarding(t *testing.T) {
 					source["gadget_capabilities"] = caps
 				}
 				writes <- command.Data["gadget_capabilities"]
-			case "create_session", "create_session_with_history", "create_session_with_memory":
+			case "create_session", "create_session_with_history", "create_session_with_memory", "create_session_with_artifacts":
 				if got := command.Data["imported_history"]; (command.Method == "create_session_with_history" && len(got) == 0) && string(command.Data["copy_history_from"]) != `"source"` {
 					t.Errorf("local history copy did not name source: %s", command.Data["copy_history_from"])
 				}
 				creates <- command.Data
 				writes <- command.Data["gadget_capabilities"]
-				if command.Data["imported_memory"] != nil && command.Method != "create_session_with_memory" {
+				if command.Data["imported_memory"] != nil && command.Method != "create_session_with_memory" && command.Method != "create_session_with_artifacts" {
 					t.Errorf("remote memory sent through %s", command.Method)
 				}
 			case "summarize_session":
@@ -212,9 +215,20 @@ func TestGadgetCapabilitiesCommandForwarding(t *testing.T) {
 				data = json.RawMessage(exportedHistory)
 			case "export_session_memory":
 				data = json.RawMessage(exportedMemory)
+			case "list_artifacts":
+				data = []artifact.Metadata{published}
+			case "read_artifact":
+				data = artifact.Chunk{Artifact: published, Content: []byte("report")}
+			case "stage_artifact_copy":
+				raw, _ := json.Marshal(command.Data)
+				var chunk artifact.CopyChunk
+				if err := json.Unmarshal(raw, &chunk); err != nil {
+					t.Errorf("could not decode staging request: %v", err)
+				}
+				staged <- chunk
 			}
 			raw, _ := json.Marshal(data)
-			if err := json.NewEncoder(out).Encode(transport.Response{Status: "ok", Data: raw}); err != nil {
+			if err := json.NewEncoder(out).Encode(transport.Response{Status: envelope.StatusSuccess, Data: raw}); err != nil {
 				return
 			}
 		}
@@ -360,8 +374,21 @@ func TestGadgetCapabilitiesCommandForwarding(t *testing.T) {
 	if err != nil || trackedRemote == nil || trackedRemote.MoneypennyName != "other" {
 		t.Fatalf("duplicate not tracked on destination: %+v, %v", trackedRemote, err)
 	}
-	check(e.CopySession([]string{"source", "--async", "-m", "other"}), updated)
-	if remote := <-creates; string(remote["imported_memory"]) != exportedMemory || remote["imported_history"] != nil {
-		t.Fatalf("remote memory should not depend on copying history: %v", remote)
+	updated.Hem = true
+	check(e.UpdateSession([]string{"source", "--gadget-hem=true"}), updated)
+	check(gadgetRouteRequest(t, e, "source", "hem.command", map[string]any{
+		"args": []string{"copy", "session", "source", "--async", "-m", "other", "--copy-artifacts"},
+	}), updated)
+	remote = <-creates
+	if string(remote["imported_memory"]) != exportedMemory || remote["imported_history"] != nil || string(remote["copied_artifacts"]) != `["artifact-id"]` {
+		t.Fatalf("remote artifact and memory copy should not depend on history: %v", remote)
+	}
+	select {
+	case chunk := <-staged:
+		if chunk.Artifact != published || string(chunk.Content) != "report" || string(remote["session_id"]) != `"`+chunk.SessionID+`"` {
+			t.Fatalf("copy forwarded wrong artifact or destination: %+v", chunk)
+		}
+	default:
+		t.Fatal("artifact was not staged before create")
 	}
 }
