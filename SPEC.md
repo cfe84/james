@@ -394,6 +394,9 @@ Line-delimited JSON, one request/response per connection:
 - `hem set-default path VALUE` sets the default working directory (used by `create session` when `--path` is not specified, fallback: `.`).
 - `hem set-default server --hem HOST/SESSION` sets the default hem server to connect via MI6. `hem set-default server --local` resets to local Unix socket (the default).
 - `hem get-default agent|path|moneypenny|server` shows the current default for a given key.
+- CLI `set-default`, `get-default`, and `list defaults` operate on the local Hem
+  database without connecting to a server, even if the saved server is invalid.
+  `set-default moneypenny` requires a registration in that local database.
 - `hem list defaults` shows all configured defaults.
 - The `--local` global flag forces local Unix socket connection, overriding any stored default server.
 - **Timestamps** are transmitted as raw UTC RFC3339 (`2006-01-02T15:04:05Z`) in all table results (dashboard, session list, subsessions) and chat turns; localization to the viewer's timezone happens at each display layer (the CLI table printer, the hem TUI, and the qew browser) — never on the server, whose process timezone may differ from the user's.

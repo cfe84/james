@@ -73,33 +73,16 @@ func TestVersionDoesNotRequireRemoteFingerprint(t *testing.T) {
 	}
 }
 
-func TestSetDefaultMI6DoesNotRequireServer(t *testing.T) {
-	if os.Getenv("HEM_TEST_LOCAL_MI6_DEFAULT") == "1" {
-		os.Args = []string{"hem", "set-default", "mi6", "relay.example/control"}
-		main()
-		return
-	}
-	t.Setenv("HEM_TEST_LOCAL_MI6_DEFAULT", "1")
-	t.Setenv("HOME", t.TempDir())
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestSetDefaultMI6DoesNotRequireServer$")
-	out, err := cmd.CombinedOutput()
-	if ctx.Err() != nil {
-		t.Fatal(ctx.Err())
-	}
-	if err != nil || !strings.Contains(string(out), `Default mi6 set to "relay.example/control".`) {
-		t.Fatalf("offline set-default mi6 failed: %v\n%s", err, out)
-	}
-}
-
-func TestListDefaultsDoesNotRequireServer(t *testing.T) {
-	if os.Getenv("HEM_TEST_LOCAL_LIST_DEFAULTS") == "1" {
-		os.Args = []string{"hem", "list", "defaults"}
+func TestDefaultsDoNotRequireServer(t *testing.T) {
+	if os.Getenv("HEM_TEST_OFFLINE_DEFAULTS") == "1" {
+		os.Args = append([]string{"hem"}, os.Args[3:]...)
 		main()
 		return
 	}
 	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("MI6_SERVER_FINGERPRINT", "")
 	dataDir := filepath.Join(home, ".config", "james", "hem")
 	if err := os.MkdirAll(dataDir, 0700); err != nil {
 		t.Fatal(err)
@@ -108,28 +91,39 @@ func TestListDefaultsDoesNotRequireServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SetDefault("agent", "copilot"); err != nil {
+	if err := st.SetDefault("server", "wrong.example:443/control"); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SetDefault("mi6", "relay.example/control"); err != nil {
+	if err := st.AddMoneypenny(&store.Moneypenny{Name: "laptop", TransportType: "mi6", MI6Addr: "relay.example/laptop"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("HEM_TEST_LOCAL_LIST_DEFAULTS", "1")
-	t.Setenv("HOME", home)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestListDefaultsDoesNotRequireServer$")
-	out, err := cmd.CombinedOutput()
-	if ctx.Err() != nil {
-		t.Fatal(ctx.Err())
+	t.Setenv("HEM_TEST_OFFLINE_DEFAULTS", "1")
+	run := func(args []string, want string) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		cmd := exec.CommandContext(ctx, os.Args[0], append([]string{"-test.run=^TestDefaultsDoNotRequireServer$", "--"}, args...)...)
+		out, err := cmd.CombinedOutput()
+		if err != nil || !strings.Contains(string(out), want) {
+			t.Fatalf("hem %v: got %q (%v), want %q", args, out, err, want)
+		}
 	}
-	if err != nil || !strings.Contains(string(out), "agent") || !strings.Contains(string(out), "copilot") ||
-		!strings.Contains(string(out), "mi6") || !strings.Contains(string(out), "relay.example/control") {
-		t.Fatalf("offline list defaults failed: %v\n%s", err, out)
+	for _, pair := range [][2]string{{"agent", "copilot"}, {"path", "/workspace"}, {"mi6", "relay.example/control"}, {"download-path", "/downloads"}, {"sound", "off"}} {
+		key, value := pair[0], pair[1]
+		run([]string{"set-default", key, value}, "Default "+key+" set")
+		run([]string{"get-default", key}, value+"\n")
 	}
+	run([]string{"set-default", "moneypenny", "-n", "laptop"}, `Default moneypenny set to "laptop".`)
+	run([]string{"get-default", "moneypenny"}, "laptop\n")
+	run([]string{"get-default", "server"}, "wrong.example:443/control\n")
+	run([]string{"-o", "json", "list", "default"}, "relay.example/control")
+	run([]string{"--verbose", "set-default", "server", "--hem", "other.example/control"}, `Default server set to MI6 "other.example/control".`)
+	run([]string{"get-default", "server"}, "other.example/control\n")
+	run([]string{"set-default", "server", "--local"}, "Default server set to local.")
+	run([]string{"get-default", "server"}, "local (default)\n")
 }
 
 func TestIsStartServerCommand(t *testing.T) {

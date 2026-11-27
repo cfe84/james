@@ -1927,7 +1927,17 @@ func (e *Executor) SetDefaultValue(key string, args []string) *protocol.Response
 
 // GetDefaultValue returns a default value.
 func (e *Executor) GetDefaultValue(key string) *protocol.Response {
-	value, err := e.store.GetDefault(key)
+	var value string
+	var err error
+	if key == "moneypenny" {
+		var mp *store.Moneypenny
+		mp, err = e.store.GetDefaultMoneypenny()
+		if mp != nil {
+			value = mp.Name
+		}
+	} else {
+		value, err = e.store.GetDefault(key)
+	}
 	if err != nil {
 		return protocol.ErrResponse(err.Error())
 	}
